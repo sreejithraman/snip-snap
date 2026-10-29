@@ -10,6 +10,7 @@ result succeeds. Views never select a haptic pattern.
 | Delete snips | Row and selection menus, accessibility action | `IOSAppModel.deleteSnips` after the deletion snapshot applies | `deleted` |
 | Delete list | List menu | `IOSAppModel.performUserAction` after the deletion snapshot applies | `deleted` |
 | Undo delete | Undo toast | `IOSAppModel.restoreDeletion` after the restored snapshot applies | `restored` |
+| Undo Done | Undo snackbar | `SavedSnipsSession.restoreDone` after the inverse snapshot applies | `reopened` |
 | Move | Row and selection menus | `IOSAppModel.performUserAction`, checking source lists before the move | `moved` |
 | Merge | Selection menu | `IOSAppModel.performUserAction` after merge succeeds | `merged` |
 | Save | Composer, inline editor, sheet editor | `IOSAppModel.performUserAction` after the saved snapshot applies | `saved` |
@@ -55,3 +56,42 @@ checks prove requests, not tactile quality; feel must be checked on the phone.
 Reordering keeps the native drag feedback. The app adds no extra reorder tick.
 Expired Undo, moving to the same list, and merging fewer than two snips add no
 completion feedback. Both chronological and manual moves use the same outcome.
+
+## Snackbar and error presentation
+
+The Mac and iOS apps share snackbar wording, icons, and error details. Capture
+confirms **Snipped** with scissors. Copy confirms **Snapped** with an explicit
+copied-content detail. Copy and Done publish one combined result after both
+operations settle; Undo reopens only newly Done snips and leaves the clipboard.
+The Done checkmark is reserved for Done feedback. Delete uses the trash icon.
+
+Recoverable action failures use a warning snackbar with **Details**. The most
+recent failure remains available from **Error details** after its snackbar
+expires. Save and field errors stay inline with the draft. Background sync
+issues stay in their existing persistent status surfaces. Unsafe failures and
+choices such as copying text without unavailable attachments use dialogs.
+The same failure must not open a dialog and snackbar at once.
+
+If Undo fails and another operation later fails, **Retry Undo** stays available
+in a persistent inline notice. The notice sits above the iOS content or in the
+Mac panel's status area. Its **Details** opens the original Undo error, while the newest
+error keeps its own feedback. The notice hides while those Undo details are open
+and ends when the inverse succeeds, becomes unavailable, or a saved-snips change
+replaces it. Retrying Undo never repeats the clipboard write.
+
+Error details offers **Copy error details** and **Share diagnostic log**. The
+copied report includes app and system versions, time, operation and safe error
+code, plus available matching diagnostic entries. It excludes raw localized
+error text because that text can contain file paths or user content. Diagnostic
+sharing reuses the existing bounded local-log export and native delivery.
+Failures to prepare or share diagnostics remain inside the details view.
+
+The active sheet owns its nested error details; the root host presents them only
+when no app sheet is open. Closing Details acknowledges its matching dialog
+failure while retaining the incident for later inspection. A backend no-op does
+not consume the previous Undo or emit completion feedback.
+
+External Mac capture uses its screen HUD for immediate feedback. Failures remain
+available through Error details without publishing a second in-panel snackbar.
+Diagnostic settings retain the actual operation and safe error code rather than
+deriving a diagnostic identity from the displayed notice.

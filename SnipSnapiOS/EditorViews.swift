@@ -243,6 +243,8 @@ struct InlineSnipEditor: View {
                     .disabled(!ownsPresentation || !draft.canDismiss)
                     .accessibilityIdentifier(ownsPresentation ? "inline-snip-text" : "inactive-inline-snip-text")
 
+                IOSInlineFailureView(model: model, operations: ["snip.update", "snip.edit_attachments", "attachment."])
+
                 if draft.isStaging {
                     HStack {
                         ProgressView()
@@ -613,6 +615,7 @@ struct InlineListEditor: View {
                     .accessibilityIdentifier("list-name")
 
             }
+            IOSInlineFailureView(model: model, operations: ["list."])
             Picker("List appearance", selection: appearanceSelection) {
                 Text("Icon").tag(AppearanceTab.icon)
                 Text("Color").tag(AppearanceTab.color)
@@ -683,4 +686,29 @@ struct InlineListEditor: View {
         _ = await cancelNewList(list.id)
     }
 
+}
+
+struct IOSInlineFailureView: View {
+    let model: IOSAppModel
+    let operations: [String]
+    var includesProtectedUndoFailure = false
+
+    var body: some View {
+        if let failure = model.inlineFailure,
+           failure.surface == .inline || includesProtectedUndoFailure,
+           operations.contains(where: { failure.operation.hasPrefix($0) }) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(failure.message, systemImage: "exclamationmark.triangle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Details") { model.errorDetails = failure }
+                    Button("Dismiss") { model.dismissError() }
+                }
+                .font(.subheadline)
+            }
+            .accessibilityIdentifier("inline-operation-error")
+        }
+    }
 }

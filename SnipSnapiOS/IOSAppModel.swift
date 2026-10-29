@@ -148,20 +148,81 @@ final class IOSAppModel {
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
     var sortMode: SnipSortMode = .chronological
-    private struct PresentedError {
-        let title: String
-        let message: String
+    private(set) var failure: AppFailure?
+    private(set) var latestFailure: AppFailure? {
+        didSet {
+            guard case .showErrorDetails(let id) = toast?.action,
+                  latestFailure?.id != id else { return }
+            toast = nil
+        }
     }
-    private var presentedError: PresentedError?
+    var errorDetails: AppFailure?
+    private var failureUsesInlineSurface = false
+    var inlineFailure: AppFailure? { failureUsesInlineSurface ? failure : nil }
+    var hasGlobalInlineFailure: Bool { failureUsesInlineSurface && failure?.surface == .snackbar }
+    private var failedUndo: (failure: AppFailure, toast: AppToast)?
     var errorMessage: String? {
-        get { presentedError?.message }
+        get { failure?.message }
         set {
-            presentedError = newValue.map {
-                PresentedError(title: String(localized: "Something Went Wrong"), message: $0)
+            if let newValue {
+                failure = AppFailure(message: newValue, operation: "app.user_action", diagnosticCode: "presentation.message")
+                latestFailure = failure
+            } else {
+                failure = nil
             }
         }
     }
-    var errorTitle: String { presentedError?.title ?? String(localized: "Something Went Wrong") }
+    var errorTitle: String { failure?.title ?? String(localized: "Something Went Wrong") }
+
+    func showLatestErrorDetails() {
+        errorDetails = latestFailure
+    }
+
+    func dismissErrorDetails() {
+        if failure?.id == errorDetails?.id, failure?.surface == .dialog { failure = nil }
+        errorDetails = nil
+    }
+
+    func dismissError() {
+        failure = nil
+    }
+
+    func canRetryFailure(_ failure: AppFailure) -> Bool {
+        failedUndo?.failure.id == failure.id
+    }
+
+    func retryFailure(_ failure: AppFailure) {
+        guard canRetryFailure(failure) else { return }
+        retryPendingUndo(failure)
+    }
+
+    var pendingUndoFailure: AppFailure? {
+        guard let failedUndo,
+              latestFailure?.id != failedUndo.failure.id,
+              errorDetails?.id != failedUndo.failure.id else { return nil }
+        return failedUndo.failure
+    }
+
+    func retryPendingUndo(_ failure: AppFailure) {
+        guard let failedUndo, failedUndo.failure.id == failure.id else { return }
+        Task { await performToastActionNow(failedUndo.toast) }
+    }
+
+    func retryPendingUndoNow(_ failure: AppFailure) async {
+        guard let failedUndo, failedUndo.failure.id == failure.id else { return }
+        await performToastActionNow(failedUndo.toast)
+    }
+
+    func clearFailure(for operation: String) {
+        guard let failure, failure.operation == operation else { return }
+        clearFailure(id: failure.id)
+    }
+
+    func clearFailure(id: UUID) {
+        guard let failure, failure.id == id else { return }
+        if toast?.action == .showErrorDetails(failure.id) { toast = nil }
+        self.failure = nil
+    }
 
     init(
         library: any SnipLibrary,
@@ -380,7 +441,7 @@ final class IOSAppModel {
     ) async {
         haptics.invalidatePendingFeedback()
         await withSerializedMutation {
-            clearPendingDeletionToast()
+            clearPendingUndoToast()
             if let snipEditorDraft { finishInlineSnipEdit(snipEditorDraft) }
             selectedSnipID = nil
             apply(await session.replaceLibrary(
@@ -524,6 +585,7 @@ final class IOSAppModel {
 
     func markCopiedSnipsDone(
         versions: IOSCopiedSnipVersions,
+        copyToast: AppToast? = nil,
         ifStillCurrent: @MainActor @Sendable () -> Bool = { true }
     ) async -> IOSMarkCopiedSnipsDoneResult {
         guard !versions.isEmpty else { return .unchanged }
@@ -533,13 +595,13 @@ final class IOSAppModel {
                 versions[$0.id] == $0.updatedAt && !$0.isPinned && !$0.isDone
             }.map(\.id))
             guard !unfinishedIDs.isEmpty else { return .unchanged }
-            let deletionToast = toast?.action == .undoDelete ? toast : nil
             let changed = await setDoneUnlocked(
                 ids: unfinishedIDs,
                 done: true,
-                feedbackInteraction: nil
+                feedbackInteraction: nil,
+                copyToast: copyToast,
+                expectation: SnipLibraryExpectation(expectedSnips: snips.filter { unfinishedIDs.contains($0.id) })
             )
-            if changed, let deletionToast { toast = deletionToast }
             return changed ? .markedDone : .failed
         }
     }
@@ -731,7 +793,8 @@ final class IOSAppModel {
     }
 
     func presentToast(_ presentedToast: AppToast) {
-        guard toast?.action == nil || presentedToast.action != nil else { return }
+        let preservesUndo = toast?.action == .undoDelete || toast?.action == .undoDone
+        guard !preservesUndo || presentedToast.action != nil else { return }
         toast = presentedToast
     }
 
@@ -740,17 +803,51 @@ final class IOSAppModel {
     }
 
     func performToastActionNow(_ presentedToast: AppToast) async {
-        guard presentedToast.action == .undoDelete else { return }
-        await withUserMutation { interaction in
-            await restoreDeletion(token: presentedToast.id, feedbackInteraction: interaction)
+        switch presentedToast.action {
+        case .undoDelete:
+            await withUserMutation { interaction in
+                await restoreDeletion(presentedToast, feedbackInteraction: interaction)
+            }
+        case .undoDone:
+            await withUserMutation { interaction in
+                let priorUndoFailureID = failedUndo?.failure.id
+                do {
+                    guard let update = try await session.restoreDone(token: presentedToast.id, sortedBy: sortMode) else {
+                        expireUnavailableUndoRetry(token: presentedToast.id, operation: "snip.undo_done")
+                        return
+                    }
+                    if errorDetails?.id == failedUndo?.failure.id { errorDetails = nil }
+                    failedUndo = nil
+                    clearFailure(for: "snip.undo_done")
+                    apply(update.snapshot)
+                    haptics.emit(.reopened, for: interaction)
+                    if toast?.id == presentedToast.id { toast = nil }
+                    scheduleCloudSync()
+                } catch {
+                    retainUndoFailure(error, operation: "snip.undo_done", toast: presentedToast,
+                                      replacingDetailsFor: priorUndoFailureID)
+                    haptics.emit(.error, for: interaction)
+                }
+            }
+        case .showErrorDetails(let id):
+            guard latestFailure?.id == id else { return }
+            showLatestErrorDetails()
+        case nil:
+            break
         }
     }
 
     func dismissToast(_ presentedToast: AppToast) {
-        guard presentedToast.action == .undoDelete else { return }
         Task {
             await session.withExclusiveAccess { session in
-                await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
+                switch presentedToast.action {
+                case .undoDelete:
+                    await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
+                case .undoDone:
+                    await session.discardDone(token: presentedToast.id)
+                default:
+                    break
+                }
             }
             if toast?.id == presentedToast.id { toast = nil }
         }
@@ -771,6 +868,7 @@ final class IOSAppModel {
                 choice: choice,
                 sortedBy: sortMode
             ) else { return false }
+            clearPendingUndoToast()
             apply(state)
             scheduleCloudSync()
             return true
@@ -923,7 +1021,7 @@ final class IOSAppModel {
                             visibility: .user
                         ))
                     }
-                    errorMessage = message
+                    presentFailure(AppFailure(message: message, operation: "attachment.prepare", diagnosticCode: code))
                 } else {
                     diagnostics.record(.failure(
                         operation: "attachment.prepare",
@@ -1010,12 +1108,8 @@ final class IOSAppModel {
             // A prepare can store a file during either await. Clearing must end without one.
             preparedAttachments.removeAll()
         } catch {
-            diagnostics.record(.failure(
-                operation: "attachment.cache_clear",
-                error: error,
-                visibility: .user
-            ))
-            errorMessage = String(localized: "Couldn’t clear downloaded files. Try again.")
+            presentError(String(localized: "Couldn’t clear downloaded files. Try again."),
+                         operation: "attachment.cache_clear", diagnosticCode: diagnosticErrorCode(error))
         }
     }
 
@@ -1105,11 +1199,47 @@ final class IOSAppModel {
         return await setDoneUnlocked(ids: [id], done: !snip.isDone, feedbackInteraction: feedbackInteraction)
     }
 
-    private func setDoneUnlocked(ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?) async -> Bool {
-        let ids = Set(snips.filter { ids.contains($0.id) && !$0.isPinned }.map(\.id))
-        guard !ids.isEmpty else { return false }
-        guard snips.contains(where: { ids.contains($0.id) && $0.isDone != done }) else { return true }
-        return await performUserAction(.setDone(ids: ids, done: done), feedbackInteraction: feedbackInteraction)
+    private func setDoneUnlocked(
+        ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?, copyToast: AppToast? = nil,
+        expectation: SnipLibraryExpectation? = nil
+    ) async -> Bool {
+        let eligible = snips.filter { ids.contains($0.id) && !$0.isPinned }
+        guard !eligible.isEmpty else { return false }
+        let ids = Set(eligible.filter { $0.isDone != done }.map(\.id))
+        guard !ids.isEmpty else { return true }
+        do {
+            let change = try await session.setDone(
+                ids: ids, done: done, expectation: expectation, sortedBy: sortMode
+            )
+            guard change.didChange else {
+                apply(change.update.snapshot)
+                return true
+            }
+            clearPendingUndoToast()
+            clearFailure(for: "snip.completion")
+            clearFailure(for: "snip.completion_after_copy")
+            apply(change.update.snapshot)
+            if let undo = change.undo {
+                toast = copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id)
+            }
+            haptics.emit(done ? .markedDone : .reopened, for: feedbackInteraction)
+            recoverySnapshot = await session.refreshRecovery()
+            await refreshAttachmentTransferStates()
+            scheduleCloudSync()
+            return true
+        } catch {
+            if copyToast != nil {
+                presentError(
+                    String(localized: "Copied, but couldn’t mark Done. Try marking the snip Done again."),
+                    operation: "snip.completion_after_copy",
+                    diagnosticCode: diagnosticErrorCode(error)
+                )
+            } else {
+                presentError(error, operation: "snip.completion")
+            }
+            haptics.emit(.error, for: feedbackInteraction)
+            return false
+        }
     }
 
     private func createListUnlocked(
@@ -1145,12 +1275,20 @@ final class IOSAppModel {
         selectedSnipIDs.intersection(snips.map(\.id))
     }
 
-    private func restoreDeletion(token: UUID, feedbackInteraction: UUID?) async {
+    private func restoreDeletion(_ presentedToast: AppToast, feedbackInteraction: UUID?) async {
+        let token = presentedToast.id
+        let priorUndoFailureID = failedUndo?.failure.id
         do {
             guard let update = try await session.restoreDeletion(
                 token: token,
                 sortedBy: sortMode
-            ) else { return }
+            ) else {
+                expireUnavailableUndoRetry(token: token, operation: "snip.undo_delete")
+                return
+            }
+            if errorDetails?.id == failedUndo?.failure.id { errorDetails = nil }
+            failedUndo = nil
+            clearFailure(for: "snip.undo_delete")
             apply(update.snapshot)
             haptics.emit(.restored, for: feedbackInteraction)
             if toast?.id == token { toast = nil }
@@ -1159,8 +1297,19 @@ final class IOSAppModel {
             scheduleCloudSync()
         } catch {
             haptics.emit(.error, for: feedbackInteraction)
-            presentError(error, operation: "snip.undo_delete")
+            retainUndoFailure(error, operation: "snip.undo_delete", toast: presentedToast,
+                              replacingDetailsFor: priorUndoFailureID)
         }
+    }
+
+    private func retainUndoFailure(
+        _ error: any Error, operation: StaticString, toast: AppToast,
+        replacingDetailsFor priorFailureID: UUID?
+    ) {
+        presentError(error, operation: operation)
+        guard let failure else { return }
+        if let priorFailureID, errorDetails?.id == priorFailureID { errorDetails = failure }
+        failedUndo = (failure, toast)
     }
 
     private func deleteSnips(ids: Set<UUID>, feedbackInteraction: UUID?) async -> Bool {
@@ -1169,12 +1318,15 @@ final class IOSAppModel {
         let count = ids.count
         let token = UUID()
         do {
-            let update = try await session.delete(
+            let result = try await session.deleteWithResult(
                 ids: ids,
                 token: token,
                 sortedBy: sortMode
             )
-            apply(update.snapshot)
+            apply(result.update.snapshot)
+            guard result.didChange else { return true }
+            failedUndo = nil
+            clearFailure(for: "snip.delete")
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
             toast = .deleted(count: count, id: token)
@@ -1211,13 +1363,15 @@ final class IOSAppModel {
     ) async -> Bool {
         let feedback = feedbackKind(for: command)
         do {
-            let update = try await session.performUserCommand(
+            let result = try await session.performUserCommandWithResult(
                 command,
                 sortedBy: sortMode
             )
-            clearPendingDeletionToast()
+            let update = result.update
+            if result.didChange { clearPendingUndoToast() }
+            clearFailure(for: String(describing: command.diagnosticOperation))
             apply(update.snapshot)
-            if let feedback, update.outcome != .add(.duplicate) {
+            if let feedback, result.didChange {
                 haptics.emit(feedback, for: feedbackInteraction)
             }
             afterSuccess(update.outcome)
@@ -1237,12 +1391,7 @@ final class IOSAppModel {
         operation: StaticString = "app.user_action"
     ) {
         diagnostics.record(.failure(operation: operation, error: error, visibility: .user))
-        presentedError = PresentedError(
-            title: error as? SnipLibraryError == .duplicateList
-                ? String(localized: "Name Already Used")
-                : String(localized: "Something Went Wrong"),
-            message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        )
+        presentFailure(AppFailure(error: error, operation: operation))
     }
 
     func presentError(
@@ -1250,20 +1399,31 @@ final class IOSAppModel {
         operation: StaticString,
         diagnosticCode: String
     ) {
-        diagnostics.record(.failure(
-            operation: operation,
-            errorCode: diagnosticCode,
-            visibility: .user
-        ))
-        presentedError = PresentedError(
-            title: String(localized: "Something Went Wrong"),
-            message: message
-        )
+        diagnostics.record(.failure(operation: operation, errorCode: diagnosticCode, visibility: .user))
+        presentFailure(AppFailure(message: message, operation: operation, diagnosticCode: diagnosticCode))
     }
 
-    private func clearPendingDeletionToast() {
-        guard let toast, toast.action == .undoDelete else { return }
-        self.toast = nil
+    func presentFailure(_ failure: AppFailure) {
+        let preservesUndo = toast?.action == .undoDone || toast?.action == .undoDelete
+        self.failure = failure
+        latestFailure = failure
+        failureUsesInlineSurface = failure.surface == .inline || (failure.surface == .snackbar && preservesUndo)
+        if failure.surface == .snackbar && !preservesUndo { toast = .failed(failure) }
+    }
+
+    private func expireUnavailableUndoRetry(token: UUID, operation: StaticString) {
+        guard failedUndo?.toast.id == token else { return }
+        let updatesDetails = errorDetails?.id == failedUndo?.failure.id
+        failedUndo = nil
+        presentError(String(localized: "Undo is no longer available because the snips changed."),
+                     operation: operation, diagnosticCode: "undo.unavailable")
+        if updatesDetails { errorDetails = failure }
+    }
+
+    private func clearPendingUndoToast() {
+        failedUndo = nil
+        guard toast?.action == .undoDelete || toast?.action == .undoDone else { return }
+        toast = nil
     }
 
     func backupImportSelectionFailed(_ error: any Error) -> String? {
@@ -1350,7 +1510,7 @@ final class IOSAppModel {
                 try Task.checkCancellation()
                 return try await session.applyPendingImport(id: id, sortedBy: .chronological)
             }) else { return }
-            clearPendingDeletionToast()
+            clearPendingUndoToast()
             apply(result.snapshot)
             recoverySnapshot = recovery
         } catch {

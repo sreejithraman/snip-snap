@@ -2,6 +2,7 @@ import XCTest
 import SnipSnapCore
 import Foundation
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 @testable import SnipSnap
 @testable import SnipSnapPersistence
@@ -1143,6 +1144,524 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testDoneSnackbarUndoReopensOnlyNewlyDoneSnipsAndKeepsClipboard() async throws {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let done = Snip(content: "Already done", origin: .quickEntry, isDone: true)
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date())
+        let model = AppModel(library: InMemorySnipLibrary(snips: [first, second, done, pinned]), defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-done-undo-\(UUID())"))
+
+        await model.setDoneNow(true, ids: [first.id, second.id, done.id, pinned.id], to: pasteboard)
+
+        let toast = try XCTUnwrap(model.toast)
+        XCTAssertEqual(toast.action, .undoDone)
+        XCTAssertEqual(toast.message, "2 snips snapped")
+        let copied = pasteboard.string(forType: .string)
+        XCTAssertNotNil(copied)
+        model.toast = nil
+        await model.performToastActionNow(toast)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == done.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == pinned.id }).isPinned)
+        XCTAssertEqual(pasteboard.string(forType: .string), copied)
+        XCTAssertNil(model.toast)
+    }
+
+    @MainActor
+    func testExternalDropDoneOffersUndoWithoutCopyFeedback() async throws {
+        let snip = Snip(content: "Dragged", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+
+        await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+
+        let toast = try XCTUnwrap(model.toast)
+        XCTAssertEqual(toast.message, "Marked Done")
+        XCTAssertEqual(toast.action, .undoDone)
+        await model.performToastActionNow(toast)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+    }
+
+    @MainActor
+    func testFailedCopyKeepsDoneAndDeleteUndoAvailable() async throws {
+        for deleting in [false, true] {
+            let library = try JSONSnipLibrary(fileURL: storeURL())
+            let added = try await library.add(content: "Preserve Undo", origin: .quickEntry)
+            let snip = try XCTUnwrap(added)
+            let model = AppModel(library: library, defaults: defaults())
+            await model.reload()
+            if deleting {
+                await model.deleteSelectionNow(ids: [snip.id])
+            } else {
+                let pasteboard = NSPasteboard(name: .init("SnipSnapTests-preserve-undo-\(UUID())"))
+                await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+            }
+            let undo = try XCTUnwrap(model.toast)
+
+            model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+
+            XCTAssertEqual(undo.action, deleting ? .undoDelete : .undoDone)
+            XCTAssertEqual(model.toast?.id, undo.id,
+                           "deleting=\(deleting), original=\(String(describing: undo.action)), current=\(String(describing: model.toast?.action))")
+            XCTAssertEqual(model.inlineFailure?.operation, "clipboard.write")
+            await model.performToastActionNow(undo)
+            XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        }
+    }
+
+    @MainActor
+    func testSuccessfulCopyOnlyRetryResolvesItsFailureAndPreservesUndo() async throws {
+        let operations: [StaticString] = ["attachment.prepare", "clipboard.export", "clipboard.write"]
+        for protectsUndo in [false, true] {
+            for operation in operations {
+                for directPlacement in [false, true] {
+                    let unfinished = Snip(content: "Earlier Done", origin: .quickEntry)
+                    let pinned = Snip(content: "Retry copy", origin: .quickEntry, pinnedAt: Date())
+                    let model = AppModel(library: InMemorySnipLibrary(snips: [unfinished, pinned]), defaults: defaults())
+                    await model.reload()
+                    let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-retry-\(UUID())"))
+                    if protectsUndo { await model.setDoneNow(true, ids: [unfinished.id], to: pasteboard) }
+                    let undo = model.toast
+                    XCTAssertEqual(undo?.action, protectsUndo ? .undoDone : nil)
+                    model.presentError(SnipLibraryError.attachmentCopyFailed, operation: operation)
+                    let incident = try XCTUnwrap(model.latestFailure)
+
+                    let copied: Bool
+                    if directPlacement {
+                        copied = await model.placeOnClipboardNow(.snips([pinned]), to: pasteboard)
+                    } else {
+                        copied = await model.copySnipsAndMarkDoneNow([pinned], to: pasteboard)
+                    }
+
+                    XCTAssertTrue(copied)
+                    XCTAssertEqual(pasteboard.string(forType: .string), pinned.content)
+                    XCTAssertNil(model.presentedError)
+                    XCTAssertNil(model.inlineFailure)
+                    XCTAssertEqual(model.latestFailure?.id, incident.id)
+                    if let undo {
+                        XCTAssertEqual(model.toast?.id, undo.id)
+                        let clipboardWrites = pasteboard.changeCount
+                        await model.performToastActionNow(undo)
+                        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == unfinished.id }).isDone)
+                        XCTAssertEqual(pasteboard.changeCount, clipboardWrites)
+                    } else {
+                        XCTAssertEqual(model.toast?.message, "Snapped")
+                        XCTAssertNil(model.toast?.action)
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testSuccessfulClipboardEntryRetryResolvesItsFailureAndKeepsUndo() async throws {
+        for protectsUndo in [false, true] {
+            let pasteboard = NSPasteboard(name: .init("SnipSnapTests-entry-retry-\(UUID())"))
+            let history = ClipboardHistory(pasteboard: pasteboard, defaults: defaults(), storeURL: try storeURL())
+            let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults(), clipboardHistory: history)
+            let undo = protectsUndo ? AppToast.deleted(count: 1, id: UUID()) : nil
+            model.toast = undo
+            model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+            let incident = try XCTUnwrap(model.latestFailure)
+            let entry = ClipboardEntry(sourceApplication: "Tests", items: [
+                ClipboardPayloadItem(representations: [
+                    ClipboardRepresentation(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("Restored entry".utf8))
+                ])
+            ])
+
+            XCTAssertTrue(model.placeClipboardEntry(entry))
+
+            XCTAssertEqual(pasteboard.string(forType: .string), "Restored entry")
+            XCTAssertNil(model.presentedError)
+            XCTAssertNil(model.inlineFailure)
+            XCTAssertEqual(model.latestFailure?.id, incident.id)
+            XCTAssertEqual(model.toast?.id, undo?.id)
+            XCTAssertEqual(model.clipboardCopyPulse?.entryID, entry.id)
+        }
+    }
+
+    @MainActor
+    func testSuccessfulCopyDoesNotClearANewerFailureDuringExport() async throws {
+        let snip = Snip(content: "Copy finishes", origin: .quickEntry, pinnedAt: Date())
+        let gate = PausingPasteboardExportPreparer()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            preparePasteboardExport: gate.prepare
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-newer-copy-failure-\(UUID())"))
+        model.presentError(CocoaError(.fileReadUnknown), operation: "clipboard.export")
+        let copying = Task { @MainActor in await model.copySnipsAndMarkDoneNow([snip], to: pasteboard) }
+        await gate.waitUntilPreparationStarts()
+        model.presentError(CocoaError(.fileReadNoPermission), operation: "clipboard.export")
+        let newer = try XCTUnwrap(model.latestFailure)
+        await gate.release()
+
+        let copied = await copying.value
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.string(forType: .string), snip.content)
+        XCTAssertEqual(model.presentedError, newer.message)
+        XCTAssertEqual(model.toast?.action, .showErrorDetails(newer.id))
+    }
+
+    @MainActor
+    func testSuccessfulCopyRetryKeepsUnrelatedUndoDetailsOpen() async throws {
+        let snip = Snip(content: "Retained inverse", origin: .quickEntry)
+        let copy = Snip(content: "Copy retry", origin: .quickEntry, pinnedAt: Date())
+        let library = InMemorySnipLibrary(snips: [snip, copy])
+        let gate = PausingPasteboardExportPreparer()
+        let model = AppModel(library: library, defaults: defaults(), preparePasteboardExport: gate.prepare)
+        await model.reload()
+        await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+        let undo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(undo)
+        let inverseFailure = try XCTUnwrap(model.dialogFailure)
+        model.presentError(CocoaError(.fileReadUnknown), operation: "clipboard.export")
+        let copyFailure = try XCTUnwrap(model.latestFailure)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-retained-details-copy-\(UUID())"))
+        let copying = Task { @MainActor in
+            await model.placeOnClipboardNow(.snips([copy]), to: pasteboard)
+        }
+        await gate.waitUntilPreparationStarts()
+        model.errorDetails = inverseFailure
+        await gate.release()
+
+        let copied = await copying.value
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.string(forType: .string), copy.content)
+        XCTAssertNil(model.presentedError, "Successful retry resolves its copy failure.")
+        XCTAssertEqual(model.latestFailure?.id, copyFailure.id)
+        XCTAssertEqual(model.errorDetails?.id, inverseFailure.id)
+        XCTAssertTrue(model.canRetryErrorAction)
+        let clipboardWrites = pasteboard.changeCount
+        await model.retryPendingUndoNow(inverseFailure)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertEqual(pasteboard.changeCount, clipboardWrites)
+        XCTAssertEqual(pasteboard.string(forType: .string), copy.content)
+    }
+
+    @MainActor
+    func testSuccessfulListRetryKeepsUnrelatedDetailsOpen() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        model.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action")
+        model.showLatestErrorDetails()
+        let retained = try XCTUnwrap(model.errorDetails)
+        model.presentError(SnipLibraryError.duplicateList, operation: "list.create")
+
+        let created = await model.createList(name: "Corrected name", systemImage: "folder")
+
+        XCTAssertTrue(created)
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(model.errorDetails?.id, retained.id)
+    }
+
+    @MainActor
+    func testDetailsOnlyFailureKeepsUnrelatedDetailsOpen() throws {
+        let captures: [(AppModel) -> Void] = [
+            { $0.presentError(SelectionCaptureFailure.sourceUnavailable,
+                              operation: "selection.capture", presentation: .detailsOnly) },
+            { $0.presentError("Capture failed", operation: "capture.screen",
+                              diagnosticCode: "capture.failed", presentation: .detailsOnly) }
+        ]
+        for capture in captures {
+            let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+            model.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action")
+            model.showLatestErrorDetails()
+            let retained = try XCTUnwrap(model.errorDetails)
+
+            capture(model)
+
+            XCTAssertNil(model.presentedError)
+            XCTAssertNotEqual(model.latestFailure?.id, retained.id)
+            XCTAssertEqual(model.errorDetails?.id, retained.id)
+        }
+    }
+
+    @MainActor
+    func testSameListMovePreservesDoneUndoAndItsFailedRetry() async throws {
+        for failingUndo in [false, true] {
+            let snip = Snip(content: "Keep this inverse", origin: .quickEntry)
+            let library = InMemorySnipLibrary(snips: [snip])
+            let model = AppModel(library: library, defaults: defaults())
+            await model.reload()
+            await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+            let undo = try XCTUnwrap(model.toast)
+            if failingUndo {
+                model.toast = nil
+                await library.failNextCheckedRead()
+                await model.performToastActionNow(undo)
+            }
+            let failure = model.latestFailure
+
+            let moved = await model.moveChronologically(ids: [snip.id], to: SnipList.inboxID)
+
+            XCTAssertTrue(moved)
+            if failingUndo {
+                XCTAssertTrue(model.canRetryErrorAction)
+                XCTAssertEqual(model.latestFailure?.id, failure?.id)
+                await model.retryPendingUndoNow(try XCTUnwrap(failure))
+            } else {
+                XCTAssertEqual(model.toast?.id, undo.id)
+                await model.performToastActionNow(undo)
+            }
+            XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        }
+    }
+
+    @MainActor
+    func testOlderDetailsRetryCannotUndoANewerFailedInverse() async throws {
+        let first = Snip(content: "First inverse", origin: .quickEntry)
+        let second = Snip(content: "Newer inverse", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [first, second])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        await model.setDoneAfterExternalDropNow(versions: [first.id: first.updatedAt])
+        let firstUndo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(firstUndo)
+        let olderRetry = try XCTUnwrap(model.errorRetryAction)
+        await model.setDoneAfterExternalDropNow(versions: [second.id: second.updatedAt])
+        let secondUndo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(secondUndo)
+        let newerFailure = try XCTUnwrap(model.dialogFailure)
+        let mustNotReopen = expectation(description: "An old Details callback must not reopen the newer snip")
+        mustNotReopen.isInverted = true
+        let subscription = model.$snips.sink { snips in
+            if snips.first(where: { $0.id == second.id })?.isDone == false {
+                mustNotReopen.fulfill()
+            }
+        }
+
+        olderRetry()
+
+        await fulfillment(of: [mustNotReopen], timeout: 1)
+        subscription.cancel()
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+        XCTAssertEqual(model.dialogFailure?.id, newerFailure.id)
+        await model.retryPendingUndoNow(newerFailure)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
+    }
+
+    @MainActor
+    func testClosingRetainedDetailsDoesNotAcknowledgeANewerDialogFailure() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        model.presentError(CocoaError(.fileReadUnknown), operation: "snip.undo_done")
+        model.showLatestErrorDetails()
+        let retained = try XCTUnwrap(model.errorDetails)
+        model.presentError(CocoaError(.fileWriteNoPermission), operation: "app.user_action")
+        let newer = try XCTUnwrap(model.latestFailure)
+        XCTAssertEqual(model.dialogFailure?.id, retained.id)
+
+        model.dismissErrorDetails()
+
+        XCTAssertNil(model.errorDetails)
+        XCTAssertEqual(model.dialogFailure?.id, newer.id)
+        XCTAssertEqual(model.presentedError, newer.message)
+        model.dismissErrorDetails()
+        XCTAssertNil(model.dialogFailure)
+    }
+
+    @MainActor
+    func testLaterCopyFailureKeepsFailedDoneUndoReachable() async throws {
+        let snip = Snip(content: "Done can still be undone", origin: .quickEntry)
+        let copy = Snip(content: "Pending copy", origin: .quickEntry, pinnedAt: Date())
+        let library = InMemorySnipLibrary(snips: [snip, copy])
+        let gate = PausingPasteboardExportPreparer(throwsAfterRelease: true)
+        let model = AppModel(library: library, defaults: defaults(), preparePasteboardExport: gate.prepare)
+        await model.reload()
+        await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+        let undo = try XCTUnwrap(model.toast)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-later-copy-failure-\(UUID())"))
+        let clipboardWrites = pasteboard.changeCount
+        let copying = Task { @MainActor in await model.copySnipsAndMarkDoneNow([copy], to: pasteboard) }
+        await gate.waitUntilPreparationStarts()
+        model.toast = nil
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(undo)
+        XCTAssertTrue(model.canRetryErrorAction)
+        let inverseFailure = try XCTUnwrap(model.dialogFailure)
+
+        await gate.release()
+        let copied = await copying.value
+
+        XCTAssertFalse(copied)
+        let recovery = try XCTUnwrap(model.pendingUndoFailure)
+        XCTAssertEqual(recovery.id, inverseFailure.id)
+        XCTAssertEqual(model.latestFailure?.operation, "clipboard.export")
+        model.errorDetails = recovery
+        XCTAssertTrue(model.canRetryErrorAction)
+        XCTAssertNil(model.pendingUndoFailure, "Details must own the inverse failure while open.")
+        model.dismissErrorDetails()
+        XCTAssertEqual(model.pendingUndoFailure?.id, recovery.id)
+        await model.retryPendingUndoNow(recovery)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertNil(model.pendingUndoFailure)
+        XCTAssertEqual(model.latestFailure?.operation, "clipboard.export")
+        XCTAssertNotNil(model.presentedError, "Undo recovery must not resolve the failed copy.")
+        XCTAssertEqual(pasteboard.changeCount, clipboardWrites)
+    }
+
+    @MainActor
+    func testFailedDoneUndoCanRetryWithoutWritingToClipboardAgain() async throws {
+        let snip = Snip(content: "Keep copied content", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-retry-done-undo-\(UUID())"))
+        await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+        let toast = try XCTUnwrap(model.toast)
+        let copied = pasteboard.string(forType: .string)
+        model.toast = nil
+        await library.failNextCheckedRead()
+
+        await model.performToastActionNow(toast)
+
+        XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertTrue(model.canRetryErrorAction)
+        XCTAssertEqual(model.dialogFailure?.surface, .dialog)
+        model.showLatestErrorDetails()
+        await library.failNextCheckedRead()
+        await model.retryErrorActionNow()
+        XCTAssertEqual(model.errorDetails?.id, model.latestFailure?.id)
+        XCTAssertTrue(model.canRetryErrorAction)
+        await model.retryErrorActionNow()
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertFalse(model.canRetryErrorAction)
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(pasteboard.string(forType: .string), copied)
+    }
+
+    @MainActor
+    func testCLICopyOnlyAndNoOpDonePreserveFailedUndoRetry() async throws {
+        let snip = Snip(content: "Completed", origin: .quickEntry)
+        let pinned = Snip(content: "Pinned copy", origin: .quickEntry, pinnedAt: Date())
+        let library = InMemorySnipLibrary(snips: [snip, pinned])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-cli-undo-retry-\(UUID())"))
+        await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+        let undo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(undo)
+        XCTAssertTrue(model.canRetryErrorAction)
+        let completed = try XCTUnwrap(model.snips.first { $0.id == snip.id })
+        let doneReference = SnipCLISnipReference(id: completed.id, revision: SnipCLIItemRevision.token(snip: completed))
+        let pinnedReference = SnipCLISnipReference(id: pinned.id, revision: SnipCLIItemRevision.token(snip: pinned))
+        let actions: [SnipCLILibraryAction] = [
+            .copy(snips: [doneReference], markDone: false),
+            .copy(snips: [pinnedReference], markDone: true),
+            .copy(snips: [doneReference], markDone: true),
+            .setDone(snips: [doneReference], done: true)
+        ]
+        for action in actions {
+            _ = try await model.handleCLILibraryRequest(.init(action: .extended(.library(action))), action: action, to: pasteboard)
+            XCTAssertTrue(model.canRetryErrorAction)
+        }
+        let clipboardWrites = pasteboard.changeCount
+        await model.retryErrorActionNow()
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertEqual(pasteboard.changeCount, clipboardWrites)
+    }
+
+    @MainActor
+    func testQueuedCLINoOpKeepsUndoFromPendingUIDone() async throws {
+        let snip = Snip(content: "Pending Done", origin: .quickEntry)
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date())
+        let library = InMemorySnipLibrary(snips: [snip, pinned], suspendsFirstCommand: true)
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-cli-queued-noop-\(UUID())"))
+        let pendingDone = Task { @MainActor in
+            await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+        }
+        await library.waitUntilFirstCommandStarts()
+        let requested = expectation(description: "CLI no-op requested during pending Done")
+        let noOp = Task { @MainActor in
+            requested.fulfill()
+            let action = SnipCLILibraryAction.setDone(snips: [
+                .init(id: pinned.id, revision: SnipCLIItemRevision.token(snip: pinned))
+            ], done: true)
+            return try await model.handleCLILibraryRequest(
+                .init(action: .extended(.library(action))), action: action, to: pasteboard
+            )
+        }
+        await fulfillment(of: [requested], timeout: 2)
+        await library.resumeFirstCommand()
+        await pendingDone.value
+        _ = try await noOp.value
+
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        await model.performToastActionNow(undo)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), snip.content)
+    }
+
+    @MainActor
+    func testCaptureFailureRetainsDetailsAndRecordsDiagnostics() {
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults(), diagnostics: probe.recorder)
+        model.presentError(SelectionCaptureFailure.sourceUnavailable, operation: "selection.capture", presentation: .detailsOnly)
+        XCTAssertNil(model.toast)
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(model.latestFailure?.code, "selection.sourceUnavailable")
+        XCTAssertEqual(probe.events.last?.operation, "selection.capture")
+        model.showLatestErrorDetails()
+        XCTAssertEqual(model.errorDetails?.id, model.latestFailure?.id)
+    }
+
+    @MainActor
+    func testRecoverableFailureKeepsDetailsAfterSnackbarDismissal() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.export")
+        let toast = try XCTUnwrap(model.toast)
+        let failure = try XCTUnwrap(model.latestFailure)
+        XCTAssertEqual(failure.surface, .snackbar)
+        model.toast = nil
+        await model.performToastActionNow(toast)
+        XCTAssertEqual(model.errorDetails?.id, failure.id)
+        XCTAssertNotNil(model.presentedError)
+    }
+
+    @MainActor
+    func testReplacingFailureClearsSupersededWarningSnackbar() throws {
+        let replacements: [(AppModel) -> Void] = [
+            { $0.presentError(SnipLibraryError.duplicateList, operation: "list.create") },
+            { $0.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action") },
+            { $0.presentError(SelectionCaptureFailure.sourceUnavailable,
+                              operation: "selection.capture", presentation: .detailsOnly) },
+            { $0.presentError("Capture failed", operation: "capture.screen",
+                              diagnosticCode: "capture.failed", presentation: .detailsOnly) }
+        ]
+        for replace in replacements {
+            let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+            model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.export")
+            let warning = try XCTUnwrap(model.toast)
+            let first = try XCTUnwrap(model.latestFailure)
+            XCTAssertEqual(warning.action, .showErrorDetails(first.id))
+
+            replace(model)
+
+            XCTAssertNotEqual(model.latestFailure?.id, first.id)
+            XCTAssertNil(model.toast, "A superseded warning must not keep a Details action for the old incident.")
+            model.showLatestErrorDetails()
+            XCTAssertEqual(model.errorDetails?.id, model.latestFailure?.id)
+        }
+    }
+
+    @MainActor
     func testRapidDoneTogglesOnlyApplyTheSuccessfulCopy() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Snip", origin: .quickEntry)
@@ -2126,7 +2645,7 @@ final class AppModelTests: StoreBackedTestCase {
         )
         XCTAssertTrue(notified)
         XCTAssertEqual(pasteboard.string(forType: .string), "Place me")
-        XCTAssertEqual(model.toast?.message, "Copied")
+        XCTAssertEqual(model.toast?.message, "Snapped")
 
         model.toast = .deleted(count: 1, id: UUID())
         let silent = await model.placeOnClipboardNow(
@@ -2140,7 +2659,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testCopyAndFinishKeepsPendingDeleteUndoVisible() async throws {
+    func testCopyAndFinishReplacesPendingDeleteWithDoneUndo() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Copy me", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
@@ -2153,7 +2672,7 @@ final class AppModelTests: StoreBackedTestCase {
 
         XCTAssertTrue(copied)
         XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
-        XCTAssertEqual(model.toast?.action, .undoDelete)
+        XCTAssertEqual(model.toast?.action, .undoDone)
     }
 
     @MainActor
@@ -3409,6 +3928,13 @@ private actor GatedDiscardUserActions: SnipLibraryUserActions {
         try await base.perform(command: command, sortedBy: sortMode)
     }
 
+    func performWithResult(
+        command: SnipLibraryCommand,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryCommandResult {
+        try await base.performWithResult(command: command, sortedBy: sortMode)
+    }
+
     func delete(
         ids: Set<UUID>,
         token: UUID,
@@ -3416,6 +3942,15 @@ private actor GatedDiscardUserActions: SnipLibraryUserActions {
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryUpdate {
         try await base.delete(ids: ids, token: token, expectation: expectation, sortedBy: sortMode)
+    }
+
+    func deleteWithResult(
+        ids: Set<UUID>,
+        token: UUID,
+        expectation: SnipLibraryExpectation?,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryCommandResult {
+        try await base.deleteWithResult(ids: ids, token: token, expectation: expectation, sortedBy: sortMode)
     }
 
     func restoreDeletion(

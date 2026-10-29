@@ -51,6 +51,10 @@ struct RecoveryCenterView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                IOSInlineFailureView(model: model, operations: ["recovery.resolve"])
+                    .padding()
+            }
             .navigationTitle("Needs attention")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -111,6 +115,10 @@ struct RecoveredSnipReviewView: View {
                 } else {
                     ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                IOSInlineFailureView(model: model, operations: ["recovery.resolve"])
+                    .padding()
             }
             .navigationTitle("Recovered snip")
             .navigationBarTitleDisplayMode(.inline)
@@ -273,6 +281,10 @@ struct RecoveredListReviewView: View {
                 } else {
                     ContentUnavailableView("Recovered version unavailable", systemImage: "checkmark.circle")
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                IOSInlineFailureView(model: model, operations: ["recovery.resolve"])
+                    .padding()
             }
             .navigationTitle("Recovered list")
             .navigationBarTitleDisplayMode(.inline)

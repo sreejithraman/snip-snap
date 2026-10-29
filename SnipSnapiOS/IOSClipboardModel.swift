@@ -25,9 +25,15 @@ final class IOSClipboardModel {
     private(set) var syncEnabled: Bool
     private var operationErrorMessage: String?
     private var loadErrorMessage: String?
+    private(set) var syncErrorMessage: String?
+    private(set) var operationFailure: AppFailure?
+    var persistentErrorMessage: String? { syncErrorMessage ?? loadErrorMessage }
     var errorMessage: String? {
-        get { operationErrorMessage ?? loadErrorMessage }
-        set { operationErrorMessage = newValue }
+        get { operationErrorMessage ?? persistentErrorMessage }
+        set {
+            operationErrorMessage = newValue
+            if newValue == nil { operationFailure = nil }
+        }
     }
     private(set) var importErrorMessage: String?
     private(set) var pasteErrorMessage: String?
@@ -40,8 +46,6 @@ final class IOSClipboardModel {
         default: return true
         }
     }
-    private(set) var copied = false
-    @ObservationIgnored private var copyFeedbackTask: Task<Void, Never>?
     var localDeviceLabel: String {
         UIDevice.current.userInterfaceIdiom == .pad ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
@@ -162,7 +166,7 @@ final class IOSClipboardModel {
         do {
             guard let generation = try await generation() else { return }
             entries = try await cloud.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: true, generation: generation).entries
-            errorMessage = nil
+            syncErrorMessage = nil
             pendingUploadIDs = []
             savePendingUploads()
         } catch {
@@ -174,7 +178,7 @@ final class IOSClipboardModel {
             ))
             pendingUploadIDs.formUnion(cloud.pendingEntryIDs)
             savePendingUploads()
-            errorMessage = ClipboardSyncErrorMessage.sync(for: error)
+            syncErrorMessage = ClipboardSyncErrorMessage.sync(for: error)
         }
     }
 
@@ -190,14 +194,14 @@ final class IOSClipboardModel {
         do {
             try await cloud?.resetAccountBinding()
             await load()
-            errorMessage = nil
+            syncErrorMessage = nil
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
                 error: error,
                 visibility: .user
             ))
-            errorMessage = ClipboardSyncErrorMessage.accountReset(for: error)
+            syncErrorMessage = ClipboardSyncErrorMessage.accountReset(for: error)
         }
     }
 
@@ -211,12 +215,7 @@ final class IOSClipboardModel {
             errorMessage = nil
             await synchronize()
         } catch {
-            diagnostics.record(.failure(
-                operation: "clipboard.pin",
-                error: error,
-                visibility: .user
-            ))
-            errorMessage = String(localized: "Couldn’t update the pin. Try again.")
+            presentError(error, operation: "clipboard.pin", message: String(localized: "Couldn’t update the pin. Try again."))
         }
     }
 
@@ -225,15 +224,11 @@ final class IOSClipboardModel {
             entries = try await store.delete(id: entry.id).entries
             pendingUploadIDs.remove(entry.id)
             savePendingUploads()
+            if operationFailure?.operation == "clipboard.delete" { errorMessage = nil }
             await synchronize()
         }
         catch {
-            diagnostics.record(.failure(
-                operation: "clipboard.delete",
-                error: error,
-                visibility: .user
-            ))
-            errorMessage = String(localized: "Couldn’t delete this clipboard entry. Try again.")
+            presentError(error, operation: "clipboard.delete", message: String(localized: "Couldn’t delete this clipboard entry. Try again."))
         }
     }
 
@@ -242,15 +237,11 @@ final class IOSClipboardModel {
             entries = try await store.clearUnpinned().entries
             pendingUploadIDs.formIntersection(entries.map(\.id))
             savePendingUploads()
+            if operationFailure?.operation == "clipboard.clear" { errorMessage = nil }
             await synchronize()
         }
         catch {
-            diagnostics.record(.failure(
-                operation: "clipboard.clear",
-                error: error,
-                visibility: .user
-            ))
-            errorMessage = String(localized: "Couldn’t clear clipboard history. Try again.")
+            presentError(error, operation: "clipboard.clear", message: String(localized: "Couldn’t clear clipboard history. Try again."))
         }
     }
 
@@ -264,9 +255,6 @@ final class IOSClipboardModel {
         let requestID = UUID()
         copyRequestID = requestID
         errorMessage = nil
-        copyFeedbackTask?.cancel()
-        copyFeedbackTask = nil
-        copied = false
         var payload = entry.items.map { item in
             Dictionary(item.representations.filter { $0.type != UTType.fileURL.identifier }.map { ($0.type, $0.data as Any) }, uniquingKeysWith: { first, _ in first })
         }.filter { !$0.isEmpty }
@@ -285,22 +273,14 @@ final class IOSClipboardModel {
                     visibility: isCurrent ? .user : .background
                 ))
                 guard isCurrent else { return false }
-                errorMessage = String(localized: "This file isn’t on this device. If it synced before, sync your clipboard and try again.")
+                let message = String(localized: "This file isn’t on this device. If it synced before, sync your clipboard and try again.")
+                operationErrorMessage = message
+                operationFailure = AppFailure(message: message, operation: "clipboard.copy_file", diagnosticCode: diagnosticErrorCode(error))
                 return false
             }
         }
         guard !Task.isCancelled, copyRequestID == requestID, !payload.isEmpty else { return false }
         UIPasteboard.general.setItems(payload)
-        copied = true
-        copyFeedbackTask?.cancel()
-        copyFeedbackTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(2))
-            } catch {
-                return
-            }
-            self?.copied = false
-        }
         return true
     }
 
@@ -439,6 +419,7 @@ final class IOSClipboardModel {
     ) {
         diagnostics.record(.failure(operation: operation, error: error, visibility: .user))
         operationErrorMessage = message
+        operationFailure = AppFailure(message: message, operation: operation, diagnosticCode: diagnosticErrorCode(error))
     }
 
     private func recordPasteFailure(_ error: PasteError) {

@@ -16,6 +16,8 @@ struct SyncedContentSettingsView: View {
     @State private var isRetryingClipboardSync = false
     @Bindable var diagnostics: AppDiagnosticSettingsModel
     @State private var diagnosticDelivery = MacDiagnosticDelivery()
+    @State private var diagnosticDetails: AppFailure?
+    @State private var diagnosticToast: AppToast?
 
     var body: some View {
         Form {
@@ -103,6 +105,32 @@ struct SyncedContentSettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .buttonStyle(.bordered)
                 .disabled(!diagnostics.canPerformActions)
+                if diagnostics.notice != nil, diagnostics.notice != .saved, diagnostics.notice != .cleared {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(diagnosticMessage, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                        switch diagnostics.notice {
+                        case .preparationFailed, .deliveryFailed:
+                            Button("Retry sharing diagnostic log") { diagnostics.share(deliver: diagnosticDelivery.deliver) }
+                                .disabled(!diagnostics.canPerformActions)
+                        case .clearFailed:
+                            Button("Retry clearing diagnostic log", action: diagnostics.clear)
+                                .disabled(!diagnostics.canPerformActions)
+                        case .readFailed, .saveFailed:
+                            Button("Reload diagnostics setting") { diagnostics.refreshRecording() }
+                        default:
+                            EmptyView()
+                        }
+                        Button("Dismiss") { diagnostics.dismissNotice() }
+                        if let failure = diagnostics.failure {
+                            Button("Details") {
+                                diagnosticDetails = AppFailure(message: diagnosticMessage,
+                                    operation: failure.operation, diagnosticCode: failure.code)
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("diagnostics-error")
+                }
                 if diagnostics.isBusy {
                     ProgressView()
                         .controlSize(.small)
@@ -115,6 +143,9 @@ struct SyncedContentSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(item: $diagnosticDetails) { failure in
+            AppErrorDetailsView(failure: failure, onClose: { diagnosticDetails = nil })
+        }
         .onAppear { diagnostics.activate() }
         .onDisappear { diagnostics.deactivate() }
         .onChange(of: scenePhase) { _, phase in
@@ -140,17 +171,13 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("Couldn’t get the latest iCloud changes. Turning off sync uses this Mac’s copy, which may be out of date. Your iCloud data stays.")
         }
-        .alert("Diagnostics", isPresented: Binding(
-            get: { diagnostics.notice != nil },
-            set: { if !$0 { diagnostics.dismissNotice() } }
-        )) {
-            if diagnostics.recordingEnabled == nil {
-                Button("Try Again") { diagnostics.refreshRecording() }
-            }
-            Button("OK", role: .cancel) { diagnostics.dismissNotice() }
-        } message: {
-            Text(diagnosticMessage)
+        .appToast($diagnosticToast, alignment: .bottom, edge: .bottom)
+        .onChange(of: diagnostics.notice) { _, notice in
+            guard notice == .saved || notice == .cleared else { return }
+            diagnosticToast = AppToast(systemImage: notice == .saved ? "square.and.arrow.down" : "trash", message: diagnosticMessage)
+            diagnostics.dismissNotice()
         }
+
     }
 
     init(
@@ -253,7 +280,7 @@ struct SyncedContentSettingsView: View {
 /// AppKit delivery owns destination access and settles only after panel/copy completion.
 @MainActor
 @Observable
-private final class MacDiagnosticDelivery {
+final class MacDiagnosticDelivery {
     private var panel: NSSavePanel?
 
     func deliver(_ source: URL) async throws -> AppDiagnosticSettingsModel.DeliveryOutcome {

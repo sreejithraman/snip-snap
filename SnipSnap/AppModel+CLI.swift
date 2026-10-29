@@ -205,6 +205,7 @@ extension AppModel {
     func performCLIMutation<Value: Sendable>(
         scopeToken: String? = nil,
         recover: (@MainActor @Sendable (SnipLibrarySnapshot) -> Value?)? = nil,
+        didMutate: @MainActor @Sendable (Value) -> Bool = { _ in true },
         _ mutation: @MainActor @Sendable () async throws -> (SnipLibraryUpdate, Value)
     ) async throws -> Value {
         let result: Result<Value, Error> = await withCommandLock {
@@ -214,7 +215,7 @@ extension AppModel {
             do { try beginCLIMutation() }
             catch { return .failure(error) }
             defer { endCLIMutation() }
-            switch await performMutationUnlocked(mutation) {
+            switch await performMutationUnlocked(didMutate: didMutate, mutation) {
             case .success(let value):
                 return .success(value)
             case .failure(let error):

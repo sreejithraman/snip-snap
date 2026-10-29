@@ -27,7 +27,10 @@ struct SyncedContentSettingsView: View {
     @State private var isProcessingImport = false
     @State private var isConfirmingImport = false
     @State private var backupExport: IOSBackupExport?
-    @State private var backupError: String?
+    private var backupError: String? { backupFailure?.message }
+    @State private var backupFailure: AppFailure?
+    @State private var settingsErrorDetails: AppFailure?
+    @State private var settingsToast: AppToast?
 
     var body: some View {
         NavigationStack {
@@ -79,7 +82,7 @@ struct SyncedContentSettingsView: View {
                         .disabled(!model.canEnableClipboardSync)
                         .accessibilityIdentifier("clipboard-sync-toggle")
                     }
-                    if let clipboard, let message = clipboard.errorMessage {
+                    if let clipboard, let message = clipboard.persistentErrorMessage {
                         Label(message, systemImage: "exclamationmark.triangle")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -118,12 +121,23 @@ struct SyncedContentSettingsView: View {
                         Button {
                             guard !isBackupBusy else { return }
                             library.haptics.invalidatePendingFeedback()
+                                                backupFailure = nil
                             isImportingBackup = true
                         } label: {
                             settingsLabel("Import Backup…", systemImage: "square.and.arrow.down")
                         }
                         .disabled(isBackupBusy)
                         .accessibilityIdentifier("import-backup")
+                        if let backupError {
+                            Label(backupError, systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let backupFailure {
+                                Button("Details") {
+                                    showSettingsErrorDetails(backupFailure)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -174,7 +188,9 @@ struct SyncedContentSettingsView: View {
                 previewBackupImport(from: url)
             case .failure(let error):
                 if backupLifetime.isActive {
-                    backupError = library?.backupImportSelectionFailed(error)
+                    if library?.backupImportSelectionFailed(error) != nil {
+                        backupFailure = AppFailure(error: error, operation: "backup.import_select")
+                    }
                 }
             }
         }
@@ -191,14 +207,6 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("Merge this backup with your library.\n\n\(library?.pendingImportPreview?.localizedSummary ?? "")")
         }
-        .alert("Couldn’t Complete Backup", isPresented: Binding(
-            get: { backupError != nil },
-            set: { if !$0 { backupError = nil } }
-        )) {
-            Button("OK") { backupError = nil }
-        } message: {
-            Text(backupError ?? "")
-        }
         .background {
             IOSShareSheetPresenter(
                 request: $diagnosticDelivery.request,
@@ -207,16 +215,22 @@ struct SyncedContentSettingsView: View {
                 .frame(width: 0, height: 0)
         }
         .onDisappear { diagnostics.deactivate() }
-        .alert("Diagnostics", isPresented: Binding(
-            get: { diagnostics.notice != nil },
-            set: { if !$0 { diagnostics.dismissNotice() } }
-        )) {
-            if diagnostics.recordingEnabled == nil {
-                Button("Try Again") { diagnostics.refreshRecording() }
+        .sheet(item: $settingsErrorDetails) { failure in
+            AppErrorDetailsView(failure: failure, onClose: { settingsErrorDetails = nil })
+        }
+        .appToast($settingsToast, alignment: .bottom, edge: .bottom,
+                  isHidden: library != nil, reservesSpace: true)
+        .onChange(of: diagnostics.notice) { _, notice in
+            switch notice {
+            case .saved:
+                presentSettingsToast(AppToast(systemImage: "square.and.arrow.down", message: String(localized: "Diagnostic log saved.")))
+                diagnostics.dismissNotice()
+            case .cleared:
+                presentSettingsToast(AppToast(systemImage: "trash", message: String(localized: "Diagnostic log cleared.")))
+                diagnostics.dismissNotice()
+            default:
+                break
             }
-            Button("OK") { diagnostics.dismissNotice() }
-        } message: {
-            Text(diagnosticMessage)
         }
         .onChange(of: model.canEnableClipboardSync) { _, canEnable in
             if !canEnable { confirmsClipboardSync = false }
@@ -319,6 +333,16 @@ struct SyncedContentSettingsView: View {
         }
     }
 
+    private func showSettingsErrorDetails(_ failure: AppFailure) {
+        if let library { library.errorDetails = failure }
+        else { settingsErrorDetails = failure }
+    }
+
+    private func presentSettingsToast(_ toast: AppToast) {
+        if let library { library.presentToast(toast) }
+        else { settingsToast = toast }
+    }
+
     private var diagnosticMessage: String {
         switch diagnostics.notice {
         case .readFailed: String(localized: "Couldn’t read the diagnostics setting. Try again.")
@@ -376,6 +400,18 @@ struct SyncedContentSettingsView: View {
                     ProgressView()
                         .accessibilityLabel("Updating diagnostics")
                 }
+                if let notice = diagnostics.notice, notice != .saved, notice != .cleared {
+                    Label(diagnosticMessage, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Details") {
+                        if let failure = diagnostics.failure {
+                            showSettingsErrorDetails(AppFailure(message: diagnosticMessage,
+                                operation: failure.operation, diagnosticCode: failure.code))
+                        }
+                    }
+                    .disabled(diagnostics.failure == nil)
+                }
             } footer: {
                 Text("Diagnostics stay on this device for up to 7 days; storage limits may shorten history. They exclude snip content and file names. Nothing is uploaded automatically. Turning recording off keeps retained logs; clear them separately. The system may keep separate logs.")
             }
@@ -392,6 +428,7 @@ struct SyncedContentSettingsView: View {
 
     private func createBackup() {
         guard let library, !isBackupBusy, backupLifetime.isActive else { return }
+        backupFailure = nil
         isPreparingBackup = true
         let operationID = backupLifetime.beginOperation()
         backupLifetime.task = Task {
@@ -412,7 +449,9 @@ struct SyncedContentSettingsView: View {
                 AppDiagnosticRecorder.live.record(.failure(
                     operation: "backup.export", error: error, visibility: .user
                 ))
-                if backupLifetime.isActive, !Task.isCancelled { backupError = error.localizedDescription }
+                if backupLifetime.isActive, !Task.isCancelled {
+                    backupFailure = AppFailure(error: error, operation: "backup.export")
+                }
             }
             isPreparingBackup = false
             backupLifetime.finishOperation(operationID)
@@ -447,7 +486,9 @@ struct SyncedContentSettingsView: View {
             } catch is CancellationError {
                 // Closing Settings or choosing another backup abandons this preview.
             } catch {
-                if backupLifetime.isActive, !Task.isCancelled { backupError = error.localizedDescription }
+                if backupLifetime.isActive, !Task.isCancelled {
+                    backupFailure = AppFailure(error: error, operation: "backup.import_preview")
+                }
             }
         }
     }
@@ -466,7 +507,9 @@ struct SyncedContentSettingsView: View {
             } catch is CancellationError {
                 // The dismissal cancelled an import that had not started committing.
             } catch {
-                if backupLifetime.isActive, !Task.isCancelled { backupError = error.localizedDescription }
+                if backupLifetime.isActive, !Task.isCancelled {
+                    backupFailure = AppFailure(error: error, operation: "backup.import_apply")
+                }
             }
         }
     }

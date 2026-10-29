@@ -126,7 +126,8 @@ struct CompactLibraryPageStack: View {
             }
             .libraryToast(
                 model: model,
-                isHidden: !isActivePage || !model.isSearchPresented,
+                isHidden: !isActivePage || !model.isSearchPresented || sheet != nil
+                    || model.newListMoveRequest != nil || model.errorDetails != nil,
                 usesFixedExpiry: true
             )
             .background {
