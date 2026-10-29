@@ -2171,7 +2171,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
         try dragTabs(140)
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        _ = try visibleTouchCenter(of: collectionRow(named: "Inbox page note", in: app), in: app)
+        _ = try visibleTouchCenter(of: row(named: "Inbox page note", in: app), in: app)
         // Visited pages stay mounted to preserve native scroll and navigation state.
         // Their rows must stop accepting input when another list becomes active.
         XCTAssertFalse(collectionRow(named: "Work page note", in: app).isHittable)
@@ -2181,7 +2181,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         try dragTabs(-140)
         XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
-        _ = try visibleTouchCenter(of: collectionRow(named: "Work page note", in: app), in: app)
+        _ = try visibleTouchCenter(of: row(named: "Work page note", in: app), in: app)
         XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isHittable)
         XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isEnabled)
         _ = try visibleTouchCenter(of: composer, in: app)
@@ -4582,7 +4582,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         returnToCollection(in: app)
         tapVisibleSelectorTab(listControl(named: "Inbox", in: app), in: app)
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        _ = try visibleTouchCenter(of: collectionRow(named: "Sketch a simpler selection flow", in: app), in: app)
+        _ = try visibleTouchCenter(of: row(named: "Sketch a simpler selection flow", in: app), in: app)
         enterSelection(in: app)
         try visibleTouchCenter(of: selectableRow(named: "Sketch a simpler selection flow"), in: app).tap()
         try visibleTouchCenter(of: app.buttons["gathered-stack"], in: app).tap()
