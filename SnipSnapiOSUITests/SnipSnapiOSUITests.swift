@@ -1144,7 +1144,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             inboxContents.buttons.matching(NSPredicate(format: "label CONTAINS %@", token)).firstMatch.exists,
             "The shared snip also appeared in Inbox."
         )
-        revealCompactList(named: work, in: app)
+        revealCompactList(named: work, in: app, scrollLimit: sharedLibraryScrollLimit)
         tapVisibleSelectorTab(listControl(named: work, in: app), in: app)
         XCTAssertTrue(
             saved.waitForExistence(timeout: 10),

@@ -71,6 +71,50 @@ checks the app's embedded Share extension and privacy manifests. For interactive
 app checks and focused or full Dev tests, use `scripts/run.sh`. Compile-only
 output from `scripts/build.sh` is not a runnable Dev app.
 
+## Development, PR, and integration cadence
+
+During development, run the affected package filter, iOS unit class, or UI method
+first. Use its named group after a repair settles. Add related regressions when
+the change crosses a feature boundary; a group is an explicit selection, not a
+coverage guarantee.
+
+Before a PR is ready, run both normal account-free gates above. The full package
+gate retains sync ordering, recovery, migration, and account-isolation coverage.
+For a changed iOS workflow, also run the full Dev UI suite. Script changes need
+their policy checks and a real run of the affected path. A focused pass does not
+waive a failed broader gate.
+
+For scheduled integration, run the full UI suite on the relevant iPhone and iPad
+families with the required Photos and Files fixtures. Keep every skip and unmet
+precondition visible. Release acceptance also follows the
+[release checklist](release-checklist.md) and the
+[release matrix](building.md#build-and-test). Local fake-transport tests do not
+establish live CloudKit or physical-device coverage.
+
+## Reuse build output locally
+
+The Dev runner already keeps a build cache for its claimed Dev slot. The normal
+test gates use fresh DerivedData and remove it on exit. For repeated local Mac
+checks, the existing override retains a cache inside this worktree:
+
+```sh
+SNIP_SNAP_DERIVED_DATA="$PWD/artifacts/local-mac-cache" ./scripts/test.sh --mac-only
+```
+
+Each Mac app-host invocation still gets a new store and diagnostics directory.
+An explicit cache retains those run directories and Xcode results for inspection;
+it does not reuse the previous test library. Keep one writer per cache, use a
+different cache for each worktree and Xcode version, and remove only your own
+idle cache when reclaiming disk space. Leave the default fresh path available
+for clean integration checks.
+
+An empty DerivedData directory does not clear Swift Package Manager's separate
+build cache or the OS file cache. When comparing timings, record both states,
+the same selection and build settings, and host load. Separate policy checks,
+compilation, test-runner startup, and test execution. Caching build output does
+not shorten a native UI wait or replace test-store and fixture isolation. Keep
+iOS parallel testing disabled; the current paths share device and system UI state.
+
 ## Fixtures and isolation
 
 Most UI tests launch with a unique `SNIP_SNAP_UI_TEST_STORE` and seed local snips,

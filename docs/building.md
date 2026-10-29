@@ -142,12 +142,12 @@ Both checks below use this worktree's isolated Dev app:
 Choose either a UI test method or a unit test class per run.
 Use `--unit-test all` to run the full iOS unit test target.
 
-Test runs prepare and install the isolated Dev app, then let XCTest launch its
-test host or fixture app. They skip the ordinary app launch before testing.
-Runs without a test selector install and open the Dev app as usual.
+For selected tests, XCTest installs and launches the isolated Dev app; see
+[iOS checks](ios-testing.md#run-targeted-tests). Runs without a test selector
+install and open the Dev app through the runner.
 
-The Simulator runner logs each terminate, install, and launch stage. Each setup
-command has a 60-second timeout; set `SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS`
+For interactive runs, the runner logs each terminate, install, and launch stage.
+Each setup command has a 60-second timeout; set `SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS`
 to change it. A timeout stops that command's process group, keeps the stage log,
 and releases the Dev slot lock after owned processes stop. It leaves shared
 Simulator services and other devices alone.

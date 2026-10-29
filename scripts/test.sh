@@ -64,7 +64,9 @@ fi
 
 if [[ "$run_mac_app_tests" == YES ]]; then
     mac_derived_data="$derived_data/mac"
-    mac_store_path="$derived_data/mac-test-store/snips.json"
+    mac_test_root="$derived_data/mac-test-stores"
+    /bin/mkdir -p "$mac_test_root"
+    mac_store_path="$(/usr/bin/mktemp -d "$mac_test_root/run.XXXXXX")/snips.json"
     if SNIP_SNAP_STORE_PATH="$mac_store_path" \
         TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY="${mac_store_path:h}/SnipSnapDiagnostics" \
         TEST_RUNNER_SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild \

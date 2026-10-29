@@ -55,6 +55,19 @@ if [[ "${SNIP_SNAP_TEST_FAILURE:-}" == "$scheme" ]]; then
     fi
     exit 65
 fi
+if [[ "$scheme" == SnipSnap && -n "${SNIP_SNAP_TEST_STORE_RECEIPTS:-}" ]]; then
+    store_path="$TEST_RUNNER_SNIP_SNAP_STORE_PATH"
+    diagnostics_path="$TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY"
+    [[ "$SNIP_SNAP_STORE_PATH" == "$store_path" ]]
+    if [[ -e "$store_path" || -e "$diagnostics_path/sentinel" ]]; then
+        print -u2 'A cached build reused a previous test store or diagnostics.'
+        exit 90
+    fi
+    /bin/mkdir -p "${store_path:h}" "$diagnostics_path"
+    print -r -- 'test store sentinel' > "$store_path"
+    print -r -- 'test diagnostics sentinel' > "$diagnostics_path/sentinel"
+    print -r -- "$derived_data"$'\t'"$store_path"$'\t'"$diagnostics_path" >> "$SNIP_SNAP_TEST_STORE_RECEIPTS"
+fi
 if [[ "$scheme" == SnipSnapiOS ]]; then
     app="$derived_data/Build/Products/Debug-iphonesimulator/Snip Snap iOS.app"
     extension="$app/PlugIns/SnipSnapShareExtension.appex"
@@ -110,6 +123,30 @@ assert_groups 0 0 1
 /usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 run_tests --without-mac-app-tests
 assert_groups 1 0 1
+
+export SNIP_SNAP_TEST_STORE_RECEIPTS="$test_root/store-receipts"
+for attempt in 1 2; do
+    if SNIP_SNAP_DERIVED_DATA="$test_root/cache" run_tests --mac-only; then
+        :
+    else
+        cache_status=$?
+        /bin/cat "$test_root/output" >&2
+        exit "$cache_status"
+    fi
+done
+/usr/bin/ruby - "$SNIP_SNAP_TEST_STORE_RECEIPTS" "$test_root/cache/mac" <<'RUBY'
+rows = File.readlines(ARGV.fetch(0), chomp: true).map { |line| line.split("\t") }
+abort 'Both cached invocations must run Mac tests' unless rows.length == 2
+abort 'Both invocations must reuse the requested build cache' unless rows.all? { |row| row[0] == ARGV.fetch(1) }
+abort 'Test stores must differ between invocations' unless rows.map { |row| row[1] }.uniq.length == 2
+abort 'Diagnostics must differ between invocations' unless rows.map { |row| row[2] }.uniq.length == 2
+rows.each do |_, store, diagnostics|
+  abort 'Cached test evidence was deleted or overwritten' unless
+    File.read(store).strip == 'test store sentinel' &&
+    File.read(File.join(diagnostics, 'sentinel')).strip == 'test diagnostics sentinel'
+end
+RUBY
+unset SNIP_SNAP_TEST_STORE_RECEIPTS
 
 for arguments in '--unknown' '--mac-only --ios-only'; do
     if run_tests ${=arguments}; then

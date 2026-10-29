@@ -29,8 +29,6 @@ done
 
 /usr/bin/grep -F 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=' \
     "$script_dir/test.sh" >/dev/null
-/usr/bin/grep -F 'mac_store_path="$derived_data/mac-test-store/snips.json"' \
-    "$script_dir/test.sh" >/dev/null
 /usr/bin/grep -F 'SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild' \
     "$script_dir/test.sh" >/dev/null
 /usr/bin/grep -F 'ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro,OS=latest}"' \
