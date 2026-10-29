@@ -1,5 +1,6 @@
 import SnipSnapCore
 import SwiftUI
+import Observation
 
 struct AppToast: Identifiable {
     enum CopiedContent {
@@ -29,6 +30,7 @@ struct AppToast: Identifiable {
     let action: Action?
     let duration: Duration
     let expiresAt: ContinuousClock.Instant
+    let lifetime: AppToastLifetime
     private let copiedContent: CopiedContent?
 
     init(
@@ -47,6 +49,7 @@ struct AppToast: Identifiable {
         self.action = action
         self.duration = duration
         self.expiresAt = ContinuousClock().now.advanced(by: duration)
+        self.lifetime = AppToastLifetime(expiresAt: expiresAt, isActionable: action != nil)
         self.copiedContent = copiedContent
     }
 
@@ -117,6 +120,56 @@ struct AppToast: Identifiable {
             action: .undoDelete,
             duration: .seconds(6)
         )
+    }
+}
+
+@MainActor
+@Observable
+final class AppToastLifetime {
+    private let expiresAt: ContinuousClock.Instant
+    private let isActionable: Bool
+    private var pausedAt: ContinuousClock.Instant?
+    private var pausedDuration: Duration = .zero
+    @ObservationIgnored private var voiceOverEnabled = false
+    @ObservationIgnored private var interactionOwners: Set<UUID> = []
+
+    nonisolated init(expiresAt: ContinuousClock.Instant, isActionable: Bool) {
+        self.expiresAt = expiresAt
+        self.isActionable = isActionable
+    }
+
+    var deadline: ContinuousClock.Instant {
+        expiresAt.advanced(by: pausedDuration)
+    }
+
+    var isPaused: Bool { pausedAt != nil }
+
+    func setVoiceOverEnabled(_ enabled: Bool, at now: ContinuousClock.Instant = ContinuousClock().now) {
+        voiceOverEnabled = enabled
+        reconcilePause(at: now)
+    }
+
+    func setInteractionPaused(
+        _ paused: Bool, owner: UUID,
+        at now: ContinuousClock.Instant = ContinuousClock().now
+    ) {
+        if paused { interactionOwners.insert(owner) }
+        else { interactionOwners.remove(owner) }
+        reconcilePause(at: now)
+    }
+
+    func canExpire(at now: ContinuousClock.Instant = ContinuousClock().now) -> Bool {
+        !isPaused && now >= deadline
+    }
+
+    private func reconcilePause(at now: ContinuousClock.Instant) {
+        let shouldPause = (voiceOverEnabled && isActionable) || !interactionOwners.isEmpty
+        if shouldPause, pausedAt == nil {
+            pausedAt = now
+        } else if !shouldPause, let pausedAt {
+            pausedDuration += pausedAt.duration(to: now)
+            self.pausedAt = nil
+        }
     }
 }
 
