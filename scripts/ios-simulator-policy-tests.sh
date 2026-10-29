@@ -1,15 +1,31 @@
 #!/bin/zsh
 set -euo pipefail
-script_dir="${0:A:h}"
+source_script_dir="${0:A:h}"
 test_dir="$(mktemp -d)"
-fixture_lock="/private/tmp/snip-snap-share-fixture-58493.lock"
+script_dir="$test_dir/repo/scripts"
+fixture_lock="$test_dir/snip-snap-share-fixture-58493.lock"
 test_fixture_lock_owned=0
 cleanup() {
  [[ "$test_fixture_lock_owned" == 0 ]] || /bin/rmdir "$fixture_lock" 2>/dev/null || true
  /bin/rm -rf "$test_dir"
 }
 trap cleanup EXIT
-mkdir -p "$test_dir/bin"
+mkdir -p "$test_dir/bin" "$script_dir" "$test_dir/repo/SnipSnapiOSUITests" "$test_dir/repo/SnipSnapiOSTests"
+# Exercise the runner with fake tools and a private lock, never the live fixture.
+for script in run.sh dev-ios-simulator.sh signing-policy.sh share-fixture.sh \
+ dev-slot.sh run-ios-simulator.sh ios-test-selection.rb local-share-fixture.py; do
+ cp "$source_script_dir/$script" "$script_dir/"
+done
+cp "$source_script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" \
+ "$test_dir/repo/SnipSnapiOSUITests/"
+cp "$source_script_dir/../SnipSnapiOSTests/"*.swift "$test_dir/repo/SnipSnapiOSTests/"
+/usr/bin/ruby - "$source_script_dir/share-fixture.sh" "$script_dir/share-fixture.sh" "$test_dir" <<'RUBY'
+source, output, root = ARGV
+text = File.read(source)
+lock_prefix = '/private/tmp/snip-snap-share-fixture-'
+abort 'Update private fixture-lock isolation before running this policy test' unless text.scan(lock_prefix).length == 1
+File.write(output, text.sub(lock_prefix, "#{root}/snip-snap-share-fixture-"))
+RUBY
 export SNIP_SNAP_DEV_STATE_DIR="$test_dir/state"
 export SNIP_SNAP_DEV_WORKTREE="${script_dir:h}"
 export FAKE_SIM_LOG="$test_dir/sim.log"
@@ -108,8 +124,30 @@ if grep -E '(^| )CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null; then
  print -u2 'Global app entitlements would affect package targets'; exit 1
 fi
 grep -F 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null
+cp "$FAKE_SIM_LOG" "$test_dir/before-test-selection"
 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output"
 grep -F -- '-only-testing:SnipSnapiOSTests/IOSAppModelTests' "$FAKE_BUILD_LOG" >/dev/null
+if ! cmp -s "$test_dir/before-test-selection" "$FAKE_SIM_LOG"; then
+ print -u2 'Selected tests must let XCTest manage Dev app installation and launch'; exit 1
+fi
+"$script_dir/run.sh" --ios-simulator --unit-test all > "$test_dir/output"
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests test' ]] || {
+ print -u2 'The full unit selection did not select the unit target'; exit 1
+}
+"$script_dir/run.sh" --ios-simulator --ui-group smoke > "$test_dir/output"
+if ! cmp -s "$test_dir/before-test-selection" "$FAKE_SIM_LOG"; then
+ print -u2 'A UI group manually opened the app before XCTest'; exit 1
+fi
+/usr/bin/ruby - "$FAKE_BUILD_LOG" <<'RUBY'
+line = File.readlines(ARGV.fetch(0)).last
+expected = %w[
+ testCreatesAndEditsTextSnip testCopiesTextOnlySnip
+ testTappingCompletionCircleTogglesWithoutEditingOrSelecting
+ testListSwipeSwitchesListsFromAVisibleRow testSelectionPersistsAcrossLists
+].map { |method| "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/#{method}" }
+abort 'A group did not select exactly its workflows in one test action' unless
+ line.scan(/-only-testing:\S+/) == expected && line.end_with?(" test\n")
+RUBY
 if [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-enableCodeCoverage NO'* ]]; then
  print -u2 'An ordinary test run disabled coverage'; exit 1
 fi
@@ -141,13 +179,13 @@ for compiler_evidence in covered response missing; do
   abort "Missing failed verification evidence" unless evidence.fetch("verified") == false && evidence.fetch("error").length > 0
  ' "$evidence"
 done
-"$script_dir/run.sh" --ios-simulator --ui-test testExample --no-test-diagnostics > "$test_dir/output" 2>&1 || {
+"$script_dir/run.sh" --ios-simulator --ui-test testCopiesTextOnlySnip --no-test-diagnostics > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1
 }
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics never'*' test' ]] || {
  print -u2 'The opt-in UI run did not disable test diagnostics'; exit 1
 }
-"$script_dir/run.sh" --ios-simulator --ui-test testExample > "$test_dir/output" 2>&1
+"$script_dir/run.sh" --ios-simulator --ui-test testCopiesTextOnlySnip > "$test_dir/output" 2>&1
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics on-failure'* ]] || {
  print -u2 'An ordinary UI run did not retain failure diagnostics'; exit 1
 }
@@ -164,7 +202,7 @@ for arguments in '--performance' '--no-test-diagnostics'; do
  fi
  cmp "$test_dir/before-invalid-options" "$FAKE_BUILD_LOG"
 done
-"$script_dir/run.sh" --ios-simulator --ui-test testExample --performance --no-test-diagnostics \
+"$script_dir/run.sh" --ios-simulator --ui-test testCopiesTextOnlySnip --performance --no-test-diagnostics \
  --build-log "$test_dir/custom logs/performance.log" > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1
 }
@@ -184,7 +222,7 @@ done
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-collect-test-diagnostics on-failure'* ]] || {
  print -u2 'A later ordinary unit run did not restore failure diagnostics'; exit 1
 }
-if "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests --ui-test testExample > "$test_dir/output" 2>&1; then
+if "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests --ui-test testCopiesTextOnlySnip > "$test_dir/output" 2>&1; then
  print -u2 'Accepted simultaneous UI and unit test selectors'; exit 1
 fi
 cp "$FAKE_SIM_LOG" "$test_dir/before"
@@ -219,6 +257,10 @@ assert_fixture_cleaned_up() {
  [[ ! -e "$SNIP_SNAP_DEV_STATE_DIR/locks/ios-slot-1" ]] || {
   print -u2 'The runner left its Dev slot locked'; exit 1
  }
+}
+assert_fixture_cleaned_up
+FAKE_EXPECT_FIXTURE=1 "$script_dir/run.sh" --ios-simulator --ui-group share > "$test_dir/output" 2>&1 || {
+ cat "$test_dir/output" >&2; exit 1
 }
 assert_fixture_cleaned_up
 for test_name in \

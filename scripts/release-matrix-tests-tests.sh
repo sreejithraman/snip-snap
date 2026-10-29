@@ -1,9 +1,10 @@
 #!/bin/zsh
 set -euo pipefail
 
-script_dir="${0:A:h}"
+source_script_dir="${0:A:h}"
 test_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-release-matrix-tests.XXXXXX)"
-fixture_lock="/private/tmp/snip-snap-share-fixture-58493.lock"
+script_dir="$test_root/repo/scripts"
+fixture_lock="$test_root/snip-snap-share-fixture-58493.lock"
 test_fixture_lock_owned=0
 cleanup() {
     [[ "$test_fixture_lock_owned" == 0 ]] || /bin/rmdir "$fixture_lock" 2>/dev/null || true
@@ -17,7 +18,17 @@ fail_test() {
     exit 1
 }
 
-/bin/mkdir -p "$test_root/bin"
+/bin/mkdir -p "$test_root/bin" "$script_dir" "$test_root/repo/Packages/SnipSnapLibrary"
+for script in release-matrix-tests.sh share-fixture.sh local-share-fixture.py; do
+    /bin/cp "$source_script_dir/$script" "$script_dir/"
+done
+/usr/bin/ruby - "$source_script_dir/share-fixture.sh" "$script_dir/share-fixture.sh" "$test_root" <<'RUBY'
+source, output, root = ARGV
+text = File.read(source)
+lock_prefix = '/private/tmp/snip-snap-share-fixture-'
+abort 'Update private fixture-lock isolation before running this policy test' unless text.scan(lock_prefix).length == 1
+File.write(output, text.sub(lock_prefix, "#{root}/snip-snap-share-fixture-"))
+RUBY
 print -r -- '#!/bin/zsh
 set -euo pipefail
 [[ -s "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE")" || exit 1
@@ -128,7 +139,7 @@ done
     fail_test "one or more package or app-action tests allowed signing"
 
 /usr/bin/grep -F -- 'run: ./scripts/test.sh --ios-only' \
-    "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
+    "$source_script_dir/../.github/workflows/ci.yml" >/dev/null || \
     fail_test "CI does not run iOS tests and bundle checks"
 
 for slow_command in \
@@ -138,14 +149,14 @@ for slow_command in \
     'run: ./scripts/release-matrix-tests.sh'
 do
     if /usr/bin/grep -Fx -- "        $slow_command" \
-        "$script_dir/../.github/workflows/ci.yml" >/dev/null
+        "$source_script_dir/../.github/workflows/ci.yml" >/dev/null
     then
         fail_test "CI still runs a slow build or release step: $slow_command"
     fi
 done
 
 /usr/bin/grep -F -- 'assertShareExtensionReportedLocalSave' \
-    "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
+    "$source_script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
     fail_test "the unavailable-store process test does not assert extension save success"
 
 [[ "$output" == *"Share fixture started:"* ]] || \
@@ -195,7 +206,7 @@ for test_signal in INT TERM; do
 done
 
 /usr/bin/grep -F -- 'URL(string: "http://127.0.0.1:58493/' \
-    "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
+    "$source_script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
     fail_test "the UI test does not use the locked loopback fixture port"
 
 print "Release matrix test checks passed."
