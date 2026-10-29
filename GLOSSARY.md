@@ -8,6 +8,14 @@ Snip Snap keeps saved snips apart from temporary clipboard history and groups th
 A saved piece of text with optional file attachments.
 _Avoid_: Clip, item, capture item
 
+**Snip (action)**:
+Capture content as a saved snip. Its confirmation says **Snipped**.
+
+**Snap (action)**:
+Put content back on the system clipboard. Its confirmation says **Snapped**
+and explicitly says what was copied. Menu actions keep the familiar **Copy**
+label. Copying an eligible saved snip also marks it Done.
+
 **Clipboard entry**:
 A record of content captured from the Mac clipboard or added through Paste on iOS, kept in clipboard history.
 _Avoid_: Snip, clipboard snip

@@ -55,13 +55,15 @@ extension AppModel {
         case .undo(let token):
             let snapshot = try await performCLIMutation(scopeToken: request.scopeToken) {
                 guard self.editingID == nil else { throw SnipCLIRequestError.editingInProgress }
-                guard let update = try await self.session.restoreDeletion(token: token, sortedBy: self.sortMode) else {
-                    throw SnipLibraryError.invalidCommand
-                }
+                let deletion = try await self.session.restoreDeletion(token: token, sortedBy: self.sortMode)
+                let update: SnipLibraryUpdate?
+                if let deletion { update = deletion }
+                else { update = try await self.session.restoreDone(token: token, sortedBy: self.sortMode) }
+                guard let update else { throw SnipLibraryError.invalidCommand }
                 return (update, update.snapshot)
             }
             return SnipCLIReceipt(request: request, status: .success, snips: snapshot.snips,
-                                  lists: snapshot.lists, message: "Restored deleted snips.")
+                                  lists: snapshot.lists, message: "Undid the saved-snips change.")
 
         case .addFiles(let content, let selector, let paths):
             guard !paths.isEmpty else { throw SnipLibraryError.invalidCommand }
@@ -85,37 +87,57 @@ extension AppModel {
             }
 
         default:
-            let copyToast: AppToast?
-            if case .copy = action { copyToast = toast } else { copyToast = nil }
-            let (update, preservesDeletion) = try await performCLIMutation(scopeToken: request.scopeToken) {
+            typealias FeedbackResult = (update: SnipLibraryUpdate, preservesUndo: Bool, undo: SavedSnipsDoneUndo?, copiedCount: Int?)
+            let feedback: FeedbackResult = try await performCLIMutation(
+                scopeToken: request.scopeToken, didMutate: { !$0.preservesUndo }
+            ) {
                 if let editingID = self.editingID,
                    action.affectedSnipIDs.contains(editingID) || action.affectedSnipIDs.isEmpty {
                     throw SnipCLIRequestError.editingInProgress
                 }
                 let snapshot = try await self.session.checkedSnapshot(sortedBy: self.sortMode)
-                // Build and validate the guarded write before performing clipboard side effects.
                 let command = try action.command(in: snapshot)
                 if case .copy(let references, let markDone) = action {
                     let snips = try SnipCLISnipReference.resolve(references, in: snapshot)
-                    guard await self.placeOnClipboardNow(.snips(snips), to: pasteboard) else {
+                    guard await self.placeOnClipboardNow(.snips(snips), feedback: .silent, to: pasteboard) else {
                         throw SnipLibraryError.attachmentCopyFailed
                     }
                     if !markDone || snips.allSatisfy({ $0.isPinned || $0.isDone }) {
                         let update = SnipLibraryUpdate(snapshot: snapshot, outcome: .none)
-                        return (update, (update, true))
+                        return (update, (update, true, nil, snips.count))
+                    }
+                    do {
+                        let change = try await self.session.setDone(
+                            ids: Set(snips.map(\.id)), done: true,
+                            expectation: .init(expectedSnips: snips), sortedBy: self.sortMode
+                        )
+                        return (change.update, (change.update, !change.didChange, change.undo, snips.count))
+                    } catch {
+                        self.presentError(
+                            String(localized: "Copied, but couldn’t mark Done. Try marking Done again."),
+                            operation: "snip.completion_after_copy", diagnosticCode: diagnosticErrorCode(error)
+                        )
+                        throw SnipCLIOutcomeUncertain()
                     }
                 }
-                let update: SnipLibraryUpdate
-                do {
-                    update = try await self.session.performLibraryCommand(command, sortedBy: self.sortMode)
-                } catch {
-                    // Once Copy succeeds, retrying could overwrite a newer clipboard.
-                    if case .copy = action { throw SnipCLIOutcomeUncertain() }
-                    throw error
+                if case .setDone(let references, let done) = action {
+                    let snips = try SnipCLISnipReference.resolve(references, in: snapshot)
+                    let change = try await self.session.setDone(
+                        ids: Set(snips.map(\.id)), done: done,
+                        expectation: .init(expectedSnips: snips), sortedBy: self.sortMode
+                    )
+                    return (change.update, (change.update, !change.didChange, change.undo, nil))
                 }
-                return (update, (update, false))
+                let result = try await self.session.performLibraryCommandWithResult(command, sortedBy: self.sortMode)
+                return (result.update, (result.update, !result.didChange, nil, nil))
             }
-            if preservesDeletion, let copyToast { toast = copyToast }
+            let update = feedback.update
+            if let undo = feedback.undo {
+                toast = feedback.copiedCount.map { AppToast.copied(count: $0).addingDoneUndo(undo) }
+                    ?? .markedDone(count: undo.count, id: undo.id)
+            } else if let count = feedback.copiedCount, !(feedback.preservesUndo && toast?.action != nil) {
+                toast = .copied(count: count)
+            }
             let returnedSnips: [Snip]
             if case .merge = action {
                 guard case .merged(let merged) = update.outcome else { throw SnipCLIOutcomeUncertain() }
@@ -124,7 +146,8 @@ extension AppModel {
                 returnedSnips = update.snapshot.snips.filter { action.affectedSnipIDs.contains($0.id) }
             }
             return SnipCLIReceipt(request: request, status: .success, snips: returnedSnips,
-                                  lists: update.snapshot.lists, message: "Saved snips updated.")
+                                  lists: update.snapshot.lists, message: "Saved snips updated.",
+                                  extendedResult: feedback.undo.map { .library(.init(undoToken: $0.id)) })
         }
     }
 

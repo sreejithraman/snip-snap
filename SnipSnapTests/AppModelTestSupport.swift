@@ -87,6 +87,8 @@ actor InMemorySnipLibrary: SnipLibrary {
         switch command {
         case .guarded(_, let inner):
             return try await perform(inner, sortedBy: sortMode)
+        case .batch(let commands) where commands.isEmpty:
+            outcome = .none
         case let .add(content, origin, source, listID, _, requestID, now):
             if snips.contains(where: { $0.requestID == requestID }) {
                 outcome = .add(.duplicate)

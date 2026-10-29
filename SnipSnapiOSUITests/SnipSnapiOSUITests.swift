@@ -1637,6 +1637,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         composer.tap()
         composer.typeText("Sent")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
+        let composerAboveKeyboard = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let keyboard = app.keyboards.firstMatch
+            guard keyboard.exists, keyboard.frame.intersects(app.frame) else { return false }
+            return [composer, addAttachments, send].allSatisfy {
+                !$0.frame.isEmpty && $0.frame.maxY <= keyboard.frame.minY
+            }
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [composerAboveKeyboard], timeout: 3), .completed)
         if usesCompactSelector {
             XCTAssertFalse(newList.exists)
         } else {
@@ -1655,7 +1663,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         XCTAssertGreaterThan(composer.frame.height, addAttachments.frame.height)
         XCTAssertEqual(addAttachments.frame.maxY, send.frame.maxY, accuracy: 1)
-        send.tap()
+        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
 
         let savedText = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@", "Sent")
@@ -2533,14 +2541,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.tap()
         field.typeText("New List")
         app.buttons["save-list"].tap()
-        let alert = app.alerts["Name Already Used"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
-        XCTAssertTrue(alert.staticTexts["A list with that name already exists. Choose another name."].exists)
+        let inlineError = app.descendants(matching: .any)["inline-operation-error"]
+        XCTAssertTrue(inlineError.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["A list with that name already exists. Choose another name."].exists)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
         let error = XCTAttachment(screenshot: app.screenshot())
         error.name = "Clear duplicate list name error"
         error.lifetime = .keepAlways
         add(error)
-        alert.buttons["OK"].tap()
         XCTAssertTrue(field.exists)
         XCTAssertEqual(field.value as? String, "New List")
         field.tap()
@@ -3074,7 +3082,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertLessThanOrEqual(toast.frame.height, 60)
         XCTAssertLessThanOrEqual(toast.frame.maxY, composer.frame.minY)
         XCTAssertGreaterThanOrEqual(action.frame.height, 44)
-        XCTAssertEqual(action.label, "Undo")
+        XCTAssertEqual(action.label, "Undo deletion")
         XCTAssertTrue(
             hasDarkLabelOnLightBackground(actionImage),
             "The Undo label must contrast with its light button background in dark mode."
@@ -3198,6 +3206,51 @@ final class SnipSnapiOSUITests: XCTestCase {
             let darkPixels = pointer.lazy.filter { $0 < 128 }.count
             return darkPixels > 0 && darkPixels * 2 < pointer.count
         }
+    }
+
+    func testDoneSnackbarUndoReopensTheSnip() {
+        let app = launchApp()
+        createSnip("Undo marking Done", in: app)
+        let snipID = row(named: "Undo marking Done", in: app).identifier
+        let snip = app.buttons[snipID]
+        snip.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+        let done = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Done"), object: snip
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 3), .completed)
+        let action = app.buttons["toast-action"]
+        XCTAssertTrue(action.waitForExistence(timeout: 3))
+        XCTAssertEqual(action.label, "Undo marking Done")
+        action.tap()
+        let reopened = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Not Done"), object: snip
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reopened], timeout: 3), .completed)
+        XCTAssertFalse(action.exists)
+    }
+
+    func testDoneUndoRemainsActionableInSettings() {
+        continueAfterFailure = false
+        let app = launchApp()
+        createSnip("Undo while Settings is open", in: app)
+        let snipID = row(named: "Undo while Settings is open", in: app).identifier
+        app.buttons[snipID].coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.2)).tap()
+
+        openSettings(in: app)
+
+        let undo = app.buttons["toast-action"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 2))
+        XCTAssertEqual(app.buttons.matching(identifier: "toast-action").count, 1)
+        XCTAssertTrue(undo.isHittable)
+        XCTAssertEqual(undo.label, "Undo marking Done")
+        undo.tap()
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(app.switches["haptics-toggle"].exists)
+        app.navigationBars.buttons["Done"].tap()
+        let reopened = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Not Done"), object: app.buttons[snipID]
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reopened], timeout: 3), .completed)
     }
 
     func testTappingCompletionCircleTogglesWithoutEditingOrSelecting() {
@@ -3423,9 +3476,16 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func assertCopyStatus(_ label: String, in app: XCUIApplication) {
+        let expected: String
+        switch label {
+        case "Copied Text": expected = "Text copied"
+        case "Copied Attachments": expected = "Attachments copied"
+        case "Copied 2 snips": expected = "2 snips snapped"
+        default: expected = "Snapped"
+        }
         let status = app.descendants(matching: .any)
             .matching(identifier: "app-toast")
-            .matching(NSPredicate(format: "label == %@", label))
+            .matching(NSPredicate(format: "label CONTAINS %@", expected))
             .firstMatch
         let found = status.waitForExistence(timeout: 3)
         if !found {
@@ -3880,8 +3940,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
         app.buttons["copy-selection"].tap()
         assertCopyStatus("Copied 2 snips", in: app)
-        XCTAssertTrue(app.buttons["delete-selection"].isHittable)
-        app.buttons["delete-selection"].tap()
+        let delete = app.buttons["delete-selection"]
+        XCTAssertTrue(delete.isHittable)
+        let toast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertFalse(toast.frame.intersects(delete.frame), "The copy confirmation must leave gathered actions clear.")
+        let copyFeedback = XCTAttachment(screenshot: app.screenshot())
+        copyFeedback.name = "Copy confirmation leaves gathered actions reachable"
+        copyFeedback.lifetime = .keepAlways
+        add(copyFeedback)
+        delete.tap()
         XCTAssertTrue(app.buttons["gathered-stack"].waitForNonExistence(timeout: 5))
         XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
         XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
@@ -4210,7 +4277,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         stack.tap()
         let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch
         XCTAssertTrue(putBack.waitForExistence(timeout: 3))
-        putBack.tap()
+        // Native automation can choose the card center instead of this leading control.
+        let returnControl = putBack.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: min(44, putBack.frame.width) / 2,
+            dy: min(44, putBack.frame.height) / 2
+        ))
+        returnControl.tap()
+        let oneSelectedItem = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "1 item"),
+            object: app.descendants(matching: .any)["gathered-contents"]
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [oneSelectedItem], timeout: 3), .completed)
         app.buttons["collapse-gathered"].tap()
         let returned = collectionRow(named: "Sketch a simpler selection flow", in: app)
             .waitForExistence(timeout: 3)
@@ -4571,15 +4648,23 @@ final class SnipSnapiOSUITests: XCTestCase {
         menuProof.lifetime = .keepAlways
         add(menuProof)
         app.buttons["add-list-for-move"].tap()
-        XCTAssertTrue(app.alerts["Add List"].waitForExistence(timeout: 3))
-        app.alerts["Add List"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.textFields["move-new-list-name"].waitForExistence(timeout: 3))
+        app.buttons["cancel-create-move"].tap()
         XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "3 items")
         app.buttons["move-gathered"].tap()
         app.buttons["add-list-for-move"].tap()
-        let name = app.alerts["Add List"].textFields.firstMatch
+        let name = app.textFields["move-new-list-name"]
         XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.tap()
+        name.typeText("Work")
+        app.buttons["create-and-move"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["inline-operation-error"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["A list with that name already exists. Choose another name."].exists)
+        XCTAssertEqual(name.value as? String, "Work")
+        name.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+        name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4))
         name.typeText("Selected notes")
-        app.alerts["Add List"].buttons["Create and Move"].tap()
+        app.buttons["create-and-move"].tap()
         XCTAssertTrue(app.buttons["gathered-stack"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 3))
         revealCompactList(named: "Selected notes", in: app)
@@ -4597,10 +4682,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         row(named: "Move into a new list", in: app).press(forDuration: 1)
         app.buttons["move-snip"].tap()
         app.buttons["Add List…"].tap()
-        let name = app.alerts["Add List"].textFields.firstMatch
+        let name = app.textFields["move-new-list-name"]
         XCTAssertTrue(name.waitForExistence(timeout: 3))
+        name.tap()
         name.typeText("First list")
-        app.alerts["Add List"].buttons["Create and Move"].tap()
+        app.buttons["create-and-move"].tap()
         let firstList = listControl(named: "First list", in: app)
         XCTAssertTrue(firstList.waitForExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["First list"].waitForExistence(timeout: 3))
@@ -4652,8 +4738,17 @@ final class SnipSnapiOSUITests: XCTestCase {
             composer.tap()
             composer.typeText(text)
             let send = app.buttons["composer-send"]
-            XCTAssertTrue(send.isEnabled)
-            send.tap()
+            let sendReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard send.exists, send.isEnabled else { return false }
+                let frame = send.frame
+                guard !frame.isEmpty, app.frame.contains(frame) else { return false }
+                let keyboard = app.keyboards.firstMatch
+                return !keyboard.exists || frame.maxY <= keyboard.frame.minY
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [sendReady], timeout: 3), .completed)
+            XCTAssertEqual(composer.value as? String, text)
+            // XCTest can retain Send's hit point from before the keyboard appeared.
+            send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         } else {
             app.buttons["new-snip"].tap()
             let editor = app.textViews["snip-text"]
@@ -4662,7 +4757,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             editor.typeText(text)
             app.buttons["save-snip"].tap()
         }
-        XCTAssertTrue(collectionRow(named: text, in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: text, in: selectedListContents(in: app)).waitForExistence(timeout: 3))
         dismissComposerKeyboard(in: app)
     }
 
@@ -4886,7 +4981,8 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func openSettings(in app: XCUIApplication) {
         let actions = app.buttons["library-actions"]
-        for _ in 0..<3 where !actions.waitForExistence(timeout: 1) {
+        for _ in 0..<3 {
+            if actions.exists { break }
             if app.buttons["Show Sidebar"].exists {
                 app.buttons["Show Sidebar"].tap()
             } else if app.buttons["BackButton"].exists {
@@ -4895,10 +4991,10 @@ final class SnipSnapiOSUITests: XCTestCase {
                 app.navigationBars.buttons.firstMatch.tap()
             }
         }
-        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(actions.exists || actions.waitForExistence(timeout: 5))
         actions.tap()
         let settings = app.buttons["settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        XCTAssertTrue(settings.exists || settings.waitForExistence(timeout: 3))
         settings.tap()
     }
 

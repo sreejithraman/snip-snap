@@ -1,6 +1,7 @@
 import XCTest
 import SnipSnapCore
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import Combine
 import SwiftUI
@@ -461,6 +462,194 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertNotNil(parent.childWindows?.first)
         XCTAssertFalse(parent.childWindows?.first === newListWindow)
         coordinator.dismissPanelDialog(id: .backupImport)
+    }
+
+    @MainActor
+    func testActivePanelDialogKeepsCompletionUndoActionable() async throws {
+        let snip = Snip(content: "Undo in dialog", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+        await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+        let coordinator = AppCoordinator(
+            model: model, shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { true }
+        )
+        let parent = SnipSnapPanel.make(
+            contentViewController: NSHostingController(rootView: Text("Panel")),
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        defer {
+            coordinator.dismissPanelDialog(id: .newList)
+            parent.orderOut(nil)
+        }
+        coordinator.presentPanelDialog(id: .newList, title: "New list", onDismiss: {}) {
+            Text("Dialog stays open")
+        }
+        let dialog = try XCTUnwrap(parent.childWindows?.first)
+        let root = try XCTUnwrap(dialog.contentView)
+        let accessibility = try MountedAccessibility(root: root)
+        let undo = try await accessibility.button(identifier: "toast-action")
+
+        XCTAssertTrue(accessibility.press(undo))
+
+        let restorationDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.snips.first?.isDone == true, ContinuousClock.now < restorationDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
+        XCTAssertNil(model.toast)
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        XCTAssertTrue(parent.childWindows?.first === dialog)
+    }
+
+    @MainActor
+    func testMountedErrorDialogResetsCopyConfirmationForAReplacementIncident() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { true }
+        )
+        let parent = SnipSnapPanel.make(
+            contentViewController: NSHostingController(rootView: Text("Panel")),
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        let pasteboard = NSPasteboard.general
+        let originalClipboard = try XCTUnwrap(PasteboardSnapshotStore.snapshot(pasteboard))
+        var copiedRevision = originalClipboard.changeCount
+        defer {
+            coordinator.dismissPanelDialog(id: .error)
+            parent.orderOut(nil)
+            _ = PasteboardSnapshotStore.restore(
+                originalClipboard, to: pasteboard, ifChangeCountIs: copiedRevision
+            )
+        }
+
+        model.presentError("Private incident A")
+        coordinator.updatePresentedError()
+        let firstFailure = try XCTUnwrap(model.dialogFailure)
+        let errorWindow = try XCTUnwrap(parent.childWindows?.first)
+        let mountedController = try XCTUnwrap(errorWindow.contentViewController)
+        let root = try XCTUnwrap(errorWindow.contentView)
+        let accessibility = try MountedAccessibility(root: root)
+        let copyLabel = String(localized: "Copy error details")
+        let copiedLabel = String(localized: "Error details copied")
+        let firstCopyButton = try await accessibility.button(identifier: "copy-error-details", label: copyLabel)
+
+        XCTAssertTrue(accessibility.press(firstCopyButton))
+        _ = try await accessibility.button(identifier: "copy-error-details", label: copiedLabel)
+        copiedRevision = pasteboard.changeCount
+        let firstReport = try XCTUnwrap(pasteboard.string(forType: .string))
+        XCTAssertTrue(firstReport.contains(firstFailure.id.uuidString))
+        XCTAssertFalse(firstReport.contains("Private incident A"))
+
+        model.presentError("Private incident B")
+        coordinator.updatePresentedError()
+        let replacement = try XCTUnwrap(model.dialogFailure)
+
+        XCTAssertNotEqual(replacement.id, firstFailure.id)
+        XCTAssertTrue(parent.childWindows?.first === errorWindow)
+        XCTAssertTrue(errorWindow.contentViewController === mountedController)
+        let replacementCopyButton = try await accessibility.button(identifier: "copy-error-details", label: copyLabel)
+        XCTAssertEqual(pasteboard.string(forType: .string), firstReport)
+        XCTAssertTrue(accessibility.press(replacementCopyButton))
+        _ = try await accessibility.button(identifier: "copy-error-details", label: copiedLabel)
+        copiedRevision = pasteboard.changeCount
+        let replacementReport = try XCTUnwrap(pasteboard.string(forType: .string))
+        XCTAssertTrue(replacementReport.contains(replacement.id.uuidString))
+        XCTAssertFalse(replacementReport.contains(firstFailure.id.uuidString))
+        XCTAssertFalse(replacementReport.contains("Private incident B"))
+    }
+
+    @MainActor
+    func testVisiblePanelPresentsUndoFailureWithTheSameMessageAsAnInlineFailure() async throws {
+        let defaultsName = "SnipSnapEqualMessageDialogTests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let snip = Snip(content: "Recover this completion", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip])
+        let model = AppModel(
+            library: library,
+            defaults: defaults
+        )
+        await model.reload()
+        await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+        let undo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        let settings = ShortcutSettings(defaults: defaults)
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: settings,
+            isAccessibilityTrusted: { true }
+        )
+        let content = ContentView(
+            coordinator: coordinator,
+            fileDropController: PanelFileDropController(),
+            dragSessionController: PanelDragSessionController()
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let parent = SnipSnapPanel.make(
+            contentViewController: NSHostingController(rootView: content),
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        defer {
+            coordinator.dismissPanelDialog(id: .error)
+            parent.orderOut(nil)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        model.presentError(SnipLibraryError.storeUnavailable, operation: "clipboard.write")
+        try await Task.sleep(for: .milliseconds(100))
+        let inlineMessage = model.presentedError
+        XCTAssertNil(model.dialogFailure)
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+
+        await library.failNextCheckedRead()
+        await model.performToastActionNow(undo)
+
+        XCTAssertEqual(model.presentedError, inlineMessage)
+        XCTAssertEqual(model.dialogFailure?.operation, "snip.undo_done")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !coordinator.panelDialogs.isPresented, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(coordinator.panelDialogs.isPresented)
+        let errorWindow = try XCTUnwrap(parent.childWindows?.first)
+        XCTAssertTrue(errorWindow.canBecomeKey)
+        XCTAssertNil(errorWindow.attachedSheet)
+        XCTAssertTrue(model.canRetryErrorAction)
+
+        model.presentError(SnipLibraryError.storeUnavailable, operation: "clipboard.write")
+        let newerFailure = try XCTUnwrap(model.latestFailure)
+        let dismissalDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while coordinator.panelDialogs.isPresented, ContinuousClock.now < dismissalDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(coordinator.panelDialogs.isPresented)
+        let pendingUndo = try XCTUnwrap(model.pendingUndoFailure)
+        let renderedPanel = try XCTUnwrap(parent.contentView)
+        renderedPanel.layoutSubtreeIfNeeded()
+        renderedPanel.displayIfNeeded()
+        let bitmap = try XCTUnwrap(renderedPanel.bitmapImageRepForCachingDisplay(in: renderedPanel.bounds))
+        renderedPanel.cacheDisplay(in: renderedPanel.bounds, to: bitmap)
+        let image = NSImage(size: renderedPanel.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Mac retained Undo recovery in the main panel"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        await model.retryPendingUndoNow(pendingUndo)
+
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertNil(model.pendingUndoFailure)
+        XCTAssertEqual(model.latestFailure?.id, newerFailure.id)
     }
 
     @MainActor
@@ -1801,5 +1990,68 @@ private final class ReentrantLayoutWindow: NSWindow {
         super.setFrame(frameRect, display: flag, animate: animateFlag)
         guard frameChangeCount == 1 else { return }
         onFirstFrameChange?()
+    }
+}
+
+@MainActor
+private struct MountedAccessibility {
+    private let root: NSView
+    private let window: AXUIElement
+
+    init(root: NSView) throws {
+        self.root = root
+        let nativeWindow = try XCTUnwrap(root.window)
+        let identifier = "mounted-test-window-\(UUID())"
+        nativeWindow.setAccessibilityIdentifier(identifier)
+        let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        let windows = Self.attribute(kAXWindowsAttribute, of: application) as? [AXUIElement] ?? []
+        window = try XCTUnwrap(windows.first {
+            Self.attribute(kAXIdentifierAttribute, of: $0) as? String == identifier
+        })
+    }
+
+    func button(identifier: String, label: String? = nil) async throws -> AXUIElement {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            root.layoutSubtreeIfNeeded()
+            if let button = findButton(identifier: identifier, label: label, in: window) {
+                return button
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return try XCTUnwrap(
+            findButton(identifier: identifier, label: label, in: window),
+            "Missing mounted accessibility button \(identifier) with label \(label ?? "<any>")"
+        )
+    }
+
+    func press(_ button: AXUIElement) -> Bool {
+        AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    }
+
+    private func findButton(
+        identifier: String, label: String?, in element: AXUIElement
+    ) -> AXUIElement? {
+        if Self.attribute(kAXIdentifierAttribute, of: element) as? String == identifier,
+           Self.attribute(kAXRoleAttribute, of: element) as? String == kAXButtonRole,
+           label == nil || Self.attribute(kAXDescriptionAttribute, of: element) as? String == label {
+            return element
+        }
+        let children = Self.attribute(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
+        for child in children {
+            if let button = findButton(identifier: identifier, label: label, in: child) {
+                return button
+            }
+        }
+        return nil
+    }
+
+    // The AX client entry point includes SwiftUI virtual nodes omitted by direct AppKit getters.
+    private static func attribute(_ name: String, of element: AXUIElement) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+            return nil
+        }
+        return value
     }
 }

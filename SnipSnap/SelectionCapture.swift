@@ -54,7 +54,7 @@ enum SelectionCaptureFailure: Error, Equatable, LocalizedError, Sendable, AppDia
         case .sourceChanged:
             String(localized: "The source app is no longer active. Try again.")
         case .duplicateSelection:
-            String(localized: "Already captured")
+            String(localized: "Already snipped")
         }
     }
 }

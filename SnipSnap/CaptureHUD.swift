@@ -1,15 +1,17 @@
 import AppKit
-import SnipSnapCore
 import SwiftUI
 
 @MainActor
 final class CaptureHUDController {
+    enum FailureFeedback: Equatable {
+        case ignored
+        case confirmation
+        case failure
+    }
+
     private let panel: NSPanel
     private var dismissWorkItem: DispatchWorkItem?
-    private let diagnostics: AppDiagnosticRecorder
-
-    init(diagnostics: AppDiagnosticRecorder = .live) {
-        self.diagnostics = diagnostics
+    init() {
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 310, height: 58),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -24,23 +26,22 @@ final class CaptureHUDController {
         panel.hidesOnDeactivate = false
     }
 
-    func show(failure: SelectionCaptureFailure) {
+    @discardableResult
+    func show(failure: SelectionCaptureFailure) -> FailureFeedback {
         // With no selection, many apps leave the clipboard unchanged on Copy.
         // The reader reports that as a timeout, so keep both empty outcomes quiet.
-        guard failure != .noSelection, failure != .copyTimedOut else { return }
-        if failure != .duplicateSelection {
-            diagnostics.record(.failure(operation: "selection.capture", error: failure, visibility: .user))
-        }
+        guard failure != .noSelection, failure != .copyTimedOut else { return .ignored }
         show(
             message: failure.localizedDescription,
-            symbol: failure == .duplicateSelection ? "minus" : "exclamationmark"
+            symbol: failure == .duplicateSelection ? "scissors" : "exclamationmark.triangle"
         )
+        return failure == .duplicateSelection ? .confirmation : .failure
     }
 
-    func show(message: String, symbol: String) {
+    func show(message: String, symbol: String, detail: String? = nil) {
         dismissWorkItem?.cancel()
         let hostingView = NSHostingView(
-            rootView: CaptureHUDView(message: message, symbol: symbol)
+            rootView: CaptureHUDView(message: message, symbol: symbol, detail: detail)
         )
         panel.contentView = hostingView
         if let screen = NSScreen.main {
@@ -65,6 +66,7 @@ final class CaptureHUDController {
 private struct CaptureHUDView: View {
     let message: String
     let symbol: String
+    let detail: String?
 
     var body: some View {
         content
@@ -77,9 +79,17 @@ private struct CaptureHUDView: View {
         HStack {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
-            Text(message)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(message)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(2)
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal)

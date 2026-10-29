@@ -64,6 +64,11 @@ struct IOSClipboardView: View {
                     .disabled(!model.entries.contains { !$0.isPinned })
                 Divider()
                 LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
+                if libraryModel.latestFailure != nil {
+                    Button("Error Details", systemImage: "exclamationmark.bubble") {
+                        libraryModel.showLatestErrorDetails()
+                    }
+                }
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .accessibilityIdentifier("settings")
             }
@@ -107,7 +112,7 @@ struct IOSClipboardView: View {
                     Button("Retry import") { Task { await model.foreground() } }
                 }
             }
-            if let error = model.errorMessage {
+            if let error = model.persistentErrorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.icloud")
                     Button("Retry clipboard sync") { Task { await model.synchronize() } }
@@ -115,7 +120,7 @@ struct IOSClipboardView: View {
             }
             ForEach(entries) { entry in
                 ClipboardItemRow(entry: entry, model: model, showsSyncStatus: true) {
-                    copyShare.copyClipboardEntry(entry, clipboard: model)
+                    copyShare.copyClipboardEntry(entry, clipboard: model, model: libraryModel)
                 }
                 .listRowSeparator(.hidden)
                 .accessibilityValue(entry.isPinned ? String(localized: "Pinned") : "")
@@ -126,13 +131,13 @@ struct IOSClipboardView: View {
                     Task { await model.delete(entry) }
                 }
                 .accessibilityAction(named: "Copy") {
-                    copyShare.copyClipboardEntry(entry, clipboard: model)
+                    copyShare.copyClipboardEntry(entry, clipboard: model, model: libraryModel)
                 }
                 .id("\(entry.id.uuidString)-\(entry.isPinned)")
                 .accessibilityIdentifier("clipboard-entry-\(entry.id)")
                 .contextMenu {
                     Button("Copy", systemImage: "doc.on.doc") {
-                        copyShare.copyClipboardEntry(entry, clipboard: model)
+                        copyShare.copyClipboardEntry(entry, clipboard: model, model: libraryModel)
                     }
                     Button(entry.isPinned ? "Unpin" : "Pin", systemImage: entry.isPinned ? "pin.slash" : "pin") {
                         Task { await model.togglePin(entry) }
@@ -144,7 +149,7 @@ struct IOSClipboardView: View {
         .listStyle(.plain)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if entries.isEmpty && model.errorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
+            if entries.isEmpty && model.persistentErrorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
                     title: emptyTitle,
                     systemImage: viewState.onlyPinned ? "pin" : "clipboard",
@@ -157,15 +162,6 @@ struct IOSClipboardView: View {
             Button("Clear unpinned history", role: .destructive) { Task { await model.clear() } }
         } message: {
             Text(model.syncIsActive ? "This clears unpinned history across synced devices. Pinned items stay." : "This clears unpinned history on this device. Pinned items stay.")
-        }
-        .overlay(alignment: .bottom) {
-            if isActivePage && !isSearching && model.copied {
-                Label("Copied", systemImage: "checkmark")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(12)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding()
-            }
         }
         .task { await model.load() }
         .refreshable { await model.synchronize() }
@@ -205,7 +201,7 @@ struct ClipboardItemRow: View {
                             Text("Pin to sync this file").font(.caption).foregroundStyle(.secondary)
                         }
                     } else if model.syncIsActive && model.pendingUploadIDs.contains(entry.id) {
-                        if model.errorMessage != nil {
+                        if model.syncErrorMessage != nil {
                             Label("Upload failed", systemImage: "exclamationmark.icloud")
                                 .font(.caption).foregroundStyle(.red)
                             Button("Retry clipboard sync") { Task { await model.synchronize() } }

@@ -82,6 +82,30 @@ final class AppModelCLILibraryTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCopyDoneReturnsUndoThatReopensOnlyOrdinarySnipWithoutChangingClipboard() async throws {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let ordinary = try await add("Ordinary", to: library)
+        let completed = try await add("Already done", to: library)
+        let finished = try await library.perform(.setDone(ids: [completed.id], done: true), sortedBy: .manual)
+        let currentDone = try XCTUnwrap(finished.snapshot.snips.first { $0.id == completed.id })
+        let model = AppModel(library: library, defaults: defaults())
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let action = SnipCLILibraryAction.copy(snips: [reference(ordinary), reference(currentDone)], markDone: true)
+
+        let receipt = try await model.handleCLILibraryRequest(.init(action: .extended(.library(action))), action: action, to: pasteboard)
+        guard case .library(let result) = receipt.extendedResult else { return XCTFail("Expected completion Undo token.") }
+        let token = try XCTUnwrap(result.undoToken)
+        let copied = pasteboard.string(forType: .string)
+        XCTAssertEqual(model.toast?.action, .undoDone)
+        _ = try await model.handleCLIRequest(.init(action: .extended(.library(.undo(token: token)))))
+
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == ordinary.id }).isDone)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == completed.id }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), copied)
+    }
+
+    @MainActor
     func testAttachmentExportDoesNotOverwriteExistingFile() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let source = try storeURL().deletingLastPathComponent().appendingPathComponent("source.txt")

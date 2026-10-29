@@ -50,6 +50,8 @@ final class AppDiagnosticSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.recordingEnabled, false)
     XCTAssertTrue(model.canPerformActions)
     XCTAssertEqual(model.notice, .saveFailed)
+    XCTAssertEqual(model.failure.map { String(describing: $0.operation) }, "diagnostics.recording")
+    XCTAssertEqual(model.failure?.code, "cocoa.513")
     XCTAssertEqual(backend.events.map(\.line), [
       "diagnostic_event operation=diagnostics.recording outcome=failed visibility=user error=cocoa.513"
     ])

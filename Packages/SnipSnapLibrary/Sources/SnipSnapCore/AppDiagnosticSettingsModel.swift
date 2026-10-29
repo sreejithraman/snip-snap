@@ -7,6 +7,10 @@ import Observation
 @MainActor
 @Observable
 public final class AppDiagnosticSettingsModel {
+  public struct Failure: Sendable {
+    public let operation: StaticString
+    public let code: String
+  }
   public enum Notice: Equatable, Sendable {
     case readFailed, saveFailed, preparationFailed, deliveryFailed, clearFailed, saved, cleared
   }
@@ -34,6 +38,7 @@ public final class AppDiagnosticSettingsModel {
   public var range: AppDiagnosticExportRange = .last24Hours
   public private(set) var recordingEnabled: Bool?
   public private(set) var notice: Notice?
+  public private(set) var failure: Failure?
   private var task: Task<Void, Never>?
   private var isActive = false
   private var generation = 0
@@ -50,7 +55,7 @@ public final class AppDiagnosticSettingsModel {
     self.diagnostics = diagnostics
   }
 
-  public func dismissNotice() { notice = nil }
+  public func dismissNotice() { notice = nil; failure = nil }
 
   public func activate() {
     isActive = true
@@ -62,6 +67,7 @@ public final class AppDiagnosticSettingsModel {
     generation += 1
     recordingEnabled = nil
     notice = nil
+    failure = nil
     task?.cancel()
   }
 
@@ -69,7 +75,7 @@ public final class AppDiagnosticSettingsModel {
 
   private func readRecording(preservingNotice: Bool) {
     guard isActive, !isBusy else { return }
-    if !preservingNotice { notice = nil }
+    if !preservingNotice { notice = nil; failure = nil }
     perform(operation: "diagnostics.recording", work: operations.readRecording) { result in
       switch result {
       case .success(let enabled): self.recordingEnabled = enabled
@@ -85,6 +91,7 @@ public final class AppDiagnosticSettingsModel {
     guard canPerformActions else { return }
     let operations = operations
     notice = nil
+    failure = nil
     perform(operation: "diagnostics.recording", work: {
       try operations.setRecording(enabled)
     }) { result in
@@ -103,6 +110,7 @@ public final class AppDiagnosticSettingsModel {
   public func clear() {
     guard canPerformActions else { return }
     notice = nil
+    failure = nil
     perform(operation: "diagnostics.clear", work: operations.clear) { result in
       switch result {
       case .success: self.notice = .cleared
@@ -120,6 +128,7 @@ public final class AppDiagnosticSettingsModel {
     let admittedGeneration = generation
     let operations = operations
     notice = nil
+    failure = nil
     task = Task {
       let url: URL
       do {
@@ -127,7 +136,10 @@ public final class AppDiagnosticSettingsModel {
           try operations.prepareExport(selectedRange)
         }
       } catch {
-        if isCurrent(admittedGeneration) { notice = .preparationFailed }
+        if isCurrent(admittedGeneration) {
+          failure = Failure(operation: "diagnostics.export", code: diagnosticErrorCode(error))
+          notice = .preparationFailed
+        }
         finish(admittedGeneration)
         return
       }
@@ -138,7 +150,10 @@ public final class AppDiagnosticSettingsModel {
         } catch {
           if !isDiagnosticCancellation(error) {
             diagnostics.record(.failure(operation: "diagnostics.export", error: error, visibility: .user))
-            if isCurrent(admittedGeneration) { notice = .deliveryFailed }
+            if isCurrent(admittedGeneration) {
+              failure = Failure(operation: "diagnostics.export", code: diagnosticErrorCode(error))
+              notice = .deliveryFailed
+            }
           }
         }
       }
@@ -160,7 +175,12 @@ public final class AppDiagnosticSettingsModel {
       do { result = .success(try await runWork(operation: operation, work: work)) }
       catch { result = .failure(error) }
       var reconcile = false
-      if isCurrent(admittedGeneration) { reconcile = completion(result) }
+      if isCurrent(admittedGeneration) {
+        if case .failure(let error) = result {
+          failure = Failure(operation: operation, code: diagnosticErrorCode(error))
+        }
+        reconcile = completion(result)
+      }
       finish(admittedGeneration, reconcile: reconcile)
     }
   }

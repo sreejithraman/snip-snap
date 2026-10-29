@@ -15,6 +15,7 @@ struct IOSAppRootView: View {
     @State private var settingsBackupLifetime = IOSSettingsBackupLifetime()
     @State private var diagnosticSettings = AppDiagnosticSettingsModel()
     @State private var newMoveListName = ""
+    @FocusState private var isMoveListNameFocused: Bool
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage = CompactComposerStorage()
     @State private var listPageMotionState = ListPageMotionState()
@@ -166,79 +167,102 @@ struct IOSAppRootView: View {
                 AppleAccountNoticeBanner(model: accountNoticeModel)
             }
         }
-        .glassMenuHost(isBlocked: sheet != nil || model.isSearchPresented || copyShare.shareRequest != nil)
+        .glassMenuHost(isBlocked: sheet != nil || model.newListMoveRequest != nil || model.isSearchPresented || copyShare.shareRequest != nil)
         .sheet(item: $sheet, onDismiss: {
             settingsBackupLifetime.end(library: model)
         }) { destination in
-            switch destination {
-            case .settings:
-                SyncedContentSettingsView(
-                    model: session.syncedContentSettings,
-                    clipboard: session.clipboard,
-                    haptics: model.haptics,
-                    library: model,
-                    backupLifetime: settingsBackupLifetime,
-                    diagnostics: diagnosticSettings,
-                    retryAction: {
-                        if session.syncedContentSettings.mode == .localOnly {
-                            await session.syncedContentSettings.enableICloudSync()
-                        } else {
-                            await session.retrySyncWhenPossible()
+            Group {
+                switch destination {
+                case .settings:
+                    SyncedContentSettingsView(
+                        model: session.syncedContentSettings,
+                        clipboard: session.clipboard,
+                        haptics: model.haptics,
+                        library: model,
+                        backupLifetime: settingsBackupLifetime,
+                        diagnostics: diagnosticSettings,
+                        retryAction: {
+                            if session.syncedContentSettings.mode == .localOnly {
+                                await session.syncedContentSettings.enableICloudSync()
+                            } else {
+                                await session.retrySyncWhenPossible()
+                            }
                         }
-                    }
-                )
-            case .recoveryCenter:
-                RecoveryCenterView(model: model)
-            case .recoverSnip(let id):
-                RecoveredSnipReviewView(model: model, recoveryID: id)
-            case .recoverList(let id):
-                RecoveredListReviewView(model: model, recoveryID: id)
+                    )
+                case .recoveryCenter:
+                    RecoveryCenterView(model: model)
+                case .recoverSnip(let id):
+                    RecoveredSnipReviewView(model: model, recoveryID: id)
+                case .recoverList(let id):
+                    RecoveredListReviewView(model: model, recoveryID: id)
+                }
             }
+            .libraryToast(model: model, isHidden: model.errorDetails != nil, usesFixedExpiry: true)
+            .modifier(IOSFailurePresentation(model: model))
         }
-        .alert(
-            "Add List",
+        .sheet(
             isPresented: Binding(
                 get: { model.newListMoveRequest != nil },
                 set: { if !$0 { model.newListMoveRequest = nil } }
             ),
-            presenting: model.newListMoveRequest
-        ) { request in
-            TextField("List name", text: $newMoveListName)
-                .accessibilityIdentifier("move-new-list-name")
-            Button("Create and Move") {
-                let name = newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines)
-                Task { @MainActor in
-                    if await model.createListAndMove(request, name: name),
-                       request.selectionSessionID == model.gatheringSessionID,
-                       model.selectedSnipIDs.isEmpty {
-                        model.endSelectingSnips()
-                        collectionEditMode = .inactive
+            onDismiss: { model.clearFailure(for: "list.create") }
+        ) {
+            if let request = model.newListMoveRequest {
+                NavigationStack {
+                    Form {
+                        TextField("List name", text: $newMoveListName)
+                            .accessibilityIdentifier("move-new-list-name")
+                            .focused($isMoveListNameFocused)
+                            .onAppear { isMoveListNameFocused = true }
+                        IOSInlineFailureView(model: model, operations: ["list.create"])
+                        Text("Selected items will move into the new list.")
+                            .foregroundStyle(.secondary)
                     }
+                    .navigationTitle("Add List")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { model.newListMoveRequest = nil }
+                                .disabled(model.isPerformingGatheredAction)
+                                .accessibilityIdentifier("cancel-create-move")
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Create and Move") {
+                                let name = newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                Task { @MainActor in
+                                    guard await model.createListAndMove(request, name: name) else { return }
+                                    model.newListMoveRequest = nil
+                                    if request.selectionSessionID == model.gatheringSessionID,
+                                       model.selectedSnipIDs.isEmpty {
+                                        model.endSelectingSnips()
+                                        collectionEditMode = .inactive
+                                    }
+                                }
+                            }
+                            .disabled(newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      || model.isPerformingGatheredAction)
+                            .accessibilityIdentifier("create-and-move")
+                        }
+                    }
+                    .disabled(model.isPerformingGatheredAction)
                 }
+                .interactiveDismissDisabled(model.isPerformingGatheredAction)
+                .libraryToast(model: model, isHidden: model.errorDetails != nil, usesFixedExpiry: true)
+                .modifier(IOSFailurePresentation(model: model))
             }
-            .disabled(newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Selected items will move into the new list.")
         }
         .onChange(of: model.newListMoveRequest != nil) { _, presented in
             if presented { newMoveListName = "" }
         }
-        .alert(
-            model.errorTitle,
-            isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { model.errorMessage = nil }
-        } message: {
-            Text(model.errorMessage ?? String(localized: "Try again."))
-        }
+
     }
 
     var body: some View {
         appPresentation
+        .modifier(IOSFailurePresentation(model: model, isActive: sheet == nil && model.newListMoveRequest == nil))
+        .onChange(of: session.clipboard.operationFailure?.id) { previousID, _ in
+            if let previousID { model.clearFailure(id: previousID) }
+            if let failure = session.clipboard.operationFailure { model.presentFailure(failure) }
+        }
         .alert(
             "Some Files Are Unavailable",
             isPresented: Binding(
@@ -253,17 +277,6 @@ struct IOSAppRootView: View {
             Button("Cancel", role: .cancel) { copyShare.cancelUnavailableFilesNotice() }
         } message: { notice in
             Text(notice.message)
-        }
-        .alert(
-            "Couldn’t Copy",
-            isPresented: Binding(
-                get: { copyShare.errorMessage != nil },
-                set: { if !$0 { copyShare.errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { copyShare.errorMessage = nil }
-        } message: {
-            Text(copyShare.errorMessage ?? String(localized: "Try again."))
         }
         .onChange(of: model.sortMode) { _, mode in
             savedSortMode = mode.rawValue
@@ -381,7 +394,7 @@ struct IOSAppRootView: View {
                     )
                     .libraryToast(
                         model: model,
-                        isHidden: model.isSearchPresented,
+                        isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
                         usesFixedExpiry: true
                     )
                     .frame(maxHeight: .infinity)
@@ -489,7 +502,8 @@ struct IOSAppRootView: View {
                         )
                         }
                     }
-                    .libraryToast(model: model)
+                    .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
+                                  usesFixedExpiry: true)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         libraryControls(showsListTabs: false)
                     }
@@ -833,4 +847,57 @@ extension View {
 
 #Preview("Empty iPhone") {
     IOSAppRootView(session: IOSAppSession(library: PreviewSnipLibrary.empty))
+}
+
+private struct IOSFailurePresentation: ViewModifier {
+    let model: IOSAppModel
+    var isActive = true
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .top) {
+                if isActive {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.hasGlobalInlineFailure {
+                            IOSInlineFailureView(model: model, operations: [""], includesProtectedUndoFailure: true)
+                                .padding()
+                        }
+                        if let failure = model.pendingUndoFailure {
+                            AppUndoRecoveryView(
+                                failure: failure,
+                                onRetry: { model.retryPendingUndo(failure) },
+                                onDetails: { model.errorDetails = failure }
+                            )
+                        }
+                    }
+                }
+            }
+            .sheet(item: Binding<AppFailure?>(
+                get: { isActive ? model.errorDetails : nil },
+                set: { selected in
+                    if selected == nil { model.dismissErrorDetails() }
+                    else { model.errorDetails = selected }
+                }
+            )) { failure in
+                AppErrorDetailsView(
+                    failure: failure,
+                    onClose: model.dismissErrorDetails,
+                    onRetry: model.canRetryFailure(failure) ? { model.retryFailure(failure) } : nil
+                )
+                .libraryToast(model: model, isHidden: model.toast?.action == .showErrorDetails(failure.id),
+                              usesFixedExpiry: true)
+            }
+            .alert(model.errorTitle, isPresented: Binding(
+                get: { isActive && model.failure?.surface == .dialog && model.errorDetails == nil },
+                set: { if !$0 && model.errorDetails == nil { model.dismissError() } }
+            )) {
+                if let failure = model.failure, model.canRetryFailure(failure) {
+                    Button("Retry") { model.retryFailure(failure) }
+                }
+                Button("Details", action: model.showLatestErrorDetails)
+                Button("OK", action: model.dismissError)
+            } message: {
+                Text(model.errorMessage ?? String(localized: "Try again."))
+            }
+    }
 }

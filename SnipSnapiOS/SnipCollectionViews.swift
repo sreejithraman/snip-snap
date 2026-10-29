@@ -689,15 +689,7 @@ struct LibrarySearchView: View {
         .attachmentPreview($previewURL)
         .task { await clipboard.load() }
         .onDisappear { isInlineEditorFocused = false }
-        .overlay(alignment: .bottom) {
-            if clipboard.copied {
-                Label("Copied", systemImage: "checkmark")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(12)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding()
-            }
-        }
+
     }
 
     private func snipResult(_ snip: Snip) -> some View {
@@ -765,13 +757,13 @@ struct LibrarySearchView: View {
 
     private func clipboardResult(_ entry: ClipboardEntry) -> some View {
         ClipboardItemRow(entry: entry, model: clipboard) {
-            copyShare.copyClipboardEntry(entry, clipboard: clipboard)
+            copyShare.copyClipboardEntry(entry, clipboard: clipboard, model: model)
         }
         .listRowSeparator(.hidden)
         .accessibilityIdentifier("search-clipboard-\(entry.id)")
         .contextMenu {
             Button("Copy", systemImage: "doc.on.doc") {
-                copyShare.copyClipboardEntry(entry, clipboard: clipboard)
+                copyShare.copyClipboardEntry(entry, clipboard: clipboard, model: model)
             }
             Button(entry.isPinned ? "Unpin" : "Pin", systemImage: "pin") {
                 Task { await clipboard.togglePin(entry) }

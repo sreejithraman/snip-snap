@@ -49,6 +49,14 @@ struct PanelMoreButton: View {
             Divider()
         }
 
+        if model.latestFailure != nil {
+            Button("Error details", systemImage: "exclamationmark.triangle") {
+                model.showLatestErrorDetails()
+            }
+            .accessibilityIdentifier("latest-error-details")
+            Divider()
+        }
+
         if let title = accessibilityPermissions.menuActionTitle {
             Button(title) {
                 accessibilityPermissions.performMenuAction()
