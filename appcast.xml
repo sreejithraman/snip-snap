@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Thu, 29 Oct 2026 03:01:04 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.169</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.169-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>169</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.169/Snip-Snap-0.6.1.zip" length="18259270" type="application/octet-stream" sparkle:edSignature="fSRBmBHx73YNSv6NoonApEvfmhkZQ8QbvMClCjurXJPjRnql7hWhUFRuri70JPUNKa885socrcdUfIPoxLHcDw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 169 — Mac
+
+- Stabilize iOS workflow checks and add targeted groups
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Tue, 27 Oct 2026 15:45:06 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.168</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.168-mac.txt</sparkle:fullReleaseNotesLink>
