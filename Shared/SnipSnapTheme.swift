@@ -1,39 +1,110 @@
+import SnipSnapCore
 import SwiftUI
 
 struct AppToast: Identifiable {
+    enum CopiedContent {
+        case snips
+        case text
+        case attachments
+
+        var shortDescription: String {
+            switch self {
+            case .snips: String(localized: "Copied")
+            case .text: String(localized: "Text copied")
+            case .attachments: String(localized: "Attachments copied")
+            }
+        }
+    }
+
     enum Action: Equatable {
         case undoDelete
+        case undoDone
+        case showErrorDetails(UUID)
     }
 
     let id: UUID
     let systemImage: String
     let message: String
+    let detail: String?
     let action: Action?
     let duration: Duration
     let expiresAt: ContinuousClock.Instant
+    private let copiedContent: CopiedContent?
 
     init(
         id: UUID = UUID(),
         systemImage: String,
         message: String,
+        detail: String? = nil,
         action: Action? = nil,
-        duration: Duration = .seconds(4)
+        duration: Duration = .seconds(3),
+        copiedContent: CopiedContent? = nil
     ) {
         self.id = id
         self.systemImage = systemImage
         self.message = message
+        self.detail = detail
         self.action = action
         self.duration = duration
         self.expiresAt = ContinuousClock().now.advanced(by: duration)
+        self.copiedContent = copiedContent
     }
 
     static func copied(count: Int) -> Self {
         Self(
             systemImage: "doc.on.doc",
             message: count == 1
-                ? String(localized: "Copied")
-                : String(localized: "Copied \(count) snips")
+                ? String(localized: "Snapped")
+                : String(localized: "\(count) snips snapped"),
+            detail: String(localized: "Copied to clipboard"),
+            copiedContent: .snips
         )
+    }
+
+    static func copiedText() -> Self {
+        Self(systemImage: "doc.text", message: String(localized: "Snapped"),
+             detail: String(localized: "Text copied"), copiedContent: .text)
+    }
+
+    static func copiedAttachments() -> Self {
+        Self(systemImage: "paperclip", message: String(localized: "Snapped"),
+             detail: String(localized: "Attachments copied"), copiedContent: .attachments)
+    }
+
+    func addingDoneUndo(_ undo: SavedSnipsDoneUndo) -> Self {
+        let copiedDetail = (copiedContent ?? .snips).shortDescription
+        let doneDetail = undo.count == 1
+            ? String(localized: "Marked Done")
+            : String(localized: "\(undo.count) marked Done")
+        return Self(id: undo.id, systemImage: systemImage, message: message,
+                    detail: String(localized: "\(copiedDetail) · \(doneDetail)"),
+                    action: .undoDone, duration: .seconds(6))
+    }
+
+    static func markedDone(count: Int, id: UUID) -> Self {
+        Self(id: id, systemImage: "checkmark.circle", message: count == 1
+             ? String(localized: "Marked Done")
+             : String(localized: "\(count) snips marked Done"),
+             action: .undoDone, duration: .seconds(6))
+    }
+
+    static func failed(_ failure: AppFailure) -> Self {
+        Self(systemImage: "exclamationmark.triangle", message: failure.title,
+             action: .showErrorDetails(failure.id), duration: .seconds(6))
+    }
+
+    var actionTitle: String {
+        if case .showErrorDetails = action { return String(localized: "Details") }
+        return String(localized: "Undo")
+    }
+
+    var actionAccessibilityLabel: String {
+        switch action {
+        case .undoDone: String(localized: "Undo marking Done")
+        case .undoDelete: String(localized: "Undo deletion")
+        case .showErrorDetails: String(localized: "Show error details")
+        case nil: ""
+        }
     }
 
     static func deleted(count: Int, id: UUID) -> Self {
@@ -111,16 +182,22 @@ private struct AppToastPresenter: ViewModifier {
     let isHidden: Bool
     let reservesSpace: Bool
     let usesFixedExpiry: Bool
+    let bottomInset: CGFloat
     let onAction: (AppToast) -> Void
     let onDismiss: (AppToast) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
+    @State private var pausedAt: ContinuousClock.Instant?
+    @State private var resumedDeadline: ContinuousClock.Instant?
+    @FocusState private var isActionFocused: Bool
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
     func body(content: Content) -> some View {
         Group {
             if reservesSpace {
-                content.safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    content
                     presentedToast
                 }
             } else {
@@ -130,11 +207,26 @@ private struct AppToastPresenter: ViewModifier {
             }
         }
         .animation(reduceMotion ? nil : .snappy, value: toast?.id)
+        .onChange(of: toast?.id) { _, _ in
+            pausedAt = nil
+            resumedDeadline = nil
+        }
+        .onChange(of: isTimerPaused) { _, isPaused in
+            guard let toast else { return }
+            let now = ContinuousClock().now
+            if isPaused {
+                pausedAt = now
+            } else if let pausedAt {
+                resumedDeadline = (resumedDeadline ?? toast.expiresAt)
+                    .advanced(by: pausedAt.duration(to: now))
+                self.pausedAt = nil
+            }
+        }
         .task(id: timerID) {
-            guard let toast, !isHovering, !isHidden else { return }
+            guard let toast, !isTimerPaused, !isHidden else { return }
             do {
                 if usesFixedExpiry {
-                    try await ContinuousClock().sleep(until: toast.expiresAt)
+                    try await ContinuousClock().sleep(until: resumedDeadline ?? toast.expiresAt)
                 } else {
                     try await Task.sleep(for: toast.duration)
                 }
@@ -152,6 +244,7 @@ private struct AppToastPresenter: ViewModifier {
         if !isHidden, let toast {
             toastView(toast)
                 .padding(12)
+                .padding(.bottom, bottomInset)
                 .transition(
                     reduceMotion
                         ? .opacity
@@ -162,7 +255,11 @@ private struct AppToastPresenter: ViewModifier {
     }
 
     private var timerID: String {
-        "\(toast?.id.uuidString ?? "none")-\(isHovering)-\(isHidden)"
+        "\(toast?.id.uuidString ?? "none")-\(isHovering)-\(isActionFocused)-\(isHidden)-\(voiceOverEnabled)"
+    }
+
+    private var isTimerPaused: Bool {
+        isHovering || isActionFocused || (voiceOverEnabled && toast?.action != nil)
     }
 
     private func toastView(_ toast: AppToast) -> some View {
@@ -170,15 +267,24 @@ private struct AppToastPresenter: ViewModifier {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
                 Image(systemName: toast.systemImage)
                     .foregroundStyle(.secondary)
-                Text(toast.message)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(toast.message)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                    if let detail = toast.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 if toast.action != nil {
                     AppPrimaryActionButton(presentation: .floatingGlass) {
                         self.toast = nil
                         onAction(toast)
                     } label: {
-                        Text("Undo")
+                        Text(toast.actionTitle)
                     }
                     .font(.subheadline.weight(.bold))
                     .controlSize(.small)
@@ -187,6 +293,8 @@ private struct AppToastPresenter: ViewModifier {
                     .contentShape(Rectangle())
 #endif
                     .accessibilityIdentifier("toast-action")
+                    .accessibilityLabel(toast.actionAccessibilityLabel)
+                    .focused($isActionFocused)
                 }
             }
             .padding(.horizontal, SnipSnapSpacing.cardContentInset)
@@ -198,7 +306,7 @@ private struct AppToastPresenter: ViewModifier {
         }
         .frame(maxWidth: 360)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(toast.message)
+        .accessibilityLabel([toast.message, toast.detail].compactMap { $0 }.joined(separator: ". "))
         .accessibilityIdentifier("app-toast")
     }
 
@@ -219,6 +327,7 @@ extension View {
         isHidden: Bool = false,
         reservesSpace: Bool = false,
         usesFixedExpiry: Bool = false,
+        bottomInset: CGFloat = 0,
         onAction: @escaping (AppToast) -> Void = { _ in },
         onDismiss: @escaping (AppToast) -> Void = { _ in }
     ) -> some View {
@@ -230,6 +339,7 @@ extension View {
                 isHidden: isHidden,
                 reservesSpace: reservesSpace,
                 usesFixedExpiry: usesFixedExpiry,
+                bottomInset: bottomInset,
                 onAction: onAction,
                 onDismiss: onDismiss
             )

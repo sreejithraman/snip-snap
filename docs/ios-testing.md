@@ -13,7 +13,7 @@ feedback sooner; it does not replace that integration gate.
 | iOS model, copy/share logic, or gestures | An iOS unit class | All iOS unit tests; full UI suite for changed workflows |
 | Inline editor or composer | `editing` | Full Dev UI suite |
 | List creation, appearance, or moves | `lists` | Full Dev UI suite |
-| Delete feedback, Undo, or its deadline | `undo` | Full Dev UI suite |
+| Done or delete feedback, Undo, or its deadline | `undo` | Full Dev UI suite |
 | Gathered selection, merge, or batch actions | `gathering` | Full Dev UI suite |
 | Attachments or system pickers | `attachments` | Full Dev UI suite; satisfy picker fixtures |
 | Share sheet or embedded extension | `share` | Full Dev UI suite with its own Share fixture |

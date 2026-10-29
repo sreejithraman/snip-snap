@@ -71,6 +71,9 @@ actor ModelTestLibrary: SnipLibrary {
     private var attachmentRetentionCalls: [Set<UUID>] = []
     private let commandDelay: Duration?
     private let failsDeletion: Bool
+    private let failsDone: Bool
+    private var failsReopenOnce: Bool
+    private var failsRestoreOnce: Bool
     private let failsListDeletion: Bool
     private let rejectsCancelledCommands: Bool
     private var suspendsFirstCommand: Bool
@@ -96,6 +99,9 @@ actor ModelTestLibrary: SnipLibrary {
         commandDelay: Duration? = nil,
         suspendsFirstCommand: Bool = false,
         failsDeletion: Bool = false,
+        failsDone: Bool = false,
+        failsReopenOnce: Bool = false,
+        failsRestoreOnce: Bool = false,
         failsListDeletion: Bool = false,
         rejectsCancelledCommands: Bool = false
     ) {
@@ -106,6 +112,9 @@ actor ModelTestLibrary: SnipLibrary {
         self.commandDelay = commandDelay
         self.suspendsFirstCommand = suspendsFirstCommand
         self.failsDeletion = failsDeletion
+        self.failsDone = failsDone
+        self.failsReopenOnce = failsReopenOnce
+        self.failsRestoreOnce = failsRestoreOnce
         self.failsListDeletion = failsListDeletion
         self.rejectsCancelledCommands = rejectsCancelledCommands
     }
@@ -301,10 +310,19 @@ actor ModelTestLibrary: SnipLibrary {
             attachmentRetentionCalls.append(retainedIDs)
             outcome = .none
         case .restore(let restored):
+            if failsRestoreOnce {
+                failsRestoreOnce = false
+                throw SnipLibraryError.storeUnavailable
+            }
             let existing = Set(snips.map(\.id))
             snips.append(contentsOf: restored.filter { !existing.contains($0.id) })
             outcome = .none
         case .setDone(let ids, let done):
+            if failsDone { throw SnipLibraryError.storeUnavailable }
+            if !done, failsReopenOnce {
+                failsReopenOnce = false
+                throw SnipLibraryError.storeUnavailable
+            }
             for index in snips.indices where ids.contains(snips[index].id) {
                 snips[index].isDone = done
                 snips[index].updatedAt = Date()
@@ -340,7 +358,7 @@ actor ModelTestLibrary: SnipLibrary {
             snips.append(contentsOf: restored)
             outcome = .none
         case .moveChronologically(let ids, let listID):
-            for index in snips.indices where ids.contains(snips[index].id) {
+            for index in snips.indices where ids.contains(snips[index].id) && snips[index].listID != listID {
                 snips[index].listID = listID
                 snips[index].manualPosition = nextTopPosition(in: listID, excluding: Set(ids))
             }

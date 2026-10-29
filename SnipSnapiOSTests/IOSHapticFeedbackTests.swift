@@ -110,7 +110,7 @@ final class IOSHapticFeedbackTests: XCTestCase {
         await coordinator.copyText(snips: [snip], model: model)
         let failure = try XCTUnwrap(feedback.event)
         XCTAssertEqual(failure.kind, .error)
-        XCTAssertNotNil(coordinator.errorMessage)
+        XCTAssertEqual(model.failure?.operation, "clipboard.write")
         await coordinator.copyText(snips: [snip], model: model)
         XCTAssertEqual(feedback.event?.kind, .error)
         XCTAssertNotEqual(feedback.event?.id, failure.id)

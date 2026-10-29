@@ -445,7 +445,9 @@ final class AppCoordinator {
             return
         }
         guard let sourceApplication = frontmostExternalApplication() else {
-            hud.show(failure: .sourceUnavailable)
+            let error = SelectionCaptureFailure.sourceUnavailable
+            model.presentError(error, operation: "selection.capture", presentation: .detailsOnly)
+            hud.show(message: error.localizedDescription, symbol: "exclamationmark.triangle")
             return
         }
         let requestID = UUID()
@@ -470,8 +472,8 @@ final class AppCoordinator {
                     guard case .success(let temporaryAttachments) = staging else {
                         let message = String(localized: "Couldn’t prepare the captured images. Try again.")
                         self.model.presentError(message, operation: "selection.capture",
-                                                diagnosticCode: "selection.attachmentStagingFailed")
-                        self.hud.show(message: message, symbol: "exclamationmark")
+                                                diagnosticCode: "selection.attachmentStagingFailed", presentation: .detailsOnly)
+                        self.hud.show(message: message, symbol: "exclamationmark.triangle")
                         return
                     }
                     defer {
@@ -488,14 +490,14 @@ final class AppCoordinator {
                     )
                     switch outcome {
                     case .success(.added):
-                        self.hud.show(message: String(localized: "Captured"), symbol: "checkmark")
+                        self.hud.show(message: String(localized: "Snipped"), symbol: "scissors", detail: String(localized: "Saved for later"))
                     case .success(.duplicate):
-                        self.hud.show(message: String(localized: "Already captured"), symbol: "minus")
+                        self.hud.show(message: String(localized: "Already snipped"), symbol: "scissors")
                     case .failure(let error):
-                        self.model.presentError(error)
+                        self.model.presentError(error, operation: "selection.capture", presentation: .detailsOnly)
                         self.hud.show(
                             message: error.localizedDescription,
-                            symbol: "exclamationmark"
+                            symbol: "exclamationmark.triangle"
                         )
                     }
                 case .failure(let error):
@@ -503,7 +505,9 @@ final class AppCoordinator {
                         self.presentAccessibilityRepair()
                         return
                     }
-                    self.hud.show(failure: error)
+                    if self.hud.show(failure: error) == .failure {
+                        self.model.presentError(error, operation: "selection.capture", presentation: .detailsOnly)
+                    }
                 }
             }
         }
@@ -783,7 +787,7 @@ final class AppCoordinator {
     }
 
     func updatePresentedError() {
-        guard model.presentedError != nil else {
+        guard let failure = model.dialogFailure else {
             dismissPanelDialog(id: .error)
             return
         }
@@ -796,9 +800,10 @@ final class AppCoordinator {
         guard !panelDialogs.isPresented else { return }
         presentPanelDialog(
             id: .error,
-            title: model.presentedErrorTitle ?? String(localized: "Something Went Wrong")
+            title: failure.title
         ) { [weak model] in
-            model?.dismissPresentedError()
+            // The window stays mounted while its observed error content changes.
+            model?.dismissErrorDetails()
         } content: {
             PanelErrorDialog(model: model)
         }

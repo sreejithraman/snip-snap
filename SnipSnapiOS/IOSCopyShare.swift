@@ -355,7 +355,6 @@ final class IOSCopyShareCoordinator {
 
     var unavailableFilesNotice: IOSUnavailableFilesNotice?
     var shareRequest: IOSShareRequest?
-    var errorMessage: String?
 
     init(
         pasteboard: any IOSPasteboardWriting = IOSSystemPasteboard(),
@@ -411,9 +410,7 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            makeToast: {
-                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
-            }
+            makeToast: { .copiedText() }
         )
     }
 
@@ -441,9 +438,7 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            makeToast: {
-                AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
-            }
+            makeToast: { .copiedAttachments() }
         )
     }
 
@@ -475,9 +470,7 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            makeToast: {
-                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
-            }
+            makeToast: { .copiedText() }
         )
     }
 
@@ -505,9 +498,17 @@ final class IOSCopyShareCoordinator {
     }
 
     @discardableResult
-    func copyClipboardEntry(_ entry: ClipboardEntry, clipboard: IOSClipboardModel) -> Task<Bool, Never> {
-        beginCopyRequest()
-        let task = Task { await clipboard.copy(entry) }
+    func copyClipboardEntry(
+        _ entry: ClipboardEntry, clipboard: IOSClipboardModel, model: IOSAppModel? = nil
+    ) -> Task<Bool, Never> {
+        let generation = beginCopyRequest()
+        let task = Task {
+            let copied = await clipboard.copy(entry)
+            if copied, !Task.isCancelled, generation == self.copyGeneration {
+                model?.presentToast(.copied(count: 1))
+            }
+            return copied
+        }
         clipboardCopyTask = task
         return task
     }
@@ -589,17 +590,22 @@ final class IOSCopyShareCoordinator {
                 errorCode: "pasteboard.writeFailed",
                 visibility: .user
             ))
-            errorMessage = String(localized: "Couldn’t copy that content. Try again.")
+            let message = String(localized: "Couldn’t copy that content. Try again.")
+            model.presentFailure(AppFailure(
+                message: message, operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed"
+            ))
             model.haptics.emit(.error, for: interaction)
             return false
         }
-        errorMessage = nil
-        model.presentToast(makeToast())
+        model.clearFailure(for: "clipboard.write")
+        let toast = makeToast()
         switch await model.markCopiedSnipsDone(
             versions: versions,
+            copyToast: toast,
             ifStillCurrent: { generation == self.copyGeneration }
         ) {
         case .unchanged:
+            if generation == copyGeneration { model.presentToast(makeToast()) }
             model.haptics.emit(.copied, for: interaction)
             return true
         case .markedDone:

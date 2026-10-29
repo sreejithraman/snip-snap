@@ -38,8 +38,10 @@ module IOSTestSelection
       ]
     },
     'undo' => {
-      description: 'Delete, restore, contrast, search placement, and the Undo deadline.',
+      description: 'Done and deletion Undo, Settings, contrast, search placement, and the deadline.',
       tests: %w[
+        testDoneSnackbarUndoReopensTheSnip
+        testDoneUndoRemainsActionableInSettings
         testDeleteToastUndoRestoresSnip
         testDeleteToastPresentationInDarkMode
         testDeleteToastStaysAboveSearchToolbar

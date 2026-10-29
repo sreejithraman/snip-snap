@@ -77,26 +77,43 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         }
     }
 
-    func testClipboardCopyFeedbackExpiresFromTheLatestCopyWithoutAPresenter() async throws {
+    func testClipboardCopyFeedbackDeadlineStartsAtLatestCopyWithoutAPresenter() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let preferencesName = UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: preferencesName))
         defer { preferences.removePersistentDomain(forName: preferencesName) }
-        let model = IOSClipboardModel(rootURL: root,
+        let clipboard = IOSClipboardModel(rootURL: root,
             settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences)
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let coordinator = IOSCopyShareCoordinator()
         let entry = ClipboardEntry(items: [ClipboardPayloadItem(representations: [
             ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("Feedback".utf8))
         ])])
 
-        await model.copy(entry)
-        XCTAssertTrue(model.copied)
-        try await Task.sleep(for: .seconds(1))
-        await model.copy(entry)
-        try await Task.sleep(for: .milliseconds(1200))
-        XCTAssertTrue(model.copied, "The first copy must not expire feedback for the second")
-        try await Task.sleep(for: .seconds(1))
-        XCTAssertFalse(model.copied, "Feedback must expire even when its source view is hidden")
+        let firstSucceeded = await coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: model).value
+        XCTAssertTrue(firstSucceeded)
+        let first = try XCTUnwrap(model.toast)
+        let secondStarted = ContinuousClock().now
+        let secondSucceeded = await coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: model).value
+        let secondFinished = ContinuousClock().now
+        XCTAssertTrue(secondSucceeded)
+        let latest = try XCTUnwrap(model.toast)
+
+        XCTAssertNotEqual(first.id, latest.id)
+        XCTAssertEqual(latest.message, "Snapped")
+        XCTAssertEqual(latest.detail, "Copied to clipboard")
+        XCTAssertNil(latest.action)
+        XCTAssertEqual(latest.duration, .seconds(3))
+        XCTAssertGreaterThanOrEqual(latest.expiresAt, secondStarted.advanced(by: latest.duration))
+        XCTAssertLessThanOrEqual(latest.expiresAt, secondFinished.advanced(by: latest.duration))
+        XCTAssertGreaterThan(latest.expiresAt, first.expiresAt,
+                             "The first copy must not consume the second copy's feedback lifetime")
+        // The shared presenter consumes this fixed deadline even after its source view is hidden.
+        try await ContinuousClock().sleep(until: latest.expiresAt)
+        XCTAssertGreaterThanOrEqual(ContinuousClock().now, latest.expiresAt)
+        XCTAssertEqual(model.toast?.expiresAt, latest.expiresAt,
+                       "Without a presenter, retaining feedback must not renew its expired deadline")
     }
 
     func testRemoteAttachmentShowsWaitingSyncingAndAvailableStates() async throws {

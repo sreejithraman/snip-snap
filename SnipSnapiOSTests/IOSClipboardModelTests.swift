@@ -229,4 +229,49 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         let saved = try await store.load()
         XCTAssertNotNil(saved.tombstones[entry.id])
     }
+
+    func testClipboardOperationFailureDoesNotBecomeASyncRetryNotice() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        let clipboard = IOSClipboardModel(
+            rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            settings: SyncedContentSettingsModel(mode: .localOnly), preferences: preferences
+        )
+
+        clipboard.presentError(SnipLibraryError.storeUnavailable, operation: "clipboard.pin", message: "Couldn’t update the pin. Try again.")
+
+        XCTAssertEqual(clipboard.operationFailure?.operation, "clipboard.pin")
+        XCTAssertEqual(clipboard.errorMessage, "Couldn’t update the pin. Try again.")
+        XCTAssertNil(clipboard.persistentErrorMessage)
+        XCTAssertNil(clipboard.syncErrorMessage)
+    }
+
+    func testResolvedClipboardFailureClearsOnlyItsIncidentAndKeepsUndo() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clipboard = IOSClipboardModel(
+            rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly),
+            preferences: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let undo = AppToast.deleted(count: 1, id: UUID())
+        model.presentToast(undo)
+        clipboard.presentError(SnipLibraryError.storeUnavailable, operation: "clipboard.clear", message: "Couldn’t clear clipboard history.")
+        let incident = try XCTUnwrap(clipboard.operationFailure)
+        model.presentFailure(incident)
+        XCTAssertEqual(model.inlineFailure?.id, incident.id)
+
+        await clipboard.clear()
+        XCTAssertNil(clipboard.operationFailure)
+        model.clearFailure(id: incident.id)
+        XCTAssertNil(model.inlineFailure)
+        XCTAssertEqual(model.toast?.id, undo.id)
+        XCTAssertEqual(model.latestFailure?.id, incident.id)
+
+        model.presentError("A newer failure", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
+        let newerID = model.failure?.id
+        model.clearFailure(id: incident.id)
+        XCTAssertEqual(model.failure?.id, newerID)
+        XCTAssertEqual(model.toast?.id, undo.id)
+    }
+
 }

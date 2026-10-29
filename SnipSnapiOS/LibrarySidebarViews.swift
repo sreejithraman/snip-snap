@@ -162,6 +162,12 @@ struct LibraryActionsMenu: View {
         }
         LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
 
+        if model.latestFailure != nil {
+            Button("Error Details", systemImage: "exclamationmark.bubble") {
+                model.showLatestErrorDetails()
+            }
+            .accessibilityIdentifier("latest-error-details")
+        }
         Button("Settings", systemImage: "gearshape", action: settings)
             .accessibilityIdentifier("settings")
     }

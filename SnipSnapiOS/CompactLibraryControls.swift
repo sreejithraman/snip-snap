@@ -123,6 +123,9 @@ struct CompactLibraryControls: View {
 
     var body: some View {
         VStack(spacing: SnipSnapSpacing.relatedContent) {
+            if showsComposer {
+                IOSInlineFailureView(model: model, operations: ["snip.add", "snip.paste_save", "list.create", "composer.", "attachment.import_"])
+            }
             if showsComposerPages {
                 GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                     composerPages

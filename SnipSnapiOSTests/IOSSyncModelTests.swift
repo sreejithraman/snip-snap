@@ -758,6 +758,36 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertFalse(model.isCloudSyncActive)
         XCTAssertEqual(model.attachmentURL(for: id), localURL)
     }
+
+    func testRecoveryResolutionEndsThePreviousFailedUndo() async throws {
+        let current = Snip(content: "Current", origin: .quickEntry)
+        let recovered = RecoveredSnip(
+            id: UUID(), currentSnipID: current.id,
+            recovered: Snip(content: "Recovered", origin: .quickEntry), conflictingFields: [.text]
+        )
+        let library = ModelTestLibrary(
+            snips: [current], recovery: SnipRecoverySnapshot(pendingSnips: [recovered]),
+            failsReopenOnce: true
+        )
+        let model = IOSAppModel(library: library, recoveryScope: SnipRecoveryScope("cloud"))
+        await model.load()
+        _ = await model.toggleDone(id: current.id)
+        let undo = try XCTUnwrap(model.toast)
+        model.toast = nil
+        await model.performToastActionNow(undo)
+        let inverseFailure = try XCTUnwrap(model.failure)
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+        XCTAssertNotNil(model.pendingUndoFailure)
+
+        let resolved = await model.resolveRecovery(recovered.id, choice: .keepCurrent)
+
+        XCTAssertTrue(resolved)
+        XCTAssertNil(model.pendingUndoFailure)
+        XCTAssertFalse(model.canRetryFailure(inverseFailure))
+        await model.performToastActionNow(undo)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == current.id }).isDone)
+    }
+
 }
 
 private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {

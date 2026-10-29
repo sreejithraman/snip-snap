@@ -9,17 +9,34 @@ struct PanelDialogContent<Content: View>: View {
 
     var body: some View {
         content
-            .alert(
-                model.presentedErrorTitle ?? String(localized: "Something Went Wrong"),
-                isPresented: Binding(
-                    get: { showsModelErrors && model.presentedError != nil },
-                    set: { _ in }
-                )
-            ) {
-                Button("OK", role: .cancel) { model.dismissPresentedError() }
-            } message: {
-                Text(model.presentedError ?? "")
+            .safeAreaInset(edge: .bottom) {
+                if showsModelErrors {
+                    PanelFailureNotices(model: model)
+                }
             }
+            .panelDialogToast(model: model, isHidden: showsModelErrors && model.dialogFailure != nil)
+            .sheet(item: Binding<AppFailure?>(
+                get: { showsModelErrors ? model.dialogFailure : nil },
+                set: { if $0 == nil { model.dismissErrorDetails() } }
+            )) { failure in
+                AppErrorDetailsView(failure: failure, onClose: { model.dismissErrorDetails(failure) },
+                                    onRetry: model.errorRetryAction)
+                    .panelDialogToast(model: model)
+            }
+    }
+}
+
+private extension View {
+    func panelDialogToast(model: AppModel, isHidden: Bool = false) -> some View {
+        let showsInspectedFailure = if case .showErrorDetails(let id) = model.toast?.action {
+            model.dialogFailure?.id == id
+        } else { false }
+        return appToast(
+            Binding(get: { model.toast }, set: { model.toast = $0 }),
+            alignment: .bottom, edge: .bottom,
+            isHidden: isHidden || showsInspectedFailure, reservesSpace: true,
+            onAction: model.performToastAction, onDismiss: model.dismissToast
+        )
     }
 }
 
@@ -27,22 +44,57 @@ struct PanelErrorDialog: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
-            Text(model.presentedErrorTitle ?? String(localized: "Something Went Wrong"))
-                .font(.headline)
-            Text(model.presentedError ?? "")
+        if let failure = model.dialogFailure {
+            AppErrorDetailsView(failure: failure, onClose: { model.dismissErrorDetails(failure) },
+                                    onRetry: model.errorRetryAction)
+        }
+    }
+}
+
+struct PanelFailureNotices: View {
+    @ObservedObject var model: AppModel
+
+    @ViewBuilder var body: some View {
+        if model.inlineFailure != nil || model.pendingUndoFailure != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                if let failure = model.inlineFailure {
+                    PanelInlineFailureView(model: model, failure: failure)
+                }
+                if let failure = model.pendingUndoFailure {
+                    AppUndoRecoveryView(
+                        failure: failure,
+                        onRetry: { model.retryPendingUndo(failure) },
+                        onDetails: { model.errorDetails = failure }
+                    )
+                }
+            }
+        }
+    }
+}
+
+struct PanelInlineFailureView: View {
+    @ObservedObject var model: AppModel
+    let failure: AppFailure
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
+            Label(failure.title, systemImage: "exclamationmark.triangle")
+                .font(.subheadline.weight(.semibold))
+            Text(failure.message)
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Spacer()
-                AppPrimaryActionButton(action: model.dismissPresentedError) {
-                    Text("OK")
-                }
-                .keyboardShortcut(.defaultAction)
+                Button("Details", action: model.showLatestErrorDetails)
+                Button("Dismiss", action: model.dismissPresentedError)
             }
+            .buttonStyle(.borderless)
         }
         .padding(SnipSnapSpacing.paneContentInset)
-        .onExitCommand(perform: model.dismissPresentedError)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("inline-failure")
     }
 }
 

@@ -103,9 +103,13 @@ struct ContentView: View {
         }
         .appToast(
             $model.toast,
-            alignment: .top,
-            edge: .top,
+            alignment: .bottom,
+            edge: .bottom,
             isHidden: panelDialogs.isPresented,
+            bottomInset: AppWindowDefaults.effectGutter
+                + (model.isSearchExpanded ? 0 : PanelControlMetrics.tabBarHeight + SnipSnapSpacing.relatedContent)
+                + (model.isSearchExpanded || model.isShowingClipboard
+                    ? 0 : inlineEntryHeight(for: model.activeListID) + PanelControlMetrics.inlineEntryInset * 2),
             onAction: model.performToastAction,
             onDismiss: model.dismissToast
         )
@@ -155,6 +159,10 @@ struct ContentView: View {
 
             if accessibilityPermissions.isSetupCardVisible {
                 AccessibilitySetupCard(controller: accessibilityPermissions)
+            }
+
+            if !panelDialogs.isPresented {
+                PanelFailureNotices(model: model)
             }
 
             mainPanel
@@ -261,7 +269,7 @@ struct ContentView: View {
         .onChange(of: accessibilityPermissions.isRepairPresented) { _, isPresented in
             presentAccessibilityDialog(isPresented: isPresented)
         }
-        .onChange(of: model.presentedError, initial: true) { _, _ in
+        .onChange(of: model.dialogFailure?.id, initial: true) { _, _ in
             coordinator.updatePresentedError()
         }
     }
@@ -288,6 +296,7 @@ struct ContentView: View {
     private func presentNewListDialog(isPresented: Bool) {
         guard isPresented else {
             coordinator.dismissPanelDialog(id: .newList)
+            if model.inlineFailure?.operation == "list.create" { model.dismissPresentedError() }
             newListMovingIDs = []
             focusedTarget = .list
             return

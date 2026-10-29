@@ -36,23 +36,26 @@ final class IOSClipboardFileCopyTests: XCTestCase {
             ]),
             .init(representations: [.init(type: UTType.fileURL.identifier, data: Data(url.absoluteString.utf8))]),
         ])
+        let feedbackModel = IOSAppModel(library: ModelTestLibrary())
         let coordinator = IOSCopyShareCoordinator()
         let text = ClipboardEntry(items: [.init(representations: [
             .init(type: UTType.utf8PlainText.identifier, data: Data("Earlier copy".utf8)),
         ])])
-        let earlierSucceeded = await coordinator.copyClipboardEntry(text, clipboard: clipboard).value
+        let earlierSucceeded = await coordinator.copyClipboardEntry(text, clipboard: clipboard, model: feedbackModel).value
         XCTAssertTrue(earlierSucceeded)
-        XCTAssertTrue(clipboard.copied)
+        let earlierFeedback = try XCTUnwrap(feedbackModel.toast)
+        XCTAssertEqual(earlierFeedback.message, "Snapped")
         UIPasteboard.general.string = "Previous pasteboard"
-        let copying = coordinator.copyClipboardEntry(entry, clipboard: clipboard)
+        let copying = coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: feedbackModel)
         await fulfillment(of: [read.entered], timeout: 2)
         XCTAssertEqual(UIPasteboard.general.string, "Previous pasteboard")
-        XCTAssertFalse(clipboard.copied)
+        XCTAssertEqual(feedbackModel.toast?.id, earlierFeedback.id, "Pending work must not publish success feedback")
         XCTAssertFalse(read.wasMainThread)
         read.resume.signal()
         let succeeded = await copying.value
         XCTAssertTrue(succeeded)
-        XCTAssertTrue(clipboard.copied)
+        XCTAssertNotEqual(feedbackModel.toast?.id, earlierFeedback.id)
+        XCTAssertEqual(feedbackModel.toast?.detail, "Copied to clipboard")
         XCTAssertEqual(UIPasteboard.general.string, "Original text")
         XCTAssertEqual(UIPasteboard.general.data(forPasteboardType: UTType.html.identifier), html)
         let type = UTType(filenameExtension: "bin")?.identifier ?? UTType.data.identifier
@@ -84,20 +87,23 @@ final class IOSClipboardFileCopyTests: XCTestCase {
             UIPasteboard.general.string = "Previous pasteboard"
             let pasteboard = RecordingPasteboard()
             let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
-            let older = coordinator.copyClipboardEntry(entry, clipboard: clipboard)
-            await fulfillment(of: [read.entered], timeout: 2)
             let snip = Snip(content: "Newer copy", origin: .quickEntry)
             let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
             await model.load()
+            let older = coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: model)
+            await fulfillment(of: [read.entered], timeout: 2)
             let newer = await coordinator.copyText(snips: [snip], model: model)
+            let latestFeedback = try XCTUnwrap(model.toast)
             read.resume.signal()
             let olderSucceeded = await older.value
             XCTAssertTrue(newer)
             XCTAssertFalse(olderSucceeded)
             XCTAssertEqual(pasteboard.writes, [[.text("Newer copy")]])
             XCTAssertEqual(UIPasteboard.general.string, "Previous pasteboard")
-            XCTAssertFalse(clipboard.copied)
             XCTAssertNil(clipboard.errorMessage)
+            XCTAssertEqual(model.toast?.id, latestFeedback.id)
+            XCTAssertEqual(model.toast?.action, .undoDone)
+            XCTAssertEqual(model.toast?.detail, "Text copied · Marked Done")
         }
     }
 
@@ -117,20 +123,22 @@ final class IOSClipboardFileCopyTests: XCTestCase {
         let previous = UIPasteboard.general.items
         defer { UIPasteboard.general.items = previous }
         UIPasteboard.general.string = "Keep on failure"
+        let feedbackModel = IOSAppModel(library: ModelTestLibrary())
         let coordinator = IOSCopyShareCoordinator()
-        let failed = await coordinator.copyClipboardEntry(entry, clipboard: clipboard).value
+        let failed = await coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: feedbackModel).value
         XCTAssertFalse(failed)
         XCTAssertEqual(UIPasteboard.general.string, "Keep on failure")
         XCTAssertNotNil(clipboard.errorMessage)
-        XCTAssertFalse(clipboard.copied)
+        XCTAssertNil(feedbackModel.toast)
         let bytes = Data([7, 8, 9])
         try bytes.write(to: url)
-        let retried = await coordinator.copyClipboardEntry(entry, clipboard: clipboard).value
+        let retried = await coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: feedbackModel).value
         XCTAssertTrue(retried)
+        XCTAssertEqual(feedbackModel.toast?.message, "Snapped")
+        XCTAssertEqual(feedbackModel.toast?.detail, "Copied to clipboard")
         XCTAssertNil(clipboard.errorMessage, "A successful retry must clear the earlier copy error")
         let type = UTType(filenameExtension: "bin")?.identifier ?? UTType.data.identifier
         XCTAssertEqual(UIPasteboard.general.data(forPasteboardType: type), bytes)
-        XCTAssertTrue(clipboard.copied)
     }
 
 }
