@@ -137,7 +137,8 @@ global services.
 
 Existing conditional tests have these preconditions:
 
-- Compact-library and compact-selector tests require iPhone. The sidebar test
+- Compact-library and compact-selector tests require a compact window. Large
+  iPhones can use the sidebar layout in landscape. The sidebar test
   `testClipboardHidesSavedListActionsOnIPad` requires regular-width iPad.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one

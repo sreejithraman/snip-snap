@@ -68,7 +68,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.launch()
         shareAppName = app.label
+        waitForAppStartup(in: app)
         return app
+    }
+
+    private func waitForAppStartup(in app: XCUIApplication) {
+        XCTAssertTrue(
+            app.staticTexts["ui-test-startup-complete"].waitForExistence(timeout: 5),
+            "App loading and fixture setup must finish before a workflow starts."
+        )
     }
 
     func testLongSnipExpandsAndCollapsesWithoutEditing() {
@@ -3437,11 +3445,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         if app.navigationBars["Snip"].exists, app.buttons["BackButton"].exists {
             app.buttons["BackButton"].tap()
         }
-        let fixture = app.buttons.matching(
+        let fixture = activeSnipRows(in: app).matching(
             NSPredicate(format: "label CONTAINS %@", text)
         ).firstMatch
         XCTAssertTrue(fixture.waitForExistence(timeout: 5))
-        try visibleTouchCenter(of: fixture, in: app).press(forDuration: 1)
+        let viewport = activeSnipViewport(in: app)
+        for _ in 0..<3 where !hasVisibleTouchTarget(fixture, within: viewport, in: app) {
+            if fixture.frame.midY < viewport.frame.minY {
+                viewport.swipeDown()
+            } else {
+                viewport.swipeUp()
+            }
+        }
+        try visibleTouchCenter(of: fixture, clippedTo: viewport.frame, in: app)
+            .press(forDuration: 1)
     }
 
     private func chooseDetailAction(_ identifier: String, in app: XCUIApplication) {
@@ -3533,6 +3550,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.launch()
         shareAppName = app.label
+        waitForAppStartup(in: app)
         return app
     }
 
@@ -4872,6 +4890,14 @@ final class SnipSnapiOSUITests: XCTestCase {
             dx: target.midX - selector.frame.minX,
             dy: target.midY - selector.frame.minY
         )).tap()
+        let selected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == true"), object: tab
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [selected], timeout: 5), .completed,
+            "The tapped selector tab must become the selected destination.",
+            file: file, line: line
+        )
     }
 
     private func openSearch(in app: XCUIApplication) -> XCUIElement {
@@ -4919,7 +4945,9 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func row(named text: String, in app: XCUIApplication) -> XCUIElement {
-        let row = collectionRow(named: text, in: app)
+        let row = activeSnipRows(in: app).matching(
+            NSPredicate(format: "label BEGINSWITH %@", text)
+        ).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 3))
         return row
     }
@@ -4950,9 +4978,14 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func requireCompactSelector(in app: XCUIApplication) throws {
-        guard app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) else {
-            throw XCTSkip("The compact selector is limited to iPhone.")
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            return
         }
+        guard app.navigationBars["Lists"].exists, app.buttons["list-Inbox"].exists else {
+            XCTFail("The loaded library must expose either its compact selector or its sidebar.")
+            return
+        }
+        throw XCTSkip("This workflow requires the compact library layout; the current window uses a sidebar.")
     }
 
     private func openListEditor(named name: String, in app: XCUIApplication) {

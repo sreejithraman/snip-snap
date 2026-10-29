@@ -22,6 +22,9 @@ struct IOSAppRootView: View {
     @State private var edgeCreationTaskID: UUID?
     @State private var clipboardViewState = ClipboardViewState()
     @State private var isCompactComposerFocused = false
+#if DEBUG
+    @State private var isUITestStartupComplete = false
+#endif
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
@@ -148,6 +151,15 @@ struct IOSAppRootView: View {
             }
         }
         .overlay(alignment: .topLeading) {
+            if (ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" || shareProcessToken != nil),
+               isUITestStartupComplete {
+                Text(verbatim: "UI test startup complete")
+                    .font(.caption2)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("ui-test-startup-complete")
+            }
             if let shareProcessToken {
                 Text(
                     String(model.snips.filter { $0.content.contains(shareProcessToken) }.count)
@@ -285,6 +297,11 @@ struct IOSAppRootView: View {
                     attachmentURLs: uiTestAttachmentURLs
                 )
             }
+#if DEBUG
+            if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" || shareProcessToken != nil {
+                isUITestStartupComplete = true
+            }
+#endif
         }
         .task {
             for await _ in NotificationCenter.default.notifications(
