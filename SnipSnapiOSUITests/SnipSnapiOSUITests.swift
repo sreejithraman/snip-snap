@@ -5108,16 +5108,38 @@ final class SnipSnapiOSUITests: XCTestCase {
         if let color { app.buttons["list-color-\(color)"].tap() }
         let save = app.buttons["save-list"]
         if save.exists, save.isEnabled, !save.frame.isEmpty, app.frame.intersects(save.frame) {
+            func keyboardFrame(in state: any XCUIElementSnapshot) -> CGRect? {
+                if state.elementType == .keyboard { return state.frame }
+                for child in state.children {
+                    if let frame = keyboardFrame(in: child) { return frame }
+                }
+                return nil
+            }
+            var savePoint: CGVector?
+            var lastObservation = "No footer snapshot was captured."
             let footerReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                guard save.exists, save.isEnabled else { return false }
-                let frame = save.frame
-                guard !frame.isEmpty, app.frame.contains(frame) else { return false }
-                let keyboard = app.keyboards.firstMatch
-                return !keyboard.exists || frame.maxY <= keyboard.frame.minY
+                guard let state = try? app.snapshot() else {
+                    lastObservation = "The application snapshot was unavailable."
+                    return false
+                }
+                let matches = self.matchingSnapshots(identifiedBy: "save-list", in: state)
+                    .filter { $0.elementType == .button }
+                guard matches.count == 1, let button = matches.first else {
+                    lastObservation = "Save footer snapshot matches: \(matches.count)."
+                    return false
+                }
+                let frame = button.frame
+                let keyboard = keyboardFrame(in: state)
+                let isAboveKeyboard = keyboard.map { frame.maxY <= $0.minY } ?? true
+                lastObservation = "app=\(state.frame), save=\(frame), enabled=\(button.isEnabled), keyboard=\(String(describing: keyboard))"
+                guard button.isEnabled, !frame.isEmpty, state.frame.contains(frame), isAboveKeyboard else { return false }
+                savePoint = CGVector(dx: frame.midX - state.frame.minX, dy: frame.midY - state.frame.minY)
+                return true
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [footerReady], timeout: 3), .completed)
-            // XCTest can retain the footer's pre-keyboard hit point.
-            save.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [footerReady], timeout: 3), .completed, lastObservation)
+            if let savePoint {
+                app.coordinate(withNormalizedOffset: .zero).withOffset(savePoint).tap()
+            }
         } else {
             let done = app.keyboards.buttons["Done"]
             XCTAssertTrue(done.waitForExistence(timeout: 3))
