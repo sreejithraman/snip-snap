@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Thu, 29 Oct 2026 22:09:43 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.170</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.170-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>170</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.170/Snip-Snap-0.6.1.zip" length="18549265" type="application/octet-stream" sparkle:edSignature="kqaOF3/RTTLdeAcLFxIIQLa8nLrTL6vnFwS+hd8ue9IROvzoRJW5WYCvL8T5rBumPUqZkHrJ7EnxCI+fEffLCA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 170 — Mac
+
+- Add Done Undo and unify action feedback
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Thu, 29 Oct 2026 03:01:04 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.169</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.169-mac.txt</sparkle:fullReleaseNotesLink>
