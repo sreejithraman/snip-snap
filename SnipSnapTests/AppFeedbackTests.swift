@@ -9,7 +9,7 @@ import XCTest
 
 final class AppFeedbackTests: XCTestCase {
     func testCopiedErrorDetailsExcludePrivateLocalizedErrorText() {
-        let privateMessage = "Private snip text in /Users/private/secret-file.txt"
+        let privateMessage = "Private snip text in /private/secret-file.txt"
         let failure = AppFailure(message: privateMessage, operation: "clipboard.write",
                                  diagnosticCode: "pasteboard.writeFailed")
 
