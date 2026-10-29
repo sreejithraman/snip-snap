@@ -3051,11 +3051,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCUIDevice.shared.appearance = .dark
         let app = launchApp()
         createSnip("Undo this", in: app)
-        try deleteSnipAndWaitForToast(named: "Undo this", in: app)
-
-        app.buttons["toast-action"]
-            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
-            .tap()
+        let presentation = try deleteSnipAndCaptureToast(named: "Undo this", in: app)
+        let action = try capturedSnapshot(identifiedBy: "toast-action", in: presentation.state)
+        XCTAssertEqual(action.label, "Undo")
+        XCTAssertTrue(action.isEnabled)
+        XCTAssertTrue(presentation.state.frame.contains(action.frame))
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: action.frame.midX - presentation.state.frame.minX,
+            dy: action.frame.minY + action.frame.height * 0.1 - presentation.state.frame.minY
+        )).tap()
         XCTAssertTrue(row(named: "Undo this", in: app).waitForExistence(timeout: 3))
     }
 
@@ -3079,13 +3083,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCUIDevice.shared.appearance = .dark
         let app = launchApp()
         createSnip("Inspect delete feedback", in: app)
-        try deleteSnipAndWaitForToast(named: "Inspect delete feedback", in: app)
-
-        let state = try app.snapshot()
+        let presentation = try deleteSnipAndCaptureToast(named: "Inspect delete feedback", in: app)
+        let state = presentation.state
         let toast = try capturedSnapshot(identifiedBy: "app-toast", in: state)
         let action = try capturedSnapshot(identifiedBy: "toast-action", in: state)
         let composer = try capturedSnapshot(identifiedBy: "composer-text", in: state)
-        let screenshot = app.screenshot()
+        let screenshot = presentation.screenshot
         let source = try XCTUnwrap(screenshot.image.cgImage)
         let scale = CGAffineTransform(
             scaleX: CGFloat(source.width) / state.frame.width,
@@ -3117,16 +3120,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
-    @discardableResult
-    private func deleteSnipAndWaitForToast(named text: String, in app: XCUIApplication) throws -> XCUIElement {
+    private func deleteSnipAndCaptureToast(
+        named text: String, in app: XCUIApplication
+    ) throws -> (state: any XCUIElementSnapshot, screenshot: XCUIScreenshot) {
         let snip = row(named: text, in: app)
         XCTAssertTrue(snip.waitForExistence(timeout: 3))
+        let snipID = snip.identifier
         try visibleTouchCenter(of: snip, in: app).press(forDuration: 1)
         app.buttons["delete-context-snip"].tap()
-        XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
-        let toast = app.descendants(matching: .any)["app-toast"]
-        XCTAssertTrue(toast.waitForExistence(timeout: 3))
-        return toast
+        // Live AX queries can outlast transient feedback on Simulator.
+        let screenshot = XCUIScreen.main.screenshot()
+        let state = try app.snapshot()
+        XCTAssertTrue(matchingSnapshots(identifiedBy: snipID, in: state).isEmpty)
+        _ = try capturedSnapshot(identifiedBy: "app-toast", in: state)
+        return (state, screenshot)
     }
 
     private func capturedSnapshot(
