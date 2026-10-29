@@ -518,17 +518,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         compactListTab(named: "Inbox", in: app).tap()
 
         let newest = collectionRow(named: "Fixture 23", in: app)
-        let lowerRow = collectionRow(named: "Fixture 17", in: app)
+        let lowerRow = collectionRow(named: "Fixture 20", in: app)
         let sourceRowsReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             self.hasVisibleTouchTarget(newest, within: self.activeSnipViewport(in: app), in: app)
                 && self.hasVisibleTouchTarget(lowerRow, within: self.activeSnipViewport(in: app), in: app)
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [sourceRowsReady], timeout: 5), .completed)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertLessThanOrEqual(lowerRow.frame.maxY, composer.frame.minY)
         let start = lowerRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 25, dy: -300)))
 
         XCTAssertFalse(newest.exists, "Vertical scrolling must work from row content")
         XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
     }
 
     func testHorizontalEndPullDoesNotScrollLongListVertically() throws {
@@ -1008,6 +1011,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let snipSnap = shareActivityCell(in: app)
         XCTAssertTrue(snipSnap.waitForExistence(timeout: 5))
         snipSnap.tap()
+        assertShareExtensionStarted(in: app)
 
         let sharedText = app.textViews["share-text"]
         XCTAssertTrue(sharedText.waitForExistence(timeout: 5))
@@ -1023,8 +1027,10 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testSharePageShowsEveryListThenSaves() {
         continueAfterFailure = false
         let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock {
+            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
+        }
         XCUIDevice.shared.appearance = .light
-        defer { XCUIDevice.shared.appearance = originalAppearance }
         let app = XCUIApplication()
         app.launch()
         shareAppName = app.label
@@ -1036,6 +1042,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let token = "share-page-check-\(UUID().uuidString)"
         let safari = shareURLFromSafari(token: token)
+        assertShareExtensionStarted(in: safari)
         let sharedText = safari.textViews["share-text"]
         XCTAssertTrue(
             sharedText.waitForExistence(timeout: 10),
@@ -1052,22 +1059,25 @@ final class SnipSnapiOSUITests: XCTestCase {
         let picker = safari.descendants(matching: .any)["share-list-picker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
         picker.tap()
-        let options = safari.descendants(matching: .any)
-        for listName in ["Inbox", work, reading] {
-            XCTAssertTrue(
-                options.matching(NSPredicate(format: "label == %@", listName)).firstMatch
-                    .waitForExistence(timeout: 5),
-                "\(listName) is missing from the share picker: \(safari.debugDescription)"
-            )
-        }
-        let pickerList = safari.collectionViews.containing(
-            .button,
-            identifier: "tray.fill"
-        ).firstMatch
+        let pickerQuery = safari.collectionViews.matching(
+            NSPredicate(format: "identifier != %@", "activityCollectionView")
+        )
         XCTAssertTrue(
-            pickerList.waitForExistence(timeout: 5),
+            pickerQuery.firstMatch.waitForExistence(timeout: 5),
             "The list picker did not open: \(safari.debugDescription)"
         )
+        XCTAssertEqual(pickerQuery.count, 1, "The destination menu must be unambiguous")
+        let pickerList = pickerQuery.element
+        for listName in ["Inbox", work, reading] {
+            let option = revealSharePickerList(
+                named: listName, in: pickerList, host: safari, towardBottom: listName != "Inbox"
+            )
+            XCTAssertTrue(
+                option.waitForExistence(timeout: 5),
+                "\(listName) is missing from the share picker: \(safari.debugDescription)"
+            )
+            XCTAssertTrue(option.isHittable, "\(listName) cannot be chosen in the share picker")
+        }
         XCTAssertFalse(
             pickerList.descendants(matching: .any)
                 .matching(NSPredicate(format: "label == %@", "Clipboard"))
@@ -1080,7 +1090,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         pickerProof.lifetime = .keepAlways
         add(pickerProof)
 
-        options.matching(NSPredicate(format: "label == %@", work)).firstMatch.tap()
+        revealSharePickerList(named: work, in: pickerList, host: safari, towardBottom: false).tap()
         Thread.sleep(forTimeInterval: 2)
         let colorProof = XCTAttachment(screenshot: safari.screenshot())
         colorProof.name = "Share page commits in the destination list color"
@@ -1098,31 +1108,40 @@ final class SnipSnapiOSUITests: XCTestCase {
         assertShareExtensionReportedLocalSave(in: safari)
 
         app.activate()
+        let listTabCount = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "list-tab-")
+        ).count
+        let sharedLibraryScrollLimit = max(24, listTabCount * 2)
+        revealCompactList(named: work, in: app, scrollLimit: sharedLibraryScrollLimit)
         let workList = listControl(named: work, in: app)
         XCTAssertTrue(workList.waitForExistence(timeout: 10))
-        workList.tap()
-        let saved = activeSnipRows(in: app).matching(
+        if !workList.isSelected { tapVisibleSelectorTab(workList, in: app) }
+        XCTAssertTrue(app.navigationBars[work].waitForExistence(timeout: 3))
+        XCTAssertTrue(workList.isSelected)
+        let workContents = listContents(for: workList, in: app)
+        let saved = workContents.buttons.matching(
             NSPredicate(format: "label CONTAINS %@", token)
         ).firstMatch
         XCTAssertTrue(
             saved.waitForExistence(timeout: 10),
             "The shared snip did not land in \(work): \(app.debugDescription)"
         )
-        revealCompactList(named: "Inbox", in: app)
+        revealCompactList(named: "Inbox", in: app, scrollLimit: sharedLibraryScrollLimit)
         let inbox = compactListTab(named: "Inbox", in: app)
         XCTAssertGreaterThanOrEqual(
             inbox.frame.minX,
             0,
             "Inbox stayed off screen at \(inbox.frame)"
         )
-        inbox.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        if !inbox.isSelected { tapVisibleSelectorTab(inbox, in: app) }
         expectation(
             for: NSPredicate(format: "selected == true"),
             evaluatedWith: inbox
         )
         waitForExpectations(timeout: 5)
+        let inboxContents = listContents(for: inbox, in: app)
         XCTAssertFalse(
-            activeSnipRows(in: app).matching(NSPredicate(format: "label CONTAINS %@", token)).firstMatch.exists,
+            inboxContents.buttons.matching(NSPredicate(format: "label CONTAINS %@", token)).firstMatch.exists,
             "The shared snip also appeared in Inbox."
         )
         revealCompactList(named: work, in: app)
@@ -1135,6 +1154,14 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func shareActivityCell(in host: XCUIApplication) -> XCUIElement {
+        XCTAssertTrue(
+            host.collectionViews["activityCollectionView"].waitForExistence(timeout: 15),
+            "The system Share content did not start."
+        )
+        XCTAssertTrue(
+            host.cells.matching(identifier: "shareCell").firstMatch.waitForExistence(timeout: 8),
+            "The Share apps row did not appear."
+        )
         let named = host.cells.matching(
             NSPredicate(format: "label == %@ OR label == %@", shareAppName, "Save to \(shareAppName)")
         ).firstMatch
@@ -1165,15 +1192,69 @@ final class SnipSnapiOSUITests: XCTestCase {
         return named
     }
 
+    private func revealSharePickerList(
+        named name: String,
+        in menu: XCUIElement,
+        host: XCUIApplication,
+        towardBottom: Bool
+    ) -> XCUIElement {
+        let option = menu.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        for _ in 0..<32 {
+            XCTAssertFalse(menu.buttons.matching(NSPredicate(format: "label == %@", "Clipboard")).firstMatch.exists)
+            let scrollBar = menu.otherElements.matching(
+                NSPredicate(format: "label BEGINSWITH %@", "Vertical scroll bar")
+            ).firstMatch
+            // The menu's accessibility frame extends below its clipped popup.
+            let viewport = scrollBar.exists
+                ? CGRect(x: menu.frame.minX, y: scrollBar.frame.minY,
+                         width: menu.frame.width, height: scrollBar.frame.height).intersection(host.frame)
+                : menu.frame.intersection(host.frame)
+            if option.exists && option.isHittable
+                && viewport.contains(CGPoint(x: option.frame.midX, y: option.frame.midY)) {
+                return option
+            }
+            guard scrollBar.exists else { return option }
+            let gestureArea = viewport.insetBy(dx: 16, dy: 24)
+            guard gestureArea.width > 44, gestureArea.height > 44 else {
+                XCTFail("The share picker has no visible scroll area: \(host.debugDescription)")
+                return option
+            }
+            let down = option.exists ? option.frame.midY > viewport.midY : towardBottom
+            let origin = host.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(
+                dx: gestureArea.midX - host.frame.minX,
+                dy: gestureArea.minY + gestureArea.height * (down ? 0.75 : 0.25) - host.frame.minY
+            ))
+            let end = origin.withOffset(CGVector(
+                dx: gestureArea.midX - host.frame.minX,
+                dy: gestureArea.minY + gestureArea.height * (down ? 0.25 : 0.75) - host.frame.minY
+            ))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        XCTFail("Could not reveal \(name) in the share picker: \(host.debugDescription)")
+        return option
+    }
+
     private func scrollShareApps(in host: XCUIApplication, towardLeft: Bool) {
         let row = host.cells.matching(identifier: "shareCell")
         guard row.count > 1 else { return }
-        let anchor = row.element(boundBy: 1)
-        if towardLeft {
-            anchor.swipeLeft()
-        } else {
-            anchor.swipeRight()
-        }
+        let anchorFrame = row.element(boundBy: 1).frame
+        let sheetFrame = activityView(in: host).frame
+        let contentFrame = host.collectionViews["activityCollectionView"].frame
+        XCTAssertEqual(contentFrame.width, sheetFrame.width, accuracy: 1)
+        XCTAssertEqual(contentFrame.height, sheetFrame.height, accuracy: 1)
+        // Remote Share content can report frames relative to its host sheet.
+        let y = sheetFrame.minY + anchorFrame.midY - contentFrame.minY
+        XCTAssertGreaterThan(y, sheetFrame.minY)
+        XCTAssertLessThan(y, sheetFrame.maxY)
+        let origin = host.frame.origin
+        let start = host.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: sheetFrame.minX + sheetFrame.width * (towardLeft ? 0.8 : 0.2) - origin.x,
+            dy: y - origin.y
+        ))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(
+            dx: sheetFrame.width * (towardLeft ? -0.6 : 0.6), dy: 0
+        )))
     }
 
     func testShareExtensionImportsExactlyOnceWhileMainAppIsOpen() {
@@ -1368,6 +1449,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         editor.typeText(" unsaved")
         let text = "Copy mixed fixture unsaved"
         XCTAssertEqual(editor.value as? String, text)
+        focusWithOnscreenKeyboard(editor, in: app)
+        XCTAssertEqual(editor.value as? String, text)
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
 
@@ -1390,17 +1473,30 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         try requireCompactSelector(in: app)
         createList("Work", in: app)
+        let workContents = listContents(for: compactListTab(named: "Work", in: app), in: app)
         let composer = app.descendants(matching: .any)["composer-text"]
         composer.tap()
         composer.typeText("Work draft to keep")
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).waitForNonExistence(timeout: 3))
         dismissComposerKeyboard(in: app)
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).waitForExistence(timeout: 3))
-        compactListTab(named: "Inbox", in: app).tap()
+        let inboxTab = compactListTab(named: "Inbox", in: app)
+        let inboxContents = listContents(for: inboxTab, in: app)
+        inboxTab.tap()
         composer.tap()
         composer.typeText("Sent to Work from Inbox")
 
+        focusWithOnscreenKeyboard(composer, in: app)
         let send = app.buttons["composer-send"]
+        let keyboard = app.keyboards.firstMatch
+        let layoutReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard keyboard.exists, app.frame.contains(keyboard.frame),
+                  send.isHittable, app.frame.contains(send.frame) else { return false }
+            return send.frame.maxY <= keyboard.frame.minY
+        }, object: nil)
+        let ready = XCTWaiter.wait(for: [layoutReady], timeout: 3)
+        if ready != .completed { attachUIState("Composer before Send morph", in: app) }
+        XCTAssertEqual(ready, .completed)
         let initialSendFrame = send.frame
         send.press(forDuration: 1)
         let picker = app.descendants(matching: .any)["composer-send-picker"]
@@ -1459,13 +1555,15 @@ final class SnipSnapiOSUITests: XCTestCase {
             predicate: NSPredicate(format: "enabled == false"), object: send
         )
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
-        XCTAssertFalse(collectionRows(named: "Sent to Work from Inbox", in: app)
-            .allElementsBoundByIndex.contains { $0.frame.intersects(app.frame) },
-            "Sending to Work must not display the sent snip in Inbox.")
+        XCTAssertEqual(composer.label, "Add to Inbox…")
+        XCTAssertTrue(inboxContents.waitForExistence(timeout: 3))
+        let sentRowInInbox = collectionRow(named: "Sent to Work from Inbox", in: inboxContents)
+        if sentRowInInbox.exists { attachUIState("Inbox after Send to Work", in: app) }
+        XCTAssertFalse(sentRowInInbox.exists)
         dismissComposerKeyboard(in: app)
         XCTAssertTrue(compactListTab(named: "Work", in: app).waitForExistence(timeout: 3))
         compactListTab(named: "Work", in: app).tap()
-        XCTAssertTrue(row(named: "Sent to Work from Inbox", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(collectionRow(named: "Sent to Work from Inbox", in: workContents).waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Work draft to keep")
 
         app.terminate()
@@ -1473,7 +1571,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         if !compactListTab(named: "Work", in: app).isSelected {
             compactListTab(named: "Work", in: app).tap()
         }
-        XCTAssertTrue(row(named: "Sent to Work from Inbox", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(collectionRow(named: "Sent to Work from Inbox", in: workContents).waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Work draft to keep")
         send.tap()
         XCTAssertTrue(row(named: "Work draft to keep", in: app).waitForExistence(timeout: 5))
@@ -1590,14 +1688,32 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Choose Photos"].firstMatch.exists)
     }
 
+    private func assertPhotosPickerReady(in app: XCUIApplication) {
+        let photos = app.buttons["Photos"]
+        let loading = app.navigationBars["PUPickerUnavailableView"]
+        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            photos.exists || loading.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: 5), .completed)
+        let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            photos.exists || !loading.exists
+        }, object: nil)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [loaded], timeout: 15), .completed,
+            "The system Photos picker did not finish loading."
+        )
+        XCTAssertTrue(photos.waitForExistence(timeout: 5))
+    }
+
     func testPhotoPickerStagesAChosenImage() throws {
         continueAfterFailure = false
         let app = launchApp()
         app.buttons["composer-add-attachments"].tap()
         app.buttons["Choose Photos"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        assertPhotosPickerReady(in: app)
         let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
         guard firstPhoto.waitForExistence(timeout: 5) else {
+            attachUIState("Photo picker fixture precondition", in: app)
             throw XCTSkip("Seed one image in the test Simulator's Photos library to run.")
         }
         // The system Photos picker exposes grid images but does not report them as hittable.
@@ -1628,9 +1744,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 5))
         app.buttons["add-attachments"].tap()
         app.buttons["Choose Photos"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        assertPhotosPickerReady(in: app)
         let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
         guard firstPhoto.waitForExistence(timeout: 5) else {
+            attachUIState("Photo picker fixture precondition", in: app)
             throw XCTSkip("Seed one image in the test Simulator's Photos library to run.")
         }
         firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -1646,7 +1763,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(replace.waitForExistence(timeout: 5))
         replace.tap()
         app.buttons["Choose Photos"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["Photos"].waitForExistence(timeout: 5))
+        assertPhotosPickerReady(in: app)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.09, dy: 0.12)).tap()
         XCTAssertTrue(staged.waitForExistence(timeout: 5))
         try visibleTouchCenter(of: app.buttons["inline-snip-save"], in: app).tap()
@@ -2763,8 +2880,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let search = app.textFields["list-icon-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 3))
+        XCTAssertTrue(search.isHittable)
+        XCTAssertTrue(app.frame.contains(search.frame))
         search.tap()
         search.typeText("star")
+        focusWithOnscreenKeyboard(search, in: app)
         XCTAssertTrue(app.keyboards.firstMatch.exists)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
         XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
@@ -2772,6 +2892,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "star")
         let results = app.scrollViews["list-icon-results"]
+        let initialSearchY = search.frame.minY
+        results.swipeUp()
+        XCTAssertTrue(search.isHittable, "Icon search must stay pinned while browsing results.")
+        let pinnedSearchY = search.frame.minY
+        XCTAssertGreaterThanOrEqual(pinnedSearchY, results.frame.minY)
+        let roundingError = max(initialSearchY.ulp, pinnedSearchY.ulp) * 8
+        XCTAssertLessThanOrEqual(pinnedSearchY - initialSearchY, roundingError)
+        results.swipeDown()
         let star = results.buttons["list-icon-star.fill"].firstMatch
         for _ in 0..<6 where !star.isHittable {
             results.swipeUp()
@@ -2892,63 +3020,131 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(moveRow.waitForExistence(timeout: 3))
         try visibleTouchCenter(of: moveRow, in: app).press(forDuration: 1)
         app.buttons["move-snip"].tap()
-        app.buttons["move-to-Inbox"].tap()
-        let inbox = compactListTab(named: "Inbox", in: app)
-        if !inbox.isSelected { tapVisibleSelectorTab(inbox, in: app) }
-        XCTAssertTrue(inbox.isSelected)
+        let inboxDestination = app.collectionViews.buttons.matching(
+            NSPredicate(format: "label == %@", "Inbox")
+        ).element
+        XCTAssertTrue(inboxDestination.waitForExistence(timeout: 3))
+        inboxDestination.tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
-        let moved = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Move this")).firstMatch
+        XCTAssertTrue(listControl(named: "Inbox", in: app).isSelected)
+        let inboxContents = selectedListContents(in: app)
+        let moved = inboxContents.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH 'snip-' AND NOT identifier BEGINSWITH 'snip-text-' AND label BEGINSWITH %@",
+            "Move this"
+        )).element
+        XCTAssertTrue(moved.waitForExistence(timeout: 3))
         try visibleTouchCenter(of: moved, in: app).press(forDuration: 1)
         XCTAssertTrue(app.buttons["delete-context-snip"].waitForExistence(timeout: 3))
         app.buttons["delete-context-snip"].tap()
         XCTAssertTrue(moved.waitForNonExistence(timeout: 3))
         XCTAssertTrue(app.descendants(matching: .any)["app-toast"].waitForExistence(timeout: 3))
         app.buttons["toast-action"].tap()
-        XCTAssertTrue(row(named: "Move this", in: app).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Move this", in: inboxContents).waitForExistence(timeout: 3))
     }
 
     func testDeleteToastUndoRestoresSnip() throws {
         continueAfterFailure = false
         let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock {
+            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
+        }
         XCUIDevice.shared.appearance = .dark
-        defer { XCUIDevice.shared.appearance = originalAppearance }
         let app = launchApp()
         createSnip("Undo this", in: app)
+        deleteSnipAndWaitForToast(named: "Undo this", in: app)
 
-        let snip = row(named: "Undo this", in: app)
-        XCTAssertTrue(snip.waitForExistence(timeout: 3))
-        try visibleTouchCenter(of: snip, in: app).press(forDuration: 1)
-        app.buttons["delete-context-snip"].tap()
-
-        XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
-        let toast = app.descendants(matching: .any)["app-toast"]
-        XCTAssertTrue(toast.waitForExistence(timeout: 3))
-        XCTAssertLessThan(toast.frame.width, app.frame.width - 48)
-        XCTAssertLessThanOrEqual(toast.frame.height, 60)
-        let composer = app.descendants(matching: .any)["composer-text"]
-        XCTAssertLessThanOrEqual(
-            toast.frame.maxY,
-            composer.frame.minY
-        )
-        XCTAssertGreaterThanOrEqual(app.buttons["toast-action"].frame.height, 44)
-        let actionScreenshot = app.buttons["toast-action"].screenshot()
-        let actionAttachment = XCTAttachment(screenshot: actionScreenshot)
-        actionAttachment.name = "Filled toast action"
-        actionAttachment.lifetime = .keepAlways
-        add(actionAttachment)
-        XCTAssertEqual(app.buttons["toast-action"].label, "Undo")
-        XCTAssertTrue(
-            hasDarkPixelsInLabelArea(actionScreenshot),
-            "The Undo label must contrast with its light button background in dark mode."
-        )
-        let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Delete toast above compact controls"
-        screenshot.lifetime = .keepAlways
-        add(screenshot)
         app.buttons["toast-action"]
             .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
             .tap()
         XCTAssertTrue(row(named: "Undo this", in: app).waitForExistence(timeout: 3))
+    }
+
+    func testDeleteToastPresentationInDarkMode() throws {
+        continueAfterFailure = false
+        let size = CGSize(width: 100, height: 60)
+        for color in [UIColor.black, UIColor.white] {
+            let blank = UIGraphicsImageRenderer(size: size).image { context in
+                context.cgContext.setFillColor(color.cgColor)
+                context.cgContext.fill(CGRect(origin: .zero, size: size))
+            }
+            XCTAssertFalse(
+                hasDarkLabelOnLightBackground(blank),
+                "A blank image cannot prove the filled Undo button and contrasting label."
+            )
+        }
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock {
+            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
+        }
+        XCUIDevice.shared.appearance = .dark
+        let app = launchApp()
+        createSnip("Inspect delete feedback", in: app)
+        deleteSnipAndWaitForToast(named: "Inspect delete feedback", in: app)
+
+        let state = try app.snapshot()
+        let toast = try capturedSnapshot(identifiedBy: "app-toast", in: state)
+        let action = try capturedSnapshot(identifiedBy: "toast-action", in: state)
+        let composer = try capturedSnapshot(identifiedBy: "composer-text", in: state)
+        let screenshot = app.screenshot()
+        let source = try XCTUnwrap(screenshot.image.cgImage)
+        let scale = CGAffineTransform(
+            scaleX: CGFloat(source.width) / state.frame.width,
+            y: CGFloat(source.height) / state.frame.height
+        )
+        let actionRect = action.frame
+            .offsetBy(dx: -state.frame.minX, dy: -state.frame.minY)
+            .applying(scale).integral
+        let actionImage = UIImage(cgImage: try XCTUnwrap(source.cropping(to: actionRect)))
+
+        XCTAssertLessThan(toast.frame.width, state.frame.width - 48)
+        XCTAssertLessThanOrEqual(toast.frame.height, 60)
+        XCTAssertLessThanOrEqual(toast.frame.maxY, composer.frame.minY)
+        XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+        XCTAssertEqual(action.label, "Undo")
+        XCTAssertTrue(
+            hasDarkLabelOnLightBackground(actionImage),
+            "The Undo label must contrast with its light button background in dark mode."
+        )
+        let actionAttachment = XCTAttachment(
+            data: try XCTUnwrap(actionImage.pngData()), uniformTypeIdentifier: "public.png"
+        )
+        actionAttachment.name = "Filled toast action"
+        actionAttachment.lifetime = .keepAlways
+        add(actionAttachment)
+        let proof = XCTAttachment(screenshot: screenshot)
+        proof.name = "Delete toast above compact controls"
+        proof.lifetime = .keepAlways
+        add(proof)
+    }
+
+    @discardableResult
+    private func deleteSnipAndWaitForToast(named text: String, in app: XCUIApplication) -> XCUIElement {
+        let snip = row(named: text, in: app)
+        XCTAssertTrue(snip.waitForExistence(timeout: 3))
+        snip.press(forDuration: 1)
+        app.buttons["delete-context-snip"].tap()
+        XCTAssertTrue(snip.waitForNonExistence(timeout: 3))
+        let toast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3))
+        return toast
+    }
+
+    private func capturedSnapshot(
+        identifiedBy identifier: String, in state: any XCUIElementSnapshot
+    ) throws -> any XCUIElementSnapshot {
+        let matches = matchingSnapshots(identifiedBy: identifier, in: state)
+        XCTAssertEqual(matches.count, 1, "The captured interface must contain one \(identifier).")
+        return try XCTUnwrap(matches.first)
+    }
+
+    private func matchingSnapshots(
+        identifiedBy identifier: String, in state: any XCUIElementSnapshot
+    ) -> [any XCUIElementSnapshot] {
+        var matches: [any XCUIElementSnapshot] = state.identifier == identifier ? [state] : []
+        for child in state.children {
+            matches += matchingSnapshots(identifiedBy: identifier, in: child)
+        }
+        return matches
     }
 
     func testDeleteToastStaysAboveSearchToolbar() throws {
@@ -2999,8 +3195,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(toast.exists)
     }
 
-    private func hasDarkPixelsInLabelArea(_ screenshot: XCUIScreenshot) -> Bool {
-        guard let source = screenshot.image.cgImage else { return false }
+    private func hasDarkLabelOnLightBackground(_ image: UIImage) -> Bool {
+        guard let source = image.cgImage else { return false }
         let crop = CGRect(
             x: CGFloat(source.width) * 0.2,
             y: CGFloat(source.height) * 0.25,
@@ -3024,7 +3220,8 @@ final class SnipSnapiOSUITests: XCTestCase {
             ) else { return false }
 
             context.draw(labelArea, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return pointer.contains { $0 < 128 }
+            let darkPixels = pointer.lazy.filter { $0 < 128 }.count
+            return darkPixels > 0 && darkPixels * 2 < pointer.count
         }
     }
 
@@ -3286,6 +3483,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
 
         let safari = shareURLFromSafari(token: token)
+        assertShareExtensionStarted(in: safari)
         let shareText = safari.textViews["share-text"]
         XCTAssertTrue(
             shareText.waitForExistence(timeout: 8),
@@ -3354,7 +3552,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         var share = safari.buttons["Share"].firstMatch
         if !share.waitForExistence(timeout: 3) {
-            let more = safari.buttons["More"].firstMatch
+            let more = safari.buttons["MoreMenuButton"].firstMatch
             XCTAssertTrue(
                 more.waitForExistence(timeout: 5),
                 "Safari did not expose its Share button or More menu."
@@ -3363,7 +3561,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             share = safari.buttons["Share"].firstMatch
         }
         if !share.waitForExistence(timeout: 12) {
-            let more = safari.buttons["More"].firstMatch
+            let more = safari.buttons["MoreMenuButton"].firstMatch
             if more.waitForExistence(timeout: 2) {
                 more.tap()
             }
@@ -3381,6 +3579,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(activity.isHittable, "The \(shareAppName) Share activity must be reachable.")
         activity.tap()
         return safari
+    }
+
+    private func assertShareExtensionStarted(in host: XCUIApplication) {
+        let surface = host.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier IN %@",
+                ["share-loading", "share-text", "share-storage-unavailable", "share-error"]
+            )
+        ).firstMatch
+        XCTAssertTrue(
+            surface.waitForExistence(timeout: 15),
+            "The selected \(shareAppName) extension did not present its interface."
+        )
     }
 
     private func assertShareExtensionReportedLocalSave(in safari: XCUIApplication) {
@@ -3482,7 +3693,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
         workflowOptions.tap()
-        app.buttons["filter-done"].tap()
+        let doneFilter = app.buttons.matching(NSPredicate(format: "label == %@", "Done")).element
+        XCTAssertTrue(doneFilter.waitForExistence(timeout: 3))
+        doneFilter.tap()
         XCTAssertTrue(collectionRow(named: "Copy text fixture", in: app).waitForExistence(timeout: 3))
         XCTAssertFalse(collectionRow(named: "Copy mixed fixture", in: app).exists)
 
@@ -3854,7 +4067,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(hasVisibleTouchTarget(putBack, within: preview, in: app))
         try visibleTouchCenter(of: putBack, clippedTo: preview.frame, in: app).tap()
         XCTAssertEqual(stack.value as? String, "1 item")
-        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        let returned = collectionRow(named: "Try the stack interaction on iPhone", in: app)
+            .waitForExistence(timeout: 3)
+        if !returned { attachUIState("Collapsed card after return", in: app) }
+        XCTAssertTrue(returned)
         let remainingReturn = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Sketch a simpler selection flow")).firstMatch
         XCTAssertTrue(hasVisibleTouchTarget(remainingReturn, within: preview, in: app))
         try visibleTouchCenter(of: remainingReturn, clippedTo: preview.frame, in: app).tap()
@@ -4032,7 +4248,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(putBack.waitForExistence(timeout: 3))
         try visibleTouchCenter(of: putBack, in: app).tap()
         try visibleTouchCenter(of: app.buttons["collapse-gathered"], in: app).tap()
-        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
+        let returned = collectionRow(named: "Sketch a simpler selection flow", in: app)
+            .waitForExistence(timeout: 3)
+        if !returned { attachUIState("Gathered return after collapse", in: app) }
+        XCTAssertTrue(returned)
         XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
         XCTAssertEqual(stack.value as? String, "1 item")
         try visibleTouchCenter(of: app.buttons["finish-selecting"], in: app).tap()
@@ -4058,6 +4277,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(stack.value as? String, "2 items")
         XCTAssertEqual(stack.frame.minY, originalFrame.minY, accuracy: 1)
         XCTAssertTrue(app.navigationBars["Inbox"].exists)
+        let inboxContents = selectedListContents(in: app)
         let proof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         proof.name = "Selected stack stays put after swipe"
         proof.lifetime = .keepAlways
@@ -4072,14 +4292,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         menuProof.name = "Move menu remains available"
         menuProof.lifetime = .keepAlways
         add(menuProof)
-        app.buttons["move-gathered-to-Work"].tap()
+        let destination = app.buttons["move-gathered-to-Work"]
+        XCTAssertTrue(destination.waitForExistence(timeout: 3))
+        destination.tap()
         XCTAssertTrue(stack.waitForNonExistence(timeout: 5))
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
-        let source = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Sketch a simpler selection flow")).firstMatch
-        XCTAssertTrue(source.waitForNonExistence(timeout: 3))
-        listControl(named: "Work", in: app).tap()
-        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: inboxContents).waitForNonExistence(timeout: 3))
+        let work = listControl(named: "Work", in: app)
+        if !work.isSelected { tapVisibleSelectorTab(work, in: app) }
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        XCTAssertTrue(work.isSelected)
+        let workContents = selectedListContents(in: app)
+        XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: workContents).waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: workContents).exists)
     }
 
     func testGatheredStackMenuMovesAndPersists() throws {
@@ -4391,7 +4616,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         try visibleTouchCenter(of: app.buttons["collapse-gathered"], in: app).tap()
         try visibleTouchCenter(of: app.buttons["move-gathered"], in: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["selection-move-panel"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["move-gathered-to-Work"].exists)
+        XCTAssertTrue(app.buttons["move-gathered-to-Work"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["add-list-for-move"].waitForExistence(timeout: 3))
         let menuProof = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         menuProof.name = "Move destinations and Add List"
@@ -4429,14 +4654,24 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 3))
         name.typeText("First list")
         app.alerts["Add List"].buttons["Create and Move"].tap()
-        XCTAssertTrue(listControl(named: "First list", in: app).waitForExistence(timeout: 5))
-        XCTAssertTrue(collectionRow(named: "Move into a new list", in: app).waitForExistence(timeout: 3))
-        listControl(named: "Inbox", in: app).tap()
-        XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
-        let inboxRows = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Move into a new list"))
-        XCTAssertTrue(inboxRows.firstMatch.waitForNonExistence(timeout: 3))
-        listControl(named: "First list", in: app).tap()
-        XCTAssertTrue(activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Move into a new list")).firstMatch.waitForExistence(timeout: 3))
+        let firstList = listControl(named: "First list", in: app)
+        XCTAssertTrue(firstList.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["First list"].waitForExistence(timeout: 3))
+        XCTAssertTrue(firstList.isSelected)
+        let firstListContents = selectedListContents(in: app)
+        XCTAssertTrue(collectionRow(named: "Move into a new list", in: firstListContents).waitForExistence(timeout: 3))
+        let inbox = listControl(named: "Inbox", in: app)
+        inbox.tap()
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(inbox.isSelected)
+        let inboxContents = selectedListContents(in: app)
+        let absentFromInbox = collectionRow(named: "Move into a new list", in: inboxContents)
+            .waitForNonExistence(timeout: 3)
+        if !absentFromInbox { attachUIState("Single move after returning to Inbox", in: app) }
+        XCTAssertTrue(absentFromInbox)
+        firstList.tap()
+        XCTAssertTrue(firstList.isSelected)
+        XCTAssertTrue(collectionRow(named: "Move into a new list", in: firstListContents).waitForExistence(timeout: 3))
     }
 
     private func scrollToListAnchor(in app: XCUIApplication) -> XCUIElement {
@@ -4559,6 +4794,26 @@ final class SnipSnapiOSUITests: XCTestCase {
         return !visible.isNull && !visible.isEmpty
     }
 
+    private func focusWithOnscreenKeyboard(
+        _ element: XCUIElement,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        // XCTest text entry can leave the software keyboard offscreen until the next touch.
+        waitForHittable(element, file: file, line: line)
+        element.tap()
+        let keyboard = app.keyboards.firstMatch
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard keyboard.exists else { return false }
+            let frame = keyboard.frame
+            return !frame.isEmpty && app.frame.contains(frame)
+        }, object: nil)
+        let ready = XCTWaiter.wait(for: [visible], timeout: 3)
+        if ready != .completed { attachUIState("Keyboard after focusing input", in: app) }
+        XCTAssertEqual(ready, .completed, file: file, line: line)
+    }
+
     private func waitForHittable(
         _ element: XCUIElement,
         timeout: TimeInterval = 5,
@@ -4618,10 +4873,23 @@ final class SnipSnapiOSUITests: XCTestCase {
         return field
     }
 
+    private func attachUIState(_ name: String, in app: XCUIApplication) {
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = name
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     private func closeSearch(in app: XCUIApplication) {
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        XCTAssertTrue(cancel.isHittable, "Search Close must be visible before tapping it.")
+        let closeIsVisible = cancel.isHittable
+        if !closeIsVisible { attachUIState("Search Close unavailable", in: app) }
+        XCTAssertTrue(closeIsVisible, "Search Close must be visible before tapping it.")
         cancel.tap()
         XCTAssertTrue(cancel.waitForNonExistence(timeout: 3))
     }
@@ -4643,12 +4911,29 @@ final class SnipSnapiOSUITests: XCTestCase {
         return row
     }
 
-    private func collectionRow(named text: String, in app: XCUIApplication) -> XCUIElement {
-        collectionRows(named: text, in: app).firstMatch
+    private func selectedListContents(in app: XCUIApplication) -> XCUIElement {
+        let contents = app.collectionViews.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND enabled == true", "snip-list-"
+        )).element
+        XCTAssertTrue(contents.waitForExistence(timeout: 3))
+        // Keep this list's identity when navigation makes its page inactive.
+        return app.collectionViews[contents.identifier]
     }
 
-    private func collectionRows(named text: String, in app: XCUIApplication) -> XCUIElementQuery {
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", text))
+    private func listContents(for tab: XCUIElement, in app: XCUIApplication) -> XCUIElement {
+        XCTAssertTrue(tab.waitForExistence(timeout: 3))
+        let identifier = tab.identifier
+        XCTAssertTrue(identifier.hasPrefix("list-tab-"))
+        let listID = identifier.dropFirst("list-tab-".count)
+        return app.collectionViews["snip-list-\(listID)"]
+    }
+
+    private func collectionRow(named text: String, in container: XCUIElement) -> XCUIElement {
+        collectionRows(named: text, in: container).firstMatch
+    }
+
+    private func collectionRows(named text: String, in container: XCUIElement) -> XCUIElementQuery {
+        container.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", text))
     }
 
     private func requireCompactSelector(in app: XCUIApplication) throws {
@@ -4703,11 +4988,11 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// Scroll-to-visible fails once a tab sits far outside the compact strip.
-    private func revealCompactList(named name: String, in app: XCUIApplication) {
+    private func revealCompactList(named name: String, in app: XCUIApplication, scrollLimit: Int = 24) {
         let tab = compactListTab(named: name, in: app)
         let selector = app.descendants(matching: .any)["list-selector"]
         guard selector.exists else { return }
-        for _ in 0..<24 {
+        for _ in 0..<scrollLimit {
             guard tab.exists, tab.frame.width > 1 else { return }
             let frame = tab.frame
             if frame.minX >= 4, frame.maxX <= app.frame.width - 4 { return }
@@ -4769,14 +5054,25 @@ final class SnipSnapiOSUITests: XCTestCase {
         field.typeText(name)
         if let color { app.buttons["list-color-\(color)"].tap() }
         let save = app.buttons["save-list"]
-        if save.isHittable {
-            save.tap()
+        if save.exists, save.isEnabled, !save.frame.isEmpty, app.frame.intersects(save.frame) {
+            let footerReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard save.exists, save.isEnabled else { return false }
+                let frame = save.frame
+                guard !frame.isEmpty, app.frame.contains(frame) else { return false }
+                let keyboard = app.keyboards.firstMatch
+                return !keyboard.exists || frame.maxY <= keyboard.frame.minY
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [footerReady], timeout: 3), .completed)
+            // XCTest can retain the footer's pre-keyboard hit point.
+            save.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         } else {
             let done = app.keyboards.buttons["Done"]
             XCTAssertTrue(done.waitForExistence(timeout: 3))
             done.tap()
         }
-        XCTAssertTrue(field.waitForNonExistence(timeout: 5))
+        let editorClosed = field.waitForNonExistence(timeout: 5)
+        if !editorClosed { attachUIState("List editor after Save", in: app) }
+        XCTAssertTrue(editorClosed)
         XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 3))
     }
 

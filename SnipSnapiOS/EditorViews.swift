@@ -299,7 +299,8 @@ struct InlineSnipEditor: View {
             isPresented: presentationBinding(\.isPickingPhotos, inactiveValue: false),
             selection: $draft.selectedPhotos,
             maxSelectionCount: draft.replacementID == nil ? nil : 1,
-            matching: .images
+            matching: .images,
+            preferredItemEncoding: .current
         )
         .onChange(of: draft.selectedPhotos) { _, items in
             guard ownsPresentation, !items.isEmpty else { return }
@@ -489,18 +490,21 @@ struct InlineListEditor: View {
         VStack(spacing: 0) {
             if verticalSizeClass == .compact || dynamicTypeSize.isAccessibilitySize {
                 ScrollView {
-                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    // Keep editor controls outside the lazy icon section during keyboard layout changes.
+                    VStack(spacing: 0) {
                         editorHeader
                         switch draft.appearanceTab {
                         case .icon:
-                            Section {
-                                ListIconGrid(selection: $draft.systemImage, query: draft.iconQuery)
-                                    .padding(.horizontal, SnipSnapSpacing.paneContentInset)
-                            } header: {
-                                ListIconSearchField(query: $draft.iconQuery, focus: $focusedField, usesGlassBackground: true)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .padding(.horizontal, SnipSnapSpacing.paneContentInset)
-                                    .padding(.bottom, SnipSnapSpacing.relatedContent)
+                            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                                Section {
+                                    ListIconGrid(selection: $draft.systemImage, query: draft.iconQuery)
+                                        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+                                } header: {
+                                    ListIconSearchField(query: $draft.iconQuery, focus: $focusedField, usesGlassBackground: true)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .padding(.horizontal, SnipSnapSpacing.paneContentInset)
+                                        .padding(.bottom, SnipSnapSpacing.relatedContent)
+                                }
                             }
                         case .color:
                             SnipListColorPicker(selection: $draft.color, showsTitle: false)

@@ -394,7 +394,7 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            toast: .copied(count: current.count)
+            makeToast: { .copied(count: current.count) }
         )
     }
 
@@ -411,7 +411,9 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            toast: AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            makeToast: {
+                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            }
         )
     }
 
@@ -439,7 +441,9 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            toast: AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
+            makeToast: {
+                AppToast(systemImage: "paperclip", message: String(localized: "Copied Attachments"))
+            }
         )
     }
 
@@ -471,7 +475,9 @@ final class IOSCopyShareCoordinator {
             generation: generation,
             model: model,
             interaction: interaction,
-            toast: AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            makeToast: {
+                AppToast(systemImage: "doc.on.doc", message: String(localized: "Copied Text"))
+            }
         )
     }
 
@@ -574,7 +580,7 @@ final class IOSCopyShareCoordinator {
         generation: Int,
         model: IOSAppModel,
         interaction: UUID?,
-        toast: AppToast
+        makeToast: () -> AppToast
     ) async -> Bool {
         guard generation == copyGeneration else { return false }
         guard pasteboard.write(items) else {
@@ -588,7 +594,7 @@ final class IOSCopyShareCoordinator {
             return false
         }
         errorMessage = nil
-        model.presentToast(toast)
+        model.presentToast(makeToast())
         switch await model.markCopiedSnipsDone(
             versions: versions,
             ifStillCurrent: { generation == self.copyGeneration }

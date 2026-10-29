@@ -8,7 +8,10 @@ source "$script_dir/share-fixture.sh"
 simulator_id=""
 build_log=""
 ui_test=""
+ui_group=""
+list_ui_groups=NO
 unit_test=""
+selection_count=0
 performance=NO
 test_diagnostics=on-failure
 while (( $# )); do
@@ -26,29 +29,55 @@ while (( $# )); do
             if [[ "$1" == --simulator-id ]]; then simulator_id="$2"; else build_log="$2"; fi
             shift 2
             ;;
-        --ui-test|--unit-test)
+        --list-ui-groups)
+            list_ui_groups=YES
+            shift
+            ;;
+        --ui-test|--ui-group|--unit-test)
             (( $# >= 2 )) || { print -u2 "Missing value for $1"; exit 2; }
             [[ -n "$2" ]] || { print -u2 "Missing value for $1"; exit 2; }
-            if [[ "$1" == --ui-test ]]; then ui_test="$2"; else unit_test="$2"; fi
+            (( ++selection_count ))
+            case "$1" in
+                --ui-test) ui_test="$2" ;;
+                --ui-group) ui_group="$2" ;;
+                --unit-test) unit_test="$2" ;;
+            esac
             shift 2
             ;;
         *)
-            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test TEST_NAME | --unit-test TEST_CLASS] [--performance] [--no-test-diagnostics]"
+            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test METHOD|all | --ui-group GROUP | --unit-test CLASS|all] [--list-ui-groups] [--performance] [--no-test-diagnostics]"
             exit 2
             ;;
     esac
 done
 
-if [[ -n "$ui_test" && -n "$unit_test" ]]; then
-    print -u2 "Choose either --ui-test or --unit-test."
+if (( selection_count > 1 )); then
+    print -u2 "Choose either --ui-test, --ui-group, or --unit-test."
     exit 2
 fi
-if [[ "$performance" == YES && -z "$ui_test" && -z "$unit_test" ]]; then
-    print -u2 -- "--performance requires --ui-test or --unit-test."
+if [[ "$list_ui_groups" == YES ]]; then
+    if (( selection_count > 0 )) || [[ "$performance" == YES || "$test_diagnostics" == never ]]; then
+        print -u2 -- "--list-ui-groups cannot be combined with test options."
+        exit 2
+    fi
+    exec /usr/bin/ruby "$script_dir/ios-test-selection.rb" --list-ui-groups
+fi
+if [[ -n "$unit_test" ]]; then
+    /usr/bin/ruby "$script_dir/ios-test-selection.rb" --unit-test "$unit_test" > /dev/null
+fi
+ui_methods=()
+if [[ -n "$ui_test" || -n "$ui_group" ]]; then
+    selection_option=--ui-test
+    [[ -z "$ui_group" ]] || selection_option=--ui-group
+    selected_methods="$(/usr/bin/ruby "$script_dir/ios-test-selection.rb" "$selection_option" "${ui_group:-$ui_test}")"
+    ui_methods=("${(@f)selected_methods}")
+fi
+if [[ "$performance" == YES && -z "$ui_test" && -z "$ui_group" && -z "$unit_test" ]]; then
+    print -u2 -- "--performance requires a UI or unit test selection."
     exit 2
 fi
-if [[ "$test_diagnostics" == never && -z "$ui_test" && -z "$unit_test" ]]; then
-    print -u2 -- "--no-test-diagnostics requires --ui-test or --unit-test."
+if [[ "$test_diagnostics" == never && -z "$ui_test" && -z "$ui_group" && -z "$unit_test" ]]; then
+    print -u2 -- "--no-test-diagnostics requires a UI or unit test selection."
     exit 2
 fi
 
@@ -146,7 +175,7 @@ run_owned_command 0 xcodebuild "${build_arguments[@]}" "${build_actions[@]}" > "
 }
 if [[ "$performance" == YES ]]; then
     print "Performance evidence: $evidence_file"
-    /usr/bin/ruby -rjson -rshellwords -rtime - "$build_log" "$evidence_file" "$destination" "${ui_test:-$unit_test}" "$test_diagnostics" <<'RUBY'
+    /usr/bin/ruby -rjson -rshellwords -rtime - "$build_log" "$evidence_file" "$destination" "${ui_group:-${ui_test:-$unit_test}}" "$test_diagnostics" <<'RUBY'
 log, output, destination, selector, diagnostics = ARGV
 commands = []
 app_driver = false
@@ -205,54 +234,58 @@ run_simulator_stage() {
     fi
     return "$stage_status"
 }
-if run_simulator_stage terminate "$bundle_identifier"; then
-    :
-else
-    terminate_status=$?
-    # An app that is not running needs no termination; timeouts still stop setup.
-    if (( terminate_status == 124 || terminate_status == 130 || terminate_status == 143 )); then
-        exit "$terminate_status"
+if (( selection_count == 0 )); then
+    if run_simulator_stage terminate "$bundle_identifier"; then
+        :
+    else
+        terminate_status=$?
+        # An app that is not running needs no termination; timeouts still stop setup.
+        if (( terminate_status == 124 || terminate_status == 130 || terminate_status == 143 )); then
+            exit "$terminate_status"
+        fi
     fi
-fi
-run_simulator_stage install "$app_path" || exit $?
-if [[ -n "$ui_test" || -n "$unit_test" ]]; then
-    print "Prepared Snip Snap iOS Dev $slot for testing"
-else
+    run_simulator_stage install "$app_path" || exit $?
     run_simulator_stage launch "$bundle_identifier" || exit $?
     print "Opened Snip Snap iOS Dev $slot"
+else
+    print "Testing Snip Snap iOS Dev $slot"
 fi
 print "Simulator: $simulator_id"
 print "Bundle: $bundle_identifier"
 print "App: $app_path"
 print "App group: group.$bundle_identifier"
-if [[ -n "$ui_test" || -n "$unit_test" ]]; then
+if [[ -n "$ui_test" || -n "$ui_group" || -n "$unit_test" ]]; then
     test_arguments=(-collect-test-diagnostics "$test_diagnostics")
-    if [[ -n "$ui_test" ]]; then
-        test_scope="SnipSnapiOSUITests"
-        if [[ "$ui_test" != all ]]; then
-            test_scope+="/SnipSnapiOSUITests/$ui_test"
-        fi
+    test_scopes=()
+    if (( ${#ui_methods} )); then
+        needs_share_fixture=NO
+        for method in "${ui_methods[@]}"; do
+            test_scope="SnipSnapiOSUITests"
+            [[ "$method" == all ]] || test_scope+="/SnipSnapiOSUITests/$method"
+            test_scopes+=("-only-testing:$test_scope")
+            case "$method" in
+                all|testShareExtension*|testSharePageShowsEveryListThenSaves)
+                    needs_share_fixture=YES ;;
+            esac
+        done
         test_kind="ui"
-        case "$ui_test" in
-            all|testShareExtension*|testSharePageShowsEveryListThenSaves)
-                share_fixture_start "$derived_data" "$script_dir/local-share-fixture.py" "Snip Snap iOS Dev $slot" || exit $?
-                ;;
-        esac
+        if [[ "$needs_share_fixture" == YES ]]; then
+            share_fixture_start "$derived_data" "$script_dir/local-share-fixture.py" "Snip Snap iOS Dev $slot" || exit $?
+        fi
     else
         test_scope="SnipSnapiOSTests"
-        if [[ "$unit_test" != all ]]; then
-            test_scope+="/$unit_test"
-        fi
+        [[ "$unit_test" == all ]] || test_scope+="/$unit_test"
+        test_scopes+=("-only-testing:$test_scope")
         test_kind="unit"
     fi
     TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL="$share_fixture_url" \
     run_owned_command 0 xcodebuild "${build_arguments[@]}" \
         "${test_arguments[@]}" \
         -parallel-testing-enabled NO \
-        "-only-testing:$test_scope" \
+        "${test_scopes[@]}" \
         "$test_action" > "${build_log:r}-$test_kind-test.log" 2>&1 || {
             /usr/bin/tail -n 80 "${build_log:r}-$test_kind-test.log"
             exit 1
         }
-    print "Test passed: $test_scope"
+    print "Tests passed: ${test_scopes[*]}"
 fi

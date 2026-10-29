@@ -56,6 +56,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/cloud-dev-run-tests.sh"
     "$script_dir/ios-target-policy-tests.sh"
     "$script_dir/localization-policy-tests.sh"
+    "$script_dir/ios-test-selection-tests.sh"
     "$script_dir/ios-simulator-policy-tests.sh"
 
     swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"

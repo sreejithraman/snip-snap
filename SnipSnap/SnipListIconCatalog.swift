@@ -440,6 +440,11 @@ struct ListIconSearchField: View {
         .padding(.vertical, 10)
 #else
         .frame(minHeight: 44)
+        .contentShape(Capsule())
+        .simultaneousGesture(TapGesture().onEnded {
+            if let focus { focus.wrappedValue = .iconSearch }
+            else { isFocused = true }
+        })
 #endif
     }
 

@@ -153,7 +153,8 @@ struct CompactLibraryControls: View {
         .photosPicker(
             isPresented: $isPickingPhotos,
             selection: $selectedPhotos,
-            matching: .images
+            matching: .images,
+            preferredItemEncoding: .current
         )
         .onChange(of: selectedPhotos) { _, items in
             guard !items.isEmpty else { return }

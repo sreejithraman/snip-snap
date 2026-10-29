@@ -368,6 +368,7 @@ struct SnipCollectionView: View {
             .onMove(perform: move)
         }
         .listStyle(.plain)
+        .accessibilityIdentifier("snip-list-\(displayedListID.uuidString)")
         .environment(\.attachmentPreparationIsActive, isActivePage && !isSearching)
         .environment(\.editMode, .constant(isReordering ? .active : .inactive))
         .scrollDismissesKeyboard(.interactively)

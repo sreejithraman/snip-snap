@@ -206,6 +206,30 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         XCTAssertEqual(pasteboard.writes, [[.text("Current state")]])
     }
 
+    func testCopyFeedbackKeepsItsFullLifetimeAfterWritingPasteboard() async throws {
+        let snip = Snip(content: "Copy feedback", origin: .quickEntry, pinnedAt: Date())
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        var writeFinishedAt: ContinuousClock.Instant?
+        pasteboard.onNextWrite = { writeFinishedAt = ContinuousClock().now }
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let copied = await coordinator.copyText(snips: [snip], model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.writes, [[.text("Copy feedback")]])
+        let finishedAt = try XCTUnwrap(writeFinishedAt)
+        let toast = try XCTUnwrap(model.toast)
+        XCTAssertEqual(toast.message, "Copied Text")
+        XCTAssertNil(toast.action)
+        XCTAssertEqual(toast.duration, .seconds(4))
+        XCTAssertGreaterThanOrEqual(
+            toast.expiresAt, finishedAt.advanced(by: toast.duration),
+            "Pasteboard work must not consume the copy feedback's visible lifetime."
+        )
+    }
+
     func testCopyUsesCurrentContentInsteadOfViewSnapshot() async throws {
         let original = Snip(content: "Old content", origin: .quickEntry)
         let model = IOSAppModel(library: ModelTestLibrary(snips: [original]))

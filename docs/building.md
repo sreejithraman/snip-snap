@@ -97,7 +97,10 @@ Select a booted Simulator and pass its ID:
 ./scripts/run.sh --ios-simulator --simulator-id <booted-simulator-id> --ui-test all
 ```
 
-Use a test method name instead of `all` to run one workflow. Both paths use this
+Use a test method name instead of `all` to run one workflow. For named smoke
+and feature groups, check selection, fixtures, and evidence guidance, see
+[iOS checks](ios-testing.md). Targeted checks support iteration; the full UI
+suite remains required for changed iOS workflows. Both paths use this
 worktree's Dev bundle ID, app name, data store, and badge. The runner starts and
 cleans up the local Share fixture for the full suite and related focused tests;
 these checks use Python 3 to serve the loopback page. Each run binds its own
