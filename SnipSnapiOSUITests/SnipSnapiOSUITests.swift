@@ -1491,14 +1491,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         let keyboard = app.keyboards.firstMatch
         let layoutReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard keyboard.exists, app.frame.contains(keyboard.frame),
-                  send.isHittable, app.frame.contains(send.frame) else { return false }
+                  self.hasVisibleTouchTarget(send, in: app),
+                  app.frame.contains(send.frame) else { return false }
             return send.frame.maxY <= keyboard.frame.minY
         }, object: nil)
         let ready = XCTWaiter.wait(for: [layoutReady], timeout: 3)
         if ready != .completed { attachUIState("Composer before Send morph", in: app) }
         XCTAssertEqual(ready, .completed)
         let initialSendFrame = send.frame
-        send.press(forDuration: 1)
+        try visibleTouchCenter(of: send, in: app).press(forDuration: 1)
         let picker = app.descendants(matching: .any)["composer-send-picker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 3))
         XCTAssertLessThan(picker.frame.width, 240, "Short list names should use a compact menu.")
@@ -1542,7 +1543,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         collapsedProof.name = "Send button before morph"
         collapsedProof.lifetime = .keepAlways
         add(collapsedProof)
-        send.press(forDuration: 1)
+        try visibleTouchCenter(of: send, in: app).press(forDuration: 1)
         XCTAssertTrue(destination.waitForExistence(timeout: 3))
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Long press Send list destinations"
