@@ -4007,12 +4007,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         proof.name = "Four icon actions in the gathered container"
         proof.lifetime = .keepAlways
         add(proof)
+        let copyIsHittableBeforeCopy = app.buttons["copy-selection"].isHittable
+        let deleteIsHittableBeforeCopy = app.buttons["delete-selection"].isHittable
+        let nativeHitPoints = XCTAttachment(string:
+            "Before Copy: Copy.isHittable=\(copyIsHittableBeforeCopy), Delete.isHittable=\(deleteIsHittableBeforeCopy)"
+        )
+        nativeHitPoints.name = "Gathered action native hit-point availability"
+        nativeHitPoints.lifetime = .keepAlways
+        add(nativeHitPoints)
         try visibleTouchCenter(of: app.buttons["copy-selection"], in: app).tap()
         assertCopyStatus("Copied 2 snips", in: app)
         let delete = app.buttons["delete-selection"]
         let deleteIsHittable = delete.isHittable
         if !deleteIsHittable { attachUIState("Gathered actions after copy confirmation", in: app) }
-        XCTAssertTrue(deleteIsHittable)
         XCTAssertTrue(hasVisibleTouchTarget(delete, in: app))
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertFalse(toast.frame.intersects(delete.frame), "The copy confirmation must leave gathered actions clear.")
@@ -4030,6 +4037,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["library-actions"].waitForExistence(timeout: 5))
         XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
         XCTAssertFalse(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        XCTAssertTrue(deleteIsHittable, "The original post-copy native hit-point assertion remains required.")
     }
 
     func testGatheredContainerExpandsInlineAndCollapses() throws {
