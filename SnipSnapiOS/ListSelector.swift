@@ -116,17 +116,11 @@ struct ListSelector: View {
             }
             .onChange(of: gestureIsActive) { _, active in
                 guard !active else { return }
-#if DEBUG
-                traceSelectorGesture("gesture-state-reset")
-#endif
                 Task { @MainActor in
                     // onEnded and GestureState reset may arrive in either order.
                     await Task.yield()
                     guard !gestureIsActive else { return }
                     motion.cancelDrag(reduceMotion: reduceMotion, at: Date())
-#if DEBUG
-                    traceSelectorGesture("cancel-drag-complete")
-#endif
                 }
             }
 
@@ -281,11 +275,6 @@ struct ListSelector: View {
                 state = true
             }
             .onChanged { value in
-#if DEBUG
-                if !motion.isSelectorDragging {
-                    traceSelectorGesture("claim start=\(value.startLocation) translation=\(value.translation)")
-                }
-#endif
                 guard !model.isManagingLists, !presentingCreation, sheet == nil else { return }
                 motion.updateDrag(
                     translation: value.translation,
@@ -298,9 +287,6 @@ struct ListSelector: View {
                 )
             }
             .onEnded { value in
-#if DEBUG
-                traceSelectorGesture("release start=\(value.startLocation) translation=\(value.translation)")
-#endif
                 guard !model.isManagingLists, !presentingCreation, sheet == nil else {
                     motion.interrupt()
                     return
@@ -320,18 +306,8 @@ struct ListSelector: View {
                 case nil:
                     break
                 }
-#if DEBUG
-                traceSelectorGesture("release-complete")
-#endif
             }
     }
-
-#if DEBUG
-    private func traceSelectorGesture(_ stage: String) {
-        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_GESTURE_DIAGNOSTICS"] == "1" else { return }
-        print("[DEBUG-r43-selector] pid=\(ProcessInfo.processInfo.processIdentifier) uptime=\(ProcessInfo.processInfo.systemUptime) stage=\(stage) selected=\(model.selectedPage) dragging=\(motion.isSelectorDragging) distance=\(motion.dragDistance)")
-    }
-#endif
 
     private var edgeFade: some View {
         LinearGradient(stops: [
