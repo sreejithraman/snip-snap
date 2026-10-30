@@ -107,9 +107,10 @@ struct GatheredSnipsDock: View {
         VStack(alignment: .leading, spacing: snips.isEmpty ? 12 : cardGap) {
             containerControls
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { headerFrame = $0 }
+                .zIndex(2)
             stack
                 .zIndex(1)
-            if !usesCompactControls { actionRow }
+            if !usesCompactControls { actionRow.zIndex(2) }
         }
         .padding(containerPadding)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 26))
