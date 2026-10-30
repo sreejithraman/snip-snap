@@ -1457,7 +1457,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         editor.typeText(" unsaved")
         let text = "Copy mixed fixture unsaved"
         XCTAssertEqual(editor.value as? String, text)
-        try focusWithOnscreenKeyboard(editor, in: app)
+        try ensureOnscreenKeyboard(for: editor, in: app)
         XCTAssertEqual(editor.value as? String, text)
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
@@ -1494,7 +1494,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         composer.tap()
         composer.typeText("Sent to Work from Inbox")
 
-        try focusWithOnscreenKeyboard(composer, in: app)
+        try ensureOnscreenKeyboard(for: composer, in: app)
         let send = app.buttons["composer-send"]
         let keyboard = app.keyboards.firstMatch
         let layoutReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -2901,7 +2901,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.frame.contains(search.frame))
         search.tap()
         search.typeText("star")
-        try focusWithOnscreenKeyboard(search, in: app)
+        try ensureOnscreenKeyboard(for: search, in: app)
         XCTAssertTrue(app.keyboards.firstMatch.exists)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
         let focusedState = try app.snapshot()
@@ -3795,8 +3795,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let doneFilter = app.buttons.matching(NSPredicate(format: "label == %@", "Done")).element
         XCTAssertTrue(doneFilter.waitForExistence(timeout: 3))
         doneFilter.tap()
-        XCTAssertTrue(collectionRow(named: "Copy text fixture", in: app).waitForExistence(timeout: 3))
-        XCTAssertFalse(collectionRow(named: "Copy mixed fixture", in: app).exists)
+        XCTAssertTrue(doneFilter.waitForNonExistence(timeout: 3),
+                      "Choosing Done must dismiss the View options menu.")
+        let filteredContents = selectedListContents(in: app)
+        XCTAssertTrue(collectionRow(named: "Copy text fixture", in: filteredContents).waitForExistence(timeout: 3))
+        XCTAssertFalse(collectionRow(named: "Copy mixed fixture", in: filteredContents).exists)
 
     }
 
@@ -4930,8 +4933,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         return !visible.isNull && !visible.isEmpty
     }
 
-    private func focusWithOnscreenKeyboard(
-        _ element: XCUIElement,
+    private func ensureOnscreenKeyboard(
+        for element: XCUIElement,
         in app: XCUIApplication,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -4945,22 +4948,18 @@ final class SnipSnapiOSUITests: XCTestCase {
             of: element, clippedTo: inputBounds, in: app, file: file, line: line
         ).tap()
         let identifier = element.identifier
-        var lastObservation = "No focused input snapshot was captured."
+        var lastObservation = "No input and keyboard snapshot was captured."
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard let state = try? app.snapshot() else { return false }
             let inputs = self.matchingSnapshots(identifiedBy: identifier, in: state)
             let keyboard = self.keyboardObservation(in: state)
-            let focused = inputs.contains { self.containsFocus(in: $0) }
-            lastObservation = "input=\(identifier), focused=\(focused), app=\(state.frame), keyboard=\(keyboard)"
-            return focused && keyboard.visibleFrame != nil
+            let inputVisible = inputs.contains { $0.isEnabled && !$0.frame.isEmpty && state.frame.intersects($0.frame) }
+            lastObservation = "input=\(identifier), visible=\(inputVisible), app=\(state.frame), keyboard=\(keyboard)"
+            return inputVisible && keyboard.visibleFrame != nil
         }, object: nil)
         let ready = XCTWaiter.wait(for: [visible], timeout: 3)
         if ready != .completed { attachUIState("Keyboard after focusing input", in: app) }
         XCTAssertEqual(ready, .completed, lastObservation, file: file, line: line)
-    }
-
-    private func containsFocus(in state: any XCUIElementSnapshot) -> Bool {
-        state.hasFocus || state.children.contains { containsFocus(in: $0) }
     }
 
     private struct KeyboardObservation {
