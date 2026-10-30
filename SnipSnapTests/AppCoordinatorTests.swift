@@ -540,7 +540,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let copiedLabel = String(localized: "Error details copied")
         let firstCopyButton = try await accessibility.button(identifier: "copy-error-details", label: copyLabel)
 
-        XCTAssertTrue(accessibility.press(firstCopyButton))
+        XCTContext.runActivity(named: "Copy details for the first incident") { _ in
+            XCTAssertTrue(accessibility.press(firstCopyButton))
+        }
         _ = try await accessibility.button(identifier: "copy-error-details", label: copiedLabel)
         copiedRevision = pasteboard.changeCount
         let firstReport = try XCTUnwrap(pasteboard.string(forType: .string))
@@ -556,7 +558,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertTrue(errorWindow.contentViewController === mountedController)
         let replacementCopyButton = try await accessibility.button(identifier: "copy-error-details", label: copyLabel)
         XCTAssertEqual(pasteboard.string(forType: .string), firstReport)
-        XCTAssertTrue(accessibility.press(replacementCopyButton))
+        XCTContext.runActivity(named: "Copy details for the replacement incident") { _ in
+            XCTAssertTrue(accessibility.press(replacementCopyButton))
+        }
         _ = try await accessibility.button(identifier: "copy-error-details", label: copiedLabel)
         copiedRevision = pasteboard.changeCount
         let replacementReport = try XCTUnwrap(pasteboard.string(forType: .string))

@@ -659,15 +659,19 @@ final class AppModelTests: StoreBackedTestCase {
         model.selectSnip(ids[1], modifiers: .command)
         let selectedState = model.selectionState
         let commands = SnipCommandDispatcher(model: model)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-targeted-commands-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        let expectedCopy = try XCTUnwrap(model.snips.first { $0.id == ids[3] }).content
 
-        await commands.performNow(.edit, on: [ids[3]])
+        await commands.performNow(.edit, on: [ids[3]], to: pasteboard)
         XCTAssertEqual(model.editingID, ids[3])
         XCTAssertEqual(model.selectionState, selectedState)
         model.editingID = nil
-        await commands.performNow(.toggleDone, on: [ids[3]])
+        await commands.performNow(.toggleDone, on: [ids[3]], to: pasteboard)
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == ids[3] }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), expectedCopy)
         XCTAssertEqual(model.selectionState, selectedState)
-        await commands.performNow(.delete, on: [ids[3]])
+        await commands.performNow(.delete, on: [ids[3]], to: pasteboard)
         XCTAssertFalse(model.snips.contains { $0.id == ids[3] })
         XCTAssertEqual(model.selectionState, selectedState)
 
@@ -678,6 +682,20 @@ final class AppModelTests: StoreBackedTestCase {
         model.selectSnip(ids[1], modifiers: [])
         XCTAssertTrue(model.selection.isEmpty)
         XCTAssertNil(model.selectionState.anchor)
+    }
+
+    @MainActor
+    func testTargetedCopyUsesTheRequestedPasteboard() async throws {
+        let snip = Snip(content: "Copy to this command's clipboard", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-targeted-copy-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+
+        await SnipCommandDispatcher(model: model).performNow(.copy, on: [snip.id], to: pasteboard)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), snip.content)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
     }
 
     @MainActor

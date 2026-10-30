@@ -1449,7 +1449,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "search-snip-", "Copy mixed fixture"
         )).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 3))
-        try visibleTouchCenter(of: result, in: app).doubleTap()
+        try visibleSearchResultTouchCenter(identifiedBy: result.identifier, in: app).doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         try visibleTouchCenter(of: app.buttons["remove-attachment-sample.png"], in: app).tap()
@@ -4889,6 +4889,43 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     // Synthetic SwiftUI accessibility containers can lack an AX hit point even when touch works.
+    private func visibleSearchResultTouchCenter(
+        identifiedBy identifier: String, in app: XCUIApplication
+    ) throws -> XCUICoordinate {
+        var point: CGVector?
+        var observations: [String] = []
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let began = ContinuousClock.now
+            guard let state = try? app.snapshot() else {
+                observations.append("Snapshot unavailable after \(began.duration(to: ContinuousClock.now)).")
+                return false
+            }
+            let owners = self.matchingSnapshots(identifiedBy: "global-search-results", in: state)
+            guard owners.count == 1, let owner = owners.first, owner.isEnabled else {
+                observations.append("Search owners=\(owners.count), elapsed=\(began.duration(to: ContinuousClock.now)).")
+                return false
+            }
+            let targets = self.matchingSnapshots(identifiedBy: identifier, in: owner)
+            guard targets.count == 1, let target = targets.first else {
+                observations.append("Target matches=\(targets.count), elapsed=\(began.duration(to: ContinuousClock.now)).")
+                return false
+            }
+            let visible = target.frame.intersection(owner.frame).intersection(state.frame)
+            observations.append("enabled=\(target.isEnabled), target=\(target.frame), visible=\(visible), elapsed=\(began.duration(to: ContinuousClock.now)).")
+            guard target.isEnabled, !visible.isNull, !visible.isEmpty else { return false }
+            point = CGVector(dx: visible.midX - state.frame.minX, dy: visible.midY - state.frame.minY)
+            return true
+        }, object: nil)
+        let outcome = XCTWaiter.wait(for: [ready], timeout: 5)
+        let evidence = XCTAttachment(string: observations.joined(separator: "\n"))
+        evidence.name = "Search result snapshot readiness"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+        if outcome != .completed { attachUIState("Search result before editing", in: app) }
+        XCTAssertEqual(outcome, .completed, "The search-owned result must be enabled and visible.")
+        return app.coordinate(withNormalizedOffset: .zero).withOffset(try XCTUnwrap(point))
+    }
+
     private func visibleTouchCenter(
         of element: XCUIElement,
         clippedTo bounds: CGRect? = nil,
