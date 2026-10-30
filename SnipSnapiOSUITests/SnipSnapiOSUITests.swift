@@ -4145,9 +4145,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(app.buttons["finish-selecting"].frame.midY, emptyHeaderY, accuracy: 1)
         try visibleTouchCenter(of: row(named: "Try the stack interaction on iPhone", in: app), in: app).tap()
         let stack = app.buttons["gathered-stack"]
-        let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")).firstMatch
+        let putBackIdentifier = app.buttons.matching(
+            NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")
+        ).firstMatch.identifier
+        XCTAssertTrue(putBackIdentifier.hasPrefix("put-back-"))
+        let putBack = app.buttons[putBackIdentifier]
         XCTAssertTrue(hasVisibleTouchTarget(putBack, within: preview, in: app))
-        let contentIdentifier = putBack.identifier.replacingOccurrences(of: "put-back-", with: "selected-card-content-")
+        let contentIdentifier = putBackIdentifier.replacingOccurrences(of: "put-back-", with: "selected-card-content-")
         let cardContent = app.otherElements[contentIdentifier]
         XCTAssertTrue(cardContent.exists)
         let closedTextFrame = cardContent.frame
