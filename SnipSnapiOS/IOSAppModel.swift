@@ -86,7 +86,14 @@ final class IOSAppModel {
     private(set) var pendingImportPreview: SnipImportPreview?
     private var pendingImportPreviewID: UUID?
     private var backupImportOperationID: UUID?
-    var toast: AppToast?
+    var toast: AppToast? {
+        didSet {
+            guard toast?.action == .undoDone || toast?.action == .undoDelete,
+                  case .showErrorDetails(let id) = oldValue?.action,
+                  failure?.id == id else { return }
+            failureUsesInlineSurface = true
+        }
+    }
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
     private(set) var lastSelectedListID: UUID
