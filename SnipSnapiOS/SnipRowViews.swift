@@ -25,60 +25,64 @@ struct SnipRow: View {
     }
 
     var body: some View {
-        IOSItemRow(hasLeading: showsStatusIcon || isGathering) {
-            if isGathering {
-                SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
-                    .opacity(0.35)
-                    .accessibilityHidden(true)
-            } else if showsStatusIcon {
-                if snip.isPinned, let onCopy {
-                    SnipCopyControl(appearance: appearance, isPinned: true, action: onCopy)
-                    .accessibilityLabel("Copy Pinned Snip")
-                    .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
-                } else {
-                    Button {
-                        guard !isChangingCompletion else { return }
-                        isChangingCompletion = true
-                        Task { @MainActor in
-                            if let onToggleDone {
-                                _ = await onToggleDone()
-                            } else {
-                                _ = await model.toggleDone(id: snip.id)
+        SnipMarkdownContent(source: snip.content) { text in
+            IOSItemRow(hasLeading: showsStatusIcon || isGathering) {
+                if isGathering {
+                    SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
+                        .opacity(0.35)
+                        .accessibilityHidden(true)
+                } else if showsStatusIcon {
+                    if snip.isPinned, let onCopy {
+                        SnipCopyControl(appearance: appearance, isPinned: true, action: onCopy)
+                        .accessibilityLabel("Copy Pinned Snip")
+                        .accessibilityIdentifier("copy-pinned-snip-\(snip.id)")
+                    } else {
+                        Button {
+                            guard !isChangingCompletion else { return }
+                            isChangingCompletion = true
+                            Task { @MainActor in
+                                if let onToggleDone {
+                                    _ = await onToggleDone()
+                                } else {
+                                    _ = await model.toggleDone(id: snip.id)
+                                }
+                                isChangingCompletion = false
                             }
-                            isChangingCompletion = false
+                        } label: {
+                            SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
                         }
-                    } label: {
-                        SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
+                        .buttonStyle(.borderless)
+                        .disabled(isChangingCompletion)
+                        .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
+                        .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
+                        .accessibilityIdentifier("completion-\(snip.id)")
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(isChangingCompletion)
-                    .accessibilityLabel(SnipCompletionLanguage.menuActionTitle(isDone: snip.isDone))
-                    .accessibilityValue(SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
-                    .accessibilityIdentifier("completion-\(snip.id)")
                 }
+            } content: {
+                SnipContentView(
+                    snip: snip,
+                    text: text,
+                    model: model,
+                    isRecovered: isRecovered,
+                    allowsTextExpansion: allowsTextExpansion && !isReordering && !isGathering,
+                    onPreviewAttachment: onPreviewAttachment,
+                    showsPin: isGathering || !showsStatusIcon || onCopy == nil
+                )
             }
-        } content: {
-            SnipContentView(
-                snip: snip,
-                model: model,
-                isRecovered: isRecovered,
-                allowsTextExpansion: allowsTextExpansion && !isReordering && !isGathering,
-                onPreviewAttachment: onPreviewAttachment,
-                showsPin: isGathering || !showsStatusIcon || onCopy == nil
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
+            // Give the native reorder handle the snip's name.
+            .accessibilityElement(children: isReordering ? .ignore : (onPreviewAttachment == nil ? .combine : .contain))
+            .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip, text: text))
+            .accessibilityValue(
+                snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
             )
         }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
-        // Give the native reorder handle the snip's name.
-        .accessibilityElement(children: isReordering ? .ignore : (onPreviewAttachment == nil ? .combine : .contain))
-        .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip))
-        .accessibilityValue(
-            snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
-        )
     }
 }
 
 struct SnipContentView: View {
     let snip: Snip
+    let text: SnipTextContent
     let model: IOSAppModel
     let isRecovered: Bool
     var lineLimit: Int? = 3
@@ -87,11 +91,11 @@ struct SnipContentView: View {
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
     var showsPin = true
 
-    static func accessibilityLabel(for snip: Snip) -> String {
-        let text = snip.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func accessibilityLabel(for snip: Snip, text: SnipTextContent) -> String {
+        let content = text.accessibilityText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = snip.attachments.map(\.fileName).joined(separator: ", ")
         return [
-            text.isEmpty ? nil : text,
+            content.isEmpty ? nil : content,
             snip.origin == .agent
                 ? AgentSnipContextLanguage.accessibilityLabel(snip.agentContextLabel)
                 : nil,
@@ -109,7 +113,7 @@ struct SnipContentView: View {
         ItemRowContent {
             if hasVisibleText {
                 ItemRowText(
-                    text: snip.content,
+                    content: text,
                     lineLimit: lineLimit,
                     isDone: snip.isDone,
                     allowsExpansion: allowsTextExpansion,

@@ -270,7 +270,7 @@ struct ClipboardEntryRow: View {
         } main: {
             ItemRowContent {
                 ItemRowText(
-                    text: entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text,
+                    content: .literal(entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text),
                     accessibilityIdentifier: "clipboard-text-\(entry.id)"
                 )
             } previews: {
@@ -344,7 +344,7 @@ struct ClipboardEntryRow: View {
             content: PanelContentCard(alignment: .top) {
                 ItemRowContent {
                     ItemRowText(
-                        text: entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text,
+                        content: .literal(entry.text.isEmpty ? String(localized: "Clipboard item") : entry.text),
                         allowsExpansion: false
                     )
                 } previews: {

@@ -3,9 +3,42 @@ import SnipSnapCore
 import XCTest
 import Foundation
 import UniformTypeIdentifiers
+import SwiftUI
 @testable import SnipSnap
 
 final class SnipListModelsTests: XCTestCase {
+    @MainActor
+    func testSelectionDragPreviewUsesThePreparedSourceCardAndKeepsTheFullExport() async {
+        let first = Snip(content: "**Drag First**", origin: .quickEntry)
+        let second = Snip(content: "# Drag Second", origin: .quickEntry)
+        let sources = [first, second]
+        let documents = sources.map { SnipMarkdownDocuments.shared.acquire($0.content) }
+        for document in documents { await document.prepare() }
+        defer { withExtendedLifetime(documents) {} }
+        SnipMarkdownDocuments.shared.clearWarmCache()
+        let payload = SnipDragPayload.make(snips: sources)
+        XCTAssertTrue(SnipMarkdown.snapshot(for: payload.text).isLoading)
+
+        let context = PanelDragSourceContext(
+            scale: 1, colorScheme: .light,
+            sourceFrame: NSRect(x: 0, y: 0, width: 320, height: 160)
+        )
+        for (source, expected) in [(first, "Drag First"), (second, "Drag Second")] {
+            let preview = SnipDragPreview(payload: payload, source: source)
+            XCTAssertFalse(preview.text.isLoading)
+            XCTAssertEqual(preview.text.accessibilityText, expected)
+            XCTAssertEqual(preview.text.source, source.content)
+            let image = preview.image(in: context)
+            XCTAssertEqual(image.size, context.sourceFrame.size)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Prepared multi-snip drag preview: \(expected)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(payload.ids, [first.id, second.id])
+        XCTAssertEqual(payload.text, "**Drag First**\n\n---\n\n# Drag Second")
+    }
+
     func testAttachmentPreviewPreservesSnipMetadata() throws {
         let id = UUID()
         let attachment = try JSONDecoder().decode(

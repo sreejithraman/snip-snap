@@ -6,7 +6,7 @@ owns the commands, prerequisites, optional signing, and device setup.
 ## Checks and app access
 
 - For contributor builds and tests, follow [Build and test](../building.md#build-and-test).
-  That section also owns the full Dev-app UI suite for changed iOS workflows.
+  That section also owns iOS UI-check selection and cadence.
 - For optional Cloud Dev or physical-device checks, follow
   [Cloud Dev and physical-device builds](../building.md#cloud-dev-and-physical-device-builds).
 - For release acceptance, use the [release checklist](../release-checklist.md).
