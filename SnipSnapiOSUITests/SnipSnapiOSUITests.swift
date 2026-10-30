@@ -1153,7 +1153,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             "The shared snip also appeared in Inbox."
         )
         revealCompactList(named: work, in: app, scrollLimit: sharedLibraryScrollLimit)
-        tapVisibleSelectorTab(listControl(named: work, in: app), in: app)
+        if !workList.isSelected { tapVisibleSelectorTab(workList, in: app) }
         XCTAssertTrue(
             saved.waitForExistence(timeout: 10),
             "The shared snip was unavailable after returning to \(work): \(app.debugDescription)"
@@ -2904,7 +2904,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         try focusWithOnscreenKeyboard(search, in: app)
         XCTAssertTrue(app.keyboards.firstMatch.exists)
         XCTAssertTrue(app.buttons["save-list"].isHittable)
-        XCTAssertLessThanOrEqual(app.buttons["save-list"].frame.maxY, app.keyboards.firstMatch.frame.minY)
+        let focusedState = try app.snapshot()
+        let keyboard = try XCTUnwrap(keyboardObservation(in: focusedState).visibleFrame)
+        let saveFooter = try XCTUnwrap(matchingSnapshots(identifiedBy: "save-list", in: focusedState)
+            .first { $0.elementType == .button })
+        XCTAssertTrue(focusedState.frame.contains(saveFooter.frame))
+        XCTAssertLessThanOrEqual(saveFooter.frame.maxY, keyboard.minY)
+        attachUIState("Landscape icon search with Save above the keyboard", in: app)
         search.typeText("\n")
         XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "star")
@@ -4931,22 +4937,65 @@ final class SnipSnapiOSUITests: XCTestCase {
         line: UInt = #line
     ) throws {
         // XCTest text entry can leave the software keyboard offscreen until the next touch.
-        let keyboard = app.keyboards.firstMatch
         var inputBounds = app.frame
-        if keyboard.exists, keyboard.frame.intersects(inputBounds) {
-            inputBounds.size.height = max(0, keyboard.frame.minY - inputBounds.minY)
+        if let state = try? app.snapshot(), let keyboard = keyboardObservation(in: state).visibleFrame {
+            inputBounds.size.height = max(0, keyboard.minY - inputBounds.minY)
         }
         try visibleTouchCenter(
             of: element, clippedTo: inputBounds, in: app, file: file, line: line
         ).tap()
+        let identifier = element.identifier
+        var lastObservation = "No focused input snapshot was captured."
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            guard keyboard.exists else { return false }
-            let frame = keyboard.frame
-            return !frame.isEmpty && app.frame.contains(frame)
+            guard let state = try? app.snapshot() else { return false }
+            let inputs = self.matchingSnapshots(identifiedBy: identifier, in: state)
+            let keyboard = self.keyboardObservation(in: state)
+            let focused = inputs.contains { self.containsFocus(in: $0) }
+            lastObservation = "input=\(identifier), focused=\(focused), app=\(state.frame), keyboard=\(keyboard)"
+            return focused && keyboard.visibleFrame != nil
         }, object: nil)
         let ready = XCTWaiter.wait(for: [visible], timeout: 3)
         if ready != .completed { attachUIState("Keyboard after focusing input", in: app) }
-        XCTAssertEqual(ready, .completed, file: file, line: line)
+        XCTAssertEqual(ready, .completed, lastObservation, file: file, line: line)
+    }
+
+    private func containsFocus(in state: any XCUIElementSnapshot) -> Bool {
+        state.hasFocus || state.children.contains { containsFocus(in: $0) }
+    }
+
+    private struct KeyboardObservation {
+        let rawFrames: [CGRect]
+        let visibleFrame: CGRect?
+    }
+
+    private func keyboardObservation(in state: any XCUIElementSnapshot) -> KeyboardObservation {
+        func frames(in node: any XCUIElementSnapshot) -> [CGRect] {
+            (node.elementType == .keyboard ? [node.frame] : []) + node.children.flatMap { frames(in: $0) }
+        }
+        let rawFrames = frames(in: state)
+        let bounds = state.frame
+        let visibleFrames = rawFrames.compactMap { frame -> CGRect? in
+            guard !frame.isEmpty else { return nil }
+            if bounds.contains(frame) { return frame }
+            // XCTest sometimes reports a landscape keyboard in portrait screen coordinates.
+            let portraitBounds = CGRect(origin: bounds.origin, size: CGSize(width: bounds.height, height: bounds.width))
+            guard bounds.width > bounds.height, portraitBounds.contains(frame) else { return nil }
+            let local = frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+            let rotated: CGRect
+            switch XCUIDevice.shared.orientation {
+            case .landscapeLeft:
+                rotated = CGRect(x: local.minY, y: bounds.height - local.maxX,
+                                 width: local.height, height: local.width)
+            case .landscapeRight:
+                rotated = CGRect(x: bounds.width - local.maxY, y: local.minX,
+                                 width: local.height, height: local.width)
+            default:
+                return nil
+            }
+            let normalized = rotated.offsetBy(dx: bounds.minX, dy: bounds.minY)
+            return bounds.contains(normalized) ? normalized : nil
+        }
+        return KeyboardObservation(rawFrames: rawFrames, visibleFrame: visibleFrames.count == 1 ? visibleFrames[0] : nil)
     }
 
     private func waitForHittable(
@@ -4972,6 +5021,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        if tab.exists, tab.isSelected { return }
+        guard !app.descendants(matching: .any)["list-management-panel"].exists,
+              !app.textFields["list-name"].exists else {
+            XCTFail("Selecting a list must not tap through a manager or list editor.", file: file, line: line)
+            return
+        }
         let selector = app.descendants(matching: .any)["list-selector"]
         guard selector.exists else {
             waitForHittable(tab, file: file, line: line)
@@ -5139,18 +5194,57 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     /// Scroll-to-visible fails once a tab sits far outside the compact strip.
     private func revealCompactList(named name: String, in app: XCUIApplication, scrollLimit: Int = 24) {
-        let tab = compactListTab(named: name, in: app)
-        let selector = app.descendants(matching: .any)["list-selector"]
-        guard selector.exists else { return }
-        for _ in 0..<scrollLimit {
-            guard tab.exists, tab.frame.width > 1 else { return }
-            let frame = tab.frame
-            if frame.minX >= 4, frame.maxX <= app.frame.width - 4 { return }
-            let towardRight = frame.minX < 0
-            let start = selector.coordinate(
-                withNormalizedOffset: CGVector(dx: towardRight ? 0.08 : 0.92, dy: 0.5)
-            )
-            let dx = (towardRight ? 1 : -1) * selector.frame.width * 0.8
+        guard app.descendants(matching: .any)["list-selector"].exists else { return }
+        var previousFrame: CGRect?
+        for gesture in 0...scrollLimit {
+            guard let state = try? app.snapshot() else {
+                XCTFail("The selector snapshot was unavailable.")
+                return
+            }
+            let manager = matchingSnapshots(identifiedBy: "list-management-panel", in: state)
+                .filter { $0.isEnabled && $0.frame.intersects(state.frame) }
+            let editor = matchingSnapshots(identifiedBy: "list-name", in: state)
+                .filter { $0.isEnabled && $0.frame.intersects(state.frame) }
+            let selectors = matchingSnapshots(identifiedBy: "list-selector", in: state)
+            guard manager.isEmpty, editor.isEmpty, selectors.count == 1,
+                  let selector = selectors.first, selector.isEnabled else {
+                attachUIState("Selector ownership changed during reveal", in: app)
+                XCTFail("List reveal must stop when a manager or editor replaces the selector.")
+                return
+            }
+            func tabs(in node: any XCUIElementSnapshot) -> [any XCUIElementSnapshot] {
+                (node.identifier.hasPrefix("list-tab-") || node.identifier == "clipboard-tab" ? [node] : [])
+                    + node.children.flatMap { tabs(in: $0) }
+            }
+            let capturedTabs = tabs(in: selector)
+            let targets = capturedTabs.filter { $0.label == name }
+            let owners = capturedTabs.filter(\.isSelected)
+            guard targets.count == 1, let target = targets.first, !target.frame.isEmpty,
+                  owners.count == 1 else {
+                attachUIState("Ambiguous selector during reveal", in: app)
+                XCTFail("Reveal needs one destination and one selected owner in the same snapshot.")
+                return
+            }
+            let clip = selector.frame.intersection(state.frame).insetBy(dx: 4, dy: 4)
+            guard !clip.isEmpty, !clip.isNull else {
+                XCTFail("The selector must have a visible gesture area.")
+                return
+            }
+            let frame = target.frame
+            if frame.minX >= clip.minX, frame.maxX <= clip.maxX,
+               frame.intersection(clip).height >= 32 { return }
+            guard gesture < scrollLimit, frame != previousFrame else {
+                attachUIState("List reveal stopped making progress", in: app)
+                XCTFail("The destination must become fully visible within the catalog-sized gesture budget.")
+                return
+            }
+            previousFrame = frame
+            let towardRight = frame.minX < clip.minX
+            let startX = towardRight ? clip.minX + clip.width * 0.08 : clip.maxX - clip.width * 0.08
+            let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: startX - state.frame.minX, dy: clip.midY - state.frame.minY
+            ))
+            let dx = (towardRight ? 1 : -1) * clip.width * 0.8
             start.press(
                 forDuration: 0.02,
                 thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0))
@@ -5206,13 +5300,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         if let color { app.buttons["list-color-\(color)"].tap() }
         let save = app.buttons["save-list"]
         if save.exists, save.isEnabled, !save.frame.isEmpty, app.frame.intersects(save.frame) {
-            func keyboardFrame(in state: any XCUIElementSnapshot) -> CGRect? {
-                if state.elementType == .keyboard { return state.frame }
-                for child in state.children {
-                    if let frame = keyboardFrame(in: child) { return frame }
-                }
-                return nil
-            }
             var savePoint: CGVector?
             var lastObservation = "No footer snapshot was captured."
             let footerReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -5227,9 +5314,10 @@ final class SnipSnapiOSUITests: XCTestCase {
                     return false
                 }
                 let frame = button.frame
-                let keyboard = keyboardFrame(in: state)
-                let isAboveKeyboard = keyboard.map { frame.maxY <= $0.minY } ?? true
-                lastObservation = "app=\(state.frame), save=\(frame), enabled=\(button.isEnabled), keyboard=\(String(describing: keyboard))"
+                let keyboard = self.keyboardObservation(in: state)
+                let isAboveKeyboard = keyboard.visibleFrame.map { frame.maxY <= $0.minY }
+                    ?? keyboard.rawFrames.isEmpty
+                lastObservation = "app=\(state.frame), save=\(frame), enabled=\(button.isEnabled), keyboard=\(keyboard)"
                 guard button.isEnabled, !frame.isEmpty, state.frame.contains(frame), isAboveKeyboard else { return false }
                 savePoint = CGVector(dx: frame.midX - state.frame.minX, dy: frame.midY - state.frame.minY)
                 return true

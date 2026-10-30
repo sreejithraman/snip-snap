@@ -214,7 +214,23 @@ extension AppFeedbackTests {
         let settings = await XCTWaiter.fulfillment(of: [settingsMounted], timeout: 3)
         XCTAssertEqual(settings, .completed)
         guard settings == .completed else { return }
+        let visibleBy = ContinuousClock().now.advanced(by: .seconds(3))
+        while ContinuousClock().now < visibleBy {
+            if let presented = controller.presentedViewController,
+               presented.viewIfLoaded?.window === window,
+               !presented.isBeingPresented,
+               presented.transitionCoordinator == nil {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let presented = try XCTUnwrap(controller.presentedViewController)
+        XCTAssertTrue(presented.viewIfLoaded?.window === window)
+        XCTAssertFalse(presented.isBeingPresented)
+        XCTAssertNil(presented.transitionCoordinator,
+                     "Settings must finish presenting before inspecting the toast")
         XCTAssertEqual(try XCTUnwrap(state.toast).id, toast.id)
+        window.layoutIfNeeded()
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
