@@ -241,10 +241,25 @@ private struct AppToastPresenter: ViewModifier {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
-    @State private var pausedAt: ContinuousClock.Instant?
-    @State private var resumedDeadline: ContinuousClock.Instant?
+    @State private var interactionOwnerID = UUID()
+    @State private var observedLifetime: AppToastLifetime?
     @FocusState private var isActionFocused: Bool
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+
+    private struct PresentationInput: Equatable {
+        let lifetime: ObjectIdentifier?
+        let interactionPaused: Bool
+        let voiceOverEnabled: Bool
+    }
+
+    private struct TimerID: Equatable {
+        let toast: UUID?
+        let lifetime: ObjectIdentifier?
+        let deadline: ContinuousClock.Instant?
+        let isPaused: Bool
+        let isHidden: Bool
+        let usesFixedExpiry: Bool
+    }
 
     func body(content: Content) -> some View {
         Group {
@@ -260,33 +275,35 @@ private struct AppToastPresenter: ViewModifier {
             }
         }
         .animation(reduceMotion ? nil : .snappy, value: toast?.id)
-        .onChange(of: toast?.id, initial: true) { _, _ in
-            pausedAt = isTimerPaused ? ContinuousClock().now : nil
-            resumedDeadline = nil
-        }
-        .onChange(of: isTimerPaused) { _, isPaused in
-            guard let toast else { return }
-            let now = ContinuousClock().now
-            if isPaused {
-                pausedAt = now
-            } else if let pausedAt {
-                resumedDeadline = (resumedDeadline ?? toast.expiresAt)
-                    .advanced(by: pausedAt.duration(to: now))
-                self.pausedAt = nil
+        .onChange(of: presentationInput, initial: true) { _, input in
+            let lifetime = toast?.lifetime
+            if observedLifetime !== lifetime {
+                observedLifetime?.setInteractionPaused(false, owner: interactionOwnerID)
+                observedLifetime = lifetime
             }
+            lifetime?.setVoiceOverEnabled(input.voiceOverEnabled)
+            lifetime?.setInteractionPaused(input.interactionPaused, owner: interactionOwnerID)
+        }
+        .onDisappear {
+            observedLifetime?.setInteractionPaused(false, owner: interactionOwnerID)
+            observedLifetime = nil
         }
         .task(id: timerID) {
-            guard let toast, !isTimerPaused, !isHidden else { return }
+            guard let toast, !toast.lifetime.isPaused, !isHidden else { return }
             do {
                 if usesFixedExpiry {
-                    try await ContinuousClock().sleep(until: resumedDeadline ?? toast.expiresAt)
+                    try await ContinuousClock().sleep(until: toast.lifetime.deadline)
                 } else {
                     try await Task.sleep(for: toast.duration)
                 }
             } catch {
                 return
             }
-            guard self.toast?.id == toast.id else { return }
+            guard !Task.isCancelled,
+                  self.toast?.id == toast.id,
+                  self.toast?.lifetime === toast.lifetime,
+                  !isHidden, !toast.lifetime.isPaused,
+                  !usesFixedExpiry || toast.lifetime.canExpire() else { return }
             self.toast = nil
             onDismiss(toast)
         }
@@ -307,12 +324,23 @@ private struct AppToastPresenter: ViewModifier {
         }
     }
 
-    private var timerID: String {
-        "\(toast?.id.uuidString ?? "none")-\(isHovering)-\(isActionFocused)-\(isHidden)-\(voiceOverEnabled)"
+    private var presentationInput: PresentationInput {
+        PresentationInput(
+            lifetime: toast.map { ObjectIdentifier($0.lifetime) },
+            interactionPaused: !isHidden && (isHovering || isActionFocused),
+            voiceOverEnabled: voiceOverEnabled
+        )
     }
 
-    private var isTimerPaused: Bool {
-        isHovering || isActionFocused || (voiceOverEnabled && toast?.action != nil)
+    private var timerID: TimerID {
+        TimerID(
+            toast: toast?.id,
+            lifetime: toast.map { ObjectIdentifier($0.lifetime) },
+            deadline: toast?.lifetime.deadline,
+            isPaused: toast?.lifetime.isPaused ?? false,
+            isHidden: isHidden,
+            usesFixedExpiry: usesFixedExpiry
+        )
     }
 
     private func toastView(_ toast: AppToast) -> some View {
