@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 171
+
+## Mac
+
+- Render saved snips with compact Markdown
+
+## iOS
+
+- Render saved snips with compact Markdown
