@@ -1040,6 +1040,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         XCUIDevice.shared.appearance = .light
         let app = XCUIApplication()
+        app.launchEnvironment["SNIP_SNAP_UI_TEST_GESTURE_DIAGNOSTICS"] = "1"
         app.launch()
         shareAppName = app.label
         let suffix = String(UUID().uuidString.prefix(4))
@@ -5247,6 +5248,13 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func revealCompactList(named name: String, in app: XCUIApplication, scrollLimit: Int = 24) {
         guard app.descendants(matching: .any)["list-selector"].exists else { return }
         var previousFrame: CGRect?
+        var observations: [String] = []
+        defer {
+            let evidence = XCTAttachment(string: observations.joined(separator: "\n"))
+            evidence.name = "[DEBUG-r43-reveal] Selector observations"
+            evidence.lifetime = .keepAlways
+            add(evidence)
+        }
         for gesture in 0...scrollLimit {
             guard let state = try? app.snapshot() else {
                 XCTFail("The selector snapshot was unavailable.")
@@ -5282,9 +5290,20 @@ final class SnipSnapiOSUITests: XCTestCase {
                 return
             }
             let frame = target.frame
+            observations.append("uptime=\(ProcessInfo.processInfo.systemUptime) step=\(gesture)/\(scrollLimit) target=\(target.identifier) frame=\(frame) selector=\(selector.frame) app=\(state.frame) owner=\(owners[0].identifier) enabled=\(owners[0].isEnabled) manager=\(manager.count) editor=\(editor.count)")
             if frame.minX >= clip.minX, frame.maxX <= clip.maxX,
                frame.intersection(clip).height >= 32 { return }
             guard gesture < scrollLimit, frame != previousFrame else {
+                observations.append("failure budgetAvailable=\(gesture < scrollLimit) changedFrame=\(frame != previousFrame)")
+                let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    guard let next = try? app.snapshot() else { return false }
+                    let targets = self.matchingSnapshots(identifiedBy: target.identifier, in: next)
+                    let selectors = self.matchingSnapshots(identifiedBy: "list-selector", in: next)
+                    observations.append("observationOnly uptime=\(ProcessInfo.processInfo.systemUptime) targets=\(targets.map(\.frame)) selectors=\(selectors.map(\.frame))")
+                    return targets.count == 1 && targets[0].frame != frame
+                }, object: nil)
+                let movement = XCTWaiter.wait(for: [moved], timeout: 1)
+                observations.append("observationOnly movement=\(movement)")
                 attachUIState("List reveal stopped making progress", in: app)
                 XCTFail("The destination must become fully visible within the catalog-sized gesture budget.")
                 return
@@ -5296,6 +5315,7 @@ final class SnipSnapiOSUITests: XCTestCase {
                 dx: startX - state.frame.minX, dy: clip.midY - state.frame.minY
             ))
             let dx = (towardRight ? 1 : -1) * clip.width * 0.8
+            observations.append("touch uptime=\(ProcessInfo.processInfo.systemUptime) start=(\(startX),\(clip.midY)) dx=\(dx)")
             start.press(
                 forDuration: 0.02,
                 thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0))

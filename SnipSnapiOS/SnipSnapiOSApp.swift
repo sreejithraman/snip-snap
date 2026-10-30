@@ -16,12 +16,18 @@ struct SnipSnapiOSApp: App {
     private let shareProcessToken: String?
 
     init() {
+#if DEBUG
+        IOSRuntimeTraceDelegate.traceUITestStartup("assembly-begin")
+#endif
         AppRuntimeTrace.applicationState(
             .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
         )
         UINavigationBar.appearance().titleTextAttributes = [.font: UIFont.rounded(size: 17, weight: .semibold)]
         UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFont.rounded(size: 34, weight: .bold)]
         let startup = Self.makeLibrary()
+#if DEBUG
+        IOSRuntimeTraceDelegate.traceUITestStartup("library-assembled")
+#endif
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         seedsCopyShareFixtures = startup.seedsCopyShareFixtures
 #if DEBUG
@@ -109,6 +115,9 @@ struct SnipSnapiOSApp: App {
             clipboardContainerIdentifier: Bundle.main.object(forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier") as? String
         )
         syncActionBridge.session = session
+#if DEBUG
+        IOSRuntimeTraceDelegate.traceUITestStartup("assembly-complete")
+#endif
     }
 
 
@@ -364,6 +373,32 @@ extension UIFont {
 
 @MainActor
 final class IOSRuntimeTraceDelegate: NSObject, UIApplicationDelegate {
+#if DEBUG
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        Self.traceUITestStartup("did-finish-launching")
+        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                Self.traceUITestStartup("launch-plus-two-seconds")
+            }
+        }
+        return true
+    }
+
+    static func traceUITestStartup(_ stage: String) {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" else { return }
+        let scenes = UIApplication.shared.connectedScenes.map { scene in
+            let windows = (scene as? UIWindowScene)?.windows.map { window in
+                "key=\(window.isKeyWindow),hidden=\(window.isHidden),alpha=\(window.alpha),frame=\(window.frame),root=\(window.rootViewController.map { String(describing: type(of: $0)) } ?? "none")"
+            }.joined(separator: ";") ?? "none"
+            return "state=\(scene.activationState.rawValue),windows=[\(windows)]"
+        }.sorted().joined(separator: ";")
+        print("[DEBUG-r43-startup] pid=\(ProcessInfo.processInfo.processIdentifier) uptime=\(ProcessInfo.processInfo.systemUptime) stage=\(stage) scenes=[\(scenes)]")
+    }
+#endif
+
     func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
         AppRuntimeTrace.protectedDataWillBecomeUnavailable(
             currentlyAvailable: application.isProtectedDataAvailable
