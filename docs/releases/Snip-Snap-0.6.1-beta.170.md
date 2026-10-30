@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 170
+
+## Mac
+
+- Add Done Undo and unify action feedback
+
+## iOS
+
+- Add Done Undo and unify action feedback
