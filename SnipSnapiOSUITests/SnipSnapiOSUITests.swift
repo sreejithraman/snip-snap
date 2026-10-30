@@ -5286,16 +5286,19 @@ final class SnipSnapiOSUITests: XCTestCase {
                frame.intersection(clip).height >= 32 { return }
             guard gesture < scrollLimit, frame != previousFrame else {
                 attachUIState("List reveal stopped making progress", in: app)
-                XCTFail("The destination must become fully visible within the catalog-sized gesture budget.")
+                XCTFail("List reveal stopped at gesture \(gesture)/\(scrollLimit): target=\(frame), previous=\(String(describing: previousFrame)), selector=\(selector.frame), owner=\(owners[0].identifier).")
                 return
             }
             previousFrame = frame
             let towardRight = frame.minX < clip.minX
-            let startX = towardRight ? clip.minX + clip.width * 0.08 : clip.maxX - clip.width * 0.08
+            // The selector contracts before XCTest dispatches; its center remains inside both widths.
+            let startX = clip.midX
             let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
                 dx: startX - state.frame.minX, dy: clip.midY - state.frame.minY
             ))
-            let dx = (towardRight ? 1 : -1) * clip.width * 0.8
+            let screen = state.frame.insetBy(dx: 4, dy: 4)
+            let availableTravel = towardRight ? screen.maxX - startX : startX - screen.minX
+            let dx = (towardRight ? 1 : -1) * min(clip.width * 0.8, availableTravel)
             start.press(
                 forDuration: 0.02,
                 thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0))
