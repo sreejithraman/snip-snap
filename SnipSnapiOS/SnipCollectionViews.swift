@@ -190,6 +190,13 @@ struct SnipCollectionView: View {
         .onChange(of: isReordering || inlineEditDraft != nil, initial: true) { _, blocked in
             blocksPageSwipe.wrappedValue = blocked
         }
+#if DEBUG
+        .onChange(of: model.snipEditorDraft?.original.id) { _, _ in
+            if isActivePage {
+                IOSRuntimeTraceDelegate.traceUITest("edit-draft-projection", details: "draftPresent=\(inlineEditDraft != nil),isActivePage=\(isActivePage),searching=\(isSearching)")
+            }
+        }
+#endif
         .onAppear {
             blocksPageSwipe.wrappedValue = isReordering || inlineEditDraft != nil
         }
@@ -297,6 +304,12 @@ struct SnipCollectionView: View {
                                 isFocused: $isInlineEditorFocused,
                                 sourceListID: displayedListID
                             )
+#if DEBUG
+                            .onAppear {
+                                IOSRuntimeTraceDelegate.traceUITest("editor-appeared", details: "matchingDraft=\(inlineEditDraft?.original.id == snip.id),isActivePage=\(isActivePage),searching=\(isSearching)", windows: true)
+                            }
+                            .onDisappear { IOSRuntimeTraceDelegate.traceUITest("editor-disappeared") }
+#endif
                         } else {
                             SnipRow(
                                 snip: snip,
@@ -439,7 +452,14 @@ struct SnipCollectionView: View {
     }
 
     private func beginEditing(_ snip: Snip) {
-        guard model.beginInlineSnipEdit(snip) else { return }
+#if DEBUG
+        IOSRuntimeTraceDelegate.traceUITest("edit-view-entry", details: "isActivePage=\(isActivePage),searching=\(isSearching)")
+#endif
+        let accepted = model.beginInlineSnipEdit(snip)
+#if DEBUG
+        IOSRuntimeTraceDelegate.traceUITest("edit-view-result", details: "accepted=\(accepted)")
+#endif
+        guard accepted else { return }
         dismissComposerKeyboard()
         isReordering = false
         if isSelecting { endSelection() }
@@ -482,6 +502,9 @@ struct SnipCollectionView: View {
         )
         Divider()
         Button("Edit", systemImage: "pencil") {
+#if DEBUG
+            IOSRuntimeTraceDelegate.traceUITest("edit-closure-entry", windows: true)
+#endif
             beginEditing(snip)
         }
         .accessibilityIdentifier("edit-snip")
