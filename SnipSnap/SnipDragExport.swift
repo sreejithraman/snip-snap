@@ -93,12 +93,17 @@ struct SnipDragExportPackage: PanelDragExportPackage {
 
 }
 
-enum SnipDragPreview {
-    @MainActor
-    static func image(
-        for payload: SnipDragPayload,
-        in context: PanelDragSourceContext
-    ) -> NSImage {
+@MainActor
+struct SnipDragPreview {
+    let text: SnipTextContent
+    private let payload: SnipDragPayload
+
+    init(payload: SnipDragPayload, source: Snip) {
+        self.payload = payload
+        text = SnipMarkdown.snapshot(for: source.content)
+    }
+
+    func image(in context: PanelDragSourceContext) -> NSImage {
         let attachmentImages = payload.attachmentURLs.prefix(3).map { url in
             if let preview = PreviewImageCache.shared.cachedFileThumbnail(
                 url: url,
@@ -114,6 +119,7 @@ enum SnipDragPreview {
         let renderer = ImageRenderer(
             content: SnipDragPreviewCard(
                 payload: payload,
+                text: text,
                 attachmentImages: attachmentImages,
                 size: context.sourceFrame.size
             )
@@ -131,6 +137,7 @@ private struct DragPreviewAttachment {
 
 private struct SnipDragPreviewCard: View {
     let payload: SnipDragPayload
+    let text: SnipTextContent
     let attachmentImages: [DragPreviewAttachment]
     let size: NSSize
 
@@ -144,9 +151,9 @@ private struct SnipDragPreviewCard: View {
             state: PanelContentCardState(isSubdued: payload.previewIsDone)
         ) {
             ItemRowContent {
-                if !payload.text.isEmpty {
+                if !text.source.isEmpty {
                     ItemRowText(
-                        text: payload.text,
+                        content: text,
                         isDone: payload.previewIsDone,
                         allowsExpansion: false
                     )

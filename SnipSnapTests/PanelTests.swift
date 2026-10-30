@@ -1609,6 +1609,26 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testMarkdownPreviewTruncatesRenderedTextAndKeepsItsEmphasis() async {
+        let source = "**" + String(repeating: "🧑🏽‍💻", count: 850) + "**"
+        let content = await SnipMarkdown.prepare(source)
+        let presentation = content.presentation(lineLimit: 5)
+
+        XCTAssertTrue(presentation.isTruncated)
+        XCTAssertEqual(String(presentation.preview.characters), String(repeating: "🧑🏽‍💻", count: 800) + "…")
+        XCTAssertEqual(String(presentation.fullText.characters), String(repeating: "🧑🏽‍💻", count: 850))
+        XCTAssertTrue(presentation.preview.runs.first?.inlinePresentationIntent?.contains(.stronglyEmphasized) == true)
+    }
+
+    @MainActor
+    func testClipboardTextPresentationKeepsLiteralMarkdown() {
+        let presentation = SnipTextContent.literal("# Heading\n**literal**").presentation(lineLimit: 5)
+
+        XCTAssertFalse(presentation.isTruncated)
+        XCTAssertEqual(String(presentation.preview.characters), "# Heading\n**literal**")
+    }
+
+    @MainActor
     func testLargePromptTextDoesNotStallSavedSnipCardOrPanelLayout() async throws {
         var uniqueLines: [String] = []
         uniqueLines.reserveCapacity(2_500)
@@ -1620,8 +1640,32 @@ final class PanelTests: StoreBackedTestCase {
         let hugePrompt = uniqueLines.joined(separator: "\n")
         XCTAssertGreaterThanOrEqual(hugePrompt.count, 200_000)
 
+        try await assertLargeSnipLayout(hugePrompt)
+    }
+
+    @MainActor
+    func testLargeMarkdownDoesNotStallSavedSnipCardOrPanelLayout() async throws {
+        try await assertLargeSnipLayout(largeMarkdownPrompt())
+    }
+
+    @MainActor
+    func testMarkdownLargerThanTheWarmCacheKeepsInitialLayoutBounded() async throws {
+        let text = String(repeating: largeMarkdownPrompt() + "\n", count: 4)
+        try await assertLargeSnipLayout(text)
+    }
+
+    private func largeMarkdownPrompt() -> String {
+        (0..<2_500).map { index in
+            "**Prompt \(index):** write a detailed SwiftUI clipboard manager with `Snip` lists, search, sync, attachments, and recovery. Include code samples and edge cases."
+        }.joined(separator: "\n")
+    }
+
+    @MainActor
+    private func assertLargeSnipLayout(_ text: String) async throws {
         let cardTime = firstLayoutTime(
-            ItemRowText(text: hugePrompt, isDone: false).frame(width: 420)
+            SnipMarkdownContent(source: text) { content in
+                ItemRowText(content: content, isDone: false).frame(width: 420)
+            }
         )
 
         let defaultsName = "SnipSnapLargePromptLayout-\(UUID().uuidString)"
@@ -1638,7 +1682,7 @@ final class PanelTests: StoreBackedTestCase {
                     .appendingPathComponent("clipboard.json")
             )
         )
-        let added = await model.add(content: hugePrompt, origin: .quickEntry)
+        let added = await model.add(content: text, origin: .quickEntry)
         XCTAssertTrue(added)
         let panelTime = firstLayoutTime(
             ContentView(
@@ -1654,9 +1698,17 @@ final class PanelTests: StoreBackedTestCase {
             .frame(width: 620, height: 720)
         )
 
-        let report = "chars=\(hugePrompt.count) card=\(cardTime) panel=\(panelTime)"
+        let report = "bytes=\(text.utf8.count) card=\(cardTime) panel=\(panelTime)"
         XCTAssertLessThan(cardTime, 0.08, report)
         XCTAssertLessThan(panelTime, 0.25, report)
+        let prepared = await SnipMarkdown.prepare(text)
+        XCTAssertFalse(prepared.isLoading)
+        let preparedCardTime = firstLayoutTime(ItemRowText(content: prepared).frame(width: 420))
+        XCTAssertLessThan(preparedCardTime, 0.08, "Prepared card: \(preparedCardTime); \(report)")
+        let measurements = XCTAttachment(string: "\(report) prepared-card=\(preparedCardTime)")
+        measurements.name = "Large snip layout measurements"
+        measurements.lifetime = .keepAlways
+        add(measurements)
     }
 
     @MainActor

@@ -702,34 +702,37 @@ struct LibrarySearchView: View {
                     isSearchResult: true
                 )
             } else {
-                IOSItemRow {
-                    SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists), isPinned: snip.isPinned) {
-                        Task { await copyShare.copy(snips: [snip], model: model) }
+                SnipMarkdownContent(source: snip.content) { text in
+                    IOSItemRow {
+                        SnipCopyControl(appearance: listAppearance(for: snip, in: model.lists), isPinned: snip.isPinned) {
+                            Task { await copyShare.copy(snips: [snip], model: model) }
+                        }
+                        .accessibilityLabel(snip.isPinned ? "Copy Pinned Snip" : "Copy Snip")
+                        .accessibilityIdentifier("copy-search-snip-\(snip.id)")
+                    } content: {
+                        SnipContentView(
+                            snip: snip,
+                            text: text,
+                            model: model,
+                            isRecovered: model.isRecoveredSnip(snip.id),
+                            allowsTextExpansion: true,
+                            onPreviewAttachment: { attachment in
+                                Task { previewURL = await model.prepareAttachmentPreview(attachment.id) }
+                            },
+                            showsPin: false
+                        )
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip, text: text))
+                        .accessibilityValue(snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(
+                            TapGesture(count: 2).onEnded { beginEditing(snip) }
+                        )
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Double tap to edit. Touch and hold for actions.")
+                        .accessibilityAction { beginEditing(snip) }
+                        .accessibilityIdentifier("search-snip-\(snip.id)")
                     }
-                    .accessibilityLabel(snip.isPinned ? "Copy Pinned Snip" : "Copy Snip")
-                    .accessibilityIdentifier("copy-search-snip-\(snip.id)")
-                } content: {
-                    SnipContentView(
-                        snip: snip,
-                        model: model,
-                        isRecovered: model.isRecoveredSnip(snip.id),
-                        allowsTextExpansion: true,
-                        onPreviewAttachment: { attachment in
-                            Task { previewURL = await model.prepareAttachmentPreview(attachment.id) }
-                        },
-                        showsPin: false
-                    )
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip))
-                    .accessibilityValue(snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone))
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(
-                        TapGesture(count: 2).onEnded { beginEditing(snip) }
-                    )
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityHint("Double tap to edit. Touch and hold for actions.")
-                    .accessibilityAction { beginEditing(snip) }
-                    .accessibilityIdentifier("search-snip-\(snip.id)")
                 }
             }
         }

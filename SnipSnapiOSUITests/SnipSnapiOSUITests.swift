@@ -104,6 +104,66 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
     }
 
+    func testMarkdownSnipRendersExpandsAndPreservesSourceForEditingAndCopying() {
+        continueAfterFailure = false
+        let storeName = "markdown-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName)
+        let source = "# Release plan\n**Rename Hot to Botto throughout.** Update `HotCore`.\n- Update the app\n- Update tests\n> Keep the install fresh\n```swift\nlet name = \"Botto\"\n```\n[Release notes](https://example.com)"
+        let composer = app.descendants(matching: .any)["composer-text"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.typeText(source)
+        XCTAssertEqual(composer.value as? String, source)
+        app.buttons["composer-send"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        dismissComposerKeyboard(in: app)
+
+        let savedRow = row(named: "Release plan", in: app)
+        XCTAssertTrue(savedRow.waitForExistence(timeout: 3))
+        XCTAssertFalse(savedRow.label.contains("**"))
+        XCTAssertFalse(savedRow.label.contains("```"))
+        XCTAssertTrue(savedRow.label.contains("Release notes"))
+        XCTAssertFalse(savedRow.label.contains("https://example.com"))
+        let disclosure = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "snip-text-")).firstMatch
+        XCTAssertEqual(disclosure.value as? String, "Collapsed")
+        let collapsedHeight = disclosure.frame.height
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Expanded"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertGreaterThan(disclosure.frame.height, collapsedHeight)
+        let rendered = XCTAttachment(screenshot: app.screenshot())
+        rendered.name = "Compact Markdown Snip"
+        rendered.lifetime = .keepAlways
+        add(rendered)
+
+        disclosure.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Collapsed"), object: disclosure
+        )], timeout: 3), .completed)
+        XCTAssertEqual(disclosure.frame.height, collapsedHeight, accuracy: 1)
+        disclosure.doubleTap()
+        let editor = app.descendants(matching: .any)["inline-snip-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        XCTAssertEqual(editor.value as? String, source)
+        app.buttons["inline-snip-cancel"].tap()
+
+        savedRow.press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        assertCopyStatus("Snapped", in: app)
+        composer.tap()
+        composer.press(forDuration: 1)
+        app.menuItems["Paste"].tap()
+        XCTAssertEqual(composer.value as? String, source)
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        let persistedRow = row(named: "Release plan", in: app)
+        XCTAssertTrue(persistedRow.waitForExistence(timeout: 3))
+        persistedRow.doubleTap()
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.descendants(matching: .any)["inline-snip-text"].value as? String, source)
+    }
+
     func testContextActionsPublishHapticOutcomes() {
         continueAfterFailure = false
         let app = launchApp(withHapticsTrace: true)

@@ -1,6 +1,7 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Loading snip" : {},
     "Retry Undo" : {},
     "Couldn’t clear downloaded files" : {},
     "Undo is no longer available because the snips changed." : {},

@@ -2,7 +2,7 @@ import SnipSnapCore
 import SwiftUI
 
 struct ExpandableSnipText: View {
-    let text: String
+    let content: SnipTextContent
     let lineLimit: Int
     var isDone = false
     var strikethroughColor: Color? = nil
@@ -21,22 +21,16 @@ struct ExpandableSnipText: View {
     @State private var expansionID = UUID()
 #endif
 
-    private var preview: String {
-        let boundedText = SnipTextPreview.displayText(text, lineLimit: lineLimit)
-        return boundedText == text ? boundedText : boundedText + "…"
-    }
-
-    private var canExpand: Bool {
-        allowsExpansion && (preview != text || previewHeight > limitedHeight + 1)
-    }
-
     var body: some View {
+        let presentation = content.presentation(lineLimit: lineLimit)
+        let canExpand = allowsExpansion && !presentation.isLoading
+            && (presentation.isTruncated || previewHeight > limitedHeight + 1)
         Group {
             if canExpand || isExpanded {
                 Button(action: { toggleExpansion(isPointerClick: false) }) {
 #if os(iOS)
                     ExpandingSnipTextLayout(collapsedHeight: limitedHeight, expansion: isExpanded ? 1 : 0) {
-                        snipText(keepsFullText ? text : preview)
+                        snipText(keepsFullText ? presentation.fullText : presentation.preview)
                             .lineLimit(keepsFullText ? nil : lineLimit)
                             .fixedSize(horizontal: false, vertical: true)
                             .transaction { $0.animation = nil }
@@ -45,7 +39,7 @@ struct ExpandableSnipText: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .contentShape(Rectangle())
 #else
-                    snipText(isExpanded ? text : preview)
+                    snipText(isExpanded ? presentation.fullText : presentation.preview)
                         .lineLimit(isExpanded ? nil : lineLimit)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -60,12 +54,12 @@ struct ExpandableSnipText: View {
                         .exclusively(before: TapGesture().onEnded { toggleExpansion(isPointerClick: true) })
                 )
 #endif
-                .accessibilityLabel(text)
+                .accessibilityLabel(Text(presentation.accessibilityText))
                 .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
                 .accessibilityHint(isExpanded ? Text("Collapse text") : Text("Show full text"))
                 .accessibilityIdentifier(accessibilityIdentifier)
             } else {
-                snipText(preview)
+                snipText(presentation.preview)
                     .lineLimit(lineLimit)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -73,12 +67,12 @@ struct ExpandableSnipText: View {
         .background(alignment: .topLeading) {
             // Both probes keep the same width and typography as the visible text.
             // Measuring the original could lay out megabytes of offscreen text.
-            snipText(preview)
+            snipText(presentation.preview)
                 .lineLimit(lineLimit)
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { limitedHeight = $0 }
                 .overlay(alignment: .topLeading) {
-                    snipText(preview)
+                    snipText(presentation.preview)
                         .fixedSize(horizontal: false, vertical: true)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { previewHeight = $0 }
                 }
@@ -86,15 +80,15 @@ struct ExpandableSnipText: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        .onChange(of: text) { resetExpansion() }
+        .onChange(of: content.source) { resetExpansion() }
         .onChange(of: allowsExpansion) { _, allowed in
             if !allowed { resetExpansion() }
         }
     }
 
-    private func snipText(_ value: String) -> some View {
-        Text(value)
-            .strikethrough(isDone, color: strikethroughColor)
+    private func snipText(_ value: AttributedString) -> some View {
+        let text = Text(value)
+        return (isDone ? text.strikethrough(color: strikethroughColor) : text)
             .lineSpacing(lineSpacing)
     }
 

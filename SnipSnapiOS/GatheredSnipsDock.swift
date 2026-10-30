@@ -263,31 +263,35 @@ struct GatheredSnipsDock: View {
 
     private func cardContent(_ snip: Snip, isPreview: Bool = false) -> some View {
         let proposedWidth = cardContentWidth
-        return VStack(alignment: .leading, spacing: 8) {
-            SnipContentView(
-                snip: snip,
-                model: model,
-                isRecovered: model.isRecoveredSnip(snip.id),
-                lineLimit: nil,
-                loadsAttachmentPreviews: (isPreview || showsContents) && !arrivingSnipIDs.contains(snip.id),
-                onPreviewAttachment: isPreview ? nil : previewAttachment
+        return SnipMarkdownContent(source: snip.content) { text in
+            VStack(alignment: .leading, spacing: 8) {
+                SnipContentView(
+                    snip: snip,
+                    text: text,
+                    model: model,
+                    isRecovered: model.isRecoveredSnip(snip.id),
+                    lineLimit: (isPreview || showsContents) && !arrivingSnipIDs.contains(snip.id)
+                        ? nil : ItemRowText.previewLineLimit,
+                    loadsAttachmentPreviews: (isPreview || showsContents) && !arrivingSnipIDs.contains(snip.id),
+                    onPreviewAttachment: isPreview ? nil : previewAttachment
+                )
+                if isPerformingAction { ProgressView().controlSize(.small) }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+            .frame(width: proposedWidth, alignment: .topLeading)
+            .onGeometryChange(for: CGSize.self) { CGSize(width: proposedWidth ?? 0, height: $0.size.height) } action: { size in
+                // Include the proposal: it can settle without the content height changing.
+                guard size.width > 0, size.height >= 44 else { return }
+                cardHeights[snip.id] = max(size.height, max(44, returnControlDiameter)) + 20
+            }
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip, text: text))
+            .accessibilityValue(
+                snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
             )
-            if isPerformingAction { ProgressView().controlSize(.small) }
+            .accessibilityIdentifier("selected-card-content-\(snip.id)")
         }
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
-        .frame(width: proposedWidth, alignment: .topLeading)
-        .onGeometryChange(for: CGSize.self) { CGSize(width: proposedWidth ?? 0, height: $0.size.height) } action: { size in
-            // Include the proposal: it can settle without the content height changing.
-            guard size.width > 0, size.height >= 44 else { return }
-            cardHeights[snip.id] = max(size.height, max(44, returnControlDiameter)) + 20
-        }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip))
-        .accessibilityValue(
-            snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)
-        )
-        .accessibilityIdentifier("selected-card-content-\(snip.id)")
     }
 
     private func putBack(_ snip: Snip) {
@@ -606,11 +610,13 @@ nonisolated private struct GatheringTransferCard: View, Animatable {
                 SnipCircularControlLabel(systemImage: "arrow.uturn.backward", appearance: appearance)
                     .opacity(controlPhase)
             }
-            SnipContentView(
-                snip: snip, model: model, isRecovered: model.isRecoveredSnip(snip.id),
-                lineLimit: phase < 0.75 ? 3 : nil,
-                showsPin: sourceIsSelecting || controlPhase > 0
-            )
+            SnipMarkdownContent(source: snip.content) { text in
+                SnipContentView(
+                    snip: snip, text: text, model: model, isRecovered: model.isRecoveredSnip(snip.id),
+                    lineLimit: phase < 0.75 ? 3 : nil,
+                    showsPin: sourceIsSelecting || controlPhase > 0
+                )
+            }
             .padding(.top, 8 * (1 - phase))
             .frame(minHeight: 44, alignment: .topLeading)
         }
