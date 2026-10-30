@@ -315,6 +315,53 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
     }
 
+    func testAdmittedDoneKeepsNewerCopyFailureVisibleAndUndoable() async throws {
+        let older = Snip(content: "Older successful copy", origin: .quickEntry)
+        let newer = Snip(content: "Newer failed copy", origin: .quickEntry)
+        let library = ModelTestLibrary(
+            snips: [older, newer],
+            suspendsFirstCommand: true
+        )
+        let model = IOSAppModel(library: library)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let olderCopy = Task {
+            await coordinator.copyText(snips: [older], model: model)
+        }
+        await library.waitUntilFirstCommandStarts()
+
+        pasteboard.succeeds = false
+        let newerCopied = await coordinator.copyText(snips: [newer], model: model)
+        let newerFailure = model.failure
+        let newerWarningAction = model.toast?.action
+        await library.resumeFirstCommand()
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(olderCopied)
+        XCTAssertFalse(newerCopied)
+        let failure = try XCTUnwrap(newerFailure)
+        XCTAssertEqual(failure.operation, "clipboard.write")
+        XCTAssertEqual(newerWarningAction, .showErrorDetails(failure.id))
+        XCTAssertEqual(model.failure?.id, failure.id)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == newer.id }).isDone)
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        XCTAssertEqual(pasteboard.writes, [
+            [.text("Older successful copy")], [.text("Newer failed copy")]
+        ])
+
+        await model.performToastActionNow(undo)
+
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertEqual(pasteboard.writes, [
+            [.text("Older successful copy")], [.text("Newer failed copy")]
+        ])
+    }
+
     func testClipboardHistoryCopyWinsWhileOlderSnipCopyWaits() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("Attachment".utf8).write(to: file)
