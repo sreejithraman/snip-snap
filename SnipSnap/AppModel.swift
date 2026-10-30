@@ -150,7 +150,14 @@ final class AppModel: ObservableObject {
     @Published var pendingImportPreview: SnipImportPreview?
     var pendingImportPreviewID: UUID?
     var cliImportPreviewID: UUID?
-    @Published var toast: AppToast?
+    @Published var toast: AppToast? {
+        didSet {
+            guard toast?.action == .undoDone || toast?.action == .undoDelete,
+                  case .showErrorDetails(let id) = oldValue?.action,
+                  presentedError != nil, latestFailure?.id == id else { return }
+            failureUsesInlineSurface = true
+        }
+    }
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     @Published private(set) var cliScopeChangeInProgress = false
     private(set) var cliMutationInProgress = false
