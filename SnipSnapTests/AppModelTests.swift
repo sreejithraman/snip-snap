@@ -3179,6 +3179,62 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testAdmittedDoneKeepsNewerCopyFailureVisibleAndUndoable() async throws {
+        let older = Snip(content: "Older successful copy", origin: .quickEntry)
+        let newer = Snip(content: "Newer failed copy", origin: .quickEntry)
+        let library = InMemorySnipLibrary(
+            snips: [older, newer],
+            suspendsFirstCommand: true
+        )
+        let model = AppModel(
+            library: library,
+            defaults: defaults(),
+            preparePasteboardExport: { text, urls in
+                if text == "Newer failed copy" { throw CocoaError(.fileWriteUnknown) }
+                return try await SnipPasteboardExport.preparingClipboardExport(
+                    text: text, attachmentURLs: urls
+                )
+            }
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-admitted-done-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        let olderCopy = Task { @MainActor in
+            await model.copySnipsAndMarkDoneNow([older], to: pasteboard)
+        }
+        await library.waitUntilFirstCommandStarts()
+
+        let newerCopied = await model.copySnipsAndMarkDoneNow([newer], to: pasteboard)
+        let newerFailure = model.latestFailure
+        let newerWarningAction = model.toast?.action
+        let clipboardRevision = pasteboard.changeCount
+        await library.resumeFirstCommand()
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(olderCopied)
+        XCTAssertFalse(newerCopied)
+        let failure = try XCTUnwrap(newerFailure)
+        XCTAssertEqual(failure.operation, "clipboard.export")
+        XCTAssertEqual(newerWarningAction, .showErrorDetails(failure.id))
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(model.latestFailure?.id, failure.id)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == newer.id }).isDone)
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Older successful copy")
+        XCTAssertEqual(pasteboard.changeCount, clipboardRevision)
+
+        await model.performToastActionNow(undo)
+
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Older successful copy")
+        XCTAssertEqual(pasteboard.changeCount, clipboardRevision)
+    }
+
+    @MainActor
     func testCancellingCopyDuringAttachmentPreparationDoesNotShowAnError() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("caller-cancel.txt")
