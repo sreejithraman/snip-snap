@@ -4487,6 +4487,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         expandedProof.lifetime = .keepAlways
         add(expandedProof)
         try visibleTouchCenter(of: app.buttons["collapse-gathered"], in: app).tap()
+        try visibleTouchCenter(of: app.buttons["gathered-stack"], in: app).tap()
+        XCTAssertTrue(hasVisibleTouchTarget(putBack, within: contents, in: app))
+        try visibleTouchCenter(of: putBack, clippedTo: contents.frame, in: app).tap()
+        XCTAssertTrue(app.staticTexts["gathering-instructions"].waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
         try visibleTouchCenter(of: app.buttons["finish-selecting"], in: app).tap()
         XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
     }

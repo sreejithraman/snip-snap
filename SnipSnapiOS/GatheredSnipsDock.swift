@@ -393,6 +393,9 @@ struct GatheredSnipsDock: View {
             guard firstID != nil else { return }
             revealFirstCard()
         }
+        .onChange(of: showsContents) { _, expanded in
+            if expanded { revealFirstCard() }
+        }
         .onChange(of: snips.map(\.id)) { previousIDs, _ in
             if showsContents, scrollPhase == .idle, let first = snips.first, !previousIDs.contains(first.id) {
                 revealFirstCard()
@@ -406,12 +409,8 @@ struct GatheredSnipsDock: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            if showsContents {
-                // A tall lazy card can keep ID-based scroll positioning in a layout loop.
-                selectionScrollPosition.scrollTo(edge: .top)
-            } else if let first = previewSnip {
-                selectionScrollPosition.scrollTo(id: first.id, anchor: .top)
-            }
+            // A tall lazy card can keep ID-based scroll positioning in a layout loop.
+            selectionScrollPosition.scrollTo(edge: .top)
         }
     }
 
