@@ -2075,7 +2075,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Clipboard selected inside list strip"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        tapVisibleSelectorTab(clipboard, in: app)
+        tapVisibleSelectorTab(clipboard, in: app, reselect: true)
         let newList = app.buttons["list-management-new"]
         XCTAssertTrue(newList.waitForExistence(timeout: 3))
         newList.tap()
@@ -4010,7 +4010,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         try visibleTouchCenter(of: app.buttons["copy-selection"], in: app).tap()
         assertCopyStatus("Copied 2 snips", in: app)
         let delete = app.buttons["delete-selection"]
-        XCTAssertTrue(delete.isHittable)
+        let deleteIsHittable = delete.isHittable
+        if !deleteIsHittable { attachUIState("Gathered actions after copy confirmation", in: app) }
+        XCTAssertTrue(deleteIsHittable)
         XCTAssertTrue(hasVisibleTouchTarget(delete, in: app))
         let toast = app.descendants(matching: .any)["app-toast"]
         XCTAssertFalse(toast.frame.intersects(delete.frame), "The copy confirmation must leave gathered actions clear.")
@@ -4477,7 +4479,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(text.exists)
         XCTAssertLessThanOrEqual(text.frame.minY + 44, contents.frame.maxY, "Keep at least a readable first line in the viewport.")
         let putBack = app.buttons.matching(NSPredicate(format: "label == %@", "Deselect: Try the stack interaction on iPhone")).firstMatch
-        XCTAssertTrue(hasVisibleTouchTarget(putBack, within: contents, in: app))
+        let putBackIsVisible = hasVisibleTouchTarget(putBack, within: contents, in: app)
+        if !putBackIsVisible { attachUIState("Expanded gathered card with clipped Put-back", in: app) }
+        XCTAssertTrue(putBackIsVisible)
         let expandedProof = XCTAttachment(screenshot: app.screenshot())
         expandedProof.name = "Expanded glass at largest accessibility text"
         expandedProof.lifetime = .keepAlways
@@ -5054,10 +5058,11 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func tapVisibleSelectorTab(
         _ tab: XCUIElement,
         in app: XCUIApplication,
+        reselect: Bool = false,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        if tab.exists, tab.isSelected { return }
+        if tab.exists, tab.isSelected, !reselect { return }
         guard !app.descendants(matching: .any)["list-management-panel"].exists,
               !app.textFields["list-name"].exists else {
             XCTFail("Selecting a list must not tap through a manager or list editor.", file: file, line: line)
