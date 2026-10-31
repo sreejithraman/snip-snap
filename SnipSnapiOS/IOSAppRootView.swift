@@ -294,15 +294,8 @@ struct IOSAppRootView: View {
             savedSortMode = mode.rawValue
         }
         .task {
-#if DEBUG
-            IOSRuntimeTraceDelegate.traceUITest("root-task-begin")
-            defer { IOSRuntimeTraceDelegate.traceUITest("root-task-end", details: "cancelled=\(Task.isCancelled)") }
-#endif
             model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
-#if DEBUG
-            IOSRuntimeTraceDelegate.traceUITest("session-launch-complete")
-#endif
 #if DEBUG
             await seedGatheringFixtureIfRequested()
             await seedLongListFixtureIfRequested()
@@ -320,7 +313,6 @@ struct IOSAppRootView: View {
 #if DEBUG
             if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" || shareProcessToken != nil {
                 isUITestStartupComplete = true
-                IOSRuntimeTraceDelegate.traceUITest("startup-complete")
             }
 #endif
         }

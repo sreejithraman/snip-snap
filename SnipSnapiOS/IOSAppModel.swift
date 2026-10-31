@@ -322,9 +322,6 @@ final class IOSAppModel {
 
     @discardableResult
     func beginInlineSnipEdit(_ snip: Snip) -> Bool {
-#if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("edit-model-entry", details: "draftPresent=\(snipEditorDraft != nil),canDismiss=\(snipEditorDraft?.canDismiss ?? true),originalMatches=\(snipEditorDraft?.original.id == snip.id)")
-#endif
         guard snipEditorDraft?.canDismiss != false else { return false }
         guard snipEditorDraft == nil || snipEditorDraft?.original.id == snip.id else { return false }
         endSelectingSnips()
@@ -332,16 +329,10 @@ final class IOSAppModel {
         if snipEditorDraft == nil {
             snipEditorDraft = SnipEditorDraft(snip: snip)
         }
-#if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("edit-model-accepted", details: "matchingDraft=\(snipEditorDraft?.original.id == snip.id),selectedMatches=\(selectedSnipID == snip.id)")
-#endif
         return true
     }
 
     func finishInlineSnipEdit(_ draft: SnipEditorDraft) {
-#if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("edit-model-finish", details: "sameDraft=\(snipEditorDraft === draft),canDismiss=\(draft.canDismiss)")
-#endif
         guard snipEditorDraft === draft else { return }
         draft.discard()
         snipEditorDraft = nil

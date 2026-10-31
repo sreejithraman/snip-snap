@@ -6,20 +6,6 @@ require 'open3'
 
 module IOSTestSelection
   GROUPS = {
-    'diagnostic-edit-sequence' => {
-      description: 'Temporary R47 context-menu predecessor and original inline Edit workflow.',
-      tests: %w[
-        testContextActionsPublishHapticOutcomes
-        testContextEditUsesInlineDraftAndPreservesAttachmentsOnCancel
-      ]
-    },
-    'diagnostic-startup-sequence' => {
-      description: 'Temporary R47 appearance predecessor and original Delete/Search workflow.',
-      tests: %w[
-        testDeleteToastPresentationInDarkMode
-        testDeleteToastStaysAboveSearchToolbar
-      ]
-    },
     'smoke' => {
       description: 'Create/edit, copy, completion, list switching, and gathered selection.',
       tests: %w[

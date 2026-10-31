@@ -66,9 +66,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         if let contentSizeCategory {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSizeCategory.rawValue]
         }
-        print("[DEBUG-r47-test] uptime=\(ProcessInfo.processInfo.systemUptime) stage=launch-request appearance=\(XCUIDevice.shared.appearance)")
         app.launch()
-        print("[DEBUG-r47-test] uptime=\(ProcessInfo.processInfo.systemUptime) stage=launch-returned appearance=\(XCUIDevice.shared.appearance)")
         shareAppName = app.label
         waitForAppStartup(in: app)
         return app
@@ -3103,11 +3101,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         let originalAppearance = XCUIDevice.shared.appearance
         addTeardownBlock {
-            await MainActor.run {
-                print("[DEBUG-r47-test] uptime=\(ProcessInfo.processInfo.systemUptime) stage=appearance-restore-request appearance=\(originalAppearance)")
-                XCUIDevice.shared.appearance = originalAppearance
-                print("[DEBUG-r47-test] uptime=\(ProcessInfo.processInfo.systemUptime) stage=appearance-restore-return appearance=\(XCUIDevice.shared.appearance)")
-            }
+            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
         }
         XCUIDevice.shared.appearance = .dark
         let app = launchApp()

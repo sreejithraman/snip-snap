@@ -16,9 +16,6 @@ struct SnipSnapiOSApp: App {
     private let shareProcessToken: String?
 
     init() {
-#if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("assembly-begin")
-#endif
         AppRuntimeTrace.applicationState(
             .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
         )
@@ -112,9 +109,6 @@ struct SnipSnapiOSApp: App {
             clipboardContainerIdentifier: Bundle.main.object(forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier") as? String
         )
         syncActionBridge.session = session
-#if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("assembly-end")
-#endif
     }
 
 
@@ -128,10 +122,6 @@ struct SnipSnapiOSApp: App {
                 shareProcessToken: shareProcessToken
             )
             .fontDesign(.rounded)
-#if DEBUG
-            .onAppear { IOSRuntimeTraceDelegate.traceUITest("root-appear", windows: true) }
-            .onDisappear { IOSRuntimeTraceDelegate.traceUITest("root-disappear", windows: true) }
-#endif
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let state: AppRuntimeTrace.State = switch phase {
@@ -143,16 +133,11 @@ struct SnipSnapiOSApp: App {
             AppRuntimeTrace.applicationState(
                 state, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
             )
-#if DEBUG
-            IOSRuntimeTraceDelegate.traceUITest("scene-phase", details: "phase=\(state.rawValue)", windows: true)
-#endif
         }
     }
 
     private static func makeLibrary() -> IOSLibraryStartup {
 #if DEBUG
-        IOSRuntimeTraceDelegate.traceUITest("library-begin")
-        defer { IOSRuntimeTraceDelegate.traceUITest("library-end") }
         let environment = ProcessInfo.processInfo.environment
         if environment["SNIP_SNAP_UI_TEST_RECOVERY"] == "1" {
             let library = RecoveryUITestSnipLibrary()
@@ -379,48 +364,6 @@ extension UIFont {
 
 @MainActor
 final class IOSRuntimeTraceDelegate: NSObject, UIApplicationDelegate {
-#if DEBUG
-    private static var diagnosticSequence = 0
-
-    func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-    ) -> Bool {
-        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" else { return true }
-        for name in [UIScene.willConnectNotification, UIScene.didActivateNotification,
-                     UIScene.willDeactivateNotification, UIScene.didDisconnectNotification,
-                     UIWindow.didBecomeKeyNotification, UIWindow.didBecomeVisibleNotification] {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(tracePresentationNotification(_:)), name: name, object: nil
-            )
-        }
-        Self.traceUITest("did-finish-launching", windows: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            Self.traceUITest("launch-plus-two-seconds", windows: true)
-        }
-        return true
-    }
-
-    @objc private func tracePresentationNotification(_ notification: Notification) {
-        Self.traceUITest("notification=\(notification.name.rawValue)", windows: true)
-    }
-
-    static func traceUITest(_ stage: String, details: String = "", windows: Bool = false) {
-        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" else { return }
-        diagnosticSequence += 1
-        var presentation = ""
-        if windows {
-            presentation = UIApplication.shared.connectedScenes.map { scene in
-                let windows = (scene as? UIWindowScene)?.windows.map { window in
-                    "class=\(type(of: window)),key=\(window.isKeyWindow),hidden=\(window.isHidden),alpha=\(window.alpha),frame=\(window.frame),root=\(window.rootViewController.map { String(describing: type(of: $0)) } ?? "none"),style=\(window.traitCollection.userInterfaceStyle.rawValue)"
-                }.joined(separator: ";") ?? "none"
-                return "activation=\(scene.activationState.rawValue),windows=[\(windows)]"
-            }.sorted().joined(separator: ";")
-        }
-        print("[DEBUG-r47] pid=\(ProcessInfo.processInfo.processIdentifier) uptime=\(ProcessInfo.processInfo.systemUptime) sequence=\(diagnosticSequence) stage=\(stage) appState=\(UIApplication.shared.applicationState.rawValue) \(details) scenes=[\(presentation)]")
-    }
-#endif
-
     func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
         AppRuntimeTrace.protectedDataWillBecomeUnavailable(
             currentlyAvailable: application.isProtectedDataAvailable
