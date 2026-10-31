@@ -186,7 +186,7 @@ struct ClipboardItemRow: View {
                 .accessibilityLabel("Copy Clipboard Entry")
         } content: {
             ItemRowContent {
-                ItemRowText(text: title, accessibilityIdentifier: "clipboard-text-\(entry.id)")
+                ItemRowText(content: .literal(title), accessibilityIdentifier: "clipboard-text-\(entry.id)")
             } previews: {
                 ClipboardItemPreviews(entry: entry, fileURLs: model.previewFileURLs(for: entry))
                     // Sync can restore bytes at the same URL; retry only the preview subtree.

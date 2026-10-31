@@ -136,37 +136,39 @@ struct SnipCardRow: View {
     }
 
     private var draggableBody: some View {
-        ItemRowContent {
-            if !snip.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ItemRowText(
-                    text: snip.content,
-                    isDone: snip.isDone && !snip.isPinned,
-                    accessibilityIdentifier: "snip-text-\(snip.id)",
-                    onActivate: onSelectForExpansion,
-                    onDoubleClick: onOpen
+        SnipMarkdownContent(source: snip.content) { text in
+            ItemRowContent {
+                if !snip.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ItemRowText(
+                        content: text,
+                        isDone: snip.isDone && !snip.isPinned,
+                        accessibilityIdentifier: "snip-text-\(snip.id)",
+                        onActivate: onSelectForExpansion,
+                        onDoubleClick: onOpen
+                    )
+                }
+            } previews: {
+                if !snip.attachments.isEmpty {
+                    AttachmentPreviewStrip(
+                        items: attachmentPreviewItems,
+                        onPreview: { item in
+                            guard let attachment = snip.attachments.first(where: {
+                                $0.id.uuidString == item.id
+                            }) else { return }
+                            onPreviewSavedAttachments(snip.attachments, attachment)
+                        }
+                    )
+                }
+            } metadata: {
+                SnipRowMetadata(
+                    date: snip.updatedAt,
+                    isPinned: snip.isPinned,
+                    isAgent: snip.origin == .agent,
+                    agentContextLabel: snip.agentContextLabel,
+                    isRecovered: isRecovered,
+                    showsPin: false
                 )
             }
-        } previews: {
-            if !snip.attachments.isEmpty {
-                AttachmentPreviewStrip(
-                    items: attachmentPreviewItems,
-                    onPreview: { item in
-                        guard let attachment = snip.attachments.first(where: {
-                            $0.id.uuidString == item.id
-                        }) else { return }
-                        onPreviewSavedAttachments(snip.attachments, attachment)
-                    }
-                )
-            }
-        } metadata: {
-            SnipRowMetadata(
-                date: snip.updatedAt,
-                isPinned: snip.isPinned,
-                isAgent: snip.origin == .agent,
-                agentContextLabel: snip.agentContextLabel,
-                isRecovered: isRecovered,
-                showsPin: false
-            )
         }
     }
 

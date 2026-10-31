@@ -17,9 +17,10 @@ module IOSTestSelection
       ]
     },
     'editing' => {
-      description: 'Inline drafts, search editing, composer destinations, and persistence.',
+      description: 'Inline drafts, Markdown, search editing, composer destinations, and persistence.',
       tests: %w[
         testCreatesAndEditsTextSnip
+        testMarkdownSnipRendersExpandsAndPreservesSourceForEditingAndCopying
         testContextEditUsesInlineDraftAndPreservesAttachmentsOnCancel
         testSearchPreservesInlineSnipDraft
         testSearchEditReopensInItsOriginalListWithoutDiscardingDraft

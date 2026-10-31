@@ -358,6 +358,7 @@ struct SnipListView: View {
                             regionID: .snip(snip.id),
                             adapter: snipDragAdapter(
                                 payload: payload,
+                                source: snip,
                                 listID: listID,
                                 snips: snips
                             )
@@ -444,13 +445,14 @@ struct SnipListView: View {
 
     private func snipDragAdapter(
         payload: SnipDragPayload,
+        source: Snip,
         listID: UUID,
         snips: [Snip]
     ) -> PanelDragSessionAdapter {
         .exporting(
             makeExport: { SnipDragExportPackage(payload: payload) },
             previewImage: { export, context in
-                SnipDragPreview.image(for: export.payload, in: context)
+                SnipDragPreview(payload: export.payload, source: source).image(in: context)
             },
             canBegin: { !payload.hasRemoteOnlyAttachments },
             onBlocked: {

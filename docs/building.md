@@ -90,22 +90,26 @@ ID:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-Run the full iOS UI suite against the isolated Dev app when changing an iOS workflow.
-Select a booted Simulator and pass its ID:
+For everyday iOS changes, run focused UI methods or feature groups covering the
+affected workflows, plus relevant unit tests. Select a booted Simulator and pass
+its ID:
 
 ```sh
-./scripts/run.sh --ios-simulator --simulator-id <booted-simulator-id> --ui-test all
+./scripts/run.sh --ios-simulator --simulator-id <booted-simulator-id> --ui-group editing
 ```
 
-Use a test method name instead of `all` to run one workflow. For named smoke
-and feature groups, check selection, fixtures, and evidence guidance, see
-[iOS checks](ios-testing.md). Targeted checks support iteration; the full UI
-suite remains required for changed iOS workflows. Both paths use this
-worktree's Dev bundle ID, app name, data store, and badge. The runner starts and
-cleans up the local Share fixture for the full suite and related focused tests;
-these checks use Python 3 to serve the loopback page. Each run binds its own
-OS-selected port and passes its fixture URL into XCTest. Separate worktrees can
-run Share checks concurrently on their own Simulators.
+Use `--ui-test <test-method-name>` for one workflow. Choose related checks when
+a change crosses feature boundaries. Focused coverage supports local handoff
+and PR readiness. Reserve `--ui-test all` for scheduled integration runs or an
+explicit request for a full suite.
+
+For named smoke and feature groups, fixtures, and evidence guidance, see
+[iOS checks](ios-testing.md). All Dev checks use this worktree's bundle ID, app
+name, data store, and badge. The runner starts and cleans up the local Share
+fixture for the full suite and related focused tests; these checks use Python 3
+to serve the loopback page. Each run binds its own OS-selected port and passes
+its fixture URL into XCTest. Separate worktrees can run Share checks concurrently
+on their own Simulators.
 
 ## Run the local Dev app
 

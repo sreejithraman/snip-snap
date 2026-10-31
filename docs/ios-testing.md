@@ -1,28 +1,42 @@
 # iOS checks
 
-Use targeted checks while developing and diagnosing failures. Run the full Dev UI
-suite before handing off a changed iOS workflow, as required by
-[Build and test](building.md#build-and-test). A smoke or feature group gives
-feedback sooner; it does not replace that integration gate.
+Choose focused checks for the affected behavior during development, diagnosis,
+and handoff. [Build and test](building.md#build-and-test) owns the check cadence.
 
 ## Choose a check
 
-| Change | Start here | Integration check |
-| --- | --- | --- |
-| Shared records, persistence, or CLI | Filter the package tests | Full package tests and affected platform tests |
-| iOS model, copy/share logic, or gestures | An iOS unit class | All iOS unit tests; full UI suite for changed workflows |
-| Inline editor or composer | `editing` | Full Dev UI suite |
-| List creation, appearance, or moves | `lists` | Full Dev UI suite |
-| Done or delete feedback, Undo, or its deadline | `undo` | Full Dev UI suite |
-| Gathered selection, merge, or batch actions | `gathering` | Full Dev UI suite |
-| Attachments or system pickers | `attachments` | Full Dev UI suite; satisfy picker fixtures |
-| Share sheet or embedded extension | `share` | Full Dev UI suite with its own Share fixture |
-| Broad UI changes or a quick sanity check | `smoke`, then affected methods | Full Dev UI suite |
-| Test runner or build scripts | Script policy checks | Real selected Dev tests plus normal build/test gates |
+| Change | Focused coverage |
+| --- | --- |
+| Shared records, persistence, or CLI | Affected package tests and platform consumers |
+| iOS model, copy/share logic, or gestures | Affected iOS unit classes and UI methods |
+| Inline editor or composer | Affected methods or `editing` |
+| List creation, appearance, or moves | Affected methods or `lists` |
+| Done or delete feedback, Undo, or its deadline | Affected methods or `undo` |
+| Gathered selection, merge, or batch actions | Affected methods or `gathering` |
+| Attachments or system pickers | Affected methods or `attachments`; satisfy picker fixtures |
+| Share sheet or embedded extension | Affected methods or `share`, with its own Share fixture |
+| Broad UI changes or a quick sanity check | `smoke`, then affected workflows |
+| Test runner or build scripts | Script policy checks and a real run of the affected path |
 
 The groups select explicit workflows, not every test in a feature. Inspect their
 methods in `scripts/ios-test-selection.rb` and add related regressions for the
 actual change. There is no automatic selection based on changed files.
+
+## Maintain focused coverage
+
+Update UI test methods alongside feature behavior, including setup, selectors,
+and assertions. Check user-visible outcomes rather than internal view structure.
+When replacing a method, carry its relevant coverage into the replacement.
+
+When adding, renaming, splitting, or removing methods, review the affected
+`GROUPS` entries in `scripts/ios-test-selection.rb`. Update relevant membership
+and descriptions in the same change, along with documentation examples that
+name those methods. Keep `smoke` small and feature groups representative;
+exhaustive edge cases can remain individually selectable.
+
+Run `./scripts/ios-test-selection-tests.sh` and list the groups after changing
+selections. The selector catches missing and duplicate members; choosing useful
+coverage for new behavior remains part of the feature change.
 
 ## Run targeted tests
 
@@ -43,7 +57,6 @@ worktree's isolated Dev app, with its own bundle ID, name, store, and badge.
   --ui-test testSearchEditReopensInItsOriginalListWithoutDiscardingDraft
 ./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --unit-test IOSAppModelTests
 ./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --unit-test all
-./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --ui-test all
 ```
 
 Pass one test selection per command. Repeated or mixed selectors fail before
@@ -80,13 +93,19 @@ coverage guarantee.
 
 Before a PR is ready, run both normal account-free gates above. The full package
 gate retains sync ordering, recovery, migration, and account-isolation coverage.
-For a changed iOS workflow, also run the full Dev UI suite. Script changes need
-their policy checks and a real run of the affected path. A focused pass does not
-waive a failed broader gate.
+For changed iOS workflows, run the affected UI methods or feature groups and
+related regressions. Script changes need their policy checks and a real run of
+the affected path. Keep failures from any broader run visible and triage their
+relationship to the change.
 
 For scheduled integration, run the full UI suite on the relevant iPhone and iPad
-families with the required Photos and Files fixtures. Keep every skip and unmet
-precondition visible. Release acceptance also follows the
+families with the required Photos and Files fixtures:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --ui-test all
+```
+
+Keep every skip and unmet precondition visible. Release acceptance also follows the
 [release checklist](release-checklist.md) and the
 [release matrix](building.md#build-and-test). Local fake-transport tests do not
 establish live CloudKit or physical-device coverage.
@@ -242,9 +261,9 @@ immediate restoration from layout and contrast inspection. The presentation test
 reads one interface snapshot and crops one screenshot after capture; screenshot
 processing does not consume the functional test's six-second Undo window.
 
-Iterate with the smallest failing method, then its related group. Integrate with
-the full applicable suite after repairs settle. For an intermittent failure,
-choose a bounded confirmation count in advance and restore equivalent fresh
+Iterate with the smallest failing method, then its related group. After repairs
+settle, complete the affected coverage under the cadence above. For an intermittent
+failure, choose a bounded confirmation count in advance and restore equivalent fresh
 state for each attempt. Report all attempts; one lucky rerun is not a reliability
 baseline. Leave diagnostics enabled while investigating unexplained failures;
 `--no-test-diagnostics` is an explicit troubleshooting option described in

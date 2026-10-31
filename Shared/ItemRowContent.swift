@@ -16,7 +16,7 @@ struct ItemRowContent<TextContent: View, Previews: View, Metadata: View>: View {
 }
 
 struct ItemRowText: View {
-    let text: String
+    let content: SnipTextContent
     var lineLimit: Int? = previewLineLimit
     var isDone = false
     var allowsExpansion = true
@@ -25,11 +25,7 @@ struct ItemRowText: View {
     var onDoubleClick: (() -> Void)? = nil
 
     static var previewLineLimit: Int {
-#if os(macOS)
-        5
-#else
-        3
-#endif
+        SnipTextPresentation.previewLineLimit
     }
 
     private var strikethroughColor: Color? {
@@ -50,9 +46,9 @@ struct ItemRowText: View {
 
     var body: some View {
         Group {
-            if let lineLimit {
+            if allowsExpansion, let lineLimit {
                 ExpandableSnipText(
-                    text: text,
+                    content: content,
                     lineLimit: lineLimit,
                     isDone: isDone,
                     strikethroughColor: strikethroughColor,
@@ -63,12 +59,17 @@ struct ItemRowText: View {
                     onDoubleClick: onDoubleClick
                 )
             } else {
-                Text(text)
-                    .strikethrough(isDone)
+                let label = Text(content.presentation(lineLimit: lineLimit).preview)
+                (isDone ? label.strikethrough(color: strikethroughColor) : label)
+                    .lineLimit(lineLimit)
+                    .lineSpacing(lineSpacing)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .redacted(reason: content.isLoading ? .placeholder : [])
+        .accessibilityLabel(Text(content.accessibilityText))
+        .allowsHitTesting(!content.isLoading)
         .font(.body)
 #if os(macOS)
         .foregroundStyle(SnipSnapColors.textPrimary)
