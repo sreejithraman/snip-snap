@@ -112,7 +112,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
     }
 
-    func testMarkdownSnipRendersExpandsAndPreservesSourceForEditingAndCopying() {
+    func testMarkdownSnipRendersExpandsAndPreservesSourceForEditingAndCopying() throws {
         continueAfterFailure = false
         let storeName = "markdown-\(UUID().uuidString)"
         var app = launchApp(storeName: storeName)
@@ -153,7 +153,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, source)
-        app.buttons["inline-snip-cancel"].tap()
+        try visibleTouchCenter(of: app.buttons["inline-snip-cancel"], in: app).tap()
+        XCTAssertTrue(editor.waitForNonExistence(timeout: 3))
 
         savedRow.press(forDuration: 1)
         app.buttons["copy-snip"].tap()
