@@ -119,10 +119,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let source = "# Release plan\n**Rename Hot to Botto throughout.** Update `HotCore`.\n- Update the app\n- Update tests\n> Keep the install fresh\n```swift\nlet name = \"Botto\"\n```\n[Release notes](https://example.com)"
         let composer = app.descendants(matching: .any)["composer-text"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        composer.tap()
+        try visibleTouchCenter(of: composer, in: app).tap()
         composer.typeText(source)
         XCTAssertEqual(composer.value as? String, source)
-        app.buttons["composer-send"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try visibleTouchCenter(of: app.buttons["composer-send"], in: app).tap()
         dismissComposerKeyboard(in: app)
 
         let savedRow = row(named: "Release plan", in: app)
@@ -134,7 +134,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let disclosure = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "snip-text-")).firstMatch
         XCTAssertEqual(disclosure.value as? String, "Collapsed")
         let collapsedHeight = disclosure.frame.height
-        disclosure.tap()
+        try visibleTouchCenter(of: disclosure, in: app).tap()
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", "Expanded"), object: disclosure
         )], timeout: 3), .completed)
@@ -144,23 +144,23 @@ final class SnipSnapiOSUITests: XCTestCase {
         rendered.lifetime = .keepAlways
         add(rendered)
 
-        disclosure.tap()
+        try visibleTouchCenter(of: disclosure, in: app).tap()
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", "Collapsed"), object: disclosure
         )], timeout: 3), .completed)
         XCTAssertEqual(disclosure.frame.height, collapsedHeight, accuracy: 1)
-        disclosure.doubleTap()
+        try visibleTouchCenter(of: disclosure, in: app).doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, source)
         try visibleTouchCenter(of: app.buttons["inline-snip-cancel"], in: app).tap()
         XCTAssertTrue(editor.waitForNonExistence(timeout: 3))
 
-        savedRow.press(forDuration: 1)
-        app.buttons["copy-snip"].tap()
+        try visibleTouchCenter(of: savedRow, in: app).press(forDuration: 1)
+        try visibleTouchCenter(of: app.buttons["copy-snip"], in: app).tap()
         assertCopyStatus("Snapped", in: app)
-        composer.tap()
-        composer.press(forDuration: 1)
+        try visibleTouchCenter(of: composer, in: app).tap()
+        try visibleTouchCenter(of: composer, in: app).press(forDuration: 1)
         app.menuItems["Paste"].tap()
         XCTAssertEqual(composer.value as? String, source)
 
@@ -168,7 +168,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app = launchApp(storeName: storeName)
         let persistedRow = row(named: "Release plan", in: app)
         XCTAssertTrue(persistedRow.waitForExistence(timeout: 3))
-        persistedRow.doubleTap()
+        try visibleTouchCenter(of: persistedRow, in: app).doubleTap()
         XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.descendants(matching: .any)["inline-snip-text"].value as? String, source)
     }
