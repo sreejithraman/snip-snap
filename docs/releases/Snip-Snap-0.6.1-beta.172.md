@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 172
+
+## Mac
+
+- Preserve editor drafts and Undo, and isolate native test runs
+
+## iOS
+
+- Preserve editor drafts and Undo, and isolate native test runs
