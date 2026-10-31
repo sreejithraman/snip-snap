@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+unset TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL
 
 script_dir="${0:A:h}"
 repo_dir="${script_dir:h}"
@@ -90,7 +91,7 @@ run_app_actions() {
 run_share_process() {
     local destination="$1"
     local derived_data="$2"
-    "$xcodebuild_tool" \
+    TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL="$share_fixture_url" "$xcodebuild_tool" \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnapiOS \
         -configuration Debug \

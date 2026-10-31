@@ -1,5 +1,6 @@
 import SnipSnapCore
 import SwiftUI
+import Observation
 
 struct AppToast: Identifiable {
     enum CopiedContent {
@@ -29,6 +30,7 @@ struct AppToast: Identifiable {
     let action: Action?
     let duration: Duration
     let expiresAt: ContinuousClock.Instant
+    let lifetime: AppToastLifetime
     private let copiedContent: CopiedContent?
 
     init(
@@ -47,6 +49,7 @@ struct AppToast: Identifiable {
         self.action = action
         self.duration = duration
         self.expiresAt = ContinuousClock().now.advanced(by: duration)
+        self.lifetime = AppToastLifetime(expiresAt: expiresAt, isActionable: action != nil)
         self.copiedContent = copiedContent
     }
 
@@ -120,6 +123,56 @@ struct AppToast: Identifiable {
     }
 }
 
+@MainActor
+@Observable
+final class AppToastLifetime {
+    private let expiresAt: ContinuousClock.Instant
+    private let isActionable: Bool
+    private var pausedAt: ContinuousClock.Instant?
+    private var pausedDuration: Duration = .zero
+    @ObservationIgnored private var voiceOverEnabled = false
+    @ObservationIgnored private var interactionOwners: Set<UUID> = []
+
+    nonisolated init(expiresAt: ContinuousClock.Instant, isActionable: Bool) {
+        self.expiresAt = expiresAt
+        self.isActionable = isActionable
+    }
+
+    var deadline: ContinuousClock.Instant {
+        expiresAt.advanced(by: pausedDuration)
+    }
+
+    var isPaused: Bool { pausedAt != nil }
+
+    func setVoiceOverEnabled(_ enabled: Bool, at now: ContinuousClock.Instant = ContinuousClock().now) {
+        voiceOverEnabled = enabled
+        reconcilePause(at: now)
+    }
+
+    func setInteractionPaused(
+        _ paused: Bool, owner: UUID,
+        at now: ContinuousClock.Instant = ContinuousClock().now
+    ) {
+        if paused { interactionOwners.insert(owner) }
+        else { interactionOwners.remove(owner) }
+        reconcilePause(at: now)
+    }
+
+    func canExpire(at now: ContinuousClock.Instant = ContinuousClock().now) -> Bool {
+        !isPaused && now >= deadline
+    }
+
+    private func reconcilePause(at now: ContinuousClock.Instant) {
+        let shouldPause = (voiceOverEnabled && isActionable) || !interactionOwners.isEmpty
+        if shouldPause, pausedAt == nil {
+            pausedAt = now
+        } else if !shouldPause, let pausedAt {
+            pausedDuration += pausedAt.duration(to: now)
+            self.pausedAt = nil
+        }
+    }
+}
+
 enum AppPrimaryActionPresentation {
     case content
     case floatingGlass
@@ -188,10 +241,25 @@ private struct AppToastPresenter: ViewModifier {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
-    @State private var pausedAt: ContinuousClock.Instant?
-    @State private var resumedDeadline: ContinuousClock.Instant?
+    @State private var interactionOwnerID = UUID()
+    @State private var observedLifetime: AppToastLifetime?
     @FocusState private var isActionFocused: Bool
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+
+    private struct PresentationInput: Equatable {
+        let lifetime: ObjectIdentifier?
+        let interactionPaused: Bool
+        let voiceOverEnabled: Bool
+    }
+
+    private struct TimerID: Equatable {
+        let toast: UUID?
+        let lifetime: ObjectIdentifier?
+        let deadline: ContinuousClock.Instant?
+        let isPaused: Bool
+        let isHidden: Bool
+        let usesFixedExpiry: Bool
+    }
 
     func body(content: Content) -> some View {
         Group {
@@ -207,33 +275,35 @@ private struct AppToastPresenter: ViewModifier {
             }
         }
         .animation(reduceMotion ? nil : .snappy, value: toast?.id)
-        .onChange(of: toast?.id) { _, _ in
-            pausedAt = nil
-            resumedDeadline = nil
-        }
-        .onChange(of: isTimerPaused) { _, isPaused in
-            guard let toast else { return }
-            let now = ContinuousClock().now
-            if isPaused {
-                pausedAt = now
-            } else if let pausedAt {
-                resumedDeadline = (resumedDeadline ?? toast.expiresAt)
-                    .advanced(by: pausedAt.duration(to: now))
-                self.pausedAt = nil
+        .onChange(of: presentationInput, initial: true) { _, input in
+            let lifetime = toast?.lifetime
+            if observedLifetime !== lifetime {
+                observedLifetime?.setInteractionPaused(false, owner: interactionOwnerID)
+                observedLifetime = lifetime
             }
+            lifetime?.setVoiceOverEnabled(input.voiceOverEnabled)
+            lifetime?.setInteractionPaused(input.interactionPaused, owner: interactionOwnerID)
+        }
+        .onDisappear {
+            observedLifetime?.setInteractionPaused(false, owner: interactionOwnerID)
+            observedLifetime = nil
         }
         .task(id: timerID) {
-            guard let toast, !isTimerPaused, !isHidden else { return }
+            guard let toast, !toast.lifetime.isPaused, !isHidden else { return }
             do {
                 if usesFixedExpiry {
-                    try await ContinuousClock().sleep(until: resumedDeadline ?? toast.expiresAt)
+                    try await ContinuousClock().sleep(until: toast.lifetime.deadline)
                 } else {
                     try await Task.sleep(for: toast.duration)
                 }
             } catch {
                 return
             }
-            guard self.toast?.id == toast.id else { return }
+            guard !Task.isCancelled,
+                  self.toast?.id == toast.id,
+                  self.toast?.lifetime === toast.lifetime,
+                  !isHidden, !toast.lifetime.isPaused,
+                  !usesFixedExpiry || toast.lifetime.canExpire() else { return }
             self.toast = nil
             onDismiss(toast)
         }
@@ -254,12 +324,23 @@ private struct AppToastPresenter: ViewModifier {
         }
     }
 
-    private var timerID: String {
-        "\(toast?.id.uuidString ?? "none")-\(isHovering)-\(isActionFocused)-\(isHidden)-\(voiceOverEnabled)"
+    private var presentationInput: PresentationInput {
+        PresentationInput(
+            lifetime: toast.map { ObjectIdentifier($0.lifetime) },
+            interactionPaused: !isHidden && (isHovering || isActionFocused),
+            voiceOverEnabled: voiceOverEnabled
+        )
     }
 
-    private var isTimerPaused: Bool {
-        isHovering || isActionFocused || (voiceOverEnabled && toast?.action != nil)
+    private var timerID: TimerID {
+        TimerID(
+            toast: toast?.id,
+            lifetime: toast.map { ObjectIdentifier($0.lifetime) },
+            deadline: toast?.lifetime.deadline,
+            isPaused: toast?.lifetime.isPaused ?? false,
+            isHidden: isHidden,
+            usesFixedExpiry: usesFixedExpiry
+        )
     }
 
     private func toastView(_ toast: AppToast) -> some View {

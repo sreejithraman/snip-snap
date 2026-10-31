@@ -400,6 +400,73 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRefreshingTheSameCloudScopeKeepsTheInlineEditorMounted() async {
+        let snip = Snip(content: "Saved text", origin: .quickEntry)
+        let scope = SnipRecoveryScope("account-a-generation-a")
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: scope
+        )
+        await model.waitForInitialLoad()
+        let beganEditing = await model.beginEditing(snip.id)
+        XCTAssertTrue(beganEditing)
+        var editorChanges: [UUID?] = []
+        let observation = model.$editingID.dropFirst().sink { editorChanges.append($0) }
+        defer { observation.cancel() }
+        let refreshedLibrary = InMemorySnipLibrary(snips: [snip])
+
+        await model.replaceLibrary(refreshedLibrary, recoveryScope: scope)
+
+        XCTAssertEqual(model.editingID, snip.id)
+        XCTAssertTrue(editorChanges.isEmpty, "Remounting the editor discards its unsaved text and attachments.")
+        let saved = await model.update(id: snip.id, content: "Unsaved text kept by the editor")
+        XCTAssertTrue(saved)
+        let refreshed = await refreshedLibrary.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(refreshed.snips.first?.content, "Unsaved text kept by the editor")
+    }
+
+    @MainActor
+    func testReplacingCloudScopeClosesTheEditorEvenWhenTheSnipIDMatches() async {
+        let snip = Snip(content: "Account A", origin: .quickEntry)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: SnipRecoveryScope("account-a-generation-a")
+        )
+        await model.waitForInitialLoad()
+        let replacementScopes: [SnipRecoveryScope?] = [
+            SnipRecoveryScope("account-a-generation-b"),
+            SnipRecoveryScope("account-b-generation-a"),
+            nil
+        ]
+        for scope in replacementScopes {
+            let beganEditing = await model.beginEditing(snip.id)
+            XCTAssertTrue(beganEditing)
+
+            await model.replaceLibrary(InMemorySnipLibrary(snips: [snip]), recoveryScope: scope)
+
+            XCTAssertNil(model.editingID)
+        }
+    }
+
+    @MainActor
+    func testRefreshingCloudScopeClosesAnEditorWhoseSnipWasDeleted() async {
+        let snip = Snip(content: "Deleted remotely", origin: .quickEntry)
+        let scope = SnipRecoveryScope("account-a-generation-a")
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]), defaults: defaults(),
+            recoveryScope: scope
+        )
+        await model.waitForInitialLoad()
+        let beganEditing = await model.beginEditing(snip.id)
+        XCTAssertTrue(beganEditing)
+
+        await model.replaceLibrary(InMemorySnipLibrary(snips: []), recoveryScope: scope)
+
+        XCTAssertNil(model.editingID)
+        XCTAssertTrue(model.snips.isEmpty)
+    }
+
+    @MainActor
     func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
         let oldLibrary = InMemorySnipLibrary(
             snips: [Snip(content: "Local before enable", origin: .quickEntry)]
@@ -592,15 +659,19 @@ final class AppModelTests: StoreBackedTestCase {
         model.selectSnip(ids[1], modifiers: .command)
         let selectedState = model.selectionState
         let commands = SnipCommandDispatcher(model: model)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-targeted-commands-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        let expectedCopy = try XCTUnwrap(model.snips.first { $0.id == ids[3] }).content
 
-        await commands.performNow(.edit, on: [ids[3]])
+        await commands.performNow(.edit, on: [ids[3]], to: pasteboard)
         XCTAssertEqual(model.editingID, ids[3])
         XCTAssertEqual(model.selectionState, selectedState)
         model.editingID = nil
-        await commands.performNow(.toggleDone, on: [ids[3]])
+        await commands.performNow(.toggleDone, on: [ids[3]], to: pasteboard)
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == ids[3] }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), expectedCopy)
         XCTAssertEqual(model.selectionState, selectedState)
-        await commands.performNow(.delete, on: [ids[3]])
+        await commands.performNow(.delete, on: [ids[3]], to: pasteboard)
         XCTAssertFalse(model.snips.contains { $0.id == ids[3] })
         XCTAssertEqual(model.selectionState, selectedState)
 
@@ -611,6 +682,20 @@ final class AppModelTests: StoreBackedTestCase {
         model.selectSnip(ids[1], modifiers: [])
         XCTAssertTrue(model.selection.isEmpty)
         XCTAssertNil(model.selectionState.anchor)
+    }
+
+    @MainActor
+    func testTargetedCopyUsesTheRequestedPasteboard() async throws {
+        let snip = Snip(content: "Copy to this command's clipboard", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-targeted-copy-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+
+        await SnipCommandDispatcher(model: model).performNow(.copy, on: [snip.id], to: pasteboard)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), snip.content)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
     }
 
     @MainActor
@@ -3091,6 +3176,62 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(olderCopied)
         XCTAssertEqual(pasteboard.string(forType: .string), "Newer copy")
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+    }
+
+    @MainActor
+    func testAdmittedDoneKeepsNewerCopyFailureVisibleAndUndoable() async throws {
+        let older = Snip(content: "Older successful copy", origin: .quickEntry)
+        let newer = Snip(content: "Newer failed copy", origin: .quickEntry)
+        let library = InMemorySnipLibrary(
+            snips: [older, newer],
+            suspendsFirstCommand: true
+        )
+        let model = AppModel(
+            library: library,
+            defaults: defaults(),
+            preparePasteboardExport: { text, urls in
+                if text == "Newer failed copy" { throw CocoaError(.fileWriteUnknown) }
+                return try await SnipPasteboardExport.preparingClipboardExport(
+                    text: text, attachmentURLs: urls
+                )
+            }
+        )
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-admitted-done-\(UUID())"))
+        defer { pasteboard.releaseGlobally() }
+        let olderCopy = Task { @MainActor in
+            await model.copySnipsAndMarkDoneNow([older], to: pasteboard)
+        }
+        await library.waitUntilFirstCommandStarts()
+
+        let newerCopied = await model.copySnipsAndMarkDoneNow([newer], to: pasteboard)
+        let newerFailure = model.latestFailure
+        let newerWarningAction = model.toast?.action
+        let clipboardRevision = pasteboard.changeCount
+        await library.resumeFirstCommand()
+        let olderCopied = await olderCopy.value
+
+        XCTAssertTrue(olderCopied)
+        XCTAssertFalse(newerCopied)
+        let failure = try XCTUnwrap(newerFailure)
+        XCTAssertEqual(failure.operation, "clipboard.export")
+        XCTAssertEqual(newerWarningAction, .showErrorDetails(failure.id))
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(model.latestFailure?.id, failure.id)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == newer.id }).isDone)
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Older successful copy")
+        XCTAssertEqual(pasteboard.changeCount, clipboardRevision)
+
+        await model.performToastActionNow(undo)
+
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == older.id }).isDone)
+        XCTAssertEqual(model.inlineFailure?.id, failure.id)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Older successful copy")
+        XCTAssertEqual(pasteboard.changeCount, clipboardRevision)
     }
 
     @MainActor

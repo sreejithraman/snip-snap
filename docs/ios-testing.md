@@ -14,7 +14,7 @@ and handoff. [Build and test](building.md#build-and-test) owns the check cadence
 | Done or delete feedback, Undo, or its deadline | Affected methods or `undo` |
 | Gathered selection, merge, or batch actions | Affected methods or `gathering` |
 | Attachments or system pickers | Affected methods or `attachments`; satisfy picker fixtures |
-| Share sheet or embedded extension | Affected methods or `share`, with the exclusive Share fixture |
+| Share sheet or embedded extension | Affected methods or `share`, with its own Share fixture |
 | Broad UI changes or a quick sanity check | `smoke`, then affected workflows |
 | Test runner or build scripts | Script policy checks and a real run of the affected path |
 
@@ -148,14 +148,16 @@ library and invalidate the integration check.
 
 The `share` group, full UI suite, and focused `testShareExtension*` and
 `testSharePageShowsEveryListThenSaves` tests start a Python 3 loopback fixture on
-port 58493. Its exclusive lock covers the run. Coordinate across worktrees before
-starting those checks. Let the owner finish and release its fixture normally;
-never remove another run's lock or restart global services. Separate Dev bundle
-IDs alone do not isolate this port or a shared Simulator.
+an OS-assigned loopback port. The runner passes that run's URL to XCTest and
+cleans up only its own fixture. Separate worktrees can run their fixtures at the
+same time. Keep each run on its own Simulator and Dev identity; separate ports
+do not isolate a shared Simulator. Never stop another run's processes or restart
+global services.
 
 Existing conditional tests have these preconditions:
 
-- Compact-library and compact-selector tests require iPhone. The sidebar test
+- Compact-library and compact-selector tests require a compact window. Large
+  iPhones can use the sidebar layout in landscape. The sidebar test
   `testClipboardHidesSavedListActionsOnIPad` requires regular-width iPad.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one

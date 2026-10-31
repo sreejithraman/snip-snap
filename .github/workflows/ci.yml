@@ -25,7 +25,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run tests
-        run: ./scripts/test.sh --mac-only
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/snip-snap-ci"
+          ./scripts/test.sh --mac-only 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/mac-tests.log"
+
+      - name: Preserve failed test output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mac-test-output
+          path: ${{ runner.temp }}/snip-snap-ci/mac-tests.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   ios:
     name: iOS tests and bundle checks
@@ -40,7 +52,19 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Run tests and check app bundles
-        run: ./scripts/test.sh --ios-only
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/snip-snap-ci"
+          ./scripts/test.sh --ios-only 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/ios-tests.log"
+
+      - name: Preserve failed test output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-test-output
+          path: ${{ runner.temp }}/snip-snap-ci/ios-tests.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   test:
     name: Tests and iOS compile check

@@ -132,7 +132,7 @@ struct SnipListTabBarView: View {
                     .panelCompactStateSurface(
                         isEmphasized: selected,
                         isSubdued: remembered,
-                        tint: model.lists.first(where: { $0.id == tab.listID })?.accent.color
+                        tint: model.displayedLists.first(where: { $0.id == tab.listID })?.accent.color
                     )
                     .panelDropTargetState(in: Circle(), isTargeted: targeted)
 
@@ -274,7 +274,7 @@ struct SnipListTabBarView: View {
     }
 
     private var tabs: [TabSelection] {
-        PanelTabPage.ordered(lists: model.lists)
+        PanelTabPage.ordered(lists: model.displayedLists)
     }
 
     private var currentTab: TabSelection {
@@ -301,7 +301,7 @@ struct SnipListTabBarView: View {
         case .clipboard:
             String(localized: "Clipboard")
         case .list(let listID):
-            model.lists.first(where: { $0.id == listID })?.displayName
+            model.displayedLists.first(where: { $0.id == listID })?.displayName
                 ?? String(localized: "List")
         }
     }
@@ -325,7 +325,7 @@ struct SnipListTabBarView: View {
                 .accessibilityLabel("Clipboard")
                 .help("Clipboard")
         case .list(let listID):
-            if let list = model.lists.first(where: { $0.id == listID }) {
+            if let list = model.displayedLists.first(where: { $0.id == listID }) {
                 Image(systemName: list.displaySystemImage)
                     .foregroundStyle(list.accent.color)
                     .accessibilityLabel(list.displayName)

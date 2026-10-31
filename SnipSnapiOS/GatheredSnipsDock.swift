@@ -129,7 +129,7 @@ struct GatheredSnipsDock: View {
             if showsContents && (scrollPhase == .tracking || scrollPhase == .interacting || scrollPhase == .decelerating) {
                 settleArrivals()
             } else if showsContents, let first = snips.first, ids.contains(first.id) {
-                scrollTo(first.id)
+                revealFirstCard()
             }
         }
 
@@ -386,7 +386,7 @@ struct GatheredSnipsDock: View {
             if phase == .tracking || phase == .interacting || phase == .decelerating {
                 settleArrivals()
             } else if phase == .idle, let first = snips.first, arrivingSnipIDs.contains(first.id) {
-                scrollTo(first.id)
+                revealFirstCard()
             }
         }
         .accessibilityIdentifier(showsContents ? "gathered-contents" : "gathered-preview")
@@ -394,23 +394,28 @@ struct GatheredSnipsDock: View {
         .accessibilityValue(showsContents
             ? (snips.count == 1 ? Text("1 item") : Text("\(snips.count) items")) : Text(""))
         .onChange(of: showsContents ? nil : previewSnip?.id) { _, firstID in
-            guard let firstID else { return }
-            scrollTo(firstID)
+            guard firstID != nil else { return }
+            revealFirstCard()
+        }
+        .onChange(of: showsContents) { _, expanded in
+            if expanded { revealFirstCard() }
         }
         .onChange(of: snips.map(\.id)) { previousIDs, _ in
             if showsContents, scrollPhase == .idle, let first = snips.first, !previousIDs.contains(first.id) {
-                scrollTo(first.id)
-            } else if !showsContents, let first = previewSnip {
-                scrollTo(first.id)
+                revealFirstCard()
+            } else if !showsContents, previewSnip != nil {
+                revealFirstCard()
             }
         }
     }
 
-    private func scrollTo(_ id: UUID) {
+    private func revealFirstCard() {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        // Native scroll position retains the request until a new lazy target is laid out.
-        withTransaction(transaction) { selectionScrollPosition.scrollTo(id: id, anchor: .top) }
+        withTransaction(transaction) {
+            // A tall lazy card can keep ID-based scroll positioning in a layout loop.
+            selectionScrollPosition.scrollTo(edge: .top)
+        }
     }
 
     private var containerControls: some View {

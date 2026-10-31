@@ -263,7 +263,7 @@ struct ListSelector: View {
             }
         }
         .overlay {
-            hitTargets(geometry: geometry, cursor: cursor)
+            hitTargets(geometry: geometry, cursor: cursor, viewport: viewport)
         }
         .contentShape(Capsule())
     }
@@ -390,10 +390,17 @@ struct ListSelector: View {
         return edge + (viewport / 2 - edge) * reveal
     }
 
-    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat) -> some View {
+    private func hitTargets(geometry: ListSelectorGeometry, cursor: CGFloat, viewport: CGFloat) -> some View {
         ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let selected = item.page == model.selectedPage
+                let offset = labelOffset(geometry.centers[index], cursor: cursor)
+                let leadingEdge = max(-viewport / 2, offset - geometry.widths[index] / 2)
+                let trailingEdge = min(viewport / 2, offset + geometry.widths[index] / 2)
+                let visibleWidth = max(0, trailingEdge - leadingEdge)
+                // Clipping the strip does not trim each button's accessibility frame.
+                let targetWidth = visibleWidth > 0 ? visibleWidth : geometry.widths[index]
+                let targetOffset = visibleWidth > 0 ? (leadingEdge + trailingEdge) / 2 : offset
                 Button { activate(item) } label: { Color.clear.contentShape(Rectangle()) }
                 .highPriorityGesture(
                     LongPressGesture(minimumDuration: 0.45, maximumDistance: 8)
@@ -406,7 +413,7 @@ struct ListSelector: View {
                         }
                 )
                 .buttonStyle(.plain)
-                .frame(width: geometry.widths[index], height: height + 8)
+                .frame(width: targetWidth, height: height + 8)
                 .accessibilityFocused($focusedTabID, equals: item.id)
                 .accessibilityLabel(item.title)
                 .accessibilityHint(selected ? Text("Manage lists") : Text("Switch list; press and hold to manage lists"))
@@ -418,7 +425,8 @@ struct ListSelector: View {
                 .accessibilityAdjustableAction { adjustment in
                     adjustItem(item.id, direction: adjustment)
                 }
-                .offset(x: labelOffset(geometry.centers[index], cursor: cursor))
+                .offset(x: targetOffset)
+                .allowsHitTesting(visibleWidth > 0)
                 .disabled(presentingCreation || motion.isDragging || motion.isEnteringNewList
                           || motion.isCreatingFromEdge)
             }

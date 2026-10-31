@@ -1,13 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 
-source_script_dir="${0:A:h}"
+script_dir="${0:A:h}"
 test_root="$(/usr/bin/mktemp -d /private/tmp/snip-snap-release-matrix-tests.XXXXXX)"
-script_dir="$test_root/repo/scripts"
-fixture_lock="$test_root/snip-snap-share-fixture-58493.lock"
-test_fixture_lock_owned=0
 cleanup() {
-    [[ "$test_fixture_lock_owned" == 0 ]] || /bin/rmdir "$fixture_lock" 2>/dev/null || true
     [[ "$test_root" == /private/tmp/snip-snap-release-matrix-tests.* ]] && \
         /bin/rm -rf "$test_root"
 }
@@ -18,31 +14,27 @@ fail_test() {
     exit 1
 }
 
-/bin/mkdir -p "$test_root/bin" "$script_dir" "$test_root/repo/Packages/SnipSnapLibrary"
-for script in release-matrix-tests.sh share-fixture.sh local-share-fixture.py; do
-    /bin/cp "$source_script_dir/$script" "$script_dir/"
-done
-/usr/bin/ruby - "$source_script_dir/share-fixture.sh" "$script_dir/share-fixture.sh" "$test_root" <<'RUBY'
-source, output, root = ARGV
-text = File.read(source)
-lock_prefix = '/private/tmp/snip-snap-share-fixture-'
-abort 'Update private fixture-lock isolation before running this policy test' unless text.scan(lock_prefix).length == 1
-File.write(output, text.sub(lock_prefix, "#{root}/snip-snap-share-fixture-"))
-RUBY
+/bin/mkdir -p "$test_root/bin"
 print -r -- '#!/bin/zsh
 set -euo pipefail
 [[ -s "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] && /bin/kill -0 "$(cat "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE")" || exit 1
+if [[ "$*" == *testShareExtension* ]]; then
+    [[ "${TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL:-}" == http://127.0.0.1:43101/ ]] || exit 1
+elif [[ -n "${TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL:-}" ]]; then
+    print -u2 'An ordinary matrix leg inherited a stale Share fixture URL.'
+    exit 1
+fi
 print -r -- "$PWD :: $@" >> "$SNIP_SNAP_RELEASE_TEST_ARGS_FILE"' > \
     "$test_root/bin/xcodebuild"
 /bin/chmod +x "$test_root/bin/xcodebuild"
 cat > "$test_root/bin/python3" <<'STUB'
 #!/bin/zsh
 set -euo pipefail
-[[ -f "$2/index.html" && "$4" == 58493 ]] || exit 1
+[[ -f "$2/index.html" && "$4" == 0 ]] || exit 1
 print -r -- "$$" > "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE"
 print -r -- "$$" >> "$SNIP_SNAP_RELEASE_FIXTURE_LOG"
 trap '/bin/rm -f "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE"; exit 0' INT TERM
-print -r -- "$4" > "$3"
+print -r -- 43101 > "$3"
 while true; do /bin/sleep 0.05; done
 STUB
 /bin/chmod +x "$test_root/bin/python3"
@@ -51,8 +43,8 @@ export SNIP_SNAP_RELEASE_FIXTURE_PID_FILE="$test_root/fixture.pid"
 export SNIP_SNAP_RELEASE_FIXTURE_LOG="$test_root/fixture.log"
 
 assert_fixture_cleaned_up() {
-    [[ ! -e "$fixture_lock" && ! -e "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] || \
-        fail_test "the runner left its fixture child or lock behind"
+    [[ ! -e "$SNIP_SNAP_RELEASE_FIXTURE_PID_FILE" ]] || \
+        fail_test "the runner left its fixture child behind"
     local fixture_pid
     for fixture_pid in ${(f)"$(cat "$SNIP_SNAP_RELEASE_FIXTURE_LOG")"}; do
         if /bin/kill -0 "$fixture_pid" 2>/dev/null; then
@@ -65,6 +57,7 @@ assert_fixture_cleaned_up() {
 
 args_file="$test_root/test-args"
 output="$(
+    TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL='http://127.0.0.1:1/' \
     SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
     SNIP_SNAP_RELEASE_TEST_ARGS_FILE="$args_file" \
     SNIP_SNAP_DERIVED_DATA="$test_root/derived-data" \
@@ -138,8 +131,8 @@ done
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
     fail_test "one or more package or app-action tests allowed signing"
 
-/usr/bin/grep -F -- 'run: ./scripts/test.sh --ios-only' \
-    "$source_script_dir/../.github/workflows/ci.yml" >/dev/null || \
+/usr/bin/grep -F -- './scripts/test.sh --ios-only' \
+    "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
     fail_test "CI does not run iOS tests and bundle checks"
 
 for slow_command in \
@@ -149,14 +142,14 @@ for slow_command in \
     'run: ./scripts/release-matrix-tests.sh'
 do
     if /usr/bin/grep -Fx -- "        $slow_command" \
-        "$source_script_dir/../.github/workflows/ci.yml" >/dev/null
+        "$script_dir/../.github/workflows/ci.yml" >/dev/null
     then
         fail_test "CI still runs a slow build or release step: $slow_command"
     fi
 done
 
 /usr/bin/grep -F -- 'assertShareExtensionReportedLocalSave' \
-    "$source_script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
+    "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
     fail_test "the unavailable-store process test does not assert extension save success"
 
 [[ "$output" == *"Share fixture started:"* ]] || \
@@ -165,19 +158,6 @@ done
     fail_test "the release matrix did not stop the local fixture"
 
 assert_fixture_cleaned_up
-/bin/mkdir "$fixture_lock"
-test_fixture_lock_owned=1
-if SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild" \
-    SNIP_SNAP_RELEASE_TEST_ARGS_FILE="$test_root/collision-args" \
-    SNIP_SNAP_DERIVED_DATA="$test_root/collision-derived" \
-        "$script_dir/release-matrix-tests.sh" >/dev/null 2>&1
-then
-    fail_test "a second release matrix acquired the locked Share fixture port"
-fi
-[[ -d "$fixture_lock" ]] || fail_test "the collision removed another runner's lock"
-[[ ! -e "$test_root/collision-args" ]] || fail_test "testing began despite the fixture collision"
-/bin/rmdir "$fixture_lock"
-test_fixture_lock_owned=0
 
 print -r -- '#!/bin/zsh
 exit 23' > "$test_root/bin/failing-xcodebuild"
@@ -204,9 +184,5 @@ for test_signal in INT TERM; do
     fi
     assert_fixture_cleaned_up
 done
-
-/usr/bin/grep -F -- 'URL(string: "http://127.0.0.1:58493/' \
-    "$source_script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
-    fail_test "the UI test does not use the locked loopback fixture port"
 
 print "Release matrix test checks passed."

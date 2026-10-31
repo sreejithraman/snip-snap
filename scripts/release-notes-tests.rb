@@ -71,6 +71,49 @@ class ReleaseNotesTest < Minitest::Test
     assert_includes result.fetch('github'), "## iOS\n"
   end
 
+  def test_internal_titles_do_not_leak_into_future_beta_or_stable_notes
+    commit('Config/Shared.xcconfig', 'Set Snip Snap 0.5.0 for CLI beta')
+    commit('Shared/Version.swift', 'Bump release version to 0.5.0')
+    commit('Shared/Reverted.swift', 'Revert direct CLI merge for PR review (#4)')
+    commit('Shared/Internal.swift', 'refactor: simplify internal library adapters')
+    commit('.github/workflows/ci.yml', 'Fix iPhone test workflow')
+    commit('SnipSnap/Panel.swift', 'Update version label to prevent Mac truncation (#5)')
+
+    %w[beta stable].each do |channel|
+      result = notes(channel)
+      %w[mac ios github].each do |platform|
+        text = result.fetch(platform)
+        refute_includes text, 'Set Snip Snap'
+        refute_includes text, 'Bump release version'
+        refute_includes text, 'Revert direct CLI'
+        refute_includes text, 'internal library adapters'
+        refute_includes text, 'test workflow'
+      end
+      assert_includes result.fetch('mac'), 'Update version label to prevent Mac truncation'
+      refute_includes result.fetch('ios'), 'version label'
+      assert_includes result.fetch('ios'), 'Fix iPhone paste'
+    end
+  end
+
+  def test_authored_commit_notes_describe_the_visible_change_and_can_omit_internal_work
+    commit('SnipSnap/Panel.swift', "Centralize native editor reconciliation\n\nRelease-Note: Keep unsaved snip edits when returning to the Mac app.")
+    commit('Shared/Internal.swift', "Replace internal library adapter\n\nRelease-Note: none")
+    commit('SnipSnapiOS/Paste.swift', "Revert iPhone paste change\n\nRelease-Note: Restore pasting images into the iPhone composer.")
+
+    %w[beta stable].each do |channel|
+      result = notes(channel)
+      assert_includes result.fetch('mac'), 'Keep unsaved snip edits when returning to the Mac app.'
+      refute_includes result.fetch('ios'), 'unsaved snip edits'
+      assert_includes result.fetch('ios'), 'Restore pasting images into the iPhone composer.'
+      refute_includes result.fetch('mac'), 'Restore pasting images'
+      %w[mac ios github].each do |platform|
+        refute_includes result.fetch(platform), 'Centralize native editor reconciliation'
+        refute_includes result.fetch(platform), 'Replace internal library adapter'
+        refute_includes result.fetch(platform), 'Revert iPhone paste change'
+      end
+    end
+  end
+
   def test_retry_and_later_commits_do_not_change_notes
     original = notes('beta')
     source = git('rev-parse', 'HEAD')

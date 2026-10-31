@@ -58,7 +58,7 @@ struct InlineListIconPicker: View {
         ScrollView { iconGrid }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("list-icon-results")
-            .safeAreaBar(edge: .top, spacing: 0) { searchField }
+            .safeAreaInset(edge: .top, spacing: 0) { searchField }
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
             .scrollEdgeEffectStyle(.soft, for: .all)

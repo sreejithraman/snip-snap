@@ -81,6 +81,12 @@ if [[ "$test_diagnostics" == never && -z "$ui_test" && -z "$ui_group" && -z "$un
     exit 2
 fi
 
+setup_timeout="${SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS:-60}"
+/usr/bin/ruby -e '
+    seconds = Float(ARGV.fetch(0)) rescue nil
+    abort "Simulator setup timeout must be a positive number of seconds." unless seconds && seconds.finite? && seconds.positive?
+' "$setup_timeout"
+
 # Require a booted iOS device; never boot or alter a user's other simulators.
 simulator_id="$(xcrun simctl list devices available --json | /usr/bin/ruby -rjson -e '
 devices = JSON.parse(STDIN.read).fetch("devices").select { |runtime, _| runtime.include?("iOS") }.values.flatten
@@ -100,7 +106,22 @@ if ! /bin/mkdir "$lock_dir" 2>/dev/null; then
     print -u2 "Snip Snap iOS Dev $slot is already building or starting. Check $lock_dir."
     exit 1
 fi
+owned_command_pid=""
+run_owned_command() {
+    local timeout_seconds="$1"
+    shift
+    local command_status=0
+    /usr/bin/ruby "$script_dir/owned-command.rb" "$timeout_seconds" "$lock_dir/active-command" "$@" &
+    owned_command_pid=$!
+    wait "$owned_command_pid" || command_status=$?
+    owned_command_pid=""
+    return "$command_status"
+}
 cleanup() {
+    if [[ -n "$owned_command_pid" ]]; then
+        /bin/kill -TERM "$owned_command_pid" 2>/dev/null || true
+        wait "$owned_command_pid" 2>/dev/null || true
+    fi
     share_fixture_cleanup
     /bin/rmdir "$lock_dir" 2>/dev/null || true
 }
@@ -110,7 +131,11 @@ trap 'exit 143' TERM
 
 settings_file="$derived_data/resolved-build-settings.txt"
 destination="platform=iOS Simulator,id=$simulator_id"
-signing_policy_capture_build_settings "$repo_dir" Debug "$destination" "$settings_file" "$derived_data" SnipSnapiOS
+run_owned_command 0 /bin/zsh -c '
+    source "$1"
+    shift
+    signing_policy_capture_build_settings "$@"
+' snip-snap-settings "$script_dir/signing-policy.sh" "$repo_dir" Debug "$destination" "$settings_file" "$derived_data" SnipSnapiOS || exit $?
 base_identifier="$(signing_policy_resolve_setting "$settings_file" SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER SnipSnapiOS)"
 product_name="$(signing_policy_resolve_setting "$settings_file" PRODUCT_NAME SnipSnapiOS)"
 [[ -n "$base_identifier" && -n "$product_name" ]] || { print -u2 "Could not resolve iOS app identity."; exit 1; }
@@ -144,7 +169,7 @@ if [[ "$performance" == YES ]]; then
     evidence_file="${build_log:r}-performance.json"
     /bin/rm -f "$evidence_file"
 fi
-xcodebuild "${build_arguments[@]}" "${build_actions[@]}" > "$build_log" 2>&1 || {
+run_owned_command 0 xcodebuild "${build_arguments[@]}" "${build_actions[@]}" > "$build_log" 2>&1 || {
     /usr/bin/tail -n 60 "$build_log"
     exit 1
 }
@@ -196,10 +221,31 @@ fi
 
 actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
 [[ "$actual_identifier" == "$bundle_identifier" ]] || { print -u2 "Dev bundle identity did not match."; exit 1; }
+run_simulator_stage() {
+    local stage="$1"
+    shift
+    local stage_log="${build_log:r}-$stage.log"
+    local stage_status=0
+    print "Simulator $stage (timeout ${setup_timeout}s). Log: $stage_log"
+    run_owned_command "$setup_timeout" xcrun simctl "$stage" "$simulator_id" "$@" > "$stage_log" 2>&1 || stage_status=$?
+    if (( stage_status != 0 )); then
+        print -u2 "Simulator $stage ended with status $stage_status. Log: $stage_log"
+        /usr/bin/tail -n 40 "$stage_log" >&2
+    fi
+    return "$stage_status"
+}
 if (( selection_count == 0 )); then
-    xcrun simctl terminate "$simulator_id" "$bundle_identifier" 2>/dev/null || true
-    xcrun simctl install "$simulator_id" "$app_path"
-    xcrun simctl launch "$simulator_id" "$bundle_identifier"
+    if run_simulator_stage terminate "$bundle_identifier"; then
+        :
+    else
+        terminate_status=$?
+        # An app that is not running needs no termination; timeouts still stop setup.
+        if (( terminate_status == 124 || terminate_status == 130 || terminate_status == 143 )); then
+            exit "$terminate_status"
+        fi
+    fi
+    run_simulator_stage install "$app_path" || exit $?
+    run_simulator_stage launch "$bundle_identifier" || exit $?
     print "Opened Snip Snap iOS Dev $slot"
 else
     print "Testing Snip Snap iOS Dev $slot"
@@ -232,7 +278,8 @@ if [[ -n "$ui_test" || -n "$ui_group" || -n "$unit_test" ]]; then
         test_scopes+=("-only-testing:$test_scope")
         test_kind="unit"
     fi
-    xcodebuild "${build_arguments[@]}" \
+    TEST_RUNNER_SNIP_SNAP_SHARE_FIXTURE_URL="$share_fixture_url" \
+    run_owned_command 0 xcodebuild "${build_arguments[@]}" \
         "${test_arguments[@]}" \
         -parallel-testing-enabled NO \
         "${test_scopes[@]}" \

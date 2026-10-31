@@ -2,6 +2,12 @@
 set -euo pipefail
 
 script_dir="${0:A:h}"
+include_untracked=NO
+if [[ "${1:-}" == --include-untracked ]]; then
+    include_untracked=YES
+    shift
+fi
+(( $# <= 1 )) || { print -u2 "Usage: $0 [--include-untracked] [REPOSITORY]"; exit 2; }
 repo_dir="${1:-${script_dir:h}}"
 
 git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -9,9 +15,13 @@ git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
     exit 1
 }
 
-/usr/bin/ruby - "$repo_dir" <<'RUBY'
+/usr/bin/ruby - "$repo_dir" "$include_untracked" <<'RUBY'
 repo = ARGV.fetch(0)
 paths = IO.popen(["git", "-C", repo, "ls-files", "-z"], &:read).split("\0")
+if ARGV.fetch(1) == "YES"
+  paths += IO.popen(["git", "-C", repo, "ls-files", "--others", "--exclude-standard", "-z"], &:read).split("\0")
+end
+paths.uniq!
 violations = []
 
 def clear_fake_value?(value)

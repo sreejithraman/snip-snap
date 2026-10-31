@@ -432,7 +432,7 @@ struct ContentView: View {
         )
         return PanelTabPager(
             selectedPage: selectedPage,
-            pages: PanelTabPage.ordered(lists: model.lists),
+            pages: PanelTabPage.ordered(lists: model.displayedLists),
             animatesChanges: !model.isSearchExpanded,
             onSelectionChange: { commandNumberPicker.setOrderedTargets([]) }
         ) { page, isInteractive in
@@ -487,7 +487,7 @@ struct ContentView: View {
     }
 
     private func selectAdjacentPage(_ direction: PanelSwipeDirection) {
-        let pages = PanelTabPage.ordered(lists: model.lists)
+        let pages = PanelTabPage.ordered(lists: model.displayedLists)
         guard let destination = selectedPage.adjacent(
             direction,
             in: pages,
@@ -672,7 +672,7 @@ struct ContentView: View {
 
     private func inlineEntry(for listID: UUID, isInteractive: Bool) -> some View {
         let draft = composerDraft(for: listID)
-        let list = model.lists.first(where: { $0.id == listID }) ?? .inbox
+        let list = model.displayedLists.first(where: { $0.id == listID }) ?? .inbox
         return HStack(alignment: .bottom, spacing: SnipSnapSpacing.relatedContent) {
             inlineAttachmentMenu(for: listID)
 

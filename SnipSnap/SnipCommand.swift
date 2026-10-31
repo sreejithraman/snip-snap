@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum SnipCommand {
@@ -43,19 +44,19 @@ enum SnipCommand {
 struct SnipCommandDispatcher {
     let model: AppModel
 
-    func perform(_ command: SnipCommand, on ids: Set<UUID>? = nil) {
+    func perform(_ command: SnipCommand, on ids: Set<UUID>? = nil, to pasteboard: NSPasteboard = .general) {
         let targets = ids ?? model.selection
-        Task { await performNow(command, on: targets) }
+        Task { await performNow(command, on: targets, to: pasteboard) }
     }
 
-    func performNow(_ command: SnipCommand, on ids: Set<UUID>) async {
+    func performNow(_ command: SnipCommand, on ids: Set<UUID>, to pasteboard: NSPasteboard = .general) async {
         let snips = model.snips.filter { ids.contains($0.id) }
         guard command.isAvailable(for: snips.count) else { return }
         switch command {
         case .copy:
-            _ = await model.copySnipsAndMarkDoneNow(snips)
+            _ = await model.copySnipsAndMarkDoneNow(snips, to: pasteboard)
         case .toggleDone:
-            await model.toggleDoneNow(ids: ids)
+            await model.toggleDoneNow(ids: ids, to: pasteboard)
         case .edit:
             if let snip = snips.first { _ = await model.beginEditing(snip.id) }
         case .merge:

@@ -77,7 +77,18 @@ final class AppModel: ObservableObject {
             anchor: selectionState.anchor, focus: selectionState.focus, modifiers: modifiers
         ))
     }
-    @Published var editingID: UUID?
+    @Published var editingID: UUID? {
+        didSet {
+            guard oldValue != editingID else { return }
+            editorOrigin = editingID.flatMap { id in
+                guard let snip = snips.first(where: { $0.id == id }),
+                      let index = lists.firstIndex(where: { $0.id == snip.listID }) else { return nil }
+                return (lists[index], index)
+            }
+            reconcileActiveList()
+        }
+    }
+    private var editorOrigin: (list: SnipList, index: Int)?
     @Published var presentedError: String?
     @Published private(set) var presentedErrorTitle: String?
     private var presentedErrorOperation: String?
@@ -139,7 +150,14 @@ final class AppModel: ObservableObject {
     @Published var pendingImportPreview: SnipImportPreview?
     var pendingImportPreviewID: UUID?
     var cliImportPreviewID: UUID?
-    @Published var toast: AppToast?
+    @Published var toast: AppToast? {
+        didSet {
+            guard toast?.action == .undoDone || toast?.action == .undoDelete,
+                  case .showErrorDetails(let id) = oldValue?.action,
+                  presentedError != nil, latestFailure?.id == id else { return }
+            failureUsesInlineSurface = true
+        }
+    }
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     @Published private(set) var cliScopeChangeInProgress = false
     private(set) var cliMutationInProgress = false
@@ -216,6 +234,24 @@ final class AppModel: ObservableObject {
         filteredSnips(in: activeListID)
     }
 
+    var displayedLists: [SnipList] {
+        guard let editorOrigin,
+              snips.contains(where: { $0.id == editingID }),
+              !lists.contains(where: { $0.id == editorOrigin.list.id }) else { return lists }
+        var displayed = lists
+        displayed.insert(editorOrigin.list, at: min(editorOrigin.index, displayed.count))
+        return displayed
+    }
+
+    func snipListSnapshot(in listID: UUID) -> SnipListSnapshot {
+        SnipListSnapshot(
+            visibleSnips: filteredSnips(in: listID), allSnips: snips,
+            lists: displayedLists, selection: selection,
+            keepsEmptyListID: hasActiveQuery ? nil : listID,
+            attachmentURL: attachmentURL
+        )
+    }
+
     func filteredSnips(in listID: UUID) -> [Snip] {
         let matches = SnipFilter.apply(
             snips: snips,
@@ -224,11 +260,26 @@ final class AppModel: ObservableObject {
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: { $0.displaySourceLabel }
         )
-        guard hasActiveQuery else {
-            return matches.filter { $0.listID == listID }
+        let rendered: [Snip]
+        if let editingID, let editorOrigin {
+            let matchingIDs = Set(matches.map(\.id))
+            // Moving the mounted row would discard its draft and temporary attachments.
+            rendered = snips.compactMap { snip in
+                if snip.id == editingID {
+                    var editor = snip
+                    editor.listID = editorOrigin.list.id
+                    return editor
+                }
+                return matchingIDs.contains(snip.id) ? snip : nil
+            }
+        } else {
+            rendered = matches
         }
-        let matchesByList = Dictionary(grouping: matches, by: \.listID)
-        return lists.flatMap { matchesByList[$0.id] ?? [] }
+        guard hasActiveQuery else {
+            return rendered.filter { $0.listID == listID }
+        }
+        let matchesByList = Dictionary(grouping: rendered, by: \.listID)
+        return displayedLists.flatMap { matchesByList[$0.id] ?? [] }
     }
 
     var selectedSnips: [Snip] {
@@ -245,7 +296,7 @@ final class AppModel: ObservableObject {
     }
 
     var activeList: SnipList {
-        lists.first(where: { $0.id == activeListID }) ?? .inbox
+        displayedLists.first(where: { $0.id == activeListID }) ?? .inbox
     }
 
     func attachmentURL(for attachment: SnipAttachment) -> URL? {
@@ -481,15 +532,17 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             clearPendingUndoToast()
             selection = []
-            editingID = nil
+            let newDraftScope = recoveryScope?.rawValue ?? "local"
+            let scopeChanged = composerDrafts.scope != newDraftScope
+            if recoveryScope == nil || scopeChanged {
+                editingID = nil
+            }
             let previousListIDs = Set(lists.map(\.id))
             let state = await session.replaceLibrary(
                 library,
                 recoveryScope: recoveryScope,
                 sortedBy: sortMode
             )
-            let newDraftScope = recoveryScope?.rawValue ?? "local"
-            let scopeChanged = composerDrafts.scope != newDraftScope
             if scopeChanged {
                 composerDrafts.switchScope(to: newDraftScope)
                 redirectedComposerTextByList.removeAll()
@@ -503,6 +556,9 @@ final class AppModel: ObservableObject {
                 retiredComposerListIDs = previousListIDs.subtracting(currentListIDs)
             }
             await reloadUnlocked()
+            if let editingID, !snips.contains(where: { $0.id == editingID }) {
+                self.editingID = nil
+            }
         }
     }
 
@@ -611,12 +667,15 @@ final class AppModel: ObservableObject {
             }
         }
         attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
-        if !lists.contains(where: { $0.id == activeListID }) {
-            activeListID = SnipList.inboxID
-            defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
-        }
+        reconcileActiveList()
         reconcileSelection()
         publishShareDestinations?(lists)
+    }
+
+    private func reconcileActiveList() {
+        guard !displayedLists.contains(where: { $0.id == activeListID }) else { return }
+        activeListID = SnipList.inboxID
+        defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
     }
 
     func setSortMode(_ mode: SnipSortMode) {

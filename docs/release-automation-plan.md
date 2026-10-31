@@ -69,6 +69,12 @@ localization edits alone do not add the other platform to an app change.
 Tests, docs, and publishing commits without app changes do not become notes.
 Keep app-change commit titles useful to users and name the platform when needed.
 
+The generator omits version bumps, revert titles, and internal conventional
+commit titles such as `ci:` or `test:`. Add a final `Release-Note: <sentence>`
+commit trailer to supply user-facing wording, including a user-visible revert.
+Use `Release-Note: none` to omit internal work. Platform selection still follows
+the changed paths and title. Published notes remain unchanged.
+
 GitHub release notes contain Mac and iOS sections. Sparkle embeds the Mac text
 in the appcast, so the update window does not need to fetch a notes file.
 TestFlight receives only the iOS text. Each release also saves separate

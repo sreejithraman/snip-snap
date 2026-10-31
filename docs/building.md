@@ -21,6 +21,18 @@ and both app test builds under a fresh DerivedData folder. Set
 After iOS tests pass, it checks the built app's Share extension and both privacy
 manifests.
 
+Failed Mac and iOS app tests preserve evidence under ignored
+`artifacts/test-failures`. Each failed group keeps up to ten results and
+200 MiB of result bundles, plus bounded summary and test JSON. Larger bundles
+are omitted with a note. Successful runs still remove temporary DerivedData.
+Remove saved evidence when finished. CI also uploads each failed test group's
+console output for seven days.
+
+Use `./scripts/test-diagnostic.sh /usr/bin/xcrun ...` for test-tool diagnostics.
+XCTest may print its environment after an invalid invocation. The wrapper
+excludes inherited credentials, keeps a fixed system `PATH`, and preserves only
+optional `DEVELOPER_DIR`, `SDKROOT`, and `TMPDIR`. Pass an absolute tool path.
+
 To run either group on its own:
 
 ```sh
@@ -67,8 +79,8 @@ interruption test on both device families. It also checks the 100 MiB total
 boundary, quota and interrupted-upload retries, the iCloud limit action,
 Share, and local attachment actions. Last, Safari opens a fixed loopback page
 and invokes the embedded Share extension with the main app open, closed, and
-unable to migrate. An exclusive run lock guards the loopback port. These
-process tests use ad-hoc Simulator signing and no Team ID. The default
+unable to migrate. These process tests use the same per-run fixture setup,
+ad-hoc Simulator signing and no Team ID. The default
 Simulator names match the CI image. Override them without checking in a device
 ID:
 
@@ -95,7 +107,9 @@ For named smoke and feature groups, fixtures, and evidence guidance, see
 [iOS checks](ios-testing.md). All Dev checks use this worktree's bundle ID, app
 name, data store, and badge. The runner starts and cleans up the local Share
 fixture for the full suite and related focused tests; these checks use Python 3
-to serve the loopback page.
+to serve the loopback page. Each run binds its own OS-selected port and passes
+its fixture URL into XCTest. Separate worktrees can run Share checks concurrently
+on their own Simulators.
 
 ## Run the local Dev app
 
@@ -130,6 +144,17 @@ Both checks below use this worktree's isolated Dev app:
 ```
 
 Choose either a UI test method or a unit test class per run.
+Use `--unit-test all` to run the full iOS unit test target.
+
+For selected tests, XCTest installs and launches the isolated Dev app; see
+[iOS checks](ios-testing.md#run-targeted-tests). Runs without a test selector
+install and open the Dev app through the runner.
+
+For interactive runs, the runner logs each terminate, install, and launch stage.
+Each setup command has a 60-second timeout; set `SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS`
+to change it. A timeout stops that command's process group, keeps the stage log,
+and releases the Dev slot lock after owned processes stop. It leaves shared
+Simulator services and other devices alone.
 
 For a focused performance investigation, opt in to a coverage-free test build:
 
@@ -550,3 +575,12 @@ home paths, device IDs, Apple credential files, and private-key blocks. It
 permits public product names and clear fake test values. Existing Git history
 stays as-is unless a separate security check finds a real credential. Rotate
 any such credential before cleaning history.
+
+Before staging new source files, include nonignored untracked files:
+
+```sh
+./scripts/tracked-input-policy.sh --include-untracked
+```
+
+Local `scripts/test.sh` runs include those files automatically. CI checks tracked
+inputs only. Both modes exclude ignored local state.

@@ -192,6 +192,26 @@
 		31B155B7091CF17782049D45 /* InteractiveScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = C55BAB9DA46E821CD8B96915 /* InteractiveScreenCapture.swift */; };
 		DF6F788FC5F4AC6561583F5F /* SnipCLIApplicationHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18FC2685DF00D7A9E4404E5 /* SnipCLIApplicationHandlerTests.swift */; };
 		B707D9502ADBE72703534E6B /* SnipCLIApplicationNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */; };
+		C2610B260000000000000001 /* IOSListModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000001 /* IOSListModelTests.swift */; };
+		C2610B260000000000000002 /* IOSSelectionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000002 /* IOSSelectionModelTests.swift */; };
+		C2610B260000000000000003 /* IOSClipboardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000003 /* IOSClipboardModelTests.swift */; };
+		C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000004 /* IOSSyncModelTests.swift */; };
+		C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */; };
+		C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000006 /* IOSShareImportTests.swift */; };
+		C2610B260000000000000007 /* IOSSnipCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000007 /* IOSSnipCopyTests.swift */; };
+		C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */; };
+		C2610B260000000000000008 /* IOSComposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000008 /* IOSComposerTests.swift */; };
+		C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000009 /* IOSBackupModelTests.swift */; };
+		C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */; };
+		C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000B /* ListSelectorGeometryTests.swift */; };
+		C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000C /* ListSelectorExpansionTests.swift */; };
+		C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */; };
+		C2610B26000000000000000E /* AttachmentThumbnailCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */; };
+		C2610B26000000000000000F /* IOSClipboardFileCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000F /* IOSClipboardFileCopyTests.swift */; };
+		C2610B260000000000000010 /* IOSModelTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000010 /* IOSModelTestSupport.swift */; };
+		C2610B260000000000000100 /* AppModelCLISequentialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000100 /* AppModelCLISequentialTests.swift */; };
+		C2610B260000000000000200 /* IOSCloudTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000200 /* IOSCloudTestSupport.swift */; };
+		C2610B260000000000000201 /* IOSAttachmentTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000201 /* IOSAttachmentTestSupport.swift */; };
 		AF7100000000000000000001 /* AppFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000001 /* AppFailure.swift */; };
 		AF7100000000000000000002 /* AppFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000001 /* AppFailure.swift */; };
 		AF7100000000000000000003 /* AppFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000001 /* AppFailure.swift */; };
@@ -414,6 +434,26 @@
 		C55BAB9DA46E821CD8B96915 /* InteractiveScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "InteractiveScreenCapture.swift"; sourceTree = "<group>"; };
 		A18FC2685DF00D7A9E4404E5 /* SnipCLIApplicationHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationHandlerTests.swift"; sourceTree = "<group>"; };
 		8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SnipCLIApplicationNavigationTests.swift"; sourceTree = "<group>"; };
+		C2610A260000000000000001 /* IOSListModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSListModelTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000002 /* IOSSelectionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSelectionModelTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000003 /* IOSClipboardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModelTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000004 /* IOSSyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSyncModelTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentPreviewTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000006 /* IOSShareImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSShareImportTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000007 /* IOSSnipCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSnipCopyTests.swift; sourceTree = "<group>"; };
+		C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSUndoFeedbackTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000008 /* IOSComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSComposerTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000009 /* IOSBackupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSBackupModelTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedbackTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000B /* ListSelectorGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorGeometryTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000C /* ListSelectorExpansionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorExpansionTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardRowPreviewTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentThumbnailCacheTests.swift; sourceTree = "<group>"; };
+		C2610A26000000000000000F /* IOSClipboardFileCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardFileCopyTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000010 /* IOSModelTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSModelTestSupport.swift; sourceTree = "<group>"; };
+		C2610A260000000000000100 /* AppModelCLISequentialTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCLISequentialTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000200 /* IOSCloudTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSCloudTestSupport.swift; sourceTree = "<group>"; };
+		C2610A260000000000000201 /* IOSAttachmentTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentTestSupport.swift; sourceTree = "<group>"; };
 		AF7200000000000000000001 /* AppFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFailure.swift; sourceTree = "<group>"; };
 		AF7200000000000000000002 /* AppErrorDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppErrorDetailsView.swift; sourceTree = "<group>"; };
 		AF7200000000000000000003 /* AppFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeedbackTests.swift; sourceTree = "<group>"; };
@@ -570,6 +610,7 @@
 				200000000000000000000027 /* TestSupport.swift */,
 				200000000000000000000028 /* SnipRepositoryTests.swift */,
 				200000000000000000000029 /* AppModelTests.swift */,
+				C2610A260000000000000100 /* AppModelCLISequentialTests.swift */,
 				AF7200000000000000000003 /* AppFeedbackTests.swift */,
 				A6B000000000000000000002 /* AppModelCLITests.swift */,
 				8158732842310D3EC301C480 /* SnipCLIApplicationNavigationTests.swift */,
@@ -696,6 +737,25 @@
 			isa = PBXGroup;
 			children = (
 				E20000000000000000000009 /* IOSAppModelTests.swift */,
+				C2610A260000000000000201 /* IOSAttachmentTestSupport.swift */,
+				C2610A260000000000000200 /* IOSCloudTestSupport.swift */,
+				C2610A260000000000000010 /* IOSModelTestSupport.swift */,
+				C2610A26000000000000000F /* IOSClipboardFileCopyTests.swift */,
+				C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */,
+				C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */,
+				C2610A26000000000000000C /* ListSelectorExpansionTests.swift */,
+				C2610A26000000000000000B /* ListSelectorGeometryTests.swift */,
+				C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */,
+				C2610A260000000000000009 /* IOSBackupModelTests.swift */,
+				C2610A260000000000000008 /* IOSComposerTests.swift */,
+				C2610A260000000000000007 /* IOSSnipCopyTests.swift */,
+				C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */,
+				C2610A260000000000000006 /* IOSShareImportTests.swift */,
+				C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */,
+				C2610A260000000000000004 /* IOSSyncModelTests.swift */,
+				C2610A260000000000000003 /* IOSClipboardModelTests.swift */,
+				C2610A260000000000000002 /* IOSSelectionModelTests.swift */,
+				C2610A260000000000000001 /* IOSListModelTests.swift */,
 				F8A1D64C09284B9B91D17A02 /* IOSCopyShareTests.swift */,
 				C260D1A60000000000000002 /* ShareExtensionDiagnosticsTests.swift */,
 				B1A000000000000000000101 /* ListPageGestureTests.swift */,
@@ -1070,6 +1130,7 @@
 				10000000000000000000001F /* TestSupport.swift in Sources */,
 				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
+				C2610B260000000000000100 /* AppModelCLISequentialTests.swift in Sources */,
 				AF7100000000000000000006 /* AppFeedbackTests.swift in Sources */,
 				A6B000000000000000000001 /* AppModelCLITests.swift in Sources */,
 				B707D9502ADBE72703534E6B /* SnipCLIApplicationNavigationTests.swift in Sources */,
@@ -1155,6 +1216,25 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1000000000000000000000B /* IOSAppModelTests.swift in Sources */,
+				C2610B260000000000000201 /* IOSAttachmentTestSupport.swift in Sources */,
+				C2610B260000000000000200 /* IOSCloudTestSupport.swift in Sources */,
+				C2610B260000000000000010 /* IOSModelTestSupport.swift in Sources */,
+				C2610B26000000000000000F /* IOSClipboardFileCopyTests.swift in Sources */,
+				C2610B26000000000000000E /* AttachmentThumbnailCacheTests.swift in Sources */,
+				C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */,
+				C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */,
+				C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */,
+				C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */,
+				C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */,
+				C2610B260000000000000008 /* IOSComposerTests.swift in Sources */,
+				C2610B260000000000000007 /* IOSSnipCopyTests.swift in Sources */,
+				C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */,
+				C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */,
+				C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */,
+				C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */,
+				C2610B260000000000000003 /* IOSClipboardModelTests.swift in Sources */,
+				C2610B260000000000000002 /* IOSSelectionModelTests.swift in Sources */,
+				C2610B260000000000000001 /* IOSListModelTests.swift in Sources */,
 				AF7100000000000000000007 /* AppFeedbackTests.swift in Sources */,
 				F8A1D64C09284B9B91D17A01 /* IOSCopyShareTests.swift in Sources */,
 				C260D1A60000000000000001 /* ShareExtensionDiagnosticsTests.swift in Sources */,
