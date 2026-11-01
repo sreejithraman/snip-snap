@@ -21,6 +21,12 @@ new_repo() {
     print -r -- "$repo"
 }
 
+if invalid_output="$("$script_dir/tracked-input-policy.sh" "$test_root/not-a-repo" 2>&1)"; then
+    fail_test "a non-repository input was accepted"
+fi
+[[ "$invalid_output" == *"tracked-input policy: not a Git worktree"* ]] || \
+    fail_test "the invalid repository error was unclear"
+
 safe_repo="$(new_repo safe)"
 print -r -- 'DEVELOPMENT_TEAM = FAKE123456' > "$safe_repo/fake-settings.xcconfig"
 print -r -- 'PRODUCT_BUNDLE_IDENTIFIER = org.example.open-source-app' >> "$safe_repo/fake-settings.xcconfig"

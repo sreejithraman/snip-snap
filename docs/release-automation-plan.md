@@ -14,26 +14,53 @@ repository:
 
 ### Pull request
 
-Run the current tests, policy checks, and unsigned Mac, iPhone Simulator, and
-iPad Simulator builds. Do not load signing files or release secrets.
+Push a PR normally. CI keeps the existing required check and selects work from
+the PR changes since its merge base. Unrelated merges on `main` do not expand
+its checks. Mac-only changes run Mac, shared package, and policy tests
+without starting an iOS runner. Shared files in the Mac folders still run both
+groups; a test checks these exceptions against Xcode target membership.
+Shared, iOS, project, script, and unknown inputs
+run both test groups. Docs and release-feed changes need no Mac runners. The
+selection job always runs the repository-wide tracked-input policy and
+release-history checks, including for docs-only and feed-only PRs. The required gate rejects missing selections and
+failed or canceled work. Manual CI runs both groups.
+
+Do not load signing files or release secrets. Official Mac and TestFlight betas
+start after merge to protected `main`, never from an unmerged PR.
 
 ### Main beta
 
 Use two long-lived workflows. The candidate workflow has a path filter for app,
 package, project, release-script, and build-setting changes. A docs-only merge
-should not make a beta. The delivery workflow starts only after a candidate
-finishes successfully on `main`.
+should not make a beta. The candidate is the only full verification run on
+`main`; PR CI does not repeat on merge. The delivery workflow starts only after a candidate finishes
+successfully on `main`. Changes to release workflows or PR CI also start a candidate.
 
-Cancel an older candidate when a newer app change reaches `main`. Keep one
-delivery active and one pending, and do not cancel active delivery. GitHub
-replaces an older pending delivery with the newest one. Before signed work, the
-delivery checks that its tested commit is still the tip of `main`. Passing that
-check marks the delivery as started; a later push does not stop it.
+Cancel an older candidate when a newer app change reaches `main`. Beta delivery
+and stable promotion share one non-canceling publication queue. Neither can
+interrupt an active delivery or replace a pending promotion. GitHub's
+[`queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+keeps pending runs; stale beta candidates exit before signed work.
+
+Before signed work, delivery requires its tested commit to be on `main` with no
+later first-parent commit touching the watched release inputs. Docs and
+published feed metadata may advance `main` without discarding that candidate.
+A change followed by a revert still supersedes it. Passing this check marks
+the delivery as started; later merges do not stop it. Both signed jobs then
+require the source to remain on public `main`, using
+`SNIP_SNAP_RELEASE_SOURCE_RELATION=on-main`. Local release commands default to
+requiring the exact current tip.
+
+For several merges in quick succession, intermediate candidates can be canceled.
+The newest candidate tests all accumulated changes. An active delivery finishes;
+queued betas recheck freshness when they start. Notes include every unpublished
+app change since the prior release tag, even when intermediate candidates were
+skipped. Stable promotion waits its turn and preserves the exact tested files.
 
 The workflows:
 
 1. Test the full unsigned matrix once in the candidate workflow.
-2. Check that the tested commit is still current, then validate the planned
+2. Check that the tested release inputs are still current, then validate the planned
    marketing version from `Config/release.json` against Xcode and published stable
    tags. Stop before either platform starts if the planned version is not newer
    than the latest stable release or the versions disagree.
@@ -107,6 +134,14 @@ as `testflight.sh` and run:
 
 The helper changes only English TestFlight notes for that exact iOS build. It
 does not change tester groups or submit a build for review.
+
+Before an iOS upload or a new Mac prerelease, check the current stable version
+again. A partial rerun must not reuse an old prepare decision after promotion.
+Recovery of an existing matching Mac prerelease keeps its immutable files.
+
+After changing release automation, follow the candidate started by its merge.
+Dispatch on current `main` only if no current candidate exists. Reruns keep the
+original source and scripts.
 
 Rerunning a delivery keeps its build number and files. Rerunning a candidate
 starts a new delivery run and therefore gets a new build number.

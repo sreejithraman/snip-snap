@@ -372,6 +372,7 @@ class CloudKitSchemaTests < Minitest::Test
       File.write(File.join(scripts, 'release-policy.sh'), <<~SH)
         release_policy_load_release() { RELEASE_VERSION=1.2.3; RELEASE_BUILD_NUMBER=123; }
         release_policy_require_project_versions() { :; }
+        release_policy_require_new_version() { :; }
       SH
       File.write(File.join(scripts, 'signing-policy.sh'), <<~SH)
         signing_policy_capture_build_settings() { :; }

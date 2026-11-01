@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: stable-promotion
+  group: beta-publish-main
+  queue: max
   cancel-in-progress: false
 
 jobs:

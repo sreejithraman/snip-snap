@@ -19,8 +19,8 @@ The Mac delivery adapter is exposed by `scripts/run.sh describe --json` for
 The default standalone PR target and review base is `main` (`origin/main`
 locally). A dependent PR targets its intended parent branch.
 
-The required gate, `Tests and iOS compile check`, aggregates the Mac/shared and
-iOS test jobs in [ci.yml](../../.github/workflows/ci.yml).
+The required gate, `Tests and iOS compile check`, requires the path-selection
+job and each selected Mac/shared or iOS test job in [ci.yml](../../.github/workflows/ci.yml).
 
 Merges into `main` that affect the watched paths in
 [beta-candidate.yml](../../.github/workflows/beta-candidate.yml) start the beta

@@ -216,6 +216,7 @@ case "$action" in
     upload)
         release_policy_require_source "$repo_dir" \
             "${SNIP_SNAP_RELEASE_REPO:-sreejithraman/snip-snap}"
+        release_policy_require_new_version "$repo_dir"
         [[ -d "$archive_path" ]] || archive_and_check
         testflight_policy_verify_source_record \
             "$archive_path" "$(git -C "$repo_dir" rev-parse HEAD)"

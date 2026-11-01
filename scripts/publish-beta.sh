@@ -198,6 +198,7 @@ elif git ls-remote --exit-code "https://github.com/$release_repo.git" \
 fi
 
 if (( ! release_exists )); then
+    release_policy_require_new_version "$release_checkout"
     "$gh_tool" release create "$beta_tag" \
         "$release_zip" "$zip_checksum_file" "$release_dmg" "$dmg_checksum_file" "$record_path" \
         --repo "$release_repo" \

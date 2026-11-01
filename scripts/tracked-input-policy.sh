@@ -1,17 +1,17 @@
-#!/bin/zsh
+#!/bin/bash
 set -euo pipefail
 
-script_dir="${0:A:h}"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 include_untracked=NO
 if [[ "${1:-}" == --include-untracked ]]; then
     include_untracked=YES
     shift
 fi
-(( $# <= 1 )) || { print -u2 "Usage: $0 [--include-untracked] [REPOSITORY]"; exit 2; }
-repo_dir="${1:-${script_dir:h}}"
+(( $# <= 1 )) || { printf '%s\n' "Usage: $0 [--include-untracked] [REPOSITORY]" >&2; exit 2; }
+repo_dir="${1:-$(dirname -- "$script_dir")}"
 
 git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    print -u2 "tracked-input policy: not a Git worktree"
+    printf '%s\n' "tracked-input policy: not a Git worktree" >&2
     exit 1
 }
 
