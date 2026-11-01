@@ -63,18 +63,6 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     os = "\(platform)-\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
   }
 
-  /// Kept for source compatibility. New callers should inject independent history/export budgets.
-  convenience init(
-    directoryURL: URL, maxBytes: Int, appVersion: String, appBuild: String,
-    now: @escaping () -> Date = Date.init
-  ) {
-    var policy = AppDiagnosticRetentionPolicy()
-    policy.exportBytes = max(0, maxBytes)
-    self.init(
-      directoryURL: directoryURL, policy: policy, appVersion: appVersion, appBuild: appBuild,
-      now: now)
-  }
-
   static func forBundle(bundleIdentifier: String?, appVersion: String, appBuild: String)
     -> AppDiagnosticEventStore
   {

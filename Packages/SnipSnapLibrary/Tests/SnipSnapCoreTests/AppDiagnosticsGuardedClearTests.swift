@@ -20,7 +20,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testCurrentSnapshotClearsHistoryAndRetainedHealth() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(.syncSnapshot(scope: .transport, pendingEvents: 3))
@@ -38,7 +38,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testStaleSnapshotRejectsClearAndPreservesBothEvents() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     store.append(.succeeded(operation: "app.startup", byteCount: 1))
@@ -57,7 +57,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
     for iteration in 0..<64 {
       let store = AppDiagnosticEventStore(
         directoryURL: directory.appendingPathComponent(String(iteration), isDirectory: true),
-        maxBytes: 4_096, appVersion: "1", appBuild: "2",
+        policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
         now: { Date(timeIntervalSince1970: 1_790_056_800) }
       )
       store.append(.succeeded(operation: "app.startup"))
@@ -87,7 +87,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testSnapshotIncludesHeaderAndUsesTheRenderedExportBytes() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let snapshot = try store.snapshot()
@@ -97,7 +97,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
     XCTAssertEqual(try store.snapshot(), snapshot)
 
     let newBuild = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "3",
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "3",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     XCTAssertNotEqual(try newBuild.snapshot().revision, snapshot.revision)
@@ -107,7 +107,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
   func testSnapshotIncludesRetainedHealthAfterHistoryExpires() throws {
     var clock = Date(timeIntervalSince1970: 1_790_053_200)
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096,
+      directoryURL: directory, policy: .init(exportBytes: 4_096),
       appVersion: "1", appBuild: "2", now: { clock })
     store.append(.syncSnapshot(scope: .transport, pendingEvents: 1))
     clock.addTimeInterval(8 * 86_400)
@@ -127,7 +127,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
 
   func testSnapshotAndGuardedClearPropagateStorageFailureWithoutDeletingHistory() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096,
+      directoryURL: directory, policy: .init(exportBytes: 4_096),
       appVersion: "1", appBuild: "2")
     store.append(.succeeded(operation: "app.startup"))
     let snapshot = try store.snapshot()

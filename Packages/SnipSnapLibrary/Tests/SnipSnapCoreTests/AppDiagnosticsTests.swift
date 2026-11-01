@@ -8,7 +8,7 @@ final class AppDiagnosticsTests: XCTestCase {
 
   func testExportPreservesSpecificSnipActionWithoutContent() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: temporaryDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2")
+      directoryURL: temporaryDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2")
     store.append(.failure(operation: "snip.add", error: SnipLibraryError.modeTransitionInProgress,
       visibility: .user))
     store.append(.failure(operation: "snip.update", error: SnipLibraryError.snipChanged,
@@ -22,7 +22,7 @@ final class AppDiagnosticsTests: XCTestCase {
 
   func testExportRetainsTypedWriteReasonsAndRejectsUnknownReasons() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: temporaryDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2")
+      directoryURL: temporaryDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2")
     store.append(.writeAdmission(.started, reason: .syncBusy))
     store.append(.writeAdmission(.failed, reason: .writeBusy))
     store.append(.writeAdmission(.failed, reason: .modeChange))
@@ -78,7 +78,7 @@ final class AppDiagnosticsTests: XCTestCase {
       environment: [:]
     )
     let firstStore = AppDiagnosticEventStore(
-      directoryURL: firstLaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: firstLaunchDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     firstStore.append(.syncSnapshot(scope: .transport, environment: .development, pendingEvents: 2))
@@ -88,7 +88,7 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertEqual(ordinaryRelaunchDirectory, expected)
     for directory in [changedStoreDirectory, ordinaryRelaunchDirectory] {
       let reopenedStore = AppDiagnosticEventStore(
-        directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+        directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
         now: { Date(timeIntervalSince1970: 1_790_056_800) }
       )
       let export = try String(contentsOf: reopenedStore.makeShareableFile(), encoding: .utf8)
@@ -96,7 +96,7 @@ final class AppDiagnosticsTests: XCTestCase {
       XCTAssertTrue(export.contains("pending_events=2"))
     }
     let relaunchedStore = AppDiagnosticEventStore(
-      directoryURL: ordinaryRelaunchDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: ordinaryRelaunchDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     try relaunchedStore.clear()
@@ -117,11 +117,11 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: nil
     )
     let releaseStore = AppDiagnosticEventStore(
-      directoryURL: releaseDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: releaseDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let devStore = AppDiagnosticEventStore(
-      directoryURL: devDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: devDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     releaseStore.append(
@@ -167,11 +167,11 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: secondRoot.path
     )
     let firstStore = AppDiagnosticEventStore(
-      directoryURL: firstDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: firstDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     let secondStore = AppDiagnosticEventStore(
-      directoryURL: secondDirectory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: secondDirectory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
     firstStore.append(.syncSnapshot(scope: .records, phase: .blocked, blockedRecords: 2))
@@ -249,7 +249,7 @@ final class AppDiagnosticsTests: XCTestCase {
       isolatedDirectoryPath: nil
     )
     let store = AppDiagnosticEventStore(
-      directoryURL: directory, maxBytes: 4_096, appVersion: "1", appBuild: "2",
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
       now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
 
@@ -289,9 +289,12 @@ final class AppDiagnosticsTests: XCTestCase {
   }
 
   func testLatestSyncHealthSurvivesHistoryRotationAndReopening() throws {
+    var policy = AppDiagnosticRetentionPolicy(
+      historyBytes: 4_096, protectedBytes: 2_048, segmentBytes: 1_024,
+      exportBytes: 32_768, aggregationWindow: 0)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 2_048,
+      policy: policy,
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -307,14 +310,40 @@ final class AppDiagnosticsTests: XCTestCase {
       .succeeded(operation: "sync.fetch"), at: Date(timeIntervalSince1970: 1_790_053_200 + 2))
     store.append(
       .succeeded(operation: "sync.send"), at: Date(timeIntervalSince1970: 1_790_053_200 + 3))
+    store.append(
+      .succeeded(operation: "clipboard.persist", byteCount: 4),
+      at: Date(timeIntervalSince1970: 1_790_053_200 + 4))
+    let syncHistoryRecords = [
+      "2026-09-22T05:00:00Z diagnostic_event operation=sync.snapshot outcome=succeeded "
+        + "visibility=background scope=transport environment=production phase=active pending_events=2",
+      "2026-09-22T05:00:01Z diagnostic_event operation=sync.snapshot outcome=succeeded "
+        + "visibility=background scope=records phase=blocked reason=record_blocked blocked_records=3",
+      "2026-09-22T05:00:02Z diagnostic_event operation=sync.fetch outcome=succeeded visibility=background",
+      "2026-09-22T05:00:03Z diagnostic_event operation=sync.send outcome=succeeded visibility=background",
+    ]
+    let initialHistory = try store.readLog().text
+    for record in syncHistoryRecords {
+      XCTAssertTrue(initialHistory.contains(record), record)
+    }
+
     for index in 10..<30 {
       store.append(
-        .started(operation: "clipboard.persist"),
+        .succeeded(operation: "clipboard.persist", byteCount: Int64(index)),
         at: Date(timeIntervalSince1970: 1_790_053_200 + TimeInterval(index)))
     }
+    let retainedHistory = try store.readLog().text
+    for record in syncHistoryRecords {
+      XCTAssertFalse(retainedHistory.contains(record), record)
+    }
+    XCTAssertFalse(retainedHistory.contains("diagnostic_event operation=sync.snapshot"))
+    XCTAssertFalse(retainedHistory.contains("diagnostic_event operation=sync.fetch"))
+    XCTAssertFalse(retainedHistory.contains("diagnostic_event operation=sync.send"))
+    XCTAssertTrue(retainedHistory.contains("operation=clipboard.persist outcome=succeeded visibility=background bytes=29"))
+
+    policy.exportBytes = 2_048
     let reopened = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 2_048,
+      policy: policy,
       appVersion: "1",
       appBuild: "3", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -347,7 +376,7 @@ final class AppDiagnosticsTests: XCTestCase {
   func testLatestSyncObservationReplacesOldValuesAndKeepsUnknownValuesAbsent() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -396,7 +425,7 @@ final class AppDiagnosticsTests: XCTestCase {
   func testLastSuccessfulTransfersAdvanceOnlyAfterSuccess() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -473,7 +502,7 @@ final class AppDiagnosticsTests: XCTestCase {
         atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 8_192,
+      policy: .init(exportBytes: 8_192),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -499,7 +528,7 @@ final class AppDiagnosticsTests: XCTestCase {
   func testUnobservedSyncHealthStaysAbsentOnExport() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -513,7 +542,7 @@ final class AppDiagnosticsTests: XCTestCase {
 
   func testObservedSyncHealthSurvivesAFailedHistoryWrite() throws {
     let store = AppDiagnosticEventStore(
-      directoryURL: temporaryDirectory, maxBytes: 4_096,
+      directoryURL: temporaryDirectory, policy: .init(exportBytes: 4_096),
       appVersion: "1", appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) })
     store.append(.started(operation: "app.startup"), at: Date(timeIntervalSince1970: 1_790_053_200))
     let file = try XCTUnwrap(
@@ -546,7 +575,7 @@ final class AppDiagnosticsTests: XCTestCase {
     """.write(to: eventsURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "0.5.1",
       appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -597,7 +626,7 @@ final class AppDiagnosticsTests: XCTestCase {
     """.write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "0.5.1",
       appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -624,7 +653,7 @@ final class AppDiagnosticsTests: XCTestCase {
       .write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 2_048,
+      policy: .init(exportBytes: 2_048),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -660,7 +689,7 @@ final class AppDiagnosticsTests: XCTestCase {
     """.write(to: legacyURL, atomically: true, encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -678,7 +707,7 @@ final class AppDiagnosticsTests: XCTestCase {
   func testLargeRetryIntervalSurvivesStoredLineValidation() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -696,10 +725,10 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertTrue(export.contains("retry_after=1e+20"))
   }
 
-  func testStoreDropsOldestWholeEventsAtSizeLimit() throws {
+  func testExportDropsOldestWholeEventsAtByteLimit() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 2_048,
+      policy: .init(exportBytes: 2_048),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -728,7 +757,7 @@ final class AppDiagnosticsTests: XCTestCase {
   func testIdenticalFailuresInTheSameSecondKeepTheirCount() throws {
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -756,7 +785,7 @@ final class AppDiagnosticsTests: XCTestCase {
         encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "1",
       appBuild: "2", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )
@@ -793,7 +822,7 @@ final class AppDiagnosticsTests: XCTestCase {
       encoding: .utf8)
     let store = AppDiagnosticEventStore(
       directoryURL: temporaryDirectory,
-      maxBytes: 4_096,
+      policy: .init(exportBytes: 4_096),
       appVersion: "0.5.1",
       appBuild: "92", now: { Date(timeIntervalSince1970: 1_790_056_800) }
     )

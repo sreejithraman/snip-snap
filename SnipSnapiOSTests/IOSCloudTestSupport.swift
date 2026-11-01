@@ -28,24 +28,32 @@ actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     private var prepareCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var syncCalls = 0
     private var prepareCalls = 0
+    private var scheduleCalls = 0
+    private let onSchedule: (@Sendable () -> Void)?
 
     init(
         states: [UUID: SyncedAttachmentTransferState],
         isActive: Bool = true,
         activeReadFails: Bool = false,
         activeReadFailsAfterFirst: Bool = false,
-        stateReadFails: Bool = false
+        stateReadFails: Bool = false,
+        onSchedule: (@Sendable () -> Void)? = nil
     ) {
         self.states = states
         active = isActive
         self.activeReadFails = activeReadFails
         self.activeReadFailsAfterFirst = activeReadFailsAfterFirst
         self.stateReadFails = stateReadFails
+        self.onSchedule = onSchedule
     }
 
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { syncCalls += 1 }
+    func scheduleSyncAfterLocalChange() async {
+        scheduleCalls += 1
+        onSchedule?()
+    }
     func isCloudSyncActive() async throws -> Bool {
         defer { activeReadCount += 1 }
         if activeReadFails || (activeReadFailsAfterFirst && activeReadCount > 0) {
@@ -54,6 +62,7 @@ actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         return active
     }
     func syncCount() -> Int { syncCalls }
+    func scheduleCount() -> Int { scheduleCalls }
     func prepareCount() -> Int { prepareCalls }
     func setState(_ state: SyncedAttachmentTransferState, for id: UUID) { states[id] = state }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {

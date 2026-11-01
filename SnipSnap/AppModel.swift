@@ -110,11 +110,6 @@ final class AppModel: ObservableObject {
         return { [weak self] in self?.retryPendingUndo(failure) }
     }
 
-    func retryErrorActionNow() async {
-        guard canRetryErrorAction, let failure = dialogFailure else { return }
-        await retryPendingUndoNow(failure)
-    }
-
     var pendingUndoFailure: AppFailure? {
         guard let retryableUndo,
               latestFailure?.id != retryableUndo.failure.id,

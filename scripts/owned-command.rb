@@ -3,10 +3,11 @@ require 'fileutils'
 
 # A separate group contains only this invocation and children that inherit it.
 class OwnedCommand
-  def initialize(timeout:, marker:, command:)
+  def initialize(timeout:, marker:, command:, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
     @timeout = timeout
     @marker = marker
     @command = command
+    @clock = clock
     @cancelled = nil
     %w[INT TERM].each { |signal| Signal.trap(signal) { @cancelled = signal } }
   end
@@ -50,7 +51,7 @@ class OwnedCommand
   end
 
   def monotonic_time
-    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    @clock.call
   end
 
   def group_running?
@@ -87,12 +88,14 @@ class OwnedCommand
   end
 end
 
-begin
-  timeout = Float(ARGV.shift)
-  marker = ARGV.shift
-  raise ArgumentError unless timeout.finite? && timeout >= 0 && marker && !ARGV.empty?
-  exit OwnedCommand.new(timeout: timeout, marker: marker, command: ARGV).run
-rescue ArgumentError, TypeError
-  warn 'Usage: owned-command.rb TIMEOUT_SECONDS MARKER COMMAND [ARGUMENT...] (0 disables timeout)'
-  exit 2
+if $PROGRAM_NAME == __FILE__
+  begin
+    timeout = Float(ARGV.shift)
+    marker = ARGV.shift
+    raise ArgumentError unless timeout.finite? && timeout >= 0 && marker && !ARGV.empty?
+    exit OwnedCommand.new(timeout: timeout, marker: marker, command: ARGV).run
+  rescue ArgumentError, TypeError
+    warn 'Usage: owned-command.rb TIMEOUT_SECONDS MARKER COMMAND [ARGUMENT...] (0 disables timeout)'
+    exit 2
+  end
 end

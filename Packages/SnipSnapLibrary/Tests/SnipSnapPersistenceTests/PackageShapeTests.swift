@@ -42,46 +42,4 @@ final class PackageShapeTests: XCTestCase {
         XCTAssertEqual(addUpdate.snapshot.lists.map(\.name), ["Inbox", "Work"])
     }
 
-    func testJSONAdapterReopensSnipsThatShareAStoredAttachment() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapLibraryTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let storeURL = directory.appendingPathComponent("snips.json")
-        let sourceURL = directory.appendingPathComponent("note.txt")
-        try Data("Shared".utf8).write(to: sourceURL)
-        let firstLibrary: any SnipLibrary = try JSONSnipLibrary(fileURL: storeURL)
-
-        let firstUpdate = try await firstLibrary.perform(
-            .add(
-                content: "First",
-                origin: .quickEntry,
-                source: nil,
-                listID: SnipList.inboxID,
-                attachmentURLs: [sourceURL],
-                requestID: UUID(),
-                now: Date(timeIntervalSince1970: 100)
-            ),
-            sortedBy: .chronological
-        )
-        let attachment = try XCTUnwrap(firstUpdate.snapshot.snips.first?.attachments.first)
-        let storedURL = try XCTUnwrap(firstUpdate.snapshot.attachmentURLs[attachment.id])
-        _ = try await firstLibrary.perform(
-            .add(
-                content: "Second",
-                origin: .quickEntry,
-                source: nil,
-                listID: SnipList.inboxID,
-                attachmentURLs: [storedURL],
-                requestID: UUID(),
-                now: Date(timeIntervalSince1970: 200)
-            ),
-            sortedBy: .chronological
-        )
-
-        let reopened: any SnipLibrary = try JSONSnipLibrary(fileURL: storeURL)
-        let snapshot = await reopened.snapshot(sortedBy: .chronological)
-        XCTAssertEqual(snapshot.snips.map(\.content), ["Second", "First"])
-        XCTAssertEqual(Set(snapshot.snips.flatMap(\.attachments).map(\.id)), [attachment.id])
-    }
 }

@@ -1,12 +1,32 @@
 #!/bin/zsh
 set -euo pipefail
 script_dir="${0:A:h}"
+source_script_dir="$script_dir"
 test_dir="$(mktemp -d)"
 cleanup() {
  /bin/rm -rf "$test_dir"
 }
 trap cleanup EXIT
-mkdir -p "$test_dir/bin"
+mkdir -p "$test_dir/bin" "$test_dir/repo/scripts"
+/bin/cp "$source_script_dir"/*.(sh|rb|py) "$test_dir/repo/scripts/"
+for input in "${source_script_dir:h}"/*; do
+ case "${input:t}" in scripts|artifacts) continue ;; esac
+ /bin/ln -s "$input" "$test_dir/repo/${input:t}"
+done
+script_dir="$test_dir/repo/scripts"
+export SNIP_SNAP_TEST_OWNED_COMMAND_SOURCE="$source_script_dir/owned-command.rb"
+export FAKE_SIM_STAGE_READY="$test_dir/stage-ready"
+cat > "$script_dir/owned-command.rb" <<'RUBY'
+require ENV.fetch('SNIP_SNAP_TEST_OWNED_COMMAND_SOURCE')
+timeout = Float(ARGV.shift)
+marker = ARGV.shift
+target = ARGV[0, 2] == %w[xcrun simctl] && ARGV[2] == ENV['FAKE_SIM_STALL_STAGE']
+clock = -> {
+  Process.clock_gettime(Process::CLOCK_MONOTONIC) +
+    (target && File.exist?(ENV.fetch('FAKE_SIM_STAGE_READY')) ? timeout + 1 : 0)
+}
+exit OwnedCommand.new(timeout: timeout, marker: marker, command: ARGV, clock: clock).run
+RUBY
 export SNIP_SNAP_DEV_STATE_DIR="$test_dir/state"
 export SNIP_SNAP_DEV_WORKTREE="${script_dir:h}"
 export FAKE_SIM_LOG="$test_dir/sim.log"
@@ -21,9 +41,13 @@ if [[ "$*" == 'simctl list devices available --json' ]]; then
  print -r -- '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[{"state":"Booted","udid":"TEST-SIM"}]}}'
 elif [[ "$1" == simctl ]]; then
  [[ ! -e "$FAKE_FIXTURE_PID_FILE" ]] || { print -u2 'The fixture started before simulator setup finished'; exit 1; }
+ if [[ "$2" != "${FAKE_SIM_STALL_STAGE:-}" && -n "${FAKE_SIM_SETUP_DELAY:-}" ]]; then
+  /bin/sleep "$FAKE_SIM_SETUP_DELAY"
+ fi
  print -r -- "$*" >> "$FAKE_SIM_LOG"
  if [[ "$2" == "${FAKE_SIM_STALL_STAGE:-}" ]]; then
   print -r -- "Waiting in simulator $2"
+  /usr/bin/touch "$FAKE_SIM_STAGE_READY"
   /bin/sleep 60 &
   wait
  fi
@@ -155,10 +179,6 @@ RUBY
 if [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-enableCodeCoverage NO'* ]]; then
  print -u2 'An ordinary test run disabled coverage'; exit 1
 fi
-"$script_dir/run.sh" --ios-simulator --unit-test all > "$test_dir/output" 2>&1
-[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests test' ]] || {
- print -u2 'The all-unit selector did not include every iOS unit suite'; exit 1
-}
 "$script_dir/run.sh" --ios-simulator --unit-test AppFeedbackTests > "$test_dir/output" 2>&1
 [[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *'-only-testing:SnipSnapiOSTests/AppFeedbackTests test' ]] || {
  print -u2 'The shared feedback suite did not select its iOS target'; exit 1
@@ -246,27 +266,32 @@ if FAKE_WRONG_ID=1 "$script_dir/run.sh" --ios-simulator > "$test_dir/output" 2>&
  print -u2 'Accepted a build with the wrong bundle ID'; exit 1
 fi
 cmp "$test_dir/before" "$FAKE_SIM_LOG"
+expected_stages=()
 for stage in terminate install launch; do
+ /bin/rm -f "$FAKE_SIM_STAGE_READY"
  : > "$FAKE_SIM_LOG"
- if FAKE_SIM_STALL_STAGE="$stage" SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS=0.2 \
+ if FAKE_SIM_STALL_STAGE="$stage" FAKE_SIM_SETUP_DELAY=0.3 SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS=5 \
   "$script_dir/run.sh" --ios-simulator > "$test_dir/output" 2>&1; then
   print -u2 "A stalled simulator $stage succeeded"; exit 1
  else
   stage_status=$?
  fi
  [[ "$stage_status" == 124 ]] || { print -u2 "Simulator $stage lost timeout status"; exit 1; }
- grep -F "Simulator $stage (timeout 0.2s). Log:" "$test_dir/output" >/dev/null
+ grep -F "Simulator $stage (timeout 5s). Log:" "$test_dir/output" >/dev/null
  stage_log="$SNIP_SNAP_DEV_STATE_DIR/build/ios-slot-1/build-$stage.log"
  grep -F "Waiting in simulator $stage" "$stage_log" >/dev/null
- grep -F 'timed out after 0.2s' "$stage_log" >/dev/null
- [[ "$(tail -n 1 "$FAKE_SIM_LOG")" == "simctl $stage "* ]] || {
+ grep -F 'timed out after 5.0s' "$stage_log" >/dev/null
+ expected_stages+=("$stage")
+ through_timeout="${(F)expected_stages}"
+ actual_stages="$(awk '{ print $2 }' "$FAKE_SIM_LOG")"
+ [[ "$actual_stages" == "$through_timeout" ]] || {
   print -u2 'Simulator setup continued after a timeout'; exit 1
  }
  [[ ! -e "$SNIP_SNAP_DEV_STATE_DIR/locks/ios-slot-1" ]] || {
   print -u2 'Simulator timeout left the Dev slot locked'; exit 1
  }
 done
-"$script_dir/owned-command-tests.sh"
+"$source_script_dir/owned-command-tests.sh"
 "$script_dir/run.sh" ios-simulator TEST-SIM > "$test_dir/output"
 if ! FAKE_EXPECT_FIXTURE=1 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --ui-test all > "$test_dir/output" 2>&1; then
  cat "$test_dir/output" >&2

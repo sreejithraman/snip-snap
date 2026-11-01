@@ -747,6 +747,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
 
       let reopened = try adapter.open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .chronological)
+      XCTAssertEqual(snapshot.snips.map(\.content), ["Shares file", "With file"], adapter.rawValue)
       XCTAssertEqual(snapshot.snips.last?.source?.windowTitle, "Contract", adapter.rawValue)
       XCTAssertEqual(
         snapshot.snips.flatMap(\.attachments).map(\.id), [attachment.id, attachment.id],

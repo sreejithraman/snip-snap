@@ -1617,10 +1617,10 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.dialogFailure?.surface, .dialog)
         model.showLatestErrorDetails()
         await library.failNextCheckedRead()
-        await model.retryErrorActionNow()
+        await model.retryPendingUndoNow(try XCTUnwrap(model.dialogFailure))
         XCTAssertEqual(model.errorDetails?.id, model.latestFailure?.id)
         XCTAssertTrue(model.canRetryErrorAction)
-        await model.retryErrorActionNow()
+        await model.retryPendingUndoNow(try XCTUnwrap(model.dialogFailure))
         XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
         XCTAssertFalse(model.canRetryErrorAction)
         XCTAssertNil(model.presentedError)
@@ -1655,7 +1655,7 @@ final class AppModelTests: StoreBackedTestCase {
             XCTAssertTrue(model.canRetryErrorAction)
         }
         let clipboardWrites = pasteboard.changeCount
-        await model.retryErrorActionNow()
+        await model.retryPendingUndoNow(try XCTUnwrap(model.dialogFailure))
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == snip.id }).isDone)
         XCTAssertEqual(pasteboard.changeCount, clipboardWrites)
     }
@@ -2393,7 +2393,8 @@ final class AppModelTests: StoreBackedTestCase {
     @MainActor
     func testSavingASnipSchedulesCloudSync() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let handler = MacOptionalCloudSyncHandlerProbe()
+        let syncRequested = expectation(description: "Saving requests cloud sync")
+        let handler = MacOptionalCloudSyncHandlerProbe(onSchedule: { syncRequested.fulfill() })
         let model = AppModel(
             library: repository,
             defaults: defaults(),
@@ -2403,13 +2404,12 @@ final class AppModelTests: StoreBackedTestCase {
 
         let added = await model.add(content: "Saved", origin: .quickEntry)
         XCTAssertTrue(added)
-        for _ in 0..<20 {
-            if await handler.syncCount() > 0 { break }
-            await Task.yield()
-        }
+        await fulfillment(of: [syncRequested], timeout: 2)
 
+        let scheduleCount = await handler.scheduleCount()
         let syncCount = await handler.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        XCTAssertEqual(scheduleCount, 1)
+        XCTAssertEqual(syncCount, 0)
     }
 
     @MainActor

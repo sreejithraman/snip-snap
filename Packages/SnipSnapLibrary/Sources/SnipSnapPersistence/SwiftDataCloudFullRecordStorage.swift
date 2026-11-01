@@ -463,24 +463,6 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  package func storeDormantCloudBase(
-    namespaceKey: CloudSyncNamespaceKey,
-    reference: CloudEntityReference,
-    identity: CloudTextStorageIdentity,
-    payload: Data
-  ) throws {
-    let rawNamespaceKey = namespaceKey.rawValue
-    try storeDormantCloudBases(
-      namespaceKey: namespaceKey,
-      bases: [CloudDormantBase(
-        namespaceKey: rawNamespaceKey,
-        reference: reference,
-        identity: identity,
-        payload: payload
-      )]
-    )
-  }
-
   package func storeDormantCloudBases(
     namespaceKey: CloudSyncNamespaceKey,
     bases: [CloudDormantBase],

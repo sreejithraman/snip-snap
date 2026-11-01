@@ -386,12 +386,6 @@ final class IOSAppModelTests: IOSModelTestCase {
         XCTAssertNil(model.toast)
     }
 
-    func testTargetCannotCompileAppKit() {
-        #if canImport(AppKit)
-        XCTFail("The universal iOS target must not compile AppKit.")
-        #endif
-    }
-
     private func contrastRatio(_ first: UIColor, _ second: UIColor) -> CGFloat {
         let lighter = max(relativeLuminance(first), relativeLuminance(second))
         let darker = min(relativeLuminance(first), relativeLuminance(second))

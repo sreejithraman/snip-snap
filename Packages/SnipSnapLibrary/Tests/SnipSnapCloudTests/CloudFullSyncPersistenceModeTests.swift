@@ -1,9 +1,9 @@
 import Foundation
 import SnipSnapCore
-import SnipSnapPersistence
 import XCTest
 
 @testable import SnipSnapCloud
+@testable import SnipSnapPersistence
 
 extension CloudFullSyncPersistenceTests {
   func testDormantTransferPayloadCapturesReadyDeferredAndPriorRecoveryOnly() async throws {
@@ -49,11 +49,14 @@ extension CloudFullSyncPersistenceTests {
       ),
       payload: Data("prior".utf8)
     )
-    try await library.storeDormantCloudBase(
+    try await library.storeDormantCloudBases(
       namespaceKey: CloudSyncNamespaceKey(rawValue: prior.namespaceKey),
-      reference: prior.reference,
-      identity: prior.identity,
-      payload: prior.payload
+      bases: [CloudDormantBase(
+        namespaceKey: prior.namespaceKey,
+        reference: prior.reference,
+        identity: prior.identity,
+        payload: prior.payload
+      )]
     )
     let before = try await library.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
