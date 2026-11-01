@@ -250,8 +250,6 @@ private actor TestCloudTextPersistence: CloudTextSyncPersistence {
         staged.remove(at: index)
     }
 
-    func clear() {}
-
     func texts() -> [String] {
         records.values.map(\.text).sorted()
     }

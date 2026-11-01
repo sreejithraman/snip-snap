@@ -7,7 +7,6 @@ package protocol CloudTextSyncPersistence: Sendable {
     func stage(_ batch: CloudSyncBatch) async throws
     func applyStaged(_ id: UUID) async throws
     func pendingChanges() async throws -> CloudOutboundBatch
-    func clear() async throws
 }
 
 package actor CloudTextSyncCoordinator {

@@ -7,6 +7,7 @@ public actor SnipCLIRequestStore {
   public static let pendingNotificationName = Notification.Name("world.sree.snipsnap.cli-request-pending")
 
   private let paths: Paths
+  private let now: @Sendable () -> Date
   private var isProcessing = false
   private var needsRescan = false
   private var didExcludeRootFromBackup = false
@@ -16,6 +17,12 @@ public actor SnipCLIRequestStore {
 
   public init(rootURL: URL) {
     paths = Paths(rootURL: rootURL)
+    now = Date.init
+  }
+
+  package init(rootURL: URL, now: @escaping @Sendable () -> Date) {
+    paths = Paths(rootURL: rootURL)
+    self.now = now
   }
 
   public func publishActiveScopeToken(_ token: String) throws {
@@ -130,7 +137,7 @@ public actor SnipCLIRequestStore {
         guard existing.fingerprint == request.fingerprint else {
           throw SnipCLIRequestError.conflictingRequestID
         }
-        if existing.expiresAt > Date(), clientIsAlive(existing.clientPID) { return .pending }
+        if existing.expiresAt > now(), clientIsAlive(existing.clientPID) { return .pending }
         try FileManager.default.removeItem(at: pendingURL)
       }
       try DurableFile.write(try Self.encoder.encode(request), to: pendingURL)
@@ -158,7 +165,7 @@ public actor SnipCLIRequestStore {
       let pendingURL = paths.pendingURL(requestID)
       if let pending = try readRequest(at: pendingURL) {
         guard pending.scopeToken == scopeToken else { return .missing }
-        if pending.expiresAt > Date(), clientIsAlive(pending.clientPID) { return .pending }
+        if pending.expiresAt > now(), clientIsAlive(pending.clientPID) { return .pending }
         try FileManager.default.removeItem(at: pendingURL)
         try DurableFile.syncDirectory(paths.pendingRootURL)
       }
@@ -264,7 +271,7 @@ public actor SnipCLIRequestStore {
       let pending = paths.pendingURL(id)
       guard let request = try readRequest(at: pending) else { return nil }
       guard request.scopeToken == (try readScopeToken()) else { return nil }
-      guard request.requestID == id, request.expiresAt > Date(),
+      guard request.requestID == id, request.expiresAt > now(),
         clientIsAlive(request.clientPID) else {
         try FileManager.default.removeItem(at: pending)
         try DurableFile.syncDirectory(paths.pendingRootURL)
@@ -399,7 +406,7 @@ public actor SnipCLIRequestStore {
     let url = paths.receiptURL(id)
     guard let modified = try url.resourceValues(forKeys: [.contentModificationDateKey])
       .contentModificationDate else { return receipt }
-    let age = Date().timeIntervalSince(modified)
+    let age = now().timeIntervalSince(modified)
     let isRead = receipt.action.receiptPolicy == .transientRead
     if isRead && age > 60 * 60 {
       try FileManager.default.removeItem(at: url)
@@ -446,12 +453,12 @@ public actor SnipCLIRequestStore {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey]),
           values.isRegularFile == true else { continue }
         let request = try? readRequest(at: file)
-        if let request, request.expiresAt > Date(), clientIsAlive(request.clientPID) { continue }
+        if let request, request.expiresAt > now(), clientIsAlive(request.clientPID) { continue }
         if (try? FileManager.default.removeItem(at: file)) != nil { removed = true }
       }
       if removed { try? DurableFile.syncDirectory(paths.pendingRootURL) }
     }
-    let readCutoff = Date().addingTimeInterval(-60 * 60)
+    let readCutoff = now().addingTimeInterval(-60 * 60)
     // Keep write receipts and uncertain markers so an old request ID cannot
     // silently run a mutation twice. Read results carry library data and expire.
     if let files = try? FileManager.default.contentsOfDirectory(

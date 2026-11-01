@@ -38,16 +38,25 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
     for action in actions {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: root) }
-      let store = SnipCLIRequestStore(rootURL: root)
+      let clock = SnipCLIStoreTestClock()
+      let store = SnipCLIRequestStore(rootURL: root, now: { clock.now })
       try await store.publishActiveScopeToken("before")
       let request = SnipCLIRequest(action: .extended(.application(action)), scopeToken: "before",
-        expiresAt: Date().addingTimeInterval(0.15))
+        expiresAt: clock.now.addingTimeInterval(1))
       let execution = Task { try await SnipCLIService.execute(request, store: store) }
       try await waitUntilPending(request, store: store)
       await store.processPending { received in
         try await store.publishActiveScopeToken("after")
-        // Claimed transitions must finish even after the original request expires.
-        try await Task.sleep(for: .milliseconds(200))
+        let unclaimed = SnipCLIRequest(
+          action: .listSnips(list: nil), scopeToken: "after",
+          expiresAt: clock.now.addingTimeInterval(1))
+        _ = try await store.enqueue(unclaimed)
+        let beforeExpiry = try await store.state(for: unclaimed.requestID)
+        XCTAssertEqual(beforeExpiry, .pending)
+        clock.advance(by: 2)
+        XCTAssertLessThan(received.expiresAt, clock.now)
+        let expired = try await store.state(for: unclaimed.requestID)
+        XCTAssertEqual(expired, .missing)
         return SnipCLIReceipt(request: received, status: .success,
           extendedResult: .application(.init(values: ["state": "finished"])),
           resultingScopeToken: "after")
@@ -56,10 +65,12 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
       XCTAssertTrue(delivered.matches(request))
       XCTAssertEqual(delivered.scopeToken, "before")
       XCTAssertEqual(delivered.visibleScopeToken, "after")
+      XCTAssertEqual(delivered.extendedResult, .application(.init(values: ["state": "finished"])))
       guard case .completed(let status) = try await SnipCLIService.status(request.requestID, store: store) else {
         return XCTFail("Expected the result in the destination scope for \(action)")
       }
       XCTAssertEqual(status.status, .success)
+      XCTAssertEqual(status.extendedResult, .application(.init(values: ["state": "finished"])))
       XCTAssertEqual(status.extendedResult, delivered.extendedResult)
       try await store.releaseReceipt(request.requestID)
       guard case .completed(let compact) = try await SnipCLIService.status(request.requestID, store: store) else {

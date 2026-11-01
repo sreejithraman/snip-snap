@@ -251,21 +251,30 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     private let clearURLs: [URL]
     private var clears = 0
     private var syncCalls = 0
+    private var scheduleCalls = 0
+    private let onSchedule: (@Sendable () -> Void)?
 
     init(
         urls: [UUID: URL] = [:],
         failuresRemaining: Int = 0,
-        clearURLs: [URL] = []
+        clearURLs: [URL] = [],
+        onSchedule: (@Sendable () -> Void)? = nil
     ) {
         self.urls = urls
         self.failuresRemaining = failuresRemaining
         self.clearURLs = clearURLs
+        self.onSchedule = onSchedule
     }
 
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { syncCalls += 1 }
+    func scheduleSyncAfterLocalChange() async {
+        scheduleCalls += 1
+        onSchedule?()
+    }
     func syncCount() -> Int { syncCalls }
+    func scheduleCount() -> Int { scheduleCalls }
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
 

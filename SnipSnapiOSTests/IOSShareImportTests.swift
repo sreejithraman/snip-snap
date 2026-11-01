@@ -12,18 +12,18 @@ import XCTest
 @MainActor
 final class IOSShareImportTests: IOSModelTestCase {
     func testSavingASnipSchedulesCloudSync() async {
-        let handler = IOSCloudSyncHandlerProbe(states: [:])
+        let syncRequested = expectation(description: "Saving requests cloud sync")
+        let handler = IOSCloudSyncHandlerProbe(states: [:], onSchedule: { syncRequested.fulfill() })
         let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
 
         let created = await model.createSnip(content: "Saved", in: SnipList.inboxID)
         XCTAssertTrue(created)
-        for _ in 0..<20 {
-            if await handler.syncCount() > 0 { break }
-            await Task.yield()
-        }
+        await fulfillment(of: [syncRequested], timeout: 2)
 
+        let scheduleCount = await handler.scheduleCount()
         let syncCount = await handler.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        XCTAssertEqual(scheduleCount, 1)
+        XCTAssertEqual(syncCount, 0)
     }
 
     func testRootReinitializationKeepsForegroundImportOnRetainedGraph() async throws {

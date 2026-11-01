@@ -84,42 +84,6 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
         XCTAssertNil(cache.cachedClipboardImage(id: invalidID, size: size, scale: 3))
     }
 
-    func testLargeClipboardImageDecodeBenchmark() async throws {
-        let context = CGContext(data: nil, width: 4096, height: 4096, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        for y in stride(from: 0, to: 4096, by: 32) {
-            context.setFillColor(red: CGFloat(y % 256) / 255, green: 0.25, blue: 0.75, alpha: 1)
-            context.fill(CGRect(x: 0, y: y, width: 4096, height: 32))
-        }
-        let data = UIImage(cgImage: context.makeImage()!).jpegData(compressionQuality: 0.9)!
-        var full: [Double] = []
-        var thumb: [Double] = []
-        var warm: [Double] = []
-        let size = CGSize(width: 64, height: 64)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let entry = ClipboardEntry(items: (0..<3).map { _ in
-            .init(representations: [.init(type: UTType.jpeg.identifier, data: data)])
-        })
-        let ids = (0..<3).map { ClipboardImageThumbnailID(entry: entry, representationIndex: $0) }
-        for _ in 0..<15 {
-            let start = CACurrentMediaTime()
-            for _ in 0..<3 {
-                autoreleasepool {
-                    let image = UIImage(data: data)!
-                    _ = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-                }
-            }
-            full.append((CACurrentMediaTime() - start) * 1000)
-            let cache = AttachmentThumbnailCache()
-            let asyncStart = CACurrentMediaTime()
-            for id in ids { _ = await cache.clipboardImage(data: data, id: id, size: size, scale: 3) }
-            thumb.append((CACurrentMediaTime() - asyncStart) * 1000)
-            let warmStart = CACurrentMediaTime()
-            for id in ids { _ = await cache.clipboardImage(data: data, id: id, size: size, scale: 3) }
-            warm.append((CACurrentMediaTime() - warmStart) * 1000)
-        }
-        print("THUMBNAIL-BENCH full-three-ms=\(full) cold-three-ms=\(thumb) warm-three-ms=\(warm) jpeg-bytes=\(data.count)")
-    }
-
     func testCachedThumbnailReturnsWhileAnotherImageIsDecoding() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "SnipSnapThumbnailWait-\(UUID().uuidString)", isDirectory: true

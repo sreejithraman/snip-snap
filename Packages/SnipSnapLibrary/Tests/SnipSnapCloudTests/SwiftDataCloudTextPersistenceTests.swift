@@ -1700,7 +1700,7 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(committed.snips.map(\.content), ["atomic remote text"])
         XCTAssertEqual(committedState, envelope)
 
-        try await bridge.clear()
+        try await reopened.clearCloudTextSyncState(namespaceKey: namespace.namespaceKey)
         let clearedState = try await bridge.loadEngineState()
         XCTAssertNil(clearedState)
         let afterClear = await reopened.snapshot(sortedBy: .chronological)

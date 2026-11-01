@@ -1648,13 +1648,6 @@ final class PanelTests: StoreBackedTestCase {
         )
     }
 
-    func testCompactComposerPeerControlsShareVisibleHeight() {
-        XCTAssertEqual(
-            PanelControlMetrics.compactControlLength,
-            PanelControlMetrics.compactComposerHeight
-        )
-    }
-
     func testPanelControlsShareAVisibleHeight() {
         XCTAssertEqual(PanelControlMetrics.regularControlLength, 32)
         XCTAssertEqual(

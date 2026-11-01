@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import Carbon.HIToolbox
+import Combine
 @testable import SnipSnap
 
 @MainActor
@@ -53,7 +54,7 @@ final class CommandNumberPickerTests: XCTestCase {
 
         picker.handleCommand(isDown: true)
         XCTAssertFalse(picker.isRevealed)
-        try? await Task.sleep(for: .milliseconds(40))
+        await waitForReveal(picker)
 
         XCTAssertTrue(picker.isRevealed)
         XCTAssertEqual(picker.displayedNumber(for: first), 1)
@@ -65,7 +66,7 @@ final class CommandNumberPickerTests: XCTestCase {
         let target = CommandNumberTarget.snip(uuid(0))
         picker.setOrderedTargets([target])
         picker.handleCommand(isDown: true)
-        try? await Task.sleep(for: .milliseconds(40))
+        await waitForReveal(picker)
         XCTAssertTrue(picker.isRevealed)
 
         picker.noteNonDigitCommandKey()
@@ -77,7 +78,7 @@ final class CommandNumberPickerTests: XCTestCase {
 
         picker.handleCommand(isDown: false)
         picker.handleCommand(isDown: true)
-        try? await Task.sleep(for: .milliseconds(40))
+        await waitForReveal(picker)
         XCTAssertTrue(picker.isRevealed)
         XCTAssertEqual(picker.displayedNumber(for: target), 1)
     }
@@ -192,6 +193,15 @@ final class CommandNumberPickerTests: XCTestCase {
         picker.setOrderedTargets([target], owner: owner)
 
         XCTAssertEqual(picker.target(forNumber: 1), target)
+    }
+
+    private func waitForReveal(_ picker: CommandNumberPicker) async {
+        let revealed = expectation(description: "Command-number overlay revealed")
+        let subscription = picker.$isRevealed.filter { $0 }.prefix(1).sink { _ in
+            revealed.fulfill()
+        }
+        defer { subscription.cancel() }
+        await fulfillment(of: [revealed], timeout: 2)
     }
 
     private func uuid(_ value: Int) -> UUID {

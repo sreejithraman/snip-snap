@@ -1,6 +1,7 @@
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
+import Synchronization
 import XCTest
 @testable import SnipSnapCLI
 
@@ -310,34 +311,67 @@ final class SnipCommandStoreTests: XCTestCase {
   func testClaimedUpdateStaysProcessingAfterRequestExpiryWithoutRetainingText() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let store = SnipCLIRequestStore(rootURL: root)
+    let clock = SnipCLIStoreTestClock()
+    let store = SnipCLIRequestStore(rootURL: root, now: { clock.now })
     let request = SnipCLIRequest(
-      action: .updateSnip(id: UUID(), content: "Private replacement", expectedUpdatedAt: Date()),
-      expiresAt: Date().addingTimeInterval(0.5)
+      action: .updateSnip(id: UUID(), content: "Private replacement", expectedUpdatedAt: clock.now),
+      expiresAt: clock.now.addingTimeInterval(1)
     )
     _ = try await store.enqueue(request)
     let started = expectation(description: "App claimed request")
+    let finished = expectation(description: "App finished request")
+    let release = AsyncStream<Void>.makeStream()
     let processing = Task {
+      defer { finished.fulfill() }
       await store.processPending { received in
         started.fulfill()
-        try? await Task.sleep(for: .seconds(1))
+        var iterator = release.stream.makeAsyncIterator()
+        _ = await iterator.next()
         return SnipCLIReceipt(request: received, status: .success)
       }
     }
     await fulfillment(of: [started], timeout: 2)
-    let markerURL = root.appendingPathComponent(
-      "Agent/Commands/Processing/\(request.requestID.uuidString).json")
-    let marker = try String(contentsOf: markerURL, encoding: .utf8)
-    XCTAssertFalse(marker.contains("Private replacement"))
-    try FileManager.default.setAttributes(
-      [.modificationDate: Date().addingTimeInterval(-8 * 24 * 60 * 60)],
-      ofItemAtPath: markerURL.path
-    )
-    try await store.pruneAbandoned()
-    XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
-    try await Task.sleep(for: .milliseconds(600))
-    let inProgress = try await store.state(for: request.requestID)
-    XCTAssertEqual(inProgress, .processing)
+    do {
+      let unclaimed = SnipCLIRequest(
+        action: .updateSnip(id: UUID(), content: "Private unclaimed replacement", expectedUpdatedAt: clock.now),
+        expiresAt: clock.now.addingTimeInterval(1)
+      )
+      _ = try await store.enqueue(unclaimed)
+      let pendingURL = root.appendingPathComponent(
+        "Agent/Commands/Pending/\(unclaimed.requestID.uuidString).json")
+      let pending = try String(contentsOf: pendingURL, encoding: .utf8)
+      XCTAssertTrue(pending.contains("Private unclaimed replacement"))
+      let beforeExpiry = try await store.state(for: unclaimed.requestID)
+      XCTAssertEqual(beforeExpiry, .pending)
+      clock.advance(by: 2)
+      XCTAssertLessThan(request.expiresAt, clock.now)
+      let markerURL = root.appendingPathComponent(
+        "Agent/Commands/Processing/\(request.requestID.uuidString).json")
+      let marker = try String(contentsOf: markerURL, encoding: .utf8)
+      XCTAssertFalse(marker.contains("Private replacement"))
+      try FileManager.default.setAttributes(
+        [.modificationDate: clock.now.addingTimeInterval(-8 * 24 * 60 * 60)],
+        ofItemAtPath: markerURL.path
+      )
+      let markerAttributes = try FileManager.default.attributesOfItem(atPath: markerURL.path)
+      let markerDate = try XCTUnwrap(markerAttributes[.modificationDate] as? Date)
+      XCTAssertLessThan(markerDate, clock.now.addingTimeInterval(-7 * 24 * 60 * 60))
+      try await store.pruneAbandoned()
+      XCTAssertFalse(FileManager.default.fileExists(atPath: pendingURL.path))
+      let expired = try await store.state(for: unclaimed.requestID)
+      XCTAssertEqual(expired, .missing)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
+      let inProgress = try await store.state(for: request.requestID)
+      XCTAssertEqual(inProgress, .processing)
+    } catch {
+      release.continuation.finish()
+      processing.cancel()
+      await fulfillment(of: [finished], timeout: 2)
+      await processing.value
+      throw error
+    }
+    release.continuation.finish()
+    await fulfillment(of: [finished], timeout: 2)
     await processing.value
     guard case .completed = try await store.state(for: request.requestID) else {
       return XCTFail("Expected a final receipt")
@@ -420,5 +454,16 @@ final class SnipCommandStoreTests: XCTestCase {
     }
     let result = try await store.state(for: request.requestID)
     XCTAssertEqual(result, .uncertain)
+  }
+}
+
+final class SnipCLIStoreTestClock: Sendable {
+  // Wrong wall-clock reads expire requests; fresh receipt files must not look old.
+  private let instant = Mutex(Date(timeIntervalSince1970: 1_000_000))
+
+  var now: Date { instant.withLock { $0 } }
+
+  func advance(by interval: TimeInterval) {
+    instant.withLock { $0 = $0.addingTimeInterval(interval) }
   }
 }

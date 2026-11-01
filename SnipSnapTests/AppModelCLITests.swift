@@ -75,7 +75,8 @@ final class AppModelCLITests: StoreBackedTestCase {
     func testCLIReconcilesAndSchedulesSyncWhenAWriteCommitsThenThrows() async throws {
         let snip = Snip(content: "Before", origin: .agent)
         let library = InMemorySnipLibrary(snips: [snip])
-        let cloud = MacOptionalCloudSyncHandlerProbe()
+        let scheduled = expectation(description: "Cloud sync scheduled after committed update")
+        let cloud = MacOptionalCloudSyncHandlerProbe(onSchedule: { scheduled.fulfill() })
         let model = AppModel(library: library, defaults: defaults(), cloudSyncHandler: cloud)
         await model.reload()
         await library.failAfterNextWrite()
@@ -90,18 +91,18 @@ final class AppModelCLITests: StoreBackedTestCase {
         let stored = try await library.checkedSnapshot(sortedBy: .chronological)
         XCTAssertEqual(stored.snips.first?.content, "Committed")
         XCTAssertEqual(model.snips.first?.content, "Committed")
-        for _ in 0..<100 {
-            if await cloud.syncCount() > 0 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await fulfillment(of: [scheduled], timeout: 2)
+        let scheduleCount = await cloud.scheduleCount()
         let syncCount = await cloud.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        XCTAssertEqual(scheduleCount, 1)
+        XCTAssertEqual(syncCount, 0)
     }
 
     @MainActor
     func testCLIAddReconcilesAndSchedulesSyncWhenWriteCommitsThenThrows() async throws {
         let library = InMemorySnipLibrary(snips: [])
-        let cloud = MacOptionalCloudSyncHandlerProbe()
+        let scheduled = expectation(description: "Cloud sync scheduled after committed add")
+        let cloud = MacOptionalCloudSyncHandlerProbe(onSchedule: { scheduled.fulfill() })
         let model = AppModel(library: library, defaults: defaults(), cloudSyncHandler: cloud)
         let request = SnipCLIRequest(
             action: .add(content: "  Committed add  ", list: nil, agentContext: nil),
@@ -114,12 +115,11 @@ final class AppModelCLITests: StoreBackedTestCase {
         XCTAssertEqual(receipt.resultSnipID, stored.snips.first?.id)
         XCTAssertEqual(stored.snips.map(\.content), ["Committed add"])
         XCTAssertEqual(model.snips.map(\.content), ["Committed add"])
-        for _ in 0..<100 {
-            if await cloud.syncCount() > 0 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await fulfillment(of: [scheduled], timeout: 2)
+        let scheduleCount = await cloud.scheduleCount()
         let syncCount = await cloud.syncCount()
-        XCTAssertEqual(syncCount, 1)
+        XCTAssertEqual(scheduleCount, 1)
+        XCTAssertEqual(syncCount, 0)
     }
 
     @MainActor

@@ -463,10 +463,6 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         try await library.removeCloudTextRecoveryEvents(namespaceKey: namespaceKey, keys: keys)
     }
 
-    package func clear() async throws {
-        try await library.clearCloudTextSyncState(namespaceKey: namespaceKey)
-    }
-
     private func applyFetched(_ batch: CloudFetchedBatch) async throws {
         let current = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         var valuesByIdentity: [CloudTextStorageIdentity: CloudTextFetchedValue] = [:]
