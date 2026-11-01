@@ -117,7 +117,7 @@ release_policy_require_project_versions() {
 release_policy_require_source() {
     local repo_dir="$1"
     local release_repo="$2"
-    local relation="${3:-exact}"
+    local relation="${3:-${SNIP_SNAP_RELEASE_SOURCE_RELATION:-exact}}"
     local git_status
     local head
     local remote_head

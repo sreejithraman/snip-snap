@@ -227,7 +227,8 @@ done
 jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
 %w[mac ios].each do |group|
   job = jobs.fetch(group)
-  abort "#{group} tests must run independently" unless Array(job['needs']).empty?
+  abort "#{group} tests must depend only on selection" unless job['needs'] == 'changes'
+  abort "#{group} tests must honor selection" unless job['if'] == "needs.changes.outputs.#{group} == 'true'"
   commands = job.fetch('steps').map { |step| step['run'] }.compact
   expected_commands = []
   expected_commands << 'xcodebuild -downloadComponent MetalToolchain' if group == 'ios'
@@ -257,22 +258,43 @@ end
 
 gate = jobs.fetch('test')
 abort 'The required check name changed' unless gate['name'] == 'Tests and iOS compile check'
-abort 'The required check must wait for both jobs' unless gate.fetch('needs').sort == %w[ios mac]
+abort 'The required check must wait for both jobs' unless gate.fetch('needs').sort == %w[changes ios mac]
 abort 'The required check must run after failures' unless gate['if'] == 'always()'
 step = gate.fetch('steps').find { |entry| entry['run'] }
 abort 'The required check must read both job results' unless step.fetch('env') == {
+  'CHANGES_RESULT' => '${{ needs.changes.result }}',
+  'MAC_REQUIRED' => '${{ needs.changes.outputs.mac }}',
+  'IOS_REQUIRED' => '${{ needs.changes.outputs.ios }}',
   'MAC_RESULT' => '${{ needs.mac.result }}',
   'IOS_RESULT' => '${{ needs.ios.result }}'
 }
-%w[success failure cancelled skipped].repeated_permutation(2) do |mac, ios|
-  passed = system(
-    { 'MAC_RESULT' => mac, 'IOS_RESULT' => ios },
-    '/bin/bash', '--noprofile', '--norc', '-e', '-c', step.fetch('run'),
-    out: File::NULL, err: File::NULL
-  )
-  expected = mac == 'success' && ios == 'success'
-  abort "Wrong required check result for Mac=#{mac}, iOS=#{ios}" unless passed == expected
+%w[true false].repeated_permutation(2) do |mac_required, ios_required|
+  %w[success failure cancelled skipped].repeated_permutation(3) do |changes, mac, ios|
+    passed = system(
+      { 'CHANGES_RESULT' => changes, 'MAC_REQUIRED' => mac_required, 'IOS_REQUIRED' => ios_required,
+        'MAC_RESULT' => mac, 'IOS_RESULT' => ios },
+      '/bin/bash', '--noprofile', '--norc', '-e', '-c', step.fetch('run'),
+      out: File::NULL, err: File::NULL
+    )
+    expected = changes == 'success' &&
+      mac == (mac_required == 'true' ? 'success' : 'skipped') &&
+      ios == (ios_required == 'true' ? 'success' : 'skipped')
+    abort "Wrong required check: #{[changes, mac_required, mac, ios_required, ios]}" unless passed == expected
+  end
 end
+%w[MAC_REQUIRED IOS_REQUIRED].each do |missing|
+  environment = { 'CHANGES_RESULT' => 'success', 'MAC_REQUIRED' => 'true', 'IOS_REQUIRED' => 'true',
+                  'MAC_RESULT' => 'success', 'IOS_RESULT' => 'success' }
+  environment[missing] = ''
+  abort 'Missing selection passed the gate' if system(environment, '/bin/bash', '-e', '-c',
+    step.fetch('run'), out: File::NULL, err: File::NULL)
+end
+workflow = YAML.load_file(ARGV.fetch(0))
+events = workflow.fetch('on', workflow[true])
+abort 'Main must not run duplicate CI' if events.key?('push')
+abort 'PR checks must not be path-filtered at workflow level' unless events.key?('pull_request') &&
+  events['pull_request'].nil?
+
 RUBY
 
 print "Test runner checks passed."

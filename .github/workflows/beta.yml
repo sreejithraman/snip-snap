@@ -14,6 +14,7 @@ permissions:
 
 concurrency:
   group: beta-publish-main
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -37,14 +38,9 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          remote_sha="$(git ls-remote origin refs/heads/main | awk 'NR == 1 { print $1 }')"
-          test -n "$remote_sha"
-          if [[ "$SOURCE_SHA" != "$remote_sha" ]]; then
-            echo "current=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping stale beta candidate $SOURCE_SHA; main is $remote_sha."
-            exit 0
-          fi
-          echo "current=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git fetch --no-tags origin main
+          /usr/bin/ruby scripts/ci-changes.rb current "$SOURCE_SHA" FETCH_HEAD >> "$GITHUB_OUTPUT"
 
       - name: Resolve version and build
         id: release
@@ -97,6 +93,7 @@ jobs:
       SNIP_SNAP_MAC_PROVISIONING_PROFILE_SPECIFIER: ${{ secrets.MAC_PROVISIONING_PROFILE_NAME }}
       SNIP_SNAP_NOTARY_PROFILE: snip-snap-ci
       SNIP_SNAP_RELEASE_CHECKS_PASSED: YES
+      SNIP_SNAP_RELEASE_SOURCE_RELATION: on-main
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -161,6 +158,7 @@ jobs:
       SNIP_SNAP_IOS_SHARE_APP_STORE_PROFILE_NAME: ${{ secrets.IOS_SHARE_APP_STORE_PROFILE_NAME }}
       SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD: YES
       SNIP_SNAP_RELEASE_CHECKS_PASSED: YES
+      SNIP_SNAP_RELEASE_SOURCE_RELATION: on-main
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

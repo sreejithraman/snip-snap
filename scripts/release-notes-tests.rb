@@ -62,6 +62,18 @@ class ReleaseNotesTest < Minitest::Test
     end
   end
 
+  def test_coalesced_merges_include_every_unpublished_change
+    commit('SnipSnap/Panel.swift', 'Keep Mac editor selection (#10)')
+    commit('SnipSnapiOS/Paste.swift', 'Keep iPhone pasted images (#11)')
+    result = notes('beta')
+    assert_includes result.fetch('mac'), 'Keep Mac editor selection'
+    assert_includes result.fetch('mac'), 'Fix sync & recovery'
+    assert_includes result.fetch('ios'), 'Fix iPhone paste'
+    assert_includes result.fetch('ios'), 'Keep iPhone pasted images'
+    refute_includes result.fetch('ios'), 'Keep Mac editor selection'
+    refute_includes result.fetch('mac'), 'Keep iPhone pasted images'
+  end
+
   def test_stable_covers_all_changes_since_previous_stable
     result = notes('stable')
     assert_includes result.fetch('mac'), 'Fix Mac panel contrast'
@@ -123,6 +135,8 @@ class ReleaseNotesTest < Minitest::Test
   end
 
   def test_platform_specific_changes_in_shared_files
+    assert_equal %w[mac ios], ReleaseNotes.platforms_for(
+      ['SnipSnap/SnipListIconCatalog.swift'], 'Add list icons')
     assert_equal ['mac'], ReleaseNotes.platforms_for(
       ['Packages/SnipSnapLibrary/Sources/SnipSnapPersistence/MacLocalSnipLibraryBootstrap.swift'],
       'Open the Mac live store as SwiftData only')
