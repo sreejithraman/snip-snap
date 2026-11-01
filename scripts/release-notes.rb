@@ -78,6 +78,9 @@ module ReleaseNotes
     shared = false
     platforms = paths.flat_map do |path|
       case path
+      when 'SnipSnap/SnipListIconCatalog.swift'
+        shared = true
+        []
       when %r{\ASnipSnap/|\AConfig/(?:Mac|Release\.|Debug\.)} then ['mac']
       when %r{\A(?:SnipSnapiOS|SnipSnapShareExtension)/|\AConfig/(?:iOS|TestFlight)} then ['ios']
       when %r{\APackages/[^/]+/Sources/}

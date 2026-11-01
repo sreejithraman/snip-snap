@@ -2,9 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -15,8 +12,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select PR checks
+    runs-on: ubuntu-latest
+    outputs:
+      mac: ${{ steps.select.outputs.mac }}
+      ios: ${{ steps.select.outputs.ios }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check tracked inputs
+        run: ./scripts/tracked-input-policy.sh
+
+      - name: Check release history
+        run: /usr/bin/ruby scripts/changelog-tests.rb
+
+      - name: Select affected platforms
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            /usr/bin/ruby scripts/ci-changes.rb pr "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "mac=true" >> "$GITHUB_OUTPUT"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          fi
+
   mac:
     name: Mac and shared tests
+    needs: changes
+    if: needs.changes.outputs.mac == 'true'
     runs-on: macos-26
     timeout-minutes: 20
 
@@ -41,6 +71,8 @@ jobs:
 
   ios:
     name: iOS tests and bundle checks
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 20
 
@@ -68,15 +100,25 @@ jobs:
 
   test:
     name: Tests and iOS compile check
-    needs: [mac, ios]
+    needs: [changes, mac, ios]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require both test jobs to pass
+      - name: Require selected test jobs to pass
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          MAC_REQUIRED: ${{ needs.changes.outputs.mac }}
+          IOS_REQUIRED: ${{ needs.changes.outputs.ios }}
           MAC_RESULT: ${{ needs.mac.result }}
           IOS_RESULT: ${{ needs.ios.result }}
         run: |
-          test "$MAC_RESULT" = success
-          test "$IOS_RESULT" = success
+          test "$CHANGES_RESULT" = success
+          for platform in MAC IOS; do
+            required="${platform}_REQUIRED"
+            result="${platform}_RESULT"
+            case "${!required}:${!result}" in
+              true:success|false:skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

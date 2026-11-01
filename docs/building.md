@@ -62,11 +62,14 @@ Simulator names, pass overrides:
   --ipad-destination 'platform=iOS Simulator,name=Example iPad'
 ```
 
-CI runs these two groups in parallel on separate clean checkouts. Both must
-pass the existing required check, `Tests and iOS compile check`. It needs no
-second iPhone build. Both groups set `CODE_SIGNING_ALLOWED=NO` for app builds.
-Beta candidate keeps the full build matrix, including the separate iPhone and
-iPad builds and their extra simulator architecture coverage.
+PR CI runs the selected groups in parallel on separate clean checkouts. Mac-only
+changes skip iOS; docs-only changes skip both. The existing required check,
+`Tests and iOS compile check`, requires selection and all selected groups to pass.
+It needs no second iPhone build. Both groups set `CODE_SIGNING_ALLOWED=NO` for
+app builds. After merge, Beta candidate runs all tests and the full build matrix
+once, including the separate iPhone and iPad builds and their extra simulator
+architecture coverage. See [release automation](release-automation-plan.md) for
+delivery and rapid-merge behavior.
 
 Run the same release tests on an iPhone and iPad Simulator:
 

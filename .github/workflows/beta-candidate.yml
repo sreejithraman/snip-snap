@@ -7,6 +7,8 @@ on:
     paths:
       - ".github/workflows/beta-candidate.yml"
       - ".github/workflows/beta.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/promote-stable.yml"
       - "CloudKit/**"
       - "Config/**"
       - "Packages/**"

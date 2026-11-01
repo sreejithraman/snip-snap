@@ -310,7 +310,7 @@ for required in \
     "github.event.workflow_run.conclusion == 'success'" \
     'github.event.workflow_run.head_sha' \
     'Check current main' \
-    'current=false' \
+    'scripts/ci-changes.rb current' \
     'needs.prepare.outputs.current' \
     'SNIP_SNAP_CANDIDATE_RUN_ATTEMPT' \
     'SNIP_SNAP_CANDIDATE_RUN_ID' \
@@ -510,6 +510,7 @@ for protected_name in Local.xcconfig TestFlight.entitlements MacRelease.entitlem
 done
 [[ -f "$ci_repo/Config/keep.txt" ]] || fail_test "CI cleanup removed an unrelated file"
 
+/usr/bin/ruby "$script_dir/ci-changes-tests.rb"
 /usr/bin/ruby "$script_dir/release-notes-tests.rb"
 /usr/bin/ruby "$script_dir/changelog-tests.rb"
 /usr/bin/ruby "$script_dir/testflight-notes-tests.rb"
