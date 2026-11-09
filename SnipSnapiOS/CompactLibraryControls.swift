@@ -288,13 +288,6 @@ struct CompactLibraryControls: View {
         guard showsComposer, !storage.isSaving, !isStaging else { return }
         model.haptics.invalidatePendingFeedback()
         let listID = model.lastSelectedListID
-        let providers: [NSItemProvider]
-        do {
-            providers = try ComposerPasteboard.requestAccess(to: .general)
-        } catch {
-            presentPasteFailure(error)
-            return
-        }
         storage.isSaving = true
         Task {
             var stagedFiles: [StagedAttachment] = []
@@ -303,7 +296,7 @@ struct CompactLibraryControls: View {
                 storage.isSaving = false
             }
             do {
-                let pasted = try await ComposerPasteboard.stageForSaving(providers, in: storage.stagingDirectory)
+                let pasted = try await ComposerPasteboard.stageForSaving(from: .general, in: storage.stagingDirectory)
                 stagedFiles = pasted.files
                 await model.createSnip(
                     content: pasted.text,

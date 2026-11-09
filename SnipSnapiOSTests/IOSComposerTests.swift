@@ -459,6 +459,44 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(result.files.first).url), png)
     }
 
+    func testPasteKeepsTextAndAFileFromTheSameItem() async throws {
+        let pdf = Data("%PDF-1.4".utf8)
+        let text = (type: UTType.utf8PlainText.identifier, data: Data("Cell text".utf8))
+        let file = (type: UTType.pdf.identifier, data: pdf)
+        for representations in [[text, file], [file, text]] {
+            let result = try await ComposerPasteboard.stage([item(representations)], in: stagingRoot())
+            XCTAssertEqual(result.text, "Cell text", "\(representations.map(\.type))")
+            XCTAssertEqual(result.files.count, 1, "\(representations.map(\.type))")
+            let saved = try XCTUnwrap(result.files.first)
+            XCTAssertEqual(try Data(contentsOf: saved.url), pdf)
+            XCTAssertEqual(saved.url.pathExtension, "pdf")
+        }
+    }
+
+    func testComposerRoutesTextWithAFileToAttachments() {
+        let input = ComposerTextView()
+        input.text = "keep"
+        var routed: [NSItemProvider] = []
+        input.onPasteAttachments = { items, _ in routed = items }
+        let provider = item([(UTType.utf8PlainText.identifier, Data("Cell text".utf8)), (UTType.pdf.identifier, Data("%PDF-1.4".utf8))])
+
+        input.paste(itemProviders: [provider])
+
+        XCTAssertEqual(routed, [provider])
+        XCTAssertEqual(input.text, "keep")
+    }
+
+    func testPasteKeepsRichTextAlternativesAsTextOnly() async throws {
+        let text = (type: UTType.utf8PlainText.identifier, data: Data("Note".utf8))
+        let rich = [UTType.html, .flatRTFD, .rtf].map { (type: $0.identifier, data: Data("rich".utf8)) }
+        let archive = (type: UTType.webArchive.identifier, data: Data("archive".utf8))
+        for representations in [[text] + rich, [text, archive]] {
+            let result = try await ComposerPasteboard.stage([item(representations)], in: stagingRoot())
+            XCTAssertEqual(result.text, "Note", "\(representations.map(\.type))")
+            XCTAssertTrue(result.files.isEmpty, "\(representations.map(\.type))")
+        }
+    }
+
     func testPastePrefersDeclaredDataOverAPrivateReference() async throws {
         let bytes = Data("extensionless file".utf8)
         let provider = item([("com.apple.finder.node", Data("bplist00 file reference".utf8)), (UTType.data.identifier, bytes)])
@@ -504,28 +542,95 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertTrue(result.files.isEmpty)
     }
 
-    func testPasteAndSaveReportsAnEmptyClipboard() async throws {
+    func testPasteAndSaveReportsAnEmptyClipboardWithoutCheckingAccess() async throws {
         let board = UIPasteboard.withUniqueName()
         addTeardownBlock { UIPasteboard.remove(withName: board.name) }
-        XCTAssertThrowsError(try ComposerPasteboard.requestAccess(to: board)) {
-            XCTAssertEqual($0 as? ComposerPasteFailure, .empty)
-        }
-        do {
-            _ = try await ComposerPasteboard.stageForSaving([NSItemProvider(object: " \n" as NSString)], in: stagingRoot())
-            XCTFail("Blank text has nothing to save")
-        } catch {
-            XCTAssertEqual(error as? ComposerPasteFailure, .empty)
+        for content in [nil, " \n"] {
+            board.string = content
+            var accessChecks = 0
+            do {
+                _ = try await ComposerPasteboard.stageForSaving(
+                    from: board, in: stagingRoot(), requestAccess: { _ in accessChecks += 1 })
+                XCTFail("Nothing to save: \(String(describing: content))")
+            } catch {
+                XCTAssertEqual(error as? ComposerPasteFailure, .empty)
+            }
+            XCTAssertEqual(accessChecks, 0)
         }
     }
 
-    func testPasteAccessReturnsEveryClipboardItem() throws {
+    /// A clipboard item whose load fails, as iOS fails loads before the paste permission passes.
+    private func refusedItem() -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) {
+            $0(nil, NSError(domain: NSItemProvider.errorDomain, code: NSItemProvider.ErrorCode.itemUnavailableError.rawValue))
+            return nil
+        }
+        return provider
+    }
+
+    func testPasteAndSaveChecksAccessOnlyAfterALoadFailsAndRetriesOnce() async throws {
+        let pdf = Data("%PDF-1.4".utf8)
+        let board = clipboard(pdf, type: UTType.pdf.identifier)
+        let root = stagingRoot()
+        var loads: [[NSItemProvider]] = []
+        var accessChecks = 0
+        func stage(
+            _ attempts: [[NSItemProvider]], access: @MainActor (UIPasteboard) throws -> Void
+        ) async throws -> ComposerPastedContent {
+            loads = attempts
+            accessChecks = 0
+            return try await ComposerPasteboard.stageForSaving(
+                from: board, in: root,
+                providers: { _ in loads.removeFirst() },
+                requestAccess: { accessChecks += 1; try access($0) })
+        }
+        func stagedFiles() -> [URL] {
+            let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?.allObjects as? [URL]
+            return (files ?? []).filter { !$0.hasDirectoryPath }
+        }
+
+        let loaded = try await stage([board.itemProviders]) { _ in }
+        XCTAssertEqual(accessChecks, 0)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(loaded.files.first).url), pdf)
+        AttachmentDraftStager.clean(loaded.files)
+
+        let retried = try await stage([[refusedItem()], board.itemProviders], access: ComposerPasteboard.requestAccess(to:))
+        XCTAssertEqual(accessChecks, 1)
+        XCTAssertTrue(loads.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(retried.files.first).url), pdf)
+        AttachmentDraftStager.clean(retried.files)
+
+        do {
+            _ = try await stage([[refusedItem()], board.itemProviders]) { _ in throw ComposerPasteFailure.unreadable }
+            XCTFail("A refused access check must not retry")
+        } catch {
+            XCTAssertEqual(error as? ComposerPasteFailure, .unreadable)
+            XCTAssertEqual(accessChecks, 1)
+            XCTAssertEqual(loads.count, 1, "The retry load must not run")
+        }
+
+        do {
+            _ = try await stage([[board.itemProviders[0], refusedItem()], [refusedItem()], board.itemProviders]) { _ in }
+            XCTFail("A failed retry must surface its error")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, NSItemProvider.errorDomain)
+            XCTAssertEqual(accessChecks, 1)
+            XCTAssertEqual(loads.count, 1, "Only one retry may run")
+        }
+        XCTAssertEqual(stagedFiles(), [], "Failed loads must not leave staged files")
+    }
+
+    func testPasteAccessAcceptsTextOrALinkInAnyItem() throws {
         let board = UIPasteboard.withUniqueName()
         addTeardownBlock { UIPasteboard.remove(withName: board.name) }
-        board.items = [
-            [UTType.utf8PlainText.identifier: "Note"],
-            [UTType.pdf.identifier: Data("%PDF-1.4".utf8)],
-        ]
-        XCTAssertEqual(try ComposerPasteboard.requestAccess(to: board).count, 2)
+        let pdf = [UTType.pdf.identifier: Data("%PDF-1.4".utf8)] as [String: Any]
+        let text = [UTType.utf8PlainText.identifier: "Note"] as [String: Any]
+        let link = [UTType.url.identifier: URL(string: "https://example.com")!] as [String: Any]
+        for items in [[text, pdf], [pdf, text], [pdf, link]] {
+            board.items = items
+            XCTAssertNoThrow(try ComposerPasteboard.requestAccess(to: board), "\(board.types)")
+        }
     }
 
     func testPasteAccessAcceptsAFileWithAPrivateReference() throws {
@@ -535,7 +640,7 @@ final class IOSComposerTests: IOSModelTestCase {
             addTeardownBlock { UIPasteboard.remove(withName: board.name) }
             board.setItemProviders([item(order.map { ($0, Data($0.utf8)) })], localOnly: true, expirationDate: nil)
             XCTAssertEqual(board.types, order)
-            XCTAssertEqual(try ComposerPasteboard.requestAccess(to: board).count, 1, "\(order)")
+            XCTAssertNoThrow(try ComposerPasteboard.requestAccess(to: board), "\(order)")
         }
     }
 
@@ -551,8 +656,7 @@ final class IOSComposerTests: IOSModelTestCase {
     func testPasteAndSaveReadsEveryClipboardType() async throws {
         for type in [UTType.pdf.identifier, UTType.utf8PlainText.identifier, "com.example.custom"] {
             let board = clipboard(Data("content".utf8), type: type)
-            let providers = try ComposerPasteboard.requestAccess(to: board)
-            let pasted = try await ComposerPasteboard.stageForSaving(providers, in: stagingRoot())
+            let pasted = try await ComposerPasteboard.stageForSaving(from: board, in: stagingRoot())
             XCTAssertTrue(!pasted.text.isEmpty || !pasted.files.isEmpty, type)
         }
     }

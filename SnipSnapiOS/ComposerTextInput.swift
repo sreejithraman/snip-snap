@@ -196,31 +196,59 @@ enum ComposerPasteboard {
         if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             return registered.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier
         }
-        guard !isText(provider) else { return nil }
+        if isText(provider) { return registered.first(where: isFileBesideText) }
         return registered.first { UTType($0)?.preferredFilenameExtension != nil }
             ?? registered.first { UTType($0).map { $0.isDeclared && $0.conforms(to: .data) } == true }
             ?? registered.first
+    }
+
+    /// A text item can carry a real file, such as a PDF. Its rich-text forms only restate the text.
+    private static func isFileBesideText(_ identifier: String) -> Bool {
+        guard let type = UTType(identifier), type.isDeclared, type.preferredFilenameExtension != nil else { return false }
+        return ![UTType.text, .url, .rtfd, .flatRTFD, .webArchive].contains { type.conforms(to: $0) }
     }
 
     private static func isText(_ provider: NSItemProvider) -> Bool {
         provider.canLoadObject(ofClass: NSString.self) || provider.canLoadObject(ofClass: NSAttributedString.self)
     }
 
-    /// Provider loads fail without a prompt until a direct read clears the system paste permission.
-    /// The read runs on the main thread and the providers load the content again, so it probes the
-    /// smallest representation: text, a URL, or a non-content type such as Files' private reference.
-    static func requestAccess(to pasteboard: UIPasteboard) throws -> [NSItemProvider] {
+    /// Paste and Save stages the clipboard through its providers, so the content is read once and off
+    /// the main thread. Under Ask, iOS can refuse those loads until a direct read passes the paste
+    /// permission, so a failed load gets one access check and one retry.
+    static func stageForSaving(
+        from pasteboard: UIPasteboard,
+        in root: URL,
+        providers: (UIPasteboard) -> [NSItemProvider] = { $0.itemProviders },
+        requestAccess: @MainActor (UIPasteboard) throws -> Void = ComposerPasteboard.requestAccess(to:)
+    ) async throws -> ComposerPastedContent {
+        guard pasteboard.numberOfItems > 0, !pasteboard.types.isEmpty else { throw ComposerPasteFailure.empty }
+        do {
+            return try await stageForSaving(providers(pasteboard), in: root)
+        } catch let error as CancellationError {
+            throw error
+        } catch ComposerPasteFailure.empty {
+            throw ComposerPasteFailure.empty
+        } catch {
+            try requestAccess(pasteboard)
+            return try await stageForSaving(providers(pasteboard), in: root)
+        }
+    }
+
+    /// Reads the clipboard directly, which shows or passes the paste permission. It runs on the main
+    /// thread, so it reads the smallest form: strings, URLs, or a non-content type such as Files' private
+    /// reference. A first item with only content types, such as a video, is read in full.
+    static func requestAccess(to pasteboard: UIPasteboard) throws {
         let types = pasteboard.types
-        guard let first = types.first else { throw ComposerPasteFailure.empty }
         let isReadable = if pasteboard.hasStrings {
-            pasteboard.string != nil
+            pasteboard.strings?.isEmpty == false
         } else if pasteboard.hasURLs {
-            pasteboard.url != nil
+            pasteboard.urls?.isEmpty == false
+        } else if let type = types.first(where: { UTType($0)?.conforms(to: .content) != true }) ?? types.first {
+            pasteboard.data(forPasteboardType: type) != nil
         } else {
-            pasteboard.data(forPasteboardType: types.first { UTType($0)?.conforms(to: .content) != true } ?? first) != nil
+            false
         }
         guard isReadable else { throw ComposerPasteFailure.unreadable }
-        return pasteboard.itemProviders
     }
 
     static func stageForSaving(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
