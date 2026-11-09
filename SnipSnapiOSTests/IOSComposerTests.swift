@@ -77,14 +77,14 @@ final class IOSComposerTests: IOSModelTestCase {
             return nil
         }
         do {
-            _ = try await ComposerPasteboard.stageAttachments([broken], in: root)
+            _ = try await ComposerPasteboard.stage([broken], in: root)
             XCTFail("Unreadable photo must report a failure")
         } catch {}
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
 
         let task = Task {
             try Task.checkCancellation()
-            return try await ComposerPasteboard.stageAttachments([broken], in: root)
+            return try await ComposerPasteboard.stage([broken], in: root)
         }
         task.cancel()
         do {
@@ -119,7 +119,7 @@ final class IOSComposerTests: IOSModelTestCase {
         let staging = root.appendingPathComponent("Draft")
         let task = Task {
             do {
-                _ = try await ComposerPasteboard.stageAttachments([NSItemProvider(contentsOf: photo)!, slow], in: staging)
+                _ = try await ComposerPasteboard.stage([NSItemProvider(contentsOf: photo)!, slow], in: staging)
                 XCTFail("Cancelled paste must not succeed")
             } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
             finished.fulfill()
@@ -576,7 +576,7 @@ final class IOSComposerTests: IOSModelTestCase {
         var loads: [[NSItemProvider]] = []
         var accessChecks = 0
         func stage(
-            _ attempts: [[NSItemProvider]], access: @MainActor (UIPasteboard) throws -> Void
+            _ attempts: [[NSItemProvider]], access: (UIPasteboard) throws -> Void
         ) async throws -> ComposerPastedContent {
             loads = attempts
             accessChecks = 0
@@ -619,6 +619,42 @@ final class IOSComposerTests: IOSModelTestCase {
             XCTAssertEqual(loads.count, 1, "Only one retry may run")
         }
         XCTAssertEqual(stagedFiles(), [], "Failed loads must not leave staged files")
+    }
+
+    func testPasteAndSaveSurfacesALocalStagingErrorWithoutCheckingAccess() async throws {
+        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
+        let root = stagingRoot()
+        try Data().write(to: root)
+        var loads = 0
+        var accessChecks = 0
+        do {
+            _ = try await ComposerPasteboard.stageForSaving(
+                from: board, in: root,
+                providers: { loads += 1; return $0.itemProviders },
+                requestAccess: { _ in accessChecks += 1 })
+            XCTFail("Staging under a file must fail")
+        } catch {
+            XCTAssertNotNil(error as? CocoaError, "\(error)")
+        }
+        XCTAssertEqual(loads, 1)
+        XCTAssertEqual(accessChecks, 0)
+    }
+
+    func testPasteAndSaveTreatsMissingProvidersAsARefusedLoad() async throws {
+        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
+        for missing in [[], [NSItemProvider()]] {
+            var accessChecks = 0
+            do {
+                _ = try await ComposerPasteboard.stageForSaving(
+                    from: board, in: stagingRoot(),
+                    providers: { _ in missing },
+                    requestAccess: { _ in accessChecks += 1 })
+                XCTFail("Missing providers have nothing to save")
+            } catch {
+                XCTAssertEqual(error as? ComposerPasteFailure, .empty)
+            }
+            XCTAssertEqual(accessChecks, 1, "\(missing)")
+        }
     }
 
     func testPasteAccessAcceptsTextOrALinkInAnyItem() throws {

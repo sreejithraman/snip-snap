@@ -212,32 +212,34 @@ enum ComposerPasteboard {
         provider.canLoadObject(ofClass: NSString.self) || provider.canLoadObject(ofClass: NSAttributedString.self)
     }
 
-    /// Paste and Save stages the clipboard through its providers, so the content is read once and off
-    /// the main thread. Under Ask, iOS can refuse those loads until a direct read passes the paste
-    /// permission, so a failed load gets one access check and one retry.
+    /// Paste and Save stages the clipboard through its providers, which load the content off the main
+    /// thread. Under Ask, iOS can refuse those loads until a direct read passes the paste permission,
+    /// so a refused load gets one access check and one retry. Local staging errors surface as they are.
     static func stageForSaving(
         from pasteboard: UIPasteboard,
         in root: URL,
         providers: (UIPasteboard) -> [NSItemProvider] = { $0.itemProviders },
-        requestAccess: @MainActor (UIPasteboard) throws -> Void = ComposerPasteboard.requestAccess(to:)
+        requestAccess: (UIPasteboard) async throws -> Void = { pasteboard in
+            try await Task.detached { try ComposerPasteboard.requestAccess(to: pasteboard) }.value
+        }
     ) async throws -> ComposerPastedContent {
         guard pasteboard.numberOfItems > 0, !pasteboard.types.isEmpty else { throw ComposerPasteFailure.empty }
         do {
-            return try await stageForSaving(providers(pasteboard), in: root)
-        } catch let error as CancellationError {
-            throw error
-        } catch ComposerPasteFailure.empty {
-            throw ComposerPasteFailure.empty
-        } catch {
-            try requestAccess(pasteboard)
-            return try await stageForSaving(providers(pasteboard), in: root)
+            return try await stageForSaving(loading: providers(pasteboard), in: root)
+        } catch is ProviderLoadFailure {
+            try await requestAccess(pasteboard)
+            do {
+                return try await stageForSaving(loading: providers(pasteboard), in: root)
+            } catch let failure as ProviderLoadFailure {
+                throw failure.underlying
+            }
         }
     }
 
-    /// Reads the clipboard directly, which shows or passes the paste permission. It runs on the main
-    /// thread, so it reads the smallest form: strings, URLs, or a non-content type such as Files' private
-    /// reference. A first item with only content types, such as a video, is read in full.
-    static func requestAccess(to pasteboard: UIPasteboard) throws {
+    /// Reads the clipboard directly, which shows or passes the paste permission. Paste and Save runs it
+    /// off the main thread. It reads the smallest form: strings, URLs, or a non-content type such as
+    /// Files' private reference. A first item with only content types, such as a video, is read in full.
+    nonisolated static func requestAccess(to pasteboard: UIPasteboard) throws {
         let types = pasteboard.types
         let isReadable = if pasteboard.hasStrings {
             pasteboard.strings?.isEmpty == false
@@ -251,14 +253,26 @@ enum ComposerPasteboard {
         guard isReadable else { throw ComposerPasteFailure.unreadable }
     }
 
-    static func stageForSaving(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
-        let pasted = try await stage(providers, in: root)
+    private static func stageForSaving(loading providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
+        // The clipboard reports content, so providers without types mean the load was refused.
+        guard providers.contains(where: { !$0.registeredTypeIdentifiers.isEmpty }) else {
+            throw ProviderLoadFailure(underlying: ComposerPasteFailure.empty)
+        }
+        let pasted = try await stageLoading(providers, in: root)
         guard pasted.files.isEmpty,
               pasted.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return pasted }
         throw ComposerPasteFailure.empty
     }
 
     static func stage(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
+        do {
+            return try await stageLoading(providers, in: root)
+        } catch let failure as ProviderLoadFailure {
+            throw failure.underlying
+        }
+    }
+
+    private static func stageLoading(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
         var text = ""
         var files: [StagedAttachment] = []
         do {
@@ -271,8 +285,8 @@ enum ComposerPasteboard {
                         guard load.begin(continuation) else { return }
                         let finish: @Sendable (String?, (any Error)?) -> Void = { string, error in
                             load.finish {
-                                if let error { throw error }
-                                guard let string else { throw CocoaError(.fileReadUnknown) }
+                                if let error { throw ProviderLoadFailure(underlying: error) }
+                                guard let string else { throw ProviderLoadFailure(underlying: CocoaError(.fileReadUnknown)) }
                                 return string
                             }
                         }
@@ -308,7 +322,7 @@ enum ComposerPasteboard {
         }
     }
 
-    static func stageAttachments(_ providers: [NSItemProvider], in root: URL) async throws -> [StagedAttachment] {
+    private static func stageAttachments(_ providers: [NSItemProvider], in root: URL) async throws -> [StagedAttachment] {
         let batch = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         var staged: [StagedAttachment] = []
         do {
@@ -324,7 +338,7 @@ enum ComposerPasteboard {
                         guard load.begin(continuation) else { return }
                         let copy: @Sendable (URL?, Error?) -> Void = { source, error in
                             load.finish {
-                                if let error { throw error }
+                                if let error { throw ProviderLoadFailure(underlying: error) }
                                 guard let source, source.isFileURL else { throw SnipLibraryError.attachmentCopyFailed }
                                 let access = source.startAccessingSecurityScopedResource()
                                 defer { if access { source.stopAccessingSecurityScopedResource() } }
@@ -366,6 +380,12 @@ enum ComposerPasteboard {
             throw error
         }
     }
+}
+
+/// A provider load that failed or was refused, unlike a local staging error. Only these can mean the
+/// paste permission has not passed yet.
+private struct ProviderLoadFailure: Error {
+    let underlying: any Error
 }
 
 /// Cancellation and callback completion share a lock so a late file callback
