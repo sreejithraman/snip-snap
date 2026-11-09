@@ -575,6 +575,7 @@ final class IOSComposerTests: IOSModelTestCase {
         let root = stagingRoot()
         var loads: [[NSItemProvider]] = []
         var accessChecks = 0
+        func pdfItem() -> NSItemProvider { item([(UTType.pdf.identifier, pdf)]) }
         func stage(
             _ attempts: [[NSItemProvider]], access: (UIPasteboard) throws -> Void
         ) async throws -> ComposerPastedContent {
@@ -590,19 +591,19 @@ final class IOSComposerTests: IOSModelTestCase {
             return (files ?? []).filter { !$0.hasDirectoryPath }
         }
 
-        let loaded = try await stage([board.itemProviders]) { _ in }
+        let loaded = try await stage([[pdfItem()]]) { _ in }
         XCTAssertEqual(accessChecks, 0)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(loaded.files.first).url), pdf)
         AttachmentDraftStager.clean(loaded.files)
 
-        let retried = try await stage([[refusedItem()], board.itemProviders], access: ComposerPasteboard.requestAccess(to:))
+        let retried = try await stage([[refusedItem()], [pdfItem()]]) { _ in }
         XCTAssertEqual(accessChecks, 1)
         XCTAssertTrue(loads.isEmpty)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(retried.files.first).url), pdf)
         AttachmentDraftStager.clean(retried.files)
 
         do {
-            _ = try await stage([[refusedItem()], board.itemProviders]) { _ in throw ComposerPasteFailure.unreadable }
+            _ = try await stage([[refusedItem()], [pdfItem()]]) { _ in throw ComposerPasteFailure.unreadable }
             XCTFail("A refused access check must not retry")
         } catch {
             XCTAssertEqual(error as? ComposerPasteFailure, .unreadable)
@@ -611,7 +612,7 @@ final class IOSComposerTests: IOSModelTestCase {
         }
 
         do {
-            _ = try await stage([[board.itemProviders[0], refusedItem()], [refusedItem()], board.itemProviders]) { _ in }
+            _ = try await stage([[pdfItem(), refusedItem()], [refusedItem()], [pdfItem()]]) { _ in }
             XCTFail("A failed retry must surface its error")
         } catch {
             XCTAssertEqual((error as NSError).domain, NSItemProvider.errorDomain)
@@ -622,7 +623,8 @@ final class IOSComposerTests: IOSModelTestCase {
     }
 
     func testPasteAndSaveSurfacesALocalStagingErrorWithoutCheckingAccess() async throws {
-        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
+        let pdf = Data("%PDF-1.4".utf8)
+        let board = clipboard(pdf, type: UTType.pdf.identifier)
         let root = stagingRoot()
         try Data().write(to: root)
         var loads = 0
@@ -630,7 +632,7 @@ final class IOSComposerTests: IOSModelTestCase {
         do {
             _ = try await ComposerPasteboard.stageForSaving(
                 from: board, in: root,
-                providers: { loads += 1; return $0.itemProviders },
+                providers: { _ in loads += 1; return [self.item([(UTType.pdf.identifier, pdf)])] },
                 requestAccess: { _ in accessChecks += 1 })
             XCTFail("Staging under a file must fail")
         } catch {
@@ -641,7 +643,8 @@ final class IOSComposerTests: IOSModelTestCase {
     }
 
     func testPasteAndSaveTreatsMissingProvidersAsARefusedLoad() async throws {
-        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
+        let pdf = Data("%PDF-1.4".utf8)
+        let board = clipboard(pdf, type: UTType.pdf.identifier)
         for missing in [[], [NSItemProvider()]] {
             var accessChecks = 0
             do {
@@ -649,11 +652,20 @@ final class IOSComposerTests: IOSModelTestCase {
                     from: board, in: stagingRoot(),
                     providers: { _ in missing },
                     requestAccess: { _ in accessChecks += 1 })
-                XCTFail("Missing providers have nothing to save")
+                XCTFail("A clipboard with content but no providers is unreadable")
             } catch {
-                XCTAssertEqual(error as? ComposerPasteFailure, .empty)
+                XCTAssertEqual(error as? ComposerPasteFailure, .unreadable, "\(missing)")
             }
             XCTAssertEqual(accessChecks, 1, "\(missing)")
+
+            var loads = [missing, [item([(UTType.pdf.identifier, pdf)])]]
+            accessChecks = 0
+            let retried = try await ComposerPasteboard.stageForSaving(
+                from: board, in: stagingRoot(),
+                providers: { _ in loads.removeFirst() },
+                requestAccess: { _ in accessChecks += 1 })
+            XCTAssertEqual(accessChecks, 1, "\(missing)")
+            XCTAssertEqual(try Data(contentsOf: XCTUnwrap(retried.files.first).url), pdf)
         }
     }
 

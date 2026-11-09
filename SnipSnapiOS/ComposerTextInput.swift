@@ -256,7 +256,7 @@ enum ComposerPasteboard {
     private static func stageForSaving(loading providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
         // The clipboard reports content, so providers without types mean the load was refused.
         guard providers.contains(where: { !$0.registeredTypeIdentifiers.isEmpty }) else {
-            throw ProviderLoadFailure(underlying: ComposerPasteFailure.empty)
+            throw ProviderLoadFailure(underlying: ComposerPasteFailure.unreadable)
         }
         let pasted = try await stageLoading(providers, in: root)
         guard pasted.files.isEmpty,
