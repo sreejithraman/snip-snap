@@ -312,6 +312,8 @@
     "over Snip Snap’s %@ per-file limit" : {},
     "part of a snip with more than %@ of attachments" : {},
     "There’s nothing to paste. Copy text or an image, then try again." : {},
+    "There’s nothing to paste. Copy something, then try again." : {},
+    "Couldn’t read the clipboard. If Paste from Other Apps is set to Deny, change it to Allow in Settings, then try again." : {},
     "This clipboard content isn’t supported. Try copying text or an image." : {},
     "Couldn’t read the clipboard. Copy the content again, then tap Paste." : {},
     "Couldn’t save the pasted content. Try again." : {},
