@@ -153,11 +153,28 @@ final class ComposerTextView: UITextView {
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), !isPasteEnabled { return false }
-        if action == #selector(paste(_:)), isEditable,
-           UIPasteboard.general.contains(pasteboardTypes: [UTType.image.identifier, UTType.fileURL.identifier]) {
+        if action == #selector(paste(_:)), isEditable, UIPasteboard.general.numberOfItems > 0 {
             return true
         }
         return super.canPerformAction(action, withSender: sender)
+    }
+}
+
+enum ComposerPasteFailure: Error {
+    case empty, denied
+
+    var message: String {
+        switch self {
+        case .empty: String(localized: "There’s nothing to paste. Copy something, then try again.")
+        case .denied: String(localized: "Snip Snap can’t read the clipboard. Set Paste from Other Apps to Allow in Settings, then try again.")
+        }
+    }
+
+    var diagnosticCode: String {
+        switch self {
+        case .empty: "snip.emptyClipboard"
+        case .denied: "snip.pasteDenied"
+        }
     }
 }
 
@@ -165,27 +182,63 @@ final class ComposerTextView: UITextView {
 @MainActor
 enum ComposerPasteboard {
     static func isAttachment(_ provider: NSItemProvider) -> Bool {
-        provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
-            || provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        attachmentType(of: provider) != nil
+    }
+
+    /// Non-text content has no body form, so it is kept as a file. Apps such as Files register private
+    /// file-reference types first, so a type with a file extension wins over undeclared ones.
+    private static func attachmentType(of provider: NSItemProvider) -> String? {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            return UTType.fileURL.identifier
+        }
+        let registered = provider.registeredTypeIdentifiers
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            return registered.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier
+        }
+        guard !isText(provider) else { return nil }
+        return registered.first { UTType($0)?.preferredFilenameExtension != nil } ?? registered.first
+    }
+
+    private static func isText(_ provider: NSItemProvider) -> Bool {
+        provider.canLoadObject(ofClass: NSString.self) || provider.canLoadObject(ofClass: NSAttributedString.self)
+    }
+
+    /// Provider loads fail without a prompt until a direct read clears the system paste permission.
+    static func requestAccess(to pasteboard: UIPasteboard) throws -> [NSItemProvider] {
+        guard let type = pasteboard.types.first else { throw ComposerPasteFailure.empty }
+        guard pasteboard.data(forPasteboardType: type) != nil else { throw ComposerPasteFailure.denied }
+        return pasteboard.itemProviders
+    }
+
+    static func stageForSaving(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
+        let pasted = try await stage(providers, in: root)
+        guard pasted.files.isEmpty,
+              pasted.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return pasted }
+        throw ComposerPasteFailure.empty
     }
 
     static func stage(_ providers: [NSItemProvider], in root: URL) async throws -> ComposerPastedContent {
         var text = ""
         var files: [StagedAttachment] = []
         do {
-            for provider in providers where !isAttachment(provider) && provider.canLoadObject(ofClass: NSString.self) {
+            for provider in providers where !isAttachment(provider) && isText(provider) {
                 try Task.checkCancellation()
                 let load = ComposerProviderLoad<String>()
                 let value = try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { continuation in
                         guard load.begin(continuation) else { return }
-                        let progress = provider.loadObject(ofClass: String.self) { string, error in
+                        let finish: @Sendable (String?, (any Error)?) -> Void = { string, error in
                             load.finish {
                                 if let error { throw error }
                                 guard let string else { throw CocoaError(.fileReadUnknown) }
                                 return string
                             }
                         }
+                        let progress = provider.canLoadObject(ofClass: NSString.self)
+                            ? provider.loadObject(ofClass: String.self) { finish($0, $1) }
+                            : provider.loadObject(ofClass: NSAttributedString.self) {
+                                finish(($0 as? NSAttributedString)?.string, $1)
+                            }
                         load.setProgress(progress)
                     }
                 } onCancel: { load.cancel() }
@@ -216,11 +269,10 @@ enum ComposerPasteboard {
         let batch = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         var staged: [StagedAttachment] = []
         do {
-            for provider in providers where isAttachment(provider) {
+            for provider in providers {
+                guard let type = attachmentType(of: provider) else { continue }
                 try Task.checkCancellation()
-                let type: UTType = provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-                    ? .fileURL : provider.registeredTypeIdentifiers.compactMap(UTType.init)
-                        .first(where: { $0.conforms(to: .image) }) ?? .image
+                let isFileURL = type == UTType.fileURL.identifier
                 let directory = batch.appendingPathComponent(UUID().uuidString, isDirectory: true)
                 let suggestedName = provider.suggestedName
                 let load = ComposerProviderLoad<StagedAttachment>()
@@ -238,9 +290,9 @@ enum ComposerPasteboard {
                                     throw SnipLibraryError.attachmentCopyFailed
                                 }
                                 var name = URL(fileURLWithPath: suggestedName ?? source.lastPathComponent).lastPathComponent
-                                if name.isEmpty { name = "Pasted Image" }
+                                if name.isEmpty { name = "Pasted File" }
                                 if URL(fileURLWithPath: name).pathExtension.isEmpty {
-                                    let suffix = type == .fileURL ? source.pathExtension : type.preferredFilenameExtension
+                                    let suffix = isFileURL ? source.pathExtension : UTType(type)?.preferredFilenameExtension
                                     if let suffix, !suffix.isEmpty { name += "." + suffix }
                                 }
                                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -252,10 +304,10 @@ enum ComposerPasteboard {
                             }
                         }
                         let progress: Progress
-                        if type == .fileURL {
+                        if isFileURL {
                             progress = provider.loadObject(ofClass: URL.self) { url, error in copy(url, error) }
                         } else {
-                            progress = provider.loadFileRepresentation(forTypeIdentifier: type.identifier, completionHandler: copy)
+                            progress = provider.loadFileRepresentation(forTypeIdentifier: type, completionHandler: copy)
                         }
                         load.setProgress(progress)
                     }

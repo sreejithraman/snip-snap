@@ -51,6 +51,7 @@ enum AppDiagnosticCodePolicy {
     "selection.clipboardRestoreFailed",
     "selection.sourceChanged", "selection.attachmentStagingFailed",
     "shortcut.eventHandlerFailed", "shortcut.registrationFailed", "snip.emptyClipboard",
+    "snip.pasteDenied",
     "library.emptyContent", "library.snipNotFound", "library.invalidStore",
     "library.storeUnavailable", "library.requiresMultipleSnips", "library.snipChanged",
     "library.duplicateList", "library.invalidList", "library.invalidCommand",

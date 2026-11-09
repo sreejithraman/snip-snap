@@ -288,16 +288,11 @@ struct CompactLibraryControls: View {
         guard showsComposer, !storage.isSaving, !isStaging else { return }
         model.haptics.invalidatePendingFeedback()
         let listID = model.lastSelectedListID
-        let pasteboard = UIPasteboard.general
-        let text = pasteboard.string ?? ""
-        let image = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? pasteboard.image : nil
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || image != nil else {
-            model.presentError(
-                String(localized: "There’s nothing to paste. Copy text or an image, then try again."),
-                operation: "snip.paste_read",
-                diagnosticCode: "snip.emptyClipboard"
-            )
+        let providers: [NSItemProvider]
+        do {
+            providers = try ComposerPasteboard.requestAccess(to: .general)
+        } catch {
+            presentPasteFailure(error)
             return
         }
         storage.isSaving = true
@@ -308,20 +303,25 @@ struct CompactLibraryControls: View {
                 storage.isSaving = false
             }
             do {
-                if let image {
-                    stagedFiles = try await AttachmentMediaStager.stage(
-                        .camera(image), in: storage.stagingDirectory
-                    )
-                }
+                let pasted = try await ComposerPasteboard.stageForSaving(providers, in: storage.stagingDirectory)
+                stagedFiles = pasted.files
                 await model.createSnip(
-                    content: text,
+                    content: pasted.text,
                     in: listID,
                     attachmentURLs: stagedFiles.map(\.url),
                     selectCreatedSnip: false
                 )
             } catch {
-                model.presentError(error, operation: "snip.paste_save")
+                presentPasteFailure(error)
             }
+        }
+    }
+
+    private func presentPasteFailure(_ error: any Error) {
+        if let failure = error as? ComposerPasteFailure {
+            model.presentError(failure.message, operation: "snip.paste_read", diagnosticCode: failure.diagnosticCode)
+        } else {
+            model.presentError(error, operation: "snip.paste_save")
         }
     }
 

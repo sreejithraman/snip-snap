@@ -373,4 +373,99 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "New inbox text")
         XCTAssertEqual(store.draft(for: workID).text, "Work draft")
     }
+
+    private func clipboard(_ data: Data, type: String) -> UIPasteboard {
+        let board = UIPasteboard.withUniqueName()
+        addTeardownBlock { UIPasteboard.remove(withName: board.name) }
+        board.setData(data, forPasteboardType: type)
+        return board
+    }
+
+    private func stagingRoot() -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    func testPasteKeepsNonTextClipboardDataAsAnAttachment() async throws {
+        let bytes = Data("%PDF-1.4".utf8)
+        for type in [UTType.pdf.identifier, UTType.mpeg4Movie.identifier, "com.example.custom"] {
+            let board = clipboard(bytes, type: type)
+            let result = try await ComposerPasteboard.stage(board.itemProviders, in: stagingRoot())
+            XCTAssertEqual(result.text, "", type)
+            let file = try XCTUnwrap(result.files.first, type)
+            XCTAssertEqual(result.files.count, 1, type)
+            XCTAssertEqual(try Data(contentsOf: file.url), bytes, type)
+            XCTAssertEqual(file.byteCount, Int64(bytes.count), type)
+        }
+    }
+
+    func testPastePrefersAFileTypeOverAPrivateReference() async throws {
+        let pdf = Data("%PDF-1.4 test".utf8)
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: "com.apple.finder.node", visibility: .all) {
+            $0(Data("bplist00 file reference".utf8), nil)
+            return nil
+        }
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) {
+            $0(pdf, nil)
+            return nil
+        }
+        XCTAssertEqual(provider.registeredTypeIdentifiers, ["com.apple.finder.node", UTType.pdf.identifier])
+
+        let result = try await ComposerPasteboard.stage([provider], in: stagingRoot())
+        XCTAssertEqual(result.files.count, 1)
+        let file = try XCTUnwrap(result.files.first)
+        XCTAssertEqual(try Data(contentsOf: file.url), pdf)
+        XCTAssertEqual(file.url.pathExtension, "pdf")
+    }
+
+    func testPasteNamesAttachmentForItsClipboardType() async throws {
+        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
+        let result = try await ComposerPasteboard.stage(board.itemProviders, in: stagingRoot())
+        XCTAssertEqual(try XCTUnwrap(result.files.first).url.pathExtension, "pdf")
+    }
+
+    func testPasteReadsRichTextOnlyClipboardAsText() async throws {
+        let rtf = try NSAttributedString(string: "Rich").data(
+            from: NSRange(location: 0, length: 4),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let board = clipboard(rtf, type: UTType.rtf.identifier)
+        let result = try await ComposerPasteboard.stage(board.itemProviders, in: stagingRoot())
+        XCTAssertEqual(result.text.trimmingCharacters(in: .whitespacesAndNewlines), "Rich")
+        XCTAssertTrue(result.files.isEmpty)
+    }
+
+    func testPasteReadsLinkOnlyClipboardAsText() async throws {
+        let board = UIPasteboard.withUniqueName()
+        addTeardownBlock { UIPasteboard.remove(withName: board.name) }
+        board.url = URL(string: "https://example.com/page")
+        let result = try await ComposerPasteboard.stage(board.itemProviders, in: stagingRoot())
+        XCTAssertEqual(result.text, "https://example.com/page")
+        XCTAssertTrue(result.files.isEmpty)
+    }
+
+    func testPasteAndSaveReportsAnEmptyClipboard() async throws {
+        let board = UIPasteboard.withUniqueName()
+        addTeardownBlock { UIPasteboard.remove(withName: board.name) }
+        XCTAssertThrowsError(try ComposerPasteboard.requestAccess(to: board)) {
+            XCTAssertEqual($0 as? ComposerPasteFailure, .empty)
+        }
+        do {
+            _ = try await ComposerPasteboard.stageForSaving([NSItemProvider(object: " \n" as NSString)], in: stagingRoot())
+            XCTFail("Blank text has nothing to save")
+        } catch {
+            XCTAssertEqual(error as? ComposerPasteFailure, .empty)
+        }
+    }
+
+    func testPasteAndSaveReadsEveryClipboardType() async throws {
+        for type in [UTType.pdf.identifier, UTType.utf8PlainText.identifier, "com.example.custom"] {
+            let board = clipboard(Data("content".utf8), type: type)
+            let providers = try ComposerPasteboard.requestAccess(to: board)
+            let pasted = try await ComposerPasteboard.stageForSaving(providers, in: stagingRoot())
+            XCTAssertTrue(!pasted.text.isEmpty || !pasted.files.isEmpty, type)
+        }
+    }
 }
