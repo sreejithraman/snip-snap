@@ -12,7 +12,7 @@ owns the commands, prerequisites, optional signing, and device setup.
 - For release acceptance, use the [release checklist](../release-checklist.md).
 
 The Mac delivery adapter is exposed by `scripts/run.sh describe --json` for
-`showroom`. It starts and verifies this worktree's isolated Dev app.
+`show-me`. It starts and verifies this worktree's isolated Dev app.
 
 ## Review and delivery
 

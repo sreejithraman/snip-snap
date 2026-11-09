@@ -21,10 +21,6 @@ Before implementation, acceptance checks, review, or PR preparation, read
 
 For ticket work, read [the GitHub issue guide](docs/agents/issue-tracker.md).
 
-### Triage labels
-
-Before changing triage labels, read [the label mapping](docs/agents/triage-labels.md).
-
 ### Domain docs
 
 Before exploring or naming domain concepts, read [the domain guide](docs/agents/domain.md).

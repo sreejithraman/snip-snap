@@ -8,7 +8,6 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - Do not treat pull requests as a request queue.
 - When a skill says to publish to the issue tracker, create a GitHub issue.
 - When a skill says to fetch a ticket, read its full body, comments, and labels.
-- Apply the label named by `docs/agents/triage-labels.md`.
 
 ## Blocking links
 
