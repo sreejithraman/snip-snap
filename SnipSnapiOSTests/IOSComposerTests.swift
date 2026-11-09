@@ -32,9 +32,11 @@ final class IOSComposerTests: IOSModelTestCase {
         input.onPasteAttachments = { items, _ in providers = items }
 
         input.paste(itemProviders: pasteboard.itemProviders)
-        let files = try await ComposerPasteboard.stageAttachments(providers, in: root.appendingPathComponent("Draft"))
+        let pasted = try await ComposerPasteboard.stage(providers, in: root.appendingPathComponent("Draft"))
+        let files = pasted.files
 
         XCTAssertEqual(input.text, "keep")
+        XCTAssertEqual(pasted.text, "")
         XCTAssertEqual(files.map(\.fileName), ["sample.png"])
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(files.first).url), data)
         pasteboard.string = "Clipboard changed"
@@ -400,18 +402,74 @@ final class IOSComposerTests: IOSModelTestCase {
         }
     }
 
+    /// One clipboard item offering each representation, in registration order.
+    private func item(_ representations: [(type: String, data: Data)]) -> NSItemProvider {
+        let provider = NSItemProvider()
+        for (type, data) in representations {
+            provider.registerDataRepresentation(forTypeIdentifier: type, visibility: .all) {
+                $0(data, nil)
+                return nil
+            }
+        }
+        XCTAssertEqual(provider.registeredTypeIdentifiers, representations.map(\.type))
+        return provider
+    }
+
+    private func pngData() -> Data {
+        UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { context in
+            UIColor.orange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+    }
+
+    func testPasteKeepsTextAndImageFromTheSameItem() async throws {
+        let png = pngData()
+        let provider = item([(UTType.utf8PlainText.identifier, Data("Cell text".utf8)), (UTType.png.identifier, png)])
+        let input = ComposerTextView()
+        input.text = "before  after"
+        input.selectedRange = NSRange(location: 7, length: 0)
+        var providers: [NSItemProvider] = []
+        var selection = NSRange()
+        input.onPasteAttachments = { items, range in providers = items; selection = range }
+
+        input.paste(itemProviders: [provider])
+        let result = try await ComposerPasteboard.stage(providers, in: stagingRoot())
+
+        XCTAssertEqual(result.text, "Cell text")
+        XCTAssertEqual(result.inserting(into: input.text, at: selection), "before Cell text after")
+        XCTAssertEqual(result.files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(result.files.first).url), png)
+    }
+
+    func testPasteKeepsWebLinkTextWithItsImage() async throws {
+        let png = pngData()
+        let provider = item([(UTType.png.identifier, png), (UTType.utf8PlainText.identifier, Data("https://example.com/a.png".utf8))])
+        let result = try await ComposerPasteboard.stage([provider], in: stagingRoot())
+        XCTAssertEqual(result.text, "https://example.com/a.png")
+        XCTAssertEqual(result.files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(result.files.first).url), png)
+    }
+
+    func testPasteLeavesAnImageFileURLOutOfTheBody() async throws {
+        let png = pngData()
+        let provider = item([(UTType.png.identifier, png), (UTType.utf8PlainText.identifier, Data(" file:///private/Folder/photo.png\n".utf8))])
+        let result = try await ComposerPasteboard.stage([provider], in: stagingRoot())
+        XCTAssertEqual(result.text, "")
+        XCTAssertEqual(result.files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(result.files.first).url), png)
+    }
+
+    func testPastePrefersDeclaredDataOverAPrivateReference() async throws {
+        let bytes = Data("extensionless file".utf8)
+        let provider = item([("com.apple.finder.node", Data("bplist00 file reference".utf8)), (UTType.data.identifier, bytes)])
+        let result = try await ComposerPasteboard.stage([provider], in: stagingRoot())
+        XCTAssertEqual(result.files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(result.files.first).url), bytes)
+    }
+
     func testPastePrefersAFileTypeOverAPrivateReference() async throws {
         let pdf = Data("%PDF-1.4 test".utf8)
-        let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: "com.apple.finder.node", visibility: .all) {
-            $0(Data("bplist00 file reference".utf8), nil)
-            return nil
-        }
-        provider.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) {
-            $0(pdf, nil)
-            return nil
-        }
-        XCTAssertEqual(provider.registeredTypeIdentifiers, ["com.apple.finder.node", UTType.pdf.identifier])
+        let provider = item([("com.apple.finder.node", Data("bplist00 file reference".utf8)), (UTType.pdf.identifier, pdf)])
 
         let result = try await ComposerPasteboard.stage([provider], in: stagingRoot())
         XCTAssertEqual(result.files.count, 1)
@@ -458,6 +516,36 @@ final class IOSComposerTests: IOSModelTestCase {
         } catch {
             XCTAssertEqual(error as? ComposerPasteFailure, .empty)
         }
+    }
+
+    func testPasteAccessReturnsEveryClipboardItem() throws {
+        let board = UIPasteboard.withUniqueName()
+        addTeardownBlock { UIPasteboard.remove(withName: board.name) }
+        board.items = [
+            [UTType.utf8PlainText.identifier: "Note"],
+            [UTType.pdf.identifier: Data("%PDF-1.4".utf8)],
+        ]
+        XCTAssertEqual(try ComposerPasteboard.requestAccess(to: board).count, 2)
+    }
+
+    func testPasteAccessAcceptsAFileWithAPrivateReference() throws {
+        let reference = "com.apple.finder.node"
+        for order in [[reference, UTType.pdf.identifier], [UTType.pdf.identifier, reference]] {
+            let board = UIPasteboard.withUniqueName()
+            addTeardownBlock { UIPasteboard.remove(withName: board.name) }
+            board.setItemProviders([item(order.map { ($0, Data($0.utf8)) })], localOnly: true, expirationDate: nil)
+            XCTAssertEqual(board.types, order)
+            XCTAssertEqual(try ComposerPasteboard.requestAccess(to: board).count, 1, "\(order)")
+        }
+    }
+
+    func testPasteFailuresKeepTheirDiagnosticCodes() {
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let model = IOSAppModel(library: JSONSnipLibrary.unavailable(), diagnostics: diagnostics.recorder)
+        for failure in [ComposerPasteFailure.empty, .unreadable] {
+            model.presentError(failure.message, operation: "snip.paste_read", diagnosticCode: failure.diagnosticCode)
+        }
+        XCTAssertEqual(diagnostics.events.map(\.errorCode), ["snip.emptyClipboard", "snip.clipboardUnreadable"])
     }
 
     func testPasteAndSaveReadsEveryClipboardType() async throws {

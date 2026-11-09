@@ -161,24 +161,25 @@ final class ComposerTextView: UITextView {
 }
 
 enum ComposerPasteFailure: Error {
-    case empty, denied
+    case empty, unreadable
 
     var message: String {
         switch self {
         case .empty: String(localized: "There’s nothing to paste. Copy something, then try again.")
-        case .denied: String(localized: "Snip Snap can’t read the clipboard. Set Paste from Other Apps to Allow in Settings, then try again.")
+        case .unreadable: String(localized: "Couldn’t read the clipboard. If Paste from Other Apps is set to Deny, change it to Allow in Settings, then try again.")
         }
     }
 
     var diagnosticCode: String {
         switch self {
         case .empty: "snip.emptyClipboard"
-        case .denied: "snip.pasteDenied"
+        case .unreadable: "snip.clipboardUnreadable"
         }
     }
 }
 
-/// Keep an attachment's URL/text alternatives out of the snip body.
+/// Each item's text goes in the body and its non-text data becomes an attachment. A file URL stays
+/// out of the body: it only points at the attachment and can expose private folder names.
 @MainActor
 enum ComposerPasteboard {
     static func isAttachment(_ provider: NSItemProvider) -> Bool {
@@ -196,7 +197,9 @@ enum ComposerPasteboard {
             return registered.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier
         }
         guard !isText(provider) else { return nil }
-        return registered.first { UTType($0)?.preferredFilenameExtension != nil } ?? registered.first
+        return registered.first { UTType($0)?.preferredFilenameExtension != nil }
+            ?? registered.first { UTType($0).map { $0.isDeclared && $0.conforms(to: .data) } == true }
+            ?? registered.first
     }
 
     private static func isText(_ provider: NSItemProvider) -> Bool {
@@ -204,9 +207,19 @@ enum ComposerPasteboard {
     }
 
     /// Provider loads fail without a prompt until a direct read clears the system paste permission.
+    /// The read runs on the main thread and the providers load the content again, so it probes the
+    /// smallest representation: text, a URL, or a non-content type such as Files' private reference.
     static func requestAccess(to pasteboard: UIPasteboard) throws -> [NSItemProvider] {
-        guard let type = pasteboard.types.first else { throw ComposerPasteFailure.empty }
-        guard pasteboard.data(forPasteboardType: type) != nil else { throw ComposerPasteFailure.denied }
+        let types = pasteboard.types
+        guard let first = types.first else { throw ComposerPasteFailure.empty }
+        let isReadable = if pasteboard.hasStrings {
+            pasteboard.string != nil
+        } else if pasteboard.hasURLs {
+            pasteboard.url != nil
+        } else {
+            pasteboard.data(forPasteboardType: types.first { UTType($0)?.conforms(to: .content) != true } ?? first) != nil
+        }
+        guard isReadable else { throw ComposerPasteFailure.unreadable }
         return pasteboard.itemProviders
     }
 
@@ -221,7 +234,8 @@ enum ComposerPasteboard {
         var text = ""
         var files: [StagedAttachment] = []
         do {
-            for provider in providers where !isAttachment(provider) && isText(provider) {
+            for provider in providers
+            where isText(provider) && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 try Task.checkCancellation()
                 let load = ComposerProviderLoad<String>()
                 let value = try await withTaskCancellationHandler {
@@ -242,7 +256,8 @@ enum ComposerPasteboard {
                         load.setProgress(progress)
                     }
                 } onCancel: { load.cancel() }
-                text += value
+                let isFileURL = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines))?.isFileURL == true
+                if !isFileURL || !isAttachment(provider) { text += value }
             }
             files = try await stageAttachments(providers, in: root)
             if LargePastedText.shouldAttach(text) {
