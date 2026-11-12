@@ -53,7 +53,6 @@ struct CompactLibraryControls: View {
     @State private var draftListID: UUID?
     @State private var toolbarWidth: CGFloat = 320
     @State private var composerHeights: [LibraryPage: CGFloat] = [:]
-    @State private var previewURL: URL?
     @State private var composerFieldID = UUID()
     @Binding private var isComposerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var scaledControlLength =
@@ -98,6 +97,7 @@ struct CompactLibraryControls: View {
     }
 
     private var isStaging: Bool { storage.stagingTask != nil }
+    private var previewURL: URL? { storage.attachmentPreview?.url }
     private var isClipboardSelected: Bool { model.selectedPage == .clipboard }
 
     private var showsComposerPages: Bool {
@@ -140,7 +140,6 @@ struct CompactLibraryControls: View {
         .padding(.top, showsListEditor ? 0 : SnipSnapSpacing.relatedContent)
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
-        .attachmentPreview($previewURL, in: draft.attachments)
         .onAppear {
             draftListID = model.lastSelectedListID
             if storage.savingListID != model.lastSelectedListID {
@@ -460,7 +459,9 @@ struct CompactLibraryControls: View {
                         preview: {
                             guard !isPreview else { return }
                             model.haptics.invalidatePendingFeedback()
-                            previewURL = url
+                            storage.attachmentPreview = ComposerAttachmentPreviewRequest(
+                                url: url, listID: model.lastSelectedListID
+                            )
                         },
                         remove: {
                             guard !isPreview else { return }
@@ -634,6 +635,8 @@ final class CompactComposerStorage {
     var isStagingPaste = false
     /// The root presents this picker, so a fold that replaces the composer leaves it open.
     var attachmentPicker: ComposerAttachmentPickerRequest?
+    /// The root presents this preview, so a fold that replaces the composer leaves it open.
+    var attachmentPreview: ComposerAttachmentPreviewRequest?
     /// Changes when storage changes a draft outside the mounted composer, so the composer reloads it.
     private(set) var draftRevision = 0
 
@@ -728,7 +731,12 @@ struct ComposerAttachmentPickerRequest: Equatable {
     let listID: UUID
 }
 
-/// Applied at the root, above the compact and regular trees, so a fold doesn't dismiss a picker.
+struct ComposerAttachmentPreviewRequest: Equatable {
+    let url: URL
+    let listID: UUID
+}
+
+/// Applied at the root, above the compact and regular trees, so a fold doesn't dismiss a picker or preview.
 struct ComposerAttachmentPresentations: ViewModifier {
     let model: IOSAppModel
     let storage: CompactComposerStorage
@@ -768,6 +776,23 @@ struct ComposerAttachmentPresentations: ViewModifier {
             .onChange(of: storage.attachmentPicker, initial: true) { _, request in
                 if let request { listID = request.listID }
             }
+            .attachmentPreview(previewURL, in: previewAttachments)
+    }
+
+    /// Quick Look can page to another of the list's attachments, so keep the list when the URL changes.
+    private var previewURL: Binding<URL?> {
+        Binding(
+            get: { storage.attachmentPreview?.url },
+            set: { url in
+                storage.attachmentPreview = url.flatMap { url in
+                    storage.attachmentPreview.map { ComposerAttachmentPreviewRequest(url: url, listID: $0.listID) }
+                }
+            }
+        )
+    }
+
+    private var previewAttachments: [URL] {
+        storage.attachmentPreview.map { storage.draftStore.draft(for: $0.listID).attachments } ?? []
     }
 
     private func isPresenting(_ source: AttachmentSource) -> Binding<Bool> {

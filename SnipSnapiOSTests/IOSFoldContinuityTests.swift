@@ -1,3 +1,4 @@
+import QuickLook
 import SnipSnapCore
 import SwiftUI
 import UIKit
@@ -181,6 +182,27 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
         storage.attachmentPicker = nil
         XCTAssertTrue(root.wait("Files picker dismissed") { root.presented(UIDocumentPickerViewController.self) == nil })
+    }
+
+    func testAttachmentPreviewStaysPresentedAcrossSizeClassSwaps() throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("Preview draft", to: storage)
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Preview draft" }, root.diagnostics)
+        // A text file opens in Quick Look; images open the full-screen viewer from the same modifier.
+        let request = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID)
+        storage.attachmentPreview = request
+        XCTAssertTrue(root.wait("Quick Look presented") { root.presented(QLPreviewController.self) != nil })
+        let preview = try XCTUnwrap(root.presented(QLPreviewController.self))
+
+        for sizeClass in [UIUserInterfaceSizeClass.regular, .compact] {
+            root.swap(to: sizeClass)
+            root.settle()
+            XCTAssertEqual(storage.attachmentPreview, request, "\(sizeClass)")
+            XCTAssertTrue(root.presented(QLPreviewController.self) === preview, "\(sizeClass)")
+        }
+        storage.attachmentPreview = nil
+        XCTAssertTrue(root.wait("Quick Look dismissed") { root.presented(QLPreviewController.self) == nil })
     }
 
     func testPickedFileStagesIntoTheListThatOpenedThePicker() async throws {
