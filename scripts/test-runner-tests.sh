@@ -317,12 +317,21 @@ abort 'PR checks must not be path-filtered at workflow level' unless events.key?
 RUBY
 
 /usr/bin/ruby -ryaml - "$script_dir/../.github/workflows" <<'RUBY'
+# Beta prepare checks out the candidate's own commit, which may predate the Xcode action, and
+# needs no Xcode to decide whether that commit is still current.
+xcode_free = ['beta.yml prepare']
 Dir[File.join(ARGV.fetch(0), '*.yml')].each do |path|
   YAML.load_file(path).fetch('jobs').each do |name, job|
     next if job.fetch('runs-on').start_with?('ubuntu-')
     label = "#{File.basename(path)} #{name}"
     abort "#{label} must run on the Xcode 27 image" unless job['runs-on'] == 'xcode-27'
-    first, second = job.fetch('steps')
+    steps = job.fetch('steps')
+    if xcode_free.include?(label)
+      abort "#{label} must stay free of Xcode" if
+        steps.any? { |step| step['uses'] == './.github/actions/xcode' || step['run'].to_s.match?(/\b(xcodebuild|xcrun|swift)\b/) }
+      next
+    end
+    first, second = steps
     abort "#{label} must select Xcode right after checkout" unless
       first.fetch('uses', '').start_with?('actions/checkout@') && second['uses'] == './.github/actions/xcode'
   end
