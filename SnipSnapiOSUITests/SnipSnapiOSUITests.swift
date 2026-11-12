@@ -1765,16 +1765,19 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
         continueAfterFailure = false
-        // On phone-idiom regular width (the open iPhone Duo), the system draws 40-pt-tall bar
-        // buttons with a taller touch target, so measure the width but tap 22 pt above and
-        // below the center to prove a 44-pt height.
-        for offset in [-22, 22] as [CGFloat] {
-            let app = launchApp()
-            if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
-                throw XCTSkip("This check needs the regular-width sidebar.")
-            }
-            returnToLists(in: app)
-            XCTAssertGreaterThanOrEqual(app.buttons["new-list"].frame.width, 44)
+        // iPad draws bar buttons at full height. Phone idiom at regular width (the open
+        // iPhone Duo) draws them 40 pt tall inside a taller touch target.
+        let app = launchApp()
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            throw XCTSkip("This check needs the regular-width sidebar.")
+        }
+        returnToLists(in: app)
+        let frame = app.buttons["new-list"].frame
+        XCTAssertGreaterThanOrEqual(frame.width, 44)
+        guard frame.height < 44 else { return }
+
+        // Hits 45 pt apart prove a target of at least 44 pt.
+        func assertTapStartsNewList(offset: CGFloat, in app: XCUIApplication) {
             app.buttons["new-list"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .withOffset(CGVector(dx: 0, dy: offset))
                 .tap()
@@ -1782,8 +1785,12 @@ final class SnipSnapiOSUITests: XCTestCase {
                 app.textFields["list-name"].waitForExistence(timeout: 3),
                 "A tap \(offset) pt from New List's center must start a new list."
             )
-            app.terminate()
         }
+        assertTapStartsNewList(offset: -22.5, in: app)
+        app.terminate()
+        let relaunched = launchApp()
+        returnToLists(in: relaunched)
+        assertTapStartsNewList(offset: 22.5, in: relaunched)
     }
 
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
