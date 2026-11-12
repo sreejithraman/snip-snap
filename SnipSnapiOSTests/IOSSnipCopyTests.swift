@@ -300,7 +300,7 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         let olderCopy = Task {
             await coordinator.copyText(snips: [older], model: model)
         }
-        await fulfillment(of: [olderWrite], timeout: 2)
+        await fulfillment(of: [olderWrite], timeout: TestReadiness.timeout)
         XCTAssertEqual(pasteboard.writes, [[.text("Older copy")]])
 
         let newerCopied = await coordinator.copyText(snips: [newer], model: model)

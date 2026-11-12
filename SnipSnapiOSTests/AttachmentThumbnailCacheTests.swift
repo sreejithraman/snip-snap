@@ -116,8 +116,7 @@ final class AttachmentThumbnailCacheTests: XCTestCase {
             return image
         }
 
-        // Bound a stuck request without making runner speed part of the contract.
-        await fulfillment(of: [cachedLoadFinished], timeout: 10)
+        await fulfillment(of: [cachedLoadFinished], timeout: TestReadiness.timeout)
         gate.release()
         let again = await cachedLoad.value
         _ = await slowLoad.value

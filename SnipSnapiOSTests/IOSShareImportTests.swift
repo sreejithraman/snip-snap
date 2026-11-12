@@ -18,7 +18,7 @@ final class IOSShareImportTests: IOSModelTestCase {
 
         let created = await model.createSnip(content: "Saved", in: SnipList.inboxID)
         XCTAssertTrue(created)
-        await fulfillment(of: [syncRequested], timeout: 2)
+        await fulfillment(of: [syncRequested], timeout: TestReadiness.timeout)
 
         let scheduleCount = await handler.scheduleCount()
         let syncCount = await handler.syncCount()
@@ -355,12 +355,7 @@ final class IOSShareImportTests: IOSModelTestCase {
     }
 
     private func waitForCalls(_ expected: Int, from probe: ImportCallProbe) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while await probe.callCount() < expected, clock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return await probe.callCount() >= expected
+        await TestReadiness.wait { await probe.callCount() >= expected }
     }
 }
 

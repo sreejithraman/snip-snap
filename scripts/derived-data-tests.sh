@@ -31,7 +31,8 @@ done
     "$script_dir/test.sh" >/dev/null
 /usr/bin/grep -F 'SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild' \
     "$script_dir/test.sh" >/dev/null
-/usr/bin/grep -F 'ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 18 Pro}"' \
+/usr/bin/grep -Fx 'ios_test_device="iPhone 18 Pro"' "$script_dir/test.sh" >/dev/null
+/usr/bin/grep -F 'ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=$ios_test_device}"' \
     "$script_dir/test.sh" >/dev/null
 /usr/bin/grep -F -- '-derivedDataPath "$derived_data/ios"' \
     "$script_dir/test.sh" >/dev/null

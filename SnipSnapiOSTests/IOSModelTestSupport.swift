@@ -38,6 +38,23 @@ class IOSModelTestCase: XCTestCase {
     }
 }
 
+/// Readiness waits for work a test started. Cold CI simulators can stall for tens of seconds, so the
+/// bound holds there; a met condition returns at once, and only broken behavior waits the full bound.
+enum TestReadiness {
+    static let timeout: TimeInterval = 30
+
+    /// Polls `condition`, suspending between checks, until it holds or the bound passes.
+    @MainActor
+    static func wait(until condition: () async -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        while await !condition() {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+}
+
 @MainActor
 final class RecordingHapticPlayer: IOSHapticPlaying {
     var played: [IOSHapticFeedback.Meaning] = []

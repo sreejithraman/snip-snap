@@ -99,10 +99,7 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
                 XCTAssertNil(context.cancellation)
                 guard case .failed = model.phase else { return XCTFail("Real provider failure stays visible") }
             } else {
-                let deadline = ContinuousClock.now + .seconds(2)
-                while context.cancellation == nil && ContinuousClock.now < deadline {
-                    await Task.yield()
-                }
+                _ = await TestReadiness.wait { context.cancellation != nil }
                 XCTAssertNotEqual(model.phase, .loading, "Cancellation must settle the loading screen")
                 XCTAssertEqual(context.cancellation?.domain, NSCocoaErrorDomain)
                 XCTAssertEqual(context.cancellation?.code, NSUserCancelledError)

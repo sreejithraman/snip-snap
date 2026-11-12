@@ -6,7 +6,8 @@ repo_dir="${script_dir:h}"
 run_common_tests=YES
 run_mac_app_tests=YES
 run_ios_app_tests=YES
-ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 18 Pro}"
+ios_test_device="iPhone 18 Pro"
+ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=$ios_test_device}"
 
 usage() {
     print -u2 "Usage: $0 [--mac-only | --ios-only | --without-mac-app-tests]"
@@ -90,6 +91,9 @@ elif [[ "$run_common_tests" == YES ]]; then
 fi
 
 if [[ "$run_ios_app_tests" == YES ]]; then
+    if [[ "${CI:-}" == true && -z "${SNIP_SNAP_IOS_TEST_DESTINATION:-}" ]]; then
+        ios_test_destination="platform=iOS Simulator,id=$("$script_dir/ci-boot-ios-simulator.sh" "$ios_test_device")"
+    fi
     if xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnapiOS \

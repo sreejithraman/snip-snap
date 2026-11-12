@@ -47,7 +47,7 @@ final class IOSClipboardFileCopyTests: XCTestCase {
         XCTAssertEqual(earlierFeedback.message, "Snapped")
         UIPasteboard.general.string = "Previous pasteboard"
         let copying = coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: feedbackModel)
-        await fulfillment(of: [read.entered], timeout: 2)
+        await fulfillment(of: [read.entered], timeout: TestReadiness.timeout)
         XCTAssertEqual(UIPasteboard.general.string, "Previous pasteboard")
         XCTAssertEqual(feedbackModel.toast?.id, earlierFeedback.id, "Pending work must not publish success feedback")
         XCTAssertFalse(read.wasMainThread)
@@ -91,7 +91,7 @@ final class IOSClipboardFileCopyTests: XCTestCase {
             let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
             await model.load()
             let older = coordinator.copyClipboardEntry(entry, clipboard: clipboard, model: model)
-            await fulfillment(of: [read.entered], timeout: 2)
+            await fulfillment(of: [read.entered], timeout: TestReadiness.timeout)
             let newer = await coordinator.copyText(snips: [snip], model: model)
             let latestFeedback = try XCTUnwrap(model.toast)
             read.resume.signal()
@@ -154,7 +154,7 @@ private final class ClipboardCopyReadGate: @unchecked Sendable {
     func read(_ url: URL) throws -> Data {
         lock.withLock { storedWasMainThread = Thread.isMainThread }
         entered.fulfill()
-        guard resume.wait(timeout: .now() + 5) == .success else { throw CocoaError(.fileReadUnknown) }
+        guard resume.wait(timeout: .now() + TestReadiness.timeout) == .success else { throw CocoaError(.fileReadUnknown) }
         if fails { throw CocoaError(.fileReadUnknown) }
         return try Data(contentsOf: url)
     }
