@@ -306,18 +306,16 @@ private struct ListPageMotionStage<PageContent: View>: View {
             // safe-area margin, which a full-width page covers.
             ZStack {
                 if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
-                    edgeCue(kind: .add, progress: creationCueProgress)
-                        .offset(x: frame.pages.last.map {
-                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-                        } ?? 0)
-                        .zIndex(2)
+                    edgeCue(kind: .add, progress: creationCueProgress, offset: frame.pages.last.map {
+                        frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                    } ?? 0)
+                    .zIndex(2)
                 }
                 if !reduceMotion, frame.edgeCancelProgress > 0 {
-                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
-                        .offset(x: cancelSource.map {
-                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-                        } ?? 0)
-                        .zIndex(2)
+                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress, offset: cancelSource.map {
+                        frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                    } ?? 0)
+                    .zIndex(2)
                 }
                 ForEach(content) { page in
                     let isRetained = frame.retainedPages.contains(page.id)
@@ -339,7 +337,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
         }
     }
 
-    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat) -> some View {
+    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat, offset: CGFloat) -> some View {
         let stretch = ListEdgeCueLayout.stretch(progress: progress)
         let armed = progress >= 1
         return GeometryReader { proxy in
@@ -359,7 +357,10 @@ private struct ListPageMotionStage<PageContent: View>: View {
                     y: proxy.size.height / 2
                 )
         }
-        // Anchor to the safe edges; `position` ignores the safe area.
+        // Anchor and clip to the fixed safe rectangle, so a cue slides in from the safe edge
+        // as it does from a zero-inset screen edge. `position` ignores the safe area.
+        .offset(x: offset)
+        .clipped()
         .padding(safeArea)
         .accessibilityHidden(true)
         .allowsHitTesting(false)
