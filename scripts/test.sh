@@ -59,6 +59,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/localization-policy-tests.sh"
     "$script_dir/ios-test-selection-tests.sh"
     "$script_dir/ios-simulator-policy-tests.sh"
+    "$script_dir/ci-boot-ios-simulator-tests.sh"
 
     swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
 fi
