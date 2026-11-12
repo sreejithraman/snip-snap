@@ -177,10 +177,19 @@ again after a fold.
 
 ### Fold during a UI test
 
-`testFocusedComposerSurvivesFoldingTheDuo` types into the composer, then asks
-for each pose by writing `NN-<pose>.request` into the directory named by
-`SNIP_SNAP_UI_TEST_FOLD_DIR`. The host folds and answers with `NN-<pose>.done`.
-Without that directory, the test skips. Start the host loop, then the test:
+Two tests fold the Duo:
+
+- `testFocusedComposerSurvivesFoldingTheDuo` types into the composer and
+  checks its draft and keyboard focus after each pose.
+- `testFoldingTheDuoKeepsPlaceAndUnsentWork` checks gathered snips, an active
+  search, the Settings sheet, and a list's draft with an attachment.
+
+After each pose, both tests check that the list tabs and Paste return whenever
+the composer has no keyboard focus. Each test asks for a pose by writing
+`NN-<pose>.request` into the directory named by `SNIP_SNAP_UI_TEST_FOLD_DIR`.
+`NN` counts requests already in the directory, so both tests can share it. The
+host folds and answers with `NN-<pose>.done`. Without that directory, the tests
+skip. Start the host loop, then a test:
 
 ```sh
 FOLDS="$(mktemp -d)"
@@ -248,12 +257,18 @@ last.
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
   focused field. In testing it did after every half-open and after some opens.
+  The composer then clears its focus, so the list tabs and Paste return, and one
+  tap resumes typing.
 - A run that ends on the inner panel can leave the next run unable to give a
   text field keyboard focus. Fold open, then closed, before the next run.
 - Half-open is checked only through the layout change, not the hinge angle. Its
   window matches open.
 - After the app moves from the inner panel back to the outer panel, XCTest can
-  wait 60 seconds per action for the app to report idle.
+  wait 60 seconds per action and log "App animations complete notification not
+  received". The app is idle then: a sample shows its main thread waiting for
+  events, and its windows hold no running Core Animation animations. It stalled
+  with and without a focused composer. Expect slow runs; the wait is not an app
+  animation.
 - `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
   fail on SimLock-set simulators, as described above.
 - On the closed panel, the system places every mounted list page's
