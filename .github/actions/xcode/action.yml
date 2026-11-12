@@ -1,12 +1,16 @@
 name: Select Xcode
-description: Select the Xcode that builds Snip Snap and print its toolchain.
+description: Select the Xcode that builds Snip Snap and a Simulator runtime it supports, then print its toolchain.
 
 runs:
   using: composite
   steps:
+    # The image's iOS 27.1 runtime offers only iPhone Duo. Pin the iPhone tests to
+    # iOS 27.0, so Xcode 27.1 never picks the newer 27.2 runtime.
     - name: Select Xcode
       shell: bash
-      run: echo "DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer" >> "$GITHUB_ENV"
+      run: |
+        echo "DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer" >> "$GITHUB_ENV"
+        echo "SNIP_SNAP_IOS_TEST_DESTINATION=platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0" >> "$GITHUB_ENV"
 
     - name: Print toolchain
       shell: bash
@@ -15,3 +19,4 @@ runs:
         echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
         echo "iOS Simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
         echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
+        echo "iOS test destination: $SNIP_SNAP_IOS_TEST_DESTINATION"
