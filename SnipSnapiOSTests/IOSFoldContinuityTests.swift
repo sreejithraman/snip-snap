@@ -164,6 +164,68 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(blocker.isFirstResponder)
     }
 
+    func testFilesPickerStaysPresentedAcrossSizeClassSwaps() throws {
+        let storage = makeComposerStorage()
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer != nil }, root.diagnostics)
+        let request = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID)
+        storage.attachmentPicker = request
+        XCTAssertTrue(root.wait("Files picker presented") { root.presented(UIDocumentPickerViewController.self) != nil })
+        let picker = try XCTUnwrap(root.presented(UIDocumentPickerViewController.self))
+
+        for sizeClass in [UIUserInterfaceSizeClass.regular, .compact] {
+            root.swap(to: sizeClass)
+            root.settle()
+            XCTAssertEqual(storage.attachmentPicker, request, "\(sizeClass)")
+            XCTAssertTrue(root.presented(UIDocumentPickerViewController.self) === picker, "\(sizeClass)")
+        }
+        storage.attachmentPicker = nil
+        XCTAssertTrue(root.wait("Files picker dismissed") { root.presented(UIDocumentPickerViewController.self) == nil })
+    }
+
+    func testPickedFileStagesIntoTheListThatOpenedThePicker() async throws {
+        let storage = makeComposerStorage()
+        storage.draftStore.setText("Picked for Inbox", for: SnipList.inboxID)
+        let root = try RootHarness(test: self, storage: storage)
+        let model = root.session.model
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Picked for Inbox" }, root.diagnostics)
+        let created = await model.createList(name: "Other")
+        XCTAssertTrue(created)
+        let other = try XCTUnwrap(model.lists.first { $0.name == "Other" })
+        model.selectList(SnipList.inboxID)
+        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID)
+
+        let picked = try makePickedFile()
+        root.swap(to: .regular)
+        model.selectList(other.id)
+        storage.stagePickedMedia(.success(.files([picked])), to: SnipList.inboxID, model: model)
+        XCTAssertNil(storage.attachmentPicker)
+        await storage.stagingTask?.value
+
+        let staged = storage.draftStore.draft(for: SnipList.inboxID).attachments
+        XCTAssertEqual(staged.map(\.lastPathComponent), ["picked.txt"])
+        XCTAssertEqual(storage.draftStore.draft(for: other.id).attachments, [])
+        model.selectList(SnipList.inboxID)
+        // This harness can't see the attachment strip. The text shows the composer loaded the Inbox
+        // draft, which holds the attachment.
+        let shown = await TestReadiness.wait { root.composer?.text == "Picked for Inbox" }
+        XCTAssertTrue(shown, root.diagnostics)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, staged)
+    }
+
+    func testCancelledPickerClearsItsRequestAndStagesNothing() {
+        let storage = makeComposerStorage()
+        let model = makeModel(library: ModelTestLibrary())
+        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .photos, listID: SnipList.inboxID)
+
+        storage.stagePickedMedia(.failure(CocoaError(.userCancelled)), to: SnipList.inboxID, model: model)
+
+        XCTAssertNil(storage.attachmentPicker)
+        XCTAssertNil(storage.stagingTask)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
+        XCTAssertNil(model.latestFailure)
+    }
+
     /// Holds a save of the Inbox draft in `gate` while the compact composer is replaced by a regular one.
     private func startSaveAndSwap(
         _ storage: CompactComposerStorage, root: RootHarness, gate: SaveGate
@@ -196,6 +258,16 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         storage.draftStore.setText(text, for: SnipList.inboxID)
         storage.draftStore.addTemporary(attachment, to: SnipList.inboxID)
         return attachment
+    }
+
+    /// A file outside the staging directory, as the Files picker returns.
+    private func makePickedFile() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("picked.txt")
+        try Data("picked".utf8).write(to: file)
+        return file
     }
 
     private func makeComposerStorage() -> CompactComposerStorage {
@@ -283,6 +355,17 @@ private final class RootHarness {
     }
 
     var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
+
+    /// A controller the root presents, such as a system picker, or one inside a presented container.
+    func presented<Controller: UIViewController>(_ type: Controller.Type) -> Controller? {
+        var next = host.presentedViewController
+        while let controller = next {
+            if let match = controller as? Controller { return match }
+            if let match = controller.children.lazy.compactMap({ $0 as? Controller }).first { return match }
+            next = controller.presentedViewController
+        }
+        return nil
+    }
 
     var composer: ComposerTextView? {
         allViews(ComposerTextView.self).first { $0.window != nil && !$0.isHidden }

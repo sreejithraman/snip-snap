@@ -54,10 +54,6 @@ struct CompactLibraryControls: View {
     @State private var toolbarWidth: CGFloat = 320
     @State private var composerHeights: [LibraryPage: CGFloat] = [:]
     @State private var previewURL: URL?
-    @State private var isImporting = false
-    @State private var isPickingPhotos = false
-    @State private var selectedPhotos: [PhotosPickerItem] = []
-    @State private var isTakingPhoto = false
     @State private var composerFieldID = UUID()
     @Binding private var isComposerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var scaledControlLength =
@@ -144,30 +140,6 @@ struct CompactLibraryControls: View {
         .padding(.top, showsListEditor ? 0 : SnipSnapSpacing.relatedContent)
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
-        .fileImporter(
-            isPresented: $isImporting,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: true
-        ) { result in
-            stage(result)
-        }
-        .photosPicker(
-            isPresented: $isPickingPhotos,
-            selection: $selectedPhotos,
-            matching: .images,
-            preferredItemEncoding: .current
-        )
-        .onChange(of: selectedPhotos) { _, items in
-            guard !items.isEmpty else { return }
-            selectedPhotos = []
-            stageMedia(.photos(items))
-        }
-        .fullScreenCover(isPresented: $isTakingPhoto) {
-            AttachmentCameraPicker { image in
-                isTakingPhoto = false
-                if let image { stageMedia(.camera(image)) }
-            }
-        }
         .attachmentPreview($previewURL, in: draft.attachments)
         .onAppear {
             draftListID = model.lastSelectedListID
@@ -376,11 +348,9 @@ struct CompactLibraryControls: View {
             AttachmentSourceMenu(choose: { source in
                 guard !isPreview else { return }
                 model.haptics.invalidatePendingFeedback()
-                switch source {
-                case .files: isImporting = true
-                case .photos: isPickingPhotos = true
-                case .camera: isTakingPhoto = true
-                }
+                storage.attachmentPicker = ComposerAttachmentPickerRequest(
+                    source: source, listID: model.lastSelectedListID
+                )
             }) {
                 Image(systemName: isPreview ? "plus" : (isStaging ? "hourglass" : "plus"))
                     .font(.title3.weight(.medium))
@@ -540,8 +510,8 @@ struct CompactLibraryControls: View {
         AttachmentDraftLifecycle.allowsSaving(
             isSaving: storage.isSaving,
             isStaging: isStaging,
-            isImporting: isImporting,
-            isPickingMedia: isPickingPhotos || isTakingPhoto,
+            isImporting: storage.attachmentPicker?.source == .files,
+            isPickingMedia: storage.attachmentPicker.map { $0.source != .files } ?? false,
             isPreviewing: previewURL != nil
         )
             && (!draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -621,39 +591,6 @@ struct CompactLibraryControls: View {
         }
     }
 
-    private func stage(_ result: Result<[URL], any Error>) {
-        guard case .success(let urls) = result else {
-            if case .failure(let error) = result {
-                let nsError = error as NSError
-                if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
-                    model.presentError(error, operation: "attachment.import_select")
-                }
-            }
-            return
-        }
-        stageMedia(.files(urls))
-    }
-
-    private func stageMedia(_ input: AttachmentMediaInput) {
-        guard storage.stagingTask == nil else { return }
-        let listID = model.lastSelectedListID
-        storage.stagingTask = Task {
-            defer { storage.stagingTask = nil }
-            do {
-                let stagedFiles = try await AttachmentMediaStager.stage(
-                    input, in: storage.stagingDirectory
-                )
-                if !model.lists.contains(where: { $0.id == listID }) {
-                    AttachmentDraftStager.clean(stagedFiles)
-                    return
-                }
-                storage.addStagedAttachments(stagedFiles.map(\.url), to: listID)
-            } catch {
-                model.presentError(error, operation: "attachment.import_stage")
-            }
-        }
-    }
-
     private func removeAttachment(_ url: URL) {
         model.haptics.invalidatePendingFeedback()
         storage.draftStore.remove(url, from: model.lastSelectedListID)
@@ -695,6 +632,8 @@ final class CompactComposerStorage {
     /// Staging outlives a composer that a size-class change replaces, such as opening an iPhone Duo.
     var stagingTask: Task<Void, Never>?
     var isStagingPaste = false
+    /// The root presents this picker, so a fold that replaces the composer leaves it open.
+    var attachmentPicker: ComposerAttachmentPickerRequest?
     /// Changes when storage changes a draft outside the mounted composer, so the composer reloads it.
     private(set) var draftRevision = 0
 
@@ -730,6 +669,38 @@ final class CompactComposerStorage {
         draftRevision += 1
     }
 
+    /// Stages into the list that opened the picker, which may no longer be the selected one.
+    func stagePickedMedia(
+        _ result: Result<AttachmentMediaInput, any Error>, to listID: UUID, model: IOSAppModel
+    ) {
+        attachmentPicker = nil
+        let input: AttachmentMediaInput
+        switch result {
+        case .success(let picked):
+            input = picked
+        case .failure(let error):
+            let nsError = error as NSError
+            if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
+                model.presentError(error, operation: "attachment.import_select")
+            }
+            return
+        }
+        guard stagingTask == nil else { return }
+        stagingTask = Task {
+            defer { stagingTask = nil }
+            do {
+                let stagedFiles = try await AttachmentMediaStager.stage(input, in: stagingDirectory)
+                guard model.lists.contains(where: { $0.id == listID }) else {
+                    AttachmentDraftStager.clean(stagedFiles)
+                    return
+                }
+                addStagedAttachments(stagedFiles.map(\.url), to: listID)
+            } catch {
+                model.presentError(error, operation: "attachment.import_stage")
+            }
+        }
+    }
+
     /// Saves the list's draft through `create`, which returns whether it saved.
     func save(listID: UUID, create: @MainActor (ComposerDraft) async -> Bool) async -> Bool {
         let snapshot = draftStore.beginSave(listID: listID)
@@ -752,6 +723,67 @@ final class CompactComposerStorage {
     }
 }
 
+struct ComposerAttachmentPickerRequest: Equatable {
+    let source: AttachmentSource
+    let listID: UUID
+}
+
+/// Applied at the root, above the compact and regular trees, so a fold doesn't dismiss a picker.
+struct ComposerAttachmentPresentations: ViewModifier {
+    let model: IOSAppModel
+    let storage: CompactComposerStorage
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    /// A picker can deliver its result after its dismissal clears the request.
+    @State private var listID: UUID?
+
+    func body(content: Content) -> some View {
+        content
+            .fileImporter(
+                isPresented: isPresenting(.files),
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: true
+            ) { result in
+                stage(result.map(AttachmentMediaInput.files))
+            }
+            .photosPicker(
+                isPresented: isPresenting(.photos),
+                selection: $selectedPhotos,
+                matching: .images,
+                preferredItemEncoding: .current
+            )
+            .onChange(of: selectedPhotos) { _, items in
+                guard !items.isEmpty else { return }
+                selectedPhotos = []
+                stage(.success(.photos(items)))
+            }
+            .fullScreenCover(isPresented: isPresenting(.camera)) {
+                AttachmentCameraPicker { image in
+                    if let image {
+                        stage(.success(.camera(image)))
+                    } else {
+                        stage(.failure(CocoaError(.userCancelled)))
+                    }
+                }
+            }
+            .onChange(of: storage.attachmentPicker, initial: true) { _, request in
+                if let request { listID = request.listID }
+            }
+    }
+
+    private func isPresenting(_ source: AttachmentSource) -> Binding<Bool> {
+        Binding(
+            get: { storage.attachmentPicker?.source == source },
+            set: { presented in
+                if !presented, storage.attachmentPicker?.source == source { storage.attachmentPicker = nil }
+            }
+        )
+    }
+
+    private func stage(_ result: Result<AttachmentMediaInput, any Error>) {
+        guard let listID else { return }
+        storage.stagePickedMedia(result, to: listID, model: model)
+    }
+}
 
 private struct CompactDraftAttachment: View {
     let url: URL
