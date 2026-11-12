@@ -1693,6 +1693,76 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.label, "Add to \(name)…")
     }
 
+    /// Large iPhones switch to the sidebar layout in landscape, which swaps the composer while it is focused.
+    func testFocusedComposerSurvivesRotation() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Turn draft")
+        var draft = "Turn draft"
+
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(composer.waitForExistence(timeout: 10), "The app stopped responding after rotating")
+            XCTAssertEqual(composer.value as? String, draft)
+            // Typing without a tap proves the composer kept keyboard focus.
+            composer.typeText("!")
+            draft += "!"
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+    }
+
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    func testFocusedComposerSurvivesFoldingTheDuo() throws {
+        guard let directory = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_FOLD_DIR"] else {
+            throw XCTSkip("Folding needs TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR and a host that answers its requests.")
+        }
+        continueAfterFailure = false
+        let folds = URL(fileURLWithPath: directory)
+        let app = launchApp()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value(forKey: "hasKeyboardFocus") as? Bool, false)
+        composer.tap()
+        composer.typeText("Fold draft")
+        var draft = "Fold draft"
+
+        let keyboardFocus = NSPredicate(format: "hasKeyboardFocus == true")
+        // Window widths on the inner and outer panels.
+        let poses: [(name: String, width: CGFloat)] = [("open", 951), ("closed", 466), ("half-open", 951), ("closed", 466)]
+        for (step, (pose, width)) in poses.enumerated() {
+            let request = String(format: "%02d-%@", step + 1, pose)
+            try Data().write(to: folds.appendingPathComponent("\(request).request"))
+            let reply = folds.appendingPathComponent("\(request).done").path
+            let folded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                FileManager.default.fileExists(atPath: reply)
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [folded], timeout: 60), .completed, "The host did not fold to \(pose)")
+
+            let window = app.windows.firstMatch
+            let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in window.frame.width == width }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 30), .completed, "The app did not move to the \(pose) panel")
+            XCTAssertTrue(composer.waitForExistence(timeout: 10), "The app stopped responding after folding to \(pose)")
+            XCTAssertEqual(composer.value as? String, draft, "The draft changed after folding to \(pose)")
+            // Moving between panels can make the system keyboard end editing. The composer may keep
+            // keyboard focus or lose it, but no other element may take it.
+            let composerFocused = composer.value(forKey: "hasKeyboardFocus") as? Bool == true
+            XCTAssertTrue(
+                composerFocused || app.descendants(matching: .any).matching(keyboardFocus).count == 0,
+                "Keyboard focus moved off the composer after folding to \(pose)"
+            )
+            // XCTest key events do not reach the Duo's inner panel, so type only when closed. A tap
+            // at the end resumes editing if the system ended it.
+            guard pose == "closed" else { continue }
+            composer.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+            composer.typeText("!")
+            draft += "!"
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()
