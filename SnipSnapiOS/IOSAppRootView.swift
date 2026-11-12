@@ -138,7 +138,7 @@ struct IOSAppRootView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if UIDevice.current.userInterfaceIdiom != .phone,
+            if horizontalSizeClass == .regular,
                let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,
                bundleID.contains(".dev"), let slot = Int(suffix) {
@@ -419,7 +419,10 @@ struct IOSAppRootView: View {
                     ListPageFrameReader(
                         state: listPageMotionState, pages: model.pages, selectedPage: model.selectedPage
                     ) { frame in
-                        libraryControls(pageFrame: frame, pageWidth: proxy.size.width)
+                        libraryControls(
+                            pageFrame: frame,
+                            pageWidth: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing
+                        )
                     }
                 }
             }
@@ -521,8 +524,12 @@ struct IOSAppRootView: View {
                     }
                     .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
                                   usesFixedExpiry: true)
+                    // Bar hosting drops field focus updates on iOS 26.5.
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         libraryControls(showsListTabs: false)
+                            .background {
+                                if !model.isSearchPresented { regularControlsFade }
+                            }
                     }
                 }
             }
@@ -602,8 +609,24 @@ struct IOSAppRootView: View {
                 : nil,
             editSelectedList: model.lastSelectedListID == SnipList.inboxID
                 ? nil : { model.editListInline(id: model.lastSelectedListID) },
-            deleteList: deleteList
+            deleteList: deleteList,
+            anchorsDevelopmentBadge: true
         )
+    }
+
+    // A plain safe-area inset gets no scroll-edge effect, so rows fade out under the controls here.
+    private var regularControlsFade: some View {
+        Rectangle()
+            .fill(.background)
+            .mask {
+                LinearGradient(
+                    stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            }
+            .ignoresSafeArea(.container, edges: .bottom)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private func libraryControls(

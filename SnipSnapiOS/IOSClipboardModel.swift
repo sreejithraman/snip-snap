@@ -47,7 +47,7 @@ final class IOSClipboardModel {
         }
     }
     var localDeviceLabel: String {
-        UIDevice.current.userInterfaceIdiom == .pad ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
+        UIDevice.current.model == "iPad" ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
 
     init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,

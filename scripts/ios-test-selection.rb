@@ -39,6 +39,7 @@ module IOSTestSelection
         testListEditorIconSearchKeepsControlsReachable
         testSelectorDeleteListKeepsItsSnips
         testCreatesListMovesSnipAndDeletesIt
+        testRegularSidebarNewListMeetsTouchTargetMinimum
       ]
     },
     'undo' => {

@@ -1763,6 +1763,28 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
     }
 
+    func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
+        continueAfterFailure = false
+        // On phone-idiom regular width (the open iPhone Duo), the system draws 40-pt bar
+        // buttons with a larger touch target, so tap the 44-pt target's edges instead of
+        // measuring the drawn frame.
+        for offset in [-21.5, 21.5] {
+            let app = launchApp()
+            if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+                throw XCTSkip("This check needs the regular-width sidebar.")
+            }
+            returnToLists(in: app)
+            app.buttons["new-list"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .withOffset(CGVector(dx: 0, dy: offset))
+                .tap()
+            XCTAssertTrue(
+                app.textFields["list-name"].waitForExistence(timeout: 3),
+                "A tap \(offset) pt from New List's center must start a new list."
+            )
+            app.terminate()
+        }
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1777,9 +1799,13 @@ final class SnipSnapiOSUITests: XCTestCase {
             composer.waitForExistence(timeout: 5),
             "The quick composer must exist on both iPhone and iPad."
         )
-        for control in [addAttachments, send, newList] {
+        // The sidebar's New List is a system bar button; its touch target has its own test.
+        for control in usesCompactSelector ? [addAttachments, send, newList] : [addAttachments, send] {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+        }
+        if !usesCompactSelector {
+            XCTAssertTrue(newList.isHittable)
         }
         XCTAssertEqual(addAttachments.frame.midY, composer.frame.midY, accuracy: 1)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 1)

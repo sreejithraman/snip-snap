@@ -52,37 +52,51 @@ struct CompactLibraryPageStack: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ListPageMotionStage(
-                state: motionState, pages: model.pages, selectedPage: model.selectedPage,
-                width: proxy.size.width,
-                content: mountedPages.map { page in
-                    MountedListPage(id: page, content: libraryPage(page, isActivePage: page == model.selectedPage))
-                },
-                retainedPagesChanged: { pages in
-                    visitedPages.formUnion(pages)
-                    visitedPages.formIntersection(model.pages)
-                }
+        GeometryReader { safeArea in
+            let pageSafeArea = EdgeInsets(
+                top: 0, leading: safeArea.safeAreaInsets.leading,
+                bottom: 0, trailing: safeArea.safeAreaInsets.trailing
             )
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-            .background {
-                ListPagePanObserver(
-                    canBegin: { direction in canPanPage(direction: direction) },
-                    canBeginAt: { point in
-                        !model.isSelectingSnips || !interactionState.selectionDock.contains(point)
-                    },
-                    onPan: { direction, translation, predictedTranslation, phase in
-                        handlePagePan(
-                            direction: direction,
-                            translation: translation,
-                            predictedTranslation: predictedTranslation,
-                            phase: phase,
-                            pageWidth: proxy.size.width
+            // Pages span the horizontal safe area so system bar items placed there, such as
+            // the closed iPhone Duo's toolbar column, stay inside the clip, and neighbor pages
+            // enter from the screen edge. Each page gets the insets back for its own layout.
+            GeometryReader { proxy in
+                ListPageMotionStage(
+                    state: motionState, pages: model.pages, selectedPage: model.selectedPage,
+                    width: proxy.size.width,
+                    content: mountedPages.map { page in
+                        MountedListPage(
+                            id: page,
+                            content: libraryPage(page, isActivePage: page == model.selectedPage)
+                                .safeAreaPadding(pageSafeArea)
                         )
+                    },
+                    retainedPagesChanged: { pages in
+                        visitedPages.formUnion(pages)
+                        visitedPages.formIntersection(model.pages)
                     }
                 )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .background {
+                    ListPagePanObserver(
+                        canBegin: { direction in canPanPage(direction: direction) },
+                        canBeginAt: { point in
+                            !model.isSelectingSnips || !interactionState.selectionDock.contains(point)
+                        },
+                        onPan: { direction, translation, predictedTranslation, phase in
+                            handlePagePan(
+                                direction: direction,
+                                translation: translation,
+                                predictedTranslation: predictedTranslation,
+                                phase: phase,
+                                pageWidth: proxy.size.width
+                            )
+                        }
+                    )
+                }
             }
+            .ignoresSafeArea(.container, edges: .horizontal)
         }
         .onChange(of: model.pages) { _, pages in
             visitedPages.formIntersection(pages)
