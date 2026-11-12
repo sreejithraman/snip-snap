@@ -1766,9 +1766,9 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
         continueAfterFailure = false
         // On phone-idiom regular width (the open iPhone Duo), the system draws 40-pt-tall bar
-        // buttons with a taller touch target, so measure the width but tap the 44-pt
-        // target's top and bottom edges.
-        for offset in [-21.5, 21.5] {
+        // buttons with a taller touch target, so measure the width but tap 22 pt above and
+        // below the center to prove a 44-pt height.
+        for offset in [-22, 22] as [CGFloat] {
             let app = launchApp()
             if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
                 throw XCTSkip("This check needs the regular-width sidebar.")
