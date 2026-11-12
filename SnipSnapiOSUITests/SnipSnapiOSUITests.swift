@@ -1523,8 +1523,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
 
-        tapVisibleSelectorTab(compactListTab(named: "Inbox", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        selectList(named: "Inbox", in: app)
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, text)
         XCTAssertFalse(app.buttons["remove-attachment-sample.png"].exists)
@@ -1811,9 +1810,10 @@ final class SnipSnapiOSUITests: XCTestCase {
             XCTAssertEqual(search.value as? String, "mixed", "The search query changed after \(pose)")
             XCTAssertTrue(result.waitForExistence(timeout: 3), "Search results changed after \(pose)")
         }
-        let closeSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
-        XCTAssertTrue(closeSearch.waitForExistence(timeout: 3))
-        closeSearch.tap()
+        // Not closeSearch(in:): after a fold's idle stall its button can exist without being hittable (W2-F3).
+        let closeSearchButton = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
+        XCTAssertTrue(closeSearchButton.waitForExistence(timeout: 3))
+        closeSearchButton.tap()
         XCTAssertTrue(search.waitForNonExistence(timeout: 5))
 
         openSettings(in: app)
@@ -2115,8 +2115,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Prefix: ")
         XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
 
-        tapVisibleSelectorTab(compactListTab(named: "Inbox", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        selectList(named: "Inbox", in: app)
         XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
@@ -4833,8 +4832,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         var app = launchApp(storeName: storeName)
         createList("Work", in: app)
         returnToLists(in: app)
-        tapVisibleSelectorTab(compactListTab(named: "Inbox", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        selectList(named: "Inbox", in: app)
         createSnip("One", in: app)
         returnToCollection(in: app)
         createSnip("Two", in: app)
@@ -4884,8 +4882,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(app.buttons["gathered-stack"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
-        tapVisibleSelectorTab(compactListTab(named: "Inbox", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        selectList(named: "Inbox", in: app)
         XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
         try visibleTouchCenter(of: app.buttons["finish-selecting"], in: app).tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
@@ -4952,8 +4949,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         createSnip("From Work", in: app)
         returnToCollection(in: app)
-        tapVisibleSelectorTab(compactListTab(named: "Inbox", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        selectList(named: "Inbox", in: app)
         enterSelection(in: app)
         try visibleTouchCenter(of: row(named: "Sketch a simpler selection flow", in: app), in: app).tap()
         try visibleTouchCenter(of: row(named: "Try the stack interaction on iPhone", in: app), in: app).tap()
@@ -5450,6 +5446,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         } else {
             compactListTab(named: name, in: app).press(forDuration: 0.7)
         }
+    }
+
+    private func selectList(
+        named name: String,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        tapVisibleSelectorTab(listControl(named: name, in: app), in: app, file: file, line: line)
+        XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 3), file: file, line: line)
     }
 
     private func listControl(named name: String, in app: XCUIApplication) -> XCUIElement {

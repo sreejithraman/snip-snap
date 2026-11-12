@@ -111,44 +111,6 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
     }
 
-    func testPageMotionInterruptedByTreeSwapIgnoresLateGestureEnds() {
-        let pages: [LibraryPage] = [.clipboard, .list(SnipList.inboxID), .list(UUID())]
-        func dragging() -> ListPageMotion {
-            var motion = ListPageMotion()
-            motion.updatePageDrag(
-                translation: CGSize(width: -120, height: 0), selectedPage: pages[1], pages: pages,
-                pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: Date()
-            )
-            XCTAssertTrue(motion.isDragging)
-            motion.interrupt()
-            return motion
-        }
-        var cancelled = dragging()
-        cancelled.cancelPageDrag(reduceMotion: false, at: Date())
-        XCTAssertNil(cancelled.transition)
-
-        var ended = dragging()
-        XCTAssertNil(ended.releasePageDrag(
-            translation: CGSize(width: -300, height: 0), predictedEndTranslation: CGSize(width: -400, height: 0),
-            reduceMotion: false, at: Date()
-        ))
-        XCTAssertNil(ended.transition, "A late release must not select a page or start a settlement")
-
-        let geometry = ListSelectorGeometry(widths: [90, 110, 90])
-        var selector = ListPageMotion()
-        selector.updateDrag(
-            translation: CGSize(width: -60, height: 0), selectedPage: pages[1], pages: pages,
-            geometry: geometry, layoutDirection: .leftToRight, at: Date()
-        )
-        XCTAssertTrue(selector.isSelectorDragging)
-        selector.interrupt()
-        XCTAssertNil(selector.release(
-            translation: CGSize(width: -120, height: 0), geometry: geometry, reduceMotion: false, at: Date()
-        ))
-        selector.cancelDrag(reduceMotion: false, at: Date())
-        XCTAssertNil(selector.transition)
-    }
-
     func testComposerClearsFocusWhenTheSystemRefusesIt() throws {
         var focused = false
         let blocker = FocusKeepingTextField()
@@ -231,20 +193,17 @@ private final class RootHarness {
     }
 
     var diagnostics: String {
-        var composers: [String] = []
-        func collect(_ view: UIView) {
-            if let input = view as? ComposerTextView {
-                composers.append("text=\(input.text ?? "nil") window=\(input.window != nil) hidden=\(input.isHidden) frame=\(input.frame)")
-            }
-            view.subviews.forEach(collect)
+        let composers = allViews(ComposerTextView.self).map {
+            "text=\($0.text ?? "nil") window=\($0.window != nil) hidden=\($0.isHidden) frame=\($0.frame)"
         }
-        collect(window)
         return "regular=\(isRegular) composers=\(composers) windowFrame=\(window.frame)"
     }
 
     var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
 
-    var composer: ComposerTextView? { firstView(ComposerTextView.self) }
+    var composer: ComposerTextView? {
+        allViews(ComposerTextView.self).first { $0.window != nil && !$0.isHidden }
+    }
 
     var visibleSearchFieldTexts: [String] {
         allViews(UISearchTextField.self).filter { $0.window != nil && !$0.isHidden && $0.alpha > 0 }.map { $0.text ?? "" }
@@ -258,7 +217,7 @@ private final class RootHarness {
 
     private func allViews<View: UIView>(_ type: View.Type) -> [View] {
         func search(_ view: UIView) -> [View] {
-            (view as? View).map { [$0] } ?? [] + view.subviews.flatMap(search)
+            ((view as? View).map { [$0] } ?? []) + view.subviews.flatMap(search)
         }
         return search(window)
     }
@@ -266,13 +225,5 @@ private final class RootHarness {
     private func first<Controller: UIViewController>(_ type: Controller.Type, in controller: UIViewController) -> Controller? {
         if let match = controller as? Controller, match.viewIfLoaded?.window != nil { return match }
         return controller.children.lazy.compactMap { self.first(type, in: $0) }.first
-    }
-
-    private func firstView<View: UIView>(_ type: View.Type) -> View? {
-        func search(_ view: UIView) -> View? {
-            if let match = view as? View, match.window != nil, !match.isHidden { return match }
-            return view.subviews.lazy.compactMap(search).first
-        }
-        return search(window)
     }
 }

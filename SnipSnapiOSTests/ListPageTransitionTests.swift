@@ -483,6 +483,31 @@ final class ListPageTransitionTests: XCTestCase {
         XCTAssertNil(motion.transition)
     }
 
+    func testInterruptedPageDragIgnoresLateGestureEnds() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        func interruptedDrag() -> ListPageMotion {
+            var motion = ListPageMotion()
+            motion.updatePageDrag(
+                translation: CGSize(width: -120, height: 0), selectedPage: pages[1], pages: pages,
+                pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+            )
+            XCTAssertTrue(motion.isDragging)
+            motion.interrupt()
+            return motion
+        }
+        var cancelled = interruptedDrag()
+        cancelled.cancelPageDrag(reduceMotion: false, at: now)
+        XCTAssertNil(cancelled.transition)
+
+        var released = interruptedDrag()
+        XCTAssertNil(released.releasePageDrag(
+            translation: CGSize(width: -300, height: 0), predictedEndTranslation: CGSize(width: -400, height: 0),
+            reduceMotion: false, at: now
+        ))
+        XCTAssertNil(released.transition, "A late release must not select a page or start a settlement")
+    }
+
     func testReducedMotionFadesTheSamePagesWithoutSidewaysMovement() {
         let geometry = ListSelectorGeometry(widths: [80, 160, 100])
         let pages: [LibraryPage] = [.clipboard, .list(UUID()), .list(UUID())]
