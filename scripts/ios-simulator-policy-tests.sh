@@ -34,17 +34,25 @@ export FAKE_BUILD_LOG="$test_dir/build.log"
 export FAKE_FIXTURE_PID_FILE="$test_dir/fixture.pid"
 export FAKE_FIXTURE_LOG="$test_dir/fixture.log"
 export SNIP_SNAP_PYTHON="$test_dir/bin/python3"
-unset SNIP_SNAP_DEV_SLOT SNIP_SNAP_IOS_DERIVED_DATA SNIP_SNAP_XCODEBUILD
+unset SNIP_SNAP_DEV_SLOT SNIP_SNAP_IOS_DERIVED_DATA SNIP_SNAP_XCODEBUILD SIMLOCK_IOS_DEVICE_SET
 cat > "$test_dir/bin/xcrun" <<'STUB'
 #!/bin/zsh
+simulator_set=""
+if [[ "$1" == simctl && "$2" == --set ]]; then
+ simulator_set="$3"
+ set -- simctl "${@:4}"
+fi
 if [[ "$*" == 'simctl list devices available --json' ]]; then
- print -r -- '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[{"state":"Booted","udid":"TEST-SIM"}]}}'
+ # A custom set holds only its own simulators, as with a SimLock lease.
+ udid=TEST-SIM
+ [[ -z "$simulator_set" ]] || udid=SET-SIM
+ print -r -- "{\"devices\":{\"com.apple.CoreSimulator.SimRuntime.iOS-26-0\":[{\"state\":\"Booted\",\"udid\":\"$udid\"}]}}"
 elif [[ "$1" == simctl ]]; then
  [[ ! -e "$FAKE_FIXTURE_PID_FILE" ]] || { print -u2 'The fixture started before simulator setup finished'; exit 1; }
  if [[ "$2" != "${FAKE_SIM_STALL_STAGE:-}" && -n "${FAKE_SIM_SETUP_DELAY:-}" ]]; then
   /bin/sleep "$FAKE_SIM_SETUP_DELAY"
  fi
- print -r -- "$*" >> "$FAKE_SIM_LOG"
+ print -r -- "$*${simulator_set:+ [set=$simulator_set]}" >> "$FAKE_SIM_LOG"
  if [[ "$2" == "${FAKE_SIM_STALL_STAGE:-}" ]]; then
   print -r -- "Waiting in simulator $2"
   /usr/bin/touch "$FAKE_SIM_STAGE_READY"
@@ -56,6 +64,7 @@ STUB
 cat > "$test_dir/bin/xcodebuild" <<'STUB'
 #!/bin/zsh
 if [[ "$*" == *'-showBuildSettings'* ]]; then
+ print -r -- "$*" >> "$FAKE_BUILD_LOG.settings"
  print -r -- 'Build settings for action build and target SnipSnapiOS:'
  print -r -- '    SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER = org.example.snipsnap.ios'
  print -r -- '    PRODUCT_NAME = Snip Snap iOS'
@@ -150,6 +159,50 @@ if grep -E '(^| )CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null; then
  print -u2 'Global app entitlements would affect package targets'; exit 1
 fi
 grep -F 'SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=' "$FAKE_BUILD_LOG" >/dev/null
+if grep -F '[set=' "$FAKE_SIM_LOG" >/dev/null ||
+ grep -F -- '-DVTSimulatorSetLocation' "$FAKE_BUILD_LOG" "$FAKE_BUILD_LOG.settings" >/dev/null; then
+ print -u2 'A default-set run used a custom simulator set'; exit 1
+fi
+simlock_set="$test_dir/simlock devices/ios"
+mkdir -p "$simlock_set"
+cp "$FAKE_SIM_LOG" "$test_dir/before-set"
+if "$script_dir/run.sh" ios-simulator SET-SIM > "$test_dir/output" 2>&1; then
+ print -u2 'Found a custom-set simulator in the default set'; exit 1
+fi
+grep -F 'SIMLOCK_IOS_DEVICE_SET' "$test_dir/output" >/dev/null
+for arguments in 'SET-SIM --simulator-set' 'SET-SIM --unknown set' "SET-SIM --simulator-set $test_dir/missing-set"; do
+ if "$script_dir/run.sh" ios-simulator ${=arguments} > "$test_dir/output" 2>&1; then
+  print -u2 "Accepted invalid simulator set arguments: $arguments"; exit 1
+ fi
+done
+grep -F "Simulator set not found: $test_dir/missing-set" "$test_dir/output" >/dev/null
+cmp "$test_dir/before-set" "$FAKE_SIM_LOG"
+for set_source in environment option; do
+ : > "$FAKE_SIM_LOG"; : > "$FAKE_BUILD_LOG"; : > "$FAKE_BUILD_LOG.settings"
+ if [[ "$set_source" == environment ]]; then
+  SIMLOCK_IOS_DEVICE_SET="$simlock_set" "$script_dir/run.sh" ios-simulator SET-SIM > "$test_dir/output" 2>&1
+ else
+  # The explicit option wins over an inherited lease environment.
+  SIMLOCK_IOS_DEVICE_SET="$test_dir/missing-set" \
+   "$script_dir/run.sh" ios-simulator SET-SIM --simulator-set "$simlock_set" > "$test_dir/output" 2>&1
+ fi || { cat "$test_dir/output" >&2; exit 1; }
+ for stage in terminate install launch; do
+  grep -F "simctl $stage SET-SIM" "$FAKE_SIM_LOG" | grep -F "[set=$simlock_set]" >/dev/null || {
+   print -u2 "Simulator $stage from the $set_source missed the custom set"; exit 1
+  }
+ done
+ (( $(grep -cF -- "-DVTSimulatorSetLocation=$simlock_set" "$FAKE_BUILD_LOG.settings") == 2 )) || {
+  print -u2 "App and Share build settings from the $set_source missed the custom set"; exit 1
+ }
+ grep -F -- "-DVTSimulatorSetLocation=$simlock_set" "$FAKE_BUILD_LOG" | grep -F 'id=SET-SIM' >/dev/null || {
+  print -u2 "The build from the $set_source missed the custom set"; exit 1
+ }
+done
+SIMLOCK_IOS_DEVICE_SET="$simlock_set" "$script_dir/run.sh" --ios-simulator --simulator-id SET-SIM \
+ --unit-test IOSAppModelTests > "$test_dir/output" 2>&1 || { cat "$test_dir/output" >&2; exit 1; }
+[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *"-DVTSimulatorSetLocation=$simlock_set"*' test' ]] || {
+ print -u2 'Selected tests missed the custom set'; exit 1
+}
 cp "$FAKE_SIM_LOG" "$test_dir/before-test-selection"
 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1
@@ -374,4 +427,4 @@ for arguments in '--ios-simulator --simulator-id TEST-SIM' 'ios-simulator TEST-S
  fi
  cmp "$test_dir/before" "$FAKE_SIM_LOG"
 done
-print 'iOS Simulator Dev policy tests passed (performance compiler evidence, diagnostics options, fixture URL handoff, 4 focused Share cases, cleanup, and slot isolation).'
+print 'iOS Simulator Dev policy tests passed (custom simulator sets, performance compiler evidence, diagnostics options, fixture URL handoff, 4 focused Share cases, cleanup, and slot isolation).'

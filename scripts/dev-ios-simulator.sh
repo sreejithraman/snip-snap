@@ -6,6 +6,7 @@ repo_dir="${script_dir:h}"
 source "$script_dir/signing-policy.sh"
 source "$script_dir/share-fixture.sh"
 simulator_id=""
+simulator_set="${SIMLOCK_IOS_DEVICE_SET:-}"
 build_log=""
 ui_test=""
 ui_group=""
@@ -24,9 +25,13 @@ while (( $# )); do
             test_diagnostics=never
             shift
             ;;
-        --simulator-id|--build-log)
+        --simulator-id|--simulator-set|--build-log)
             (( $# >= 2 )) || { print -u2 "Missing value for $1"; exit 2; }
-            if [[ "$1" == --simulator-id ]]; then simulator_id="$2"; else build_log="$2"; fi
+            case "$1" in
+                --simulator-id) simulator_id="$2" ;;
+                --simulator-set) simulator_set="$2" ;;
+                --build-log) build_log="$2" ;;
+            esac
             shift 2
             ;;
         --list-ui-groups)
@@ -45,7 +50,7 @@ while (( $# )); do
             shift 2
             ;;
         *)
-            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--build-log PATH] [--ui-test METHOD|all | --ui-group GROUP | --unit-test CLASS|all] [--list-ui-groups] [--performance] [--no-test-diagnostics]"
+            print -u2 "Usage: scripts/run.sh --ios-simulator [--simulator-id UUID] [--simulator-set PATH] [--build-log PATH] [--ui-test METHOD|all | --ui-group GROUP | --unit-test CLASS|all] [--list-ui-groups] [--performance] [--no-test-diagnostics]"
             exit 2
             ;;
     esac
@@ -87,13 +92,22 @@ setup_timeout="${SNIP_SNAP_SIMULATOR_SETUP_TIMEOUT_SECONDS:-60}"
     abort "Simulator setup timeout must be a positive number of seconds." unless seconds && seconds.finite? && seconds.positive?
 ' "$setup_timeout"
 
+# A custom device set, such as SimLock's, needs Xcode 27 or later for xcodebuild.
+simctl=(xcrun simctl)
+simulator_set_arguments=()
+if [[ -n "$simulator_set" ]]; then
+    [[ -d "$simulator_set" ]] || { print -u2 "Simulator set not found: $simulator_set"; exit 2; }
+    simctl+=(--set "$simulator_set")
+    simulator_set_arguments=("-DVTSimulatorSetLocation=$simulator_set")
+fi
+
 # Require a booted iOS device; never boot or alter a user's other simulators.
-simulator_id="$(xcrun simctl list devices available --json | /usr/bin/ruby -rjson -e '
+simulator_id="$("${simctl[@]}" list devices available --json | /usr/bin/ruby -rjson -e '
 devices = JSON.parse(STDIN.read).fetch("devices").select { |runtime, _| runtime.include?("iOS") }.values.flatten
 booted = devices.select { |device| device["state"] == "Booted" }
 requested = ARGV.fetch(0)
 selected = requested.empty? ? (booted.one? ? booted.first : nil) : booted.find { |device| device["udid"] == requested }
-abort "Select one booted iOS simulator with --simulator-id UUID (or boot one in Simulator)." unless selected
+abort "Select one booted iOS simulator with --simulator-id UUID (or boot one in Simulator). For a SimLock lease, also pass --simulator-set PATH or set SIMLOCK_IOS_DEVICE_SET." unless selected
 puts selected.fetch("udid")
 ' "$simulator_id")"
 
@@ -135,7 +149,7 @@ run_owned_command 0 /bin/zsh -c '
     source "$1"
     shift
     signing_policy_capture_build_settings "$@"
-' snip-snap-settings "$script_dir/signing-policy.sh" "$repo_dir" Debug "$destination" "$settings_file" "$derived_data" SnipSnapiOS || exit $?
+' snip-snap-settings "$script_dir/signing-policy.sh" "$repo_dir" Debug "$destination" "$settings_file" "$derived_data" SnipSnapiOS "${simulator_set_arguments[@]}" || exit $?
 base_identifier="$(signing_policy_resolve_setting "$settings_file" SNIP_SNAP_IOS_PRODUCT_BUNDLE_IDENTIFIER SnipSnapiOS)"
 product_name="$(signing_policy_resolve_setting "$settings_file" PRODUCT_NAME SnipSnapiOS)"
 [[ -n "$base_identifier" && -n "$product_name" ]] || { print -u2 "Could not resolve iOS app identity."; exit 1; }
@@ -147,6 +161,7 @@ print "Building Snip Snap iOS Dev $slot. Log: $build_log"
 build_arguments=(
     -project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS
     -configuration Debug -destination "$destination" -derivedDataPath "$derived_data"
+    "${simulator_set_arguments[@]}"
     CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual
     CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= "PROVISIONING_PROFILE_SPECIFIER="
     "SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$repo_dir/SnipSnapiOS/SnipSnapiOS.entitlements"
@@ -227,7 +242,7 @@ run_simulator_stage() {
     local stage_log="${build_log:r}-$stage.log"
     local stage_status=0
     print "Simulator $stage (timeout ${setup_timeout}s). Log: $stage_log"
-    run_owned_command "$setup_timeout" xcrun simctl "$stage" "$simulator_id" "$@" > "$stage_log" 2>&1 || stage_status=$?
+    run_owned_command "$setup_timeout" "${simctl[@]}" "$stage" "$simulator_id" "$@" > "$stage_log" 2>&1 || stage_status=$?
     if (( stage_status != 0 )); then
         print -u2 "Simulator $stage ended with status $stage_status. Log: $stage_log"
         /usr/bin/tail -n 40 "$stage_log" >&2
