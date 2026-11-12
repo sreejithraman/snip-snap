@@ -725,7 +725,7 @@ final class CompactComposerStorage {
     var isSaving = false
     var savingListID: UUID?
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
         let stagingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCompactDrafts", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -744,6 +744,7 @@ final class CompactComposerStorage {
 #endif
         self.stagingDirectory = stagingDirectory
         draftStore = ComposerDraftStore(
+            defaults: defaults,
             textDefaultsKey: textDefaultsKey,
             temporaryRootDirectory: stagingDirectory
         )
