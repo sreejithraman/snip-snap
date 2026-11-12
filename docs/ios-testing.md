@@ -184,12 +184,11 @@ Two tests fold the Duo:
 - `testFoldingTheDuoKeepsPlaceAndUnsentWork` checks gathered snips, an active
   search, the Settings sheet, and a list's draft with an attachment.
 
-After each pose, both tests check that the list tabs and Paste return whenever
-the composer has no keyboard focus. Each test asks for a pose by writing
-`NN-<pose>.request` into the directory named by `SNIP_SNAP_UI_TEST_FOLD_DIR`.
-`NN` counts requests already in the directory, so both tests can share it. The
-host folds and answers with `NN-<pose>.done`. Without that directory, the tests
-skip. Start the host loop, then a test:
+Each test asks for a pose by writing `NN-<pose>.request` into the directory
+named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the
+directory, so both tests can share it. The host folds and answers with
+`NN-<pose>.done`. Without that directory, the tests skip. Start the host loop,
+then a test:
 
 ```sh
 FOLDS="$(mktemp -d)"
@@ -257,8 +256,7 @@ last.
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
   focused field. In testing it did after every half-open and after some opens.
-  The composer then clears its focus, so the list tabs and Paste return, and one
-  tap resumes typing.
+  The composer then drops its focus, and one tap resumes typing.
 - A run that ends on the inner panel can leave the next run unable to give a
   text field keyboard focus. Fold open, then closed, before the next run.
 - Half-open is checked only through the layout change, not the hinge angle. Its

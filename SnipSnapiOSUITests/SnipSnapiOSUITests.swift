@@ -5494,8 +5494,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 30), .completed, "The app did not move to the \(pose) panel", file: file, line: line)
     }
 
-    /// Without keyboard focus the composer must not hide navigation: the list selector and Paste on the
-    /// closed panel, and Paste alone beside the sidebar when open.
     private func assertNavigationReturnsWithoutComposerFocus(
         _ composer: XCUIElement, after pose: DuoPose, in app: XCUIApplication,
         file: StaticString = #filePath, line: UInt = #line

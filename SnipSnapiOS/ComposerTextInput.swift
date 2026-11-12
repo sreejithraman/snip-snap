@@ -121,8 +121,9 @@ struct ComposerTextInput: UIViewRepresentable {
             }
         }
 
-        /// Moving between iPhone Duo panels can end editing or refuse focus. Follow the system
-        /// instead of forcing focus back: clear focus so navigation returns, and one tap resumes typing.
+        /// The system can end editing or refuse focus, as when an iPhone Duo moves between panels.
+        /// Forcing focus back would fight the keyboard service, so clear it: navigation returns and
+        /// one tap resumes typing.
         func followSystemFocusLoss() {
             guard !isDismantled else { return }
             parent.isFocused = false
@@ -140,7 +141,6 @@ final class ComposerTextView: UITextView {
     var onPasteAttachments: ([NSItemProvider], NSRange) -> Void = { _, _ in }
     var isPasteEnabled = true
     var attachmentPasteSelection: NSRange?
-    /// Called when requested focus cannot be applied, such as when another responder keeps it.
     var onFocusRefused: () -> Void = {}
     let placeholder = UILabel()
     private(set) var isApplyingRequestedFocus = false

@@ -24,7 +24,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
 
         for sizeClass in [UIUserInterfaceSizeClass.compact, .regular, .compact, .regular] {
             root.swap(to: sizeClass)
-            // The new tree's composer loads its draft, attachments included, from the shared store.
+            // This harness can't see SwiftUI's attachment strip. The text stands in for the whole
+            // draft, which the new composer loads from the same store as its attachments.
             let shown = root.wait("\(sizeClass) composer shows the draft") { root.composer?.text == "Fold draft" }
             XCTAssertTrue(shown, root.diagnostics)
             XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
@@ -32,7 +33,6 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
     }
 
-    /// A paste that is still staging when the layout swaps must still land in the draft.
     func testAttachmentStagingFinishesAcrossSizeClassSwap() throws {
         let storage = makeComposerStorage()
         storage.draftStore.setText("before ", for: SnipList.inboxID)
@@ -101,7 +101,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
             root.swap(to: sizeClass)
             // The regular layout's search field is not in this harness's view tree; the Duo UI test checks it.
             if sizeClass == .compact {
-                let presented = root.wait("compact search field shows the query") { root.searchFieldTexts.contains("Gather") }
+                let presented = root.wait("compact search field shows the query") { root.visibleSearchFieldTexts.contains("Gather") }
                 XCTAssertTrue(presented, root.searchFieldDiagnostics)
             }
             root.settle()
@@ -111,7 +111,6 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
     }
 
-    /// A UIKit gesture can end or cancel after the compact tree interrupts its motion on disappear.
     func testPageMotionInterruptedByTreeSwapIgnoresLateGestureEnds() {
         let pages: [LibraryPage] = [.clipboard, .list(SnipList.inboxID), .list(UUID())]
         func dragging() -> ListPageMotion {
@@ -150,7 +149,6 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertNil(selector.transition)
     }
 
-    /// When focus cannot move to the composer after a swap, the binding must not claim it.
     func testComposerClearsFocusWhenTheSystemRefusesIt() throws {
         var focused = false
         let blocker = FocusKeepingTextField()
@@ -248,8 +246,7 @@ private final class RootHarness {
 
     var composer: ComposerTextView? { firstView(ComposerTextView.self) }
 
-    /// Text of each search field the user can see.
-    var searchFieldTexts: [String] {
+    var visibleSearchFieldTexts: [String] {
         allViews(UISearchTextField.self).filter { $0.window != nil && !$0.isHidden && $0.alpha > 0 }.map { $0.text ?? "" }
     }
 
