@@ -203,10 +203,19 @@ done &
 TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR="$FOLDS" ./scripts/run.sh --ios-simulator \
   --simulator-id "$UDID" --simulator-set "$SET" --ui-test testFocusedComposerSurvivesFoldingTheDuo
 kill %1
-# Reset the keyboard; see Known limits.
-simlock simctl spawn "$UDID" "$FOLD_HELPER" open && sleep 3
-simlock simctl spawn "$UDID" "$FOLD_HELPER" closed
 ```
+
+Before the next run, reset with the app in front:
+
+```sh
+simlock simctl spawn "$UDID" "$FOLD_HELPER" open && sleep 3
+"$AD" open "$BUNDLE_ID" "${AD_ARGS[@]}" && sleep 3
+simlock simctl spawn "$UDID" "$FOLD_HELPER" closed && sleep 3
+simlock simctl io "$UDID" screenshot --display=primary reset-closed.png
+```
+
+Check that `reset-closed.png` shows the app, not the Home Screen, before the
+next run. See Known limits.
 
 ### Capture each panel
 
@@ -259,7 +268,11 @@ last.
   focus. When it happens, the composer drops its focus, and one tap resumes
   typing.
 - A run that ends on the inner panel can leave the next run unable to give a
-  text field keyboard focus. Fold open, then closed, before the next run.
+  text field keyboard focus. Reset with the app in front before the next run,
+  as in [Fold during a UI test](#fold-during-a-ui-test).
+- A reset with the Home Screen in front can leave apps that launch on the
+  closed panel off screen. XCTest then sees a 466×678 window while the outer
+  panel shows the Home Screen, and taps reach SpringBoard.
 - Half-open is checked only through the layout change, not the hinge angle. Its
   window matches open.
 - After the app moves from the inner panel back to the outer panel, XCTest can
