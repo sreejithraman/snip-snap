@@ -61,28 +61,39 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 
-    func testFailedSendShowsItsDraftInTheComposerMountedDuringTheSave() throws {
+    func testFailedSaveShowsItsDraftInTheComposerMountedDuringIt() async throws {
         let storage = makeComposerStorage()
         let attachment = try addInboxDraft("Unsent", to: storage)
         let root = try RootHarness(test: self, storage: storage)
-        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Unsent" }, root.diagnostics)
-        let compact = try XCTUnwrap(root.composer)
+        let gate = SaveGate()
+        let saving = try startSaveAndSwap(storage, root: root, gate: gate)
+        XCTAssertEqual(gate.draft?.attachments, [attachment])
 
-        // This harness can't press SwiftUI's Send button, so the test does send's storage steps.
-        let snapshot = storage.draftStore.beginSave(listID: SnipList.inboxID)
-        storage.savingListID = snapshot.listID
-        storage.isSaving = true
-        root.swap(to: .regular)
-        let hidden = root.wait("regular composer mounted mid-save") {
-            root.composer !== compact && root.composer?.text == ""
+        gate.finish(saved: false)
+        let saved = await saving.value
+        XCTAssertFalse(saved)
+        let restored = root.wait("regular composer shows the unsent draft") {
+            root.composer?.text == "Unsent" && root.composer?.isEditable == true
         }
-        XCTAssertTrue(hidden, root.diagnostics)
-        storage.draftStore.finishSave(snapshot, saved: false)
-        storage.finishSaving()
-
-        let restored = root.wait("regular composer shows the unsent draft") { root.composer?.text == "Unsent" }
         XCTAssertTrue(restored, root.diagnostics)
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
+    }
+
+    func testSavedDraftStaysOutOfTheComposerMountedDuringTheSave() async throws {
+        let storage = makeComposerStorage()
+        _ = try addInboxDraft("Sent", to: storage)
+        let root = try RootHarness(test: self, storage: storage)
+        let gate = SaveGate()
+        let saving = try startSaveAndSwap(storage, root: root, gate: gate)
+
+        gate.finish(saved: true)
+        let saved = await saving.value
+        XCTAssertTrue(saved)
+        let ended = root.wait("regular composer accepts typing again") { root.composer?.isEditable == true }
+        XCTAssertTrue(ended, root.diagnostics)
+        root.settle()
+        XCTAssertEqual(root.composer?.text, "", root.diagnostics)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
     }
 
     func testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps() async throws {
@@ -152,6 +163,24 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(blocker.isFirstResponder)
     }
 
+    /// Holds a save of the Inbox draft in `gate` while the compact composer is replaced by a regular one.
+    private func startSaveAndSwap(
+        _ storage: CompactComposerStorage, root: RootHarness, gate: SaveGate
+    ) throws -> Task<Bool, Never> {
+        let draft = storage.draftStore.draft(for: SnipList.inboxID).text
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == draft }, root.diagnostics)
+        let compact = try XCTUnwrap(root.composer)
+        let saving = Task { await storage.save(listID: SnipList.inboxID, create: gate.create) }
+        XCTAssertTrue(root.wait("save started") { gate.draft != nil })
+        XCTAssertEqual(gate.draft?.text, draft)
+        root.swap(to: .regular)
+        let mounted = root.wait("regular composer mounted mid-save") {
+            root.composer !== compact && root.composer?.text == "" && root.composer?.isEditable == false
+        }
+        XCTAssertTrue(mounted, root.diagnostics)
+        return saving
+    }
+
     /// Returns the draft's attachment, a staged file.
     private func addInboxDraft(_ text: String, to storage: CompactComposerStorage) throws -> URL {
         let attachment = storage.stagingDirectory
@@ -171,6 +200,27 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return CompactComposerStorage(defaults: defaults)
+    }
+}
+
+/// Stands in for creating the snip, and holds the save until the test finishes it.
+@MainActor
+private final class SaveGate {
+    private(set) var draft: ComposerDraft?
+    private var outcome: Bool?
+    private var result: CheckedContinuation<Bool, Never>?
+
+    func create(_ draft: ComposerDraft) async -> Bool {
+        self.draft = draft
+        if let outcome { return outcome }
+        return await withCheckedContinuation { result = $0 }
+    }
+
+    /// Also answers a save that starts late, so a failed wait can't leave the test hanging.
+    func finish(saved: Bool) {
+        outcome = saved
+        result?.resume(returning: saved)
+        result = nil
     }
 }
 

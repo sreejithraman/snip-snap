@@ -555,23 +555,17 @@ struct CompactLibraryControls: View {
               !frame.isMoving, sourceID == model.lastSelectedListID,
               model.lists.contains(where: { $0.id == destinationID }),
               canSend(draft: draft(for: sourceID)) else { return }
-        let snapshot = storage.draftStore.beginSave(listID: sourceID)
-        storage.savingListID = snapshot.listID
-        storage.isSaving = true
         replaceComposerField()
         draft = ComposerDraft()
-        let saved = await model.createSnip(
-            content: snapshot.draft.text,
-            in: destinationID,
-            attachmentURLs: snapshot.draft.attachments,
-            selectCreatedSnip: false,
-            expectedLibraryRevision: expectedLibraryRevision, expectedSourceListID: sourceID
-        )
-        storage.draftStore.finishSave(snapshot, saved: saved)
-        if saved {
-            storage.draftStore.flushText()
+        let saved = await storage.save(listID: sourceID) { saving in
+            await model.createSnip(
+                content: saving.text,
+                in: destinationID,
+                attachmentURLs: saving.attachments,
+                selectCreatedSnip: false,
+                expectedLibraryRevision: expectedLibraryRevision, expectedSourceListID: sourceID
+            )
         }
-        storage.finishSaving()
         if !saved {
             replaceComposerField()
         }
@@ -736,8 +730,22 @@ final class CompactComposerStorage {
         draftRevision += 1
     }
 
+    /// Saves the list's draft through `create`, which returns whether it saved.
+    func save(listID: UUID, create: @MainActor (ComposerDraft) async -> Bool) async -> Bool {
+        let snapshot = draftStore.beginSave(listID: listID)
+        savingListID = listID
+        isSaving = true
+        let saved = await create(snapshot.draft)
+        draftStore.finishSave(snapshot, saved: saved)
+        if saved {
+            draftStore.flushText()
+        }
+        finishSaving()
+        return saved
+    }
+
     /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
-    func finishSaving() {
+    private func finishSaving() {
         savingListID = nil
         isSaving = false
         draftRevision += 1
