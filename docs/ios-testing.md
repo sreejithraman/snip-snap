@@ -177,16 +177,20 @@ again after a fold.
 
 ### Fold during a UI test
 
-Two tests fold the Duo:
+Four tests fold the Duo:
 
 - `testFocusedComposerSurvivesFoldingTheDuo` types into the composer and
   checks its draft and keyboard focus after each pose.
 - `testFoldingTheDuoKeepsPlaceAndUnsentWork` checks gathered snips, an active
   search, the Settings sheet, and a list's draft with an attachment.
+- `testComposerPickersSurviveFoldingTheDuo` keeps the Files and Photos pickers
+  open through each pose, then picks a photo if the library has one.
+- `testComposerAttachmentPreviewSurvivesFoldingTheDuo` keeps a draft
+  attachment's preview open through each pose.
 
 Each test asks for a pose by writing `NN-<pose>.request` into the directory
 named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the
-directory, so both tests can share it. The host folds and answers with
+directory, so the tests can share it. The host folds and answers with
 `NN-<pose>.done`. Without that directory, the tests skip. Start the host loop,
 then a test:
 

@@ -1849,6 +1849,84 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
     }
 
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    /// The simulator has no camera, so the unit tests cover the camera's presenter.
+    func testComposerPickersSurviveFoldingTheDuo() throws {
+        let folds = try duoFoldDirectory()
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        let addAttachments = app.buttons["composer-add-attachments"]
+        XCTAssertTrue(addAttachments.waitForExistence(timeout: 5))
+
+        addAttachments.tap()
+        app.buttons["Choose Files"].firstMatch.tap()
+        let cancelFiles = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelFiles.waitForExistence(timeout: 10), "The Files picker did not open")
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(cancelFiles.waitForExistence(timeout: 10), "The Files picker closed after \(pose)")
+        }
+        cancelFiles.tap()
+        XCTAssertTrue(cancelFiles.waitForNonExistence(timeout: 5))
+
+        addAttachments.tap()
+        app.buttons["Choose Photos"].firstMatch.tap()
+        assertPhotosPickerReady(in: app)
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            assertPhotosPickerReady(in: app)
+        }
+        let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        guard firstPhoto.waitForExistence(timeout: 5) else {
+            // Declared skip of the result step only: the picker checks above still count.
+            attachUIState("Photo result step skipped: seed one image in the Photos library to run it", in: app)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.09, dy: 0.12)).tap()
+            XCTAssertTrue(app.buttons["Photos"].waitForNonExistence(timeout: 5))
+            return
+        }
+        // The system Photos picker exposes grid images but does not report them as hittable.
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        let attachment = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "composer-attachment-Photo."
+        )).firstMatch
+        XCTAssertTrue(attachment.waitForExistence(timeout: 8), "The picked photo did not reach the composer")
+    }
+
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    /// An image attachment opens the full-screen viewer, which shares its presenter with Quick Look.
+    func testComposerAttachmentPreviewSurvivesFoldingTheDuo() throws {
+        let folds = try duoFoldDirectory()
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        try requireCompactSelector(in: app)
+
+        // The copied photo snip pasted into the composer, as in testFoldingTheDuoKeepsPlaceAndUnsentWork.
+        try visibleTouchCenter(of: row(named: "Copy mixed fixture", in: app), in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.press(forDuration: 1)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+        let attachment = app.buttons["composer-attachment-sample.png"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+
+        try visibleTouchCenter(of: attachment, in: app).tap()
+        let preview = app.images["Image preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), "The attachment preview did not open")
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(preview.waitForExistence(timeout: 10), "The attachment preview closed after \(pose)")
+        }
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5), "The staged attachment was lost")
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()
