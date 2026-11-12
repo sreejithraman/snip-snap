@@ -736,7 +736,8 @@ struct ComposerAttachmentPreviewRequest: Equatable {
     let listID: UUID
 }
 
-/// Applied at the root, above the compact and regular trees, so a fold doesn't dismiss a picker or preview.
+/// Applied beside the root's compact and regular trees, so a fold doesn't dismiss a picker or preview.
+/// It sits in a sibling background, so the inline editor's own pickers aren't nested under it.
 struct ComposerAttachmentPresentations: ViewModifier {
     let model: IOSAppModel
     let storage: CompactComposerStorage
@@ -805,7 +806,10 @@ struct ComposerAttachmentPresentations: ViewModifier {
     }
 
     private func stage(_ result: Result<AttachmentMediaInput, any Error>) {
-        guard let listID else { return }
+        guard let listID else {
+            storage.attachmentPicker = nil
+            return
+        }
         storage.stagePickedMedia(result, to: listID, model: model)
     }
 }

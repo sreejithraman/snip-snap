@@ -235,6 +235,29 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, staged)
     }
 
+    func testFilesPickerCallbackStagesIntoTheListThatOpenedIt() async throws {
+        let storage = makeComposerStorage()
+        let root = try RootHarness(test: self, storage: storage)
+        let model = root.session.model
+        XCTAssertTrue(root.wait("compact composer") { root.composer != nil }, root.diagnostics)
+        let created = await model.createList(name: "Other")
+        XCTAssertTrue(created)
+        let other = try XCTUnwrap(model.lists.first { $0.name == "Other" })
+        model.selectList(SnipList.inboxID)
+
+        try await deliverThroughFilesPicker("for-inbox.txt", openedFor: SnipList.inboxID, storage: storage, root: root) {
+            root.swap(to: .regular)
+            model.selectList(other.id)
+        }
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments.map(\.lastPathComponent), ["for-inbox.txt"])
+        XCTAssertEqual(storage.draftStore.draft(for: other.id).attachments, [])
+
+        // A list kept from the first request would send this file to Inbox.
+        try await deliverThroughFilesPicker("for-other.txt", openedFor: other.id, storage: storage, root: root)
+        XCTAssertEqual(storage.draftStore.draft(for: other.id).attachments.map(\.lastPathComponent), ["for-other.txt"])
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments.map(\.lastPathComponent), ["for-inbox.txt"])
+    }
+
     func testCancelledPickerClearsItsRequestAndStagesNothing() {
         let storage = makeComposerStorage()
         let model = makeModel(library: ModelTestLibrary())
@@ -282,12 +305,36 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         return attachment
     }
 
+    /// Opens the Files picker for `listID`, runs `meanwhile`, then picks `fileName` through the presented
+    /// picker's delegate, so SwiftUI's own completion delivers it.
+    private func deliverThroughFilesPicker(
+        _ fileName: String, openedFor listID: UUID, storage: CompactComposerStorage, root: RootHarness,
+        meanwhile: () -> Void = {}
+    ) async throws {
+        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: listID)
+        let opened = await TestReadiness.wait { root.presented(UIDocumentPickerViewController.self) != nil }
+        XCTAssertTrue(opened, "The Files picker must open")
+        let picker = try XCTUnwrap(root.presented(UIDocumentPickerViewController.self))
+        meanwhile()
+        let delegate = try XCTUnwrap(picker.delegate, "SwiftUI's file importer must set the picker's delegate")
+        let file = try makePickedFile(named: fileName)
+        let delivered: Void? = delegate.documentPicker?(picker, didPickDocumentsAt: [file])
+        XCTAssertNotNil(delivered, "The picker's delegate must handle picked documents")
+        let staged = await TestReadiness.wait {
+            storage.attachmentPicker == nil && storage.stagingTask == nil
+                && storage.draftStore.draft(for: listID).attachments.contains { $0.lastPathComponent == fileName }
+        }
+        XCTAssertTrue(staged, "\(fileName) must stage into its list and clear the request")
+        let closed = await TestReadiness.wait { root.presented(UIDocumentPickerViewController.self) == nil }
+        XCTAssertTrue(closed, "The Files picker must close")
+    }
+
     /// A file outside the staging directory, as the Files picker returns.
-    private func makePickedFile() throws -> URL {
+    private func makePickedFile(named fileName: String = "picked.txt") throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("picked.txt")
+        let file = directory.appendingPathComponent(fileName)
         try Data("picked".utf8).write(to: file)
         return file
     }

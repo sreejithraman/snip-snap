@@ -1850,7 +1850,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
-    /// The simulator has no camera, so the unit tests cover the camera's presenter.
+    /// The simulator has no camera, so no test exercises the camera's presenter.
     func testComposerPickersSurviveFoldingTheDuo() throws {
         let folds = try duoFoldDirectory()
         continueAfterFailure = false
@@ -2016,6 +2016,20 @@ final class SnipSnapiOSUITests: XCTestCase {
             "The system Photos picker did not finish loading."
         )
         XCTAssertTrue(photos.waitForExistence(timeout: 5))
+    }
+
+    /// The inline editor presents its own pickers; the composer's root presenter must not cover them.
+    func testInlineEditorFilesPickerOpensAndCancels() throws {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        try openAttachmentFixture(in: app)
+        app.buttons["add-attachments"].tap()
+        app.buttons["Choose Files"].firstMatch.tap()
+        let cancel = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The inline editor's Files picker did not open")
+        cancel.tap()
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].exists)
     }
 
     func testPhotoPickerStagesAChosenImage() throws {
