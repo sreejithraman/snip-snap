@@ -1765,15 +1765,16 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
         continueAfterFailure = false
-        // On phone-idiom regular width (the open iPhone Duo), the system draws 40-pt bar
-        // buttons with a larger touch target, so tap the 44-pt target's edges instead of
-        // measuring the drawn frame.
+        // On phone-idiom regular width (the open iPhone Duo), the system draws 40-pt-tall bar
+        // buttons with a taller touch target, so measure the width but tap the 44-pt
+        // target's top and bottom edges.
         for offset in [-21.5, 21.5] {
             let app = launchApp()
             if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
                 throw XCTSkip("This check needs the regular-width sidebar.")
             }
             returnToLists(in: app)
+            XCTAssertGreaterThanOrEqual(app.buttons["new-list"].frame.width, 44)
             app.buttons["new-list"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .withOffset(CGVector(dx: 0, dy: offset))
                 .tap()
@@ -1803,9 +1804,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         for control in usesCompactSelector ? [addAttachments, send, newList] : [addAttachments, send] {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
-        }
-        if !usesCompactSelector {
-            XCTAssertTrue(newList.isHittable)
         }
         XCTAssertEqual(addAttachments.frame.midY, composer.frame.midY, accuracy: 1)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 1)

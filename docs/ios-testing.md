@@ -241,8 +241,9 @@ last.
   reachable. `"$AD" orientation landscape-left "${AD_ARGS[@]}"` reports
   "unconfirmed". In a UI test, `XCUIDevice.shared.orientation = .landscapeLeft`
   reports landscape, but the window and panel capture stay unchanged when
-  closed or open. `simlock rotate` refuses a T3-owned lease, so closed
-  landscape stays unverified on this lane.
+  closed or open. `simlock rotate` refuses a T3-owned lease. So
+  `testListEditorIconSearchKeepsControlsReachable`, which asks for landscape,
+  fails on the closed panel ("Icon search must stay pinned").
 - Typing works only through XCUITest, and only on the outer panel. XCTest key
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
@@ -259,11 +260,7 @@ last.
   navigation-bar items in the status column at the same position. XCTest then
   finds one `library-actions` button per mounted page, and a bare
   `app.buttons["library-actions"].tap()` fails with "Multiple matching
-  elements". `testSelectionPersistsAcrossLists` hits this. It also fails on
-  `b25245bf`.
-- `testListEditorIconSearchKeepsControlsReachable` fails on the closed panel
-  ("Icon search must stay pinned"). It asks for landscape, and the leased Duo
-  does not rotate. It also fails on `b25245bf`.
+  elements". `testSelectionPersistsAcrossLists` hits this.
 
 When done, call `device_close` with `shutdown: true`. That ends the lease, and
 SimLock wipes the device.

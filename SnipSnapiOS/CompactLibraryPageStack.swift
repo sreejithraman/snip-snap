@@ -64,6 +64,7 @@ struct CompactLibraryPageStack: View {
                 ListPageMotionStage(
                     state: motionState, pages: model.pages, selectedPage: model.selectedPage,
                     width: proxy.size.width,
+                    safeArea: pageSafeArea,
                     content: mountedPages.map { page in
                         MountedListPage(
                             id: page,
@@ -289,6 +290,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
     let pages: [LibraryPage]
     let selectedPage: LibraryPage
     let width: CGFloat
+    let safeArea: EdgeInsets
     let content: [MountedListPage<PageContent>]
     let retainedPagesChanged: ([LibraryPage]) -> Void
 
@@ -355,6 +357,8 @@ private struct ListPageMotionStage<PageContent: View>: View {
                     y: proxy.size.height / 2
                 )
         }
+        // Anchor to the safe edges; `position` ignores the safe area.
+        .padding(safeArea)
         .accessibilityHidden(true)
         .allowsHitTesting(false)
     }
