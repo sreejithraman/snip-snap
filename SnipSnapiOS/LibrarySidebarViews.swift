@@ -92,12 +92,13 @@ struct LibraryActionsMenu: View {
     var reviewRecoveredEdits: (() -> Void)?
     var editSelectedList: (() -> Void)?
     let deleteList: (UUID) async -> Void
+    var anchorsDevelopmentBadge = false
     @State private var confirmsDeleteList = false
 
     @ViewBuilder
     var body: some View {
 #if DEBUG
-        if UIDevice.current.userInterfaceIdiom == .phone {
+        if anchorsDevelopmentBadge {
             Menu {
                 menuActions
             } label: {

@@ -52,37 +52,52 @@ struct CompactLibraryPageStack: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ListPageMotionStage(
-                state: motionState, pages: model.pages, selectedPage: model.selectedPage,
-                width: proxy.size.width,
-                content: mountedPages.map { page in
-                    MountedListPage(id: page, content: libraryPage(page, isActivePage: page == model.selectedPage))
-                },
-                retainedPagesChanged: { pages in
-                    visitedPages.formUnion(pages)
-                    visitedPages.formIntersection(model.pages)
-                }
+        GeometryReader { safeArea in
+            let pageSafeArea = EdgeInsets(
+                top: 0, leading: safeArea.safeAreaInsets.leading,
+                bottom: 0, trailing: safeArea.safeAreaInsets.trailing
             )
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-            .background {
-                ListPagePanObserver(
-                    canBegin: { direction in canPanPage(direction: direction) },
-                    canBeginAt: { point in
-                        !model.isSelectingSnips || !interactionState.selectionDock.contains(point)
-                    },
-                    onPan: { direction, translation, predictedTranslation, phase in
-                        handlePagePan(
-                            direction: direction,
-                            translation: translation,
-                            predictedTranslation: predictedTranslation,
-                            phase: phase,
-                            pageWidth: proxy.size.width
+            // Pages span the horizontal safe area so system bar items placed there, such as
+            // the closed iPhone Duo's toolbar column, stay inside the clip, and neighbor pages
+            // enter from the screen edge. Each page gets the insets back for its own layout.
+            GeometryReader { proxy in
+                ListPageMotionStage(
+                    state: motionState, pages: model.pages, selectedPage: model.selectedPage,
+                    width: proxy.size.width,
+                    safeArea: pageSafeArea,
+                    content: mountedPages.map { page in
+                        MountedListPage(
+                            id: page,
+                            content: libraryPage(page, isActivePage: page == model.selectedPage)
+                                .safeAreaPadding(pageSafeArea)
                         )
+                    },
+                    retainedPagesChanged: { pages in
+                        visitedPages.formUnion(pages)
+                        visitedPages.formIntersection(model.pages)
                     }
                 )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .background {
+                    ListPagePanObserver(
+                        canBegin: { direction in canPanPage(direction: direction) },
+                        canBeginAt: { point in
+                            !model.isSelectingSnips || !interactionState.selectionDock.contains(point)
+                        },
+                        onPan: { direction, translation, predictedTranslation, phase in
+                            handlePagePan(
+                                direction: direction,
+                                translation: translation,
+                                predictedTranslation: predictedTranslation,
+                                phase: phase,
+                                pageWidth: proxy.size.width
+                            )
+                        }
+                    )
+                }
             }
+            .ignoresSafeArea(.container, edges: .horizontal)
         }
         .onChange(of: model.pages) { _, pages in
             visitedPages.formIntersection(pages)
@@ -275,6 +290,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
     let pages: [LibraryPage]
     let selectedPage: LibraryPage
     let width: CGFloat
+    let safeArea: EdgeInsets
     let content: [MountedListPage<PageContent>]
     let retainedPagesChanged: ([LibraryPage]) -> Void
 
@@ -286,19 +302,20 @@ private struct ListPageMotionStage<PageContent: View>: View {
                 holdsAtAdd: motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
             )
             let cancelSource = frame.directEntrance?.source ?? frame.pages.last
+            // Layers: destination, cancel source, then cues. Cues draw over their page's
+            // safe-area margin, which a full-width page covers.
             ZStack {
                 if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
-                    edgeCue(kind: .add, progress: creationCueProgress)
-                        .offset(x: frame.pages.last.map {
-                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-                        } ?? 0)
+                    edgeCue(kind: .add, progress: creationCueProgress, offset: frame.pages.last.map {
+                        frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                    } ?? 0)
+                    .zIndex(2)
                 }
                 if !reduceMotion, frame.edgeCancelProgress > 0 {
-                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
-                        .offset(x: cancelSource.map {
-                            frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
-                        } ?? 0)
-                        .zIndex(1)
+                    edgeCue(kind: .cancel, progress: frame.edgeCancelProgress, offset: cancelSource.map {
+                        frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
+                    } ?? 0)
+                    .zIndex(2)
                 }
                 ForEach(content) { page in
                     let isRetained = frame.retainedPages.contains(page.id)
@@ -311,8 +328,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
                         .accessibilityHidden(page.id != selectedPage)
                         .disabled(frame.isMoving || page.id != selectedPage)
                         .allowsHitTesting(!frame.isMoving && page.id == selectedPage)
-                        // All layers share this stack: destination, cancel cue, then source.
-                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 2 : 0)
+                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 1 : 0)
                 }
             }
             .onChange(of: frame.retainedPages, initial: true) { _, pages in
@@ -321,7 +337,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
         }
     }
 
-    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat) -> some View {
+    private func edgeCue(kind: ListEdgeCueLayout.Kind, progress: CGFloat, offset: CGFloat) -> some View {
         let stretch = ListEdgeCueLayout.stretch(progress: progress)
         let armed = progress >= 1
         return GeometryReader { proxy in
@@ -341,6 +357,11 @@ private struct ListPageMotionStage<PageContent: View>: View {
                     y: proxy.size.height / 2
                 )
         }
+        // Anchor and clip to the fixed safe rectangle, so a cue slides in from the safe edge
+        // as it does from a zero-inset screen edge. `position` ignores the safe area.
+        .offset(x: offset)
+        .clipped()
+        .padding(safeArea)
         .accessibilityHidden(true)
         .allowsHitTesting(false)
     }

@@ -1763,6 +1763,33 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
     }
 
+    func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
+        continueAfterFailure = false
+        // Bar buttons draw shorter than 44 pt inside a 44-pt touch target with exclusive
+        // edges, so tap half a point inside each edge.
+        let app = launchApp()
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            throw XCTSkip("This check needs the regular-width sidebar.")
+        }
+        returnToLists(in: app)
+        XCTAssertGreaterThanOrEqual(app.buttons["new-list"].frame.width, 44)
+
+        func assertTapStartsNewList(offset: CGFloat, in app: XCUIApplication) {
+            app.buttons["new-list"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .withOffset(CGVector(dx: 0, dy: offset))
+                .tap()
+            XCTAssertTrue(
+                app.textFields["list-name"].waitForExistence(timeout: 3),
+                "A tap \(offset) pt from New List's center must start a new list."
+            )
+        }
+        assertTapStartsNewList(offset: -21.5, in: app)
+        app.terminate()
+        let relaunched = launchApp()
+        returnToLists(in: relaunched)
+        assertTapStartsNewList(offset: 21.5, in: relaunched)
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1777,7 +1804,8 @@ final class SnipSnapiOSUITests: XCTestCase {
             composer.waitForExistence(timeout: 5),
             "The quick composer must exist on both iPhone and iPad."
         )
-        for control in [addAttachments, send, newList] {
+        // The sidebar's New List is a system bar button; its touch target has its own test.
+        for control in usesCompactSelector ? [addAttachments, send, newList] : [addAttachments, send] {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
         }
