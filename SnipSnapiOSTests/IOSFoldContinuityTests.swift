@@ -1,6 +1,7 @@
 import SnipSnapCore
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import SnipSnapiOS
 
@@ -29,6 +30,43 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
             XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
             XCTAssertTrue(FileManager.default.fileExists(atPath: attachment.path), "\(sizeClass)")
         }
+    }
+
+    /// A paste that is still staging when the layout swaps must still land in the draft.
+    func testAttachmentStagingFinishesAcrossSizeClassSwap() throws {
+        let storage = makeComposerStorage()
+        storage.draftStore.setText("before ", for: SnipList.inboxID)
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "before " }, root.diagnostics)
+        let compact = try XCTUnwrap(root.composer)
+        compact.selectedRange = NSRange(location: 7, length: 0)
+
+        let started = expectation(description: "Text provider started")
+        let release = DispatchSemaphore(value: 0)
+        let text = NSItemProvider()
+        text.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            started.fulfill()
+            DispatchQueue.global().async {
+                release.wait()
+                completion(Data("hello".utf8), nil)
+            }
+            return Progress(totalUnitCount: 1)
+        }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        compact.paste(itemProviders: [text, NSItemProvider(object: image)])
+        XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: TestReadiness.timeout), .completed)
+
+        root.swap(to: .regular)
+        release.signal()
+        let staged = root.wait("the staged paste reaches the regular composer") {
+            root.composer !== compact && root.composer?.text == "before hello"
+                && storage.draftStore.draft(for: SnipList.inboxID).attachments.count == 1
+        }
+        XCTAssertTrue(staged, root.diagnostics)
+        let file = try XCTUnwrap(storage.draftStore.draft(for: SnipList.inboxID).attachments.first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 
     func testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps() async throws {
