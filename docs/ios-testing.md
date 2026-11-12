@@ -46,9 +46,12 @@ List the groups without Xcode or a running Simulator:
 ./scripts/run.sh --ios-simulator --list-ui-groups
 ```
 
-Choose a booted Simulator in T3's Device panel or Simulator. Set `SIMULATOR_ID`
-locally; do not check its value into the repository. All commands below run the
-worktree's isolated Dev app, with its own bundle ID, name, store, and badge.
+Choose a booted Simulator in T3's Device panel or Simulator. For a SimLock
+lease, also pass its device set; see
+[iPhone Duo and SimLock simulators](#iphone-duo-and-simlock-simulators). Set
+`SIMULATOR_ID` locally; do not check its value into the repository. All
+commands below run the worktree's isolated Dev app, with its own bundle ID,
+name, store, and badge.
 
 ```sh
 ./scripts/run.sh --ios-simulator --simulator-id "$SIMULATOR_ID" --ui-group smoke
@@ -83,6 +86,126 @@ The Mac gate includes policy and package tests. The iOS gate runs unit tests and
 checks the app's embedded Share extension and privacy manifests. For interactive
 app checks and focused or full Dev tests, use `scripts/run.sh`. Compile-only
 output from `scripts/build.sh` is not a runnable Dev app.
+
+## iPhone Duo and SimLock simulators
+
+T3's SimLock host keeps leased simulators in SimLock's own device set, not
+Xcode's default set. Pass that set to the runner. The runner reads
+`SIMLOCK_IOS_DEVICE_SET`, and `--simulator-set PATH` overrides it, for both
+`ios-simulator` and `--ios-simulator`. A custom set needs Xcode 27 or later.
+Without a set, the runner uses the default set as before.
+
+### Launch the Dev app on a leased Duo
+
+The iPhone Duo needs Xcode 27.1 or later and the iOS 27.1 runtime. In T3, call
+`device_list`, then `device_open` with the `simlock-` host and
+`simlock:ios:iPhone Duo`. Copy three values from its `agentDevice` result.
+Pass `AD_ARGS` to every `$AD` call so each call targets your lease.
+`session list` shows every T3 thread's sessions on that host, so select yours
+by name. Then read the lease's UDID and set, and launch:
+
+```sh
+AD='/…/agent-device'                                       # command
+AD_ARGS=('--config' '/…/hosts/….json' '--session' 't3-…')  # targetArgs, in order
+SESSION='t3-…'                                             # session
+sessions="$("$AD" session list --json "${AD_ARGS[@]}")"
+field() {
+  print -r -- "$sessions" | ruby -rjson -e '
+    mine = JSON.parse(STDIN.read).dig("data", "sessions").find { |s| s["name"].end_with?(":#{ARGV[0]}") }
+    puts mine.fetch(ARGV[1])' "$SESSION" "$1"
+}
+UDID="$(field device_udid)"
+SET="$(field ios_simulator_device_set)"
+SIMLOCK_IOS_DEVICE_SET="$SET" ./scripts/run.sh ios-simulator "$UDID"
+```
+
+To seed 24 Inbox rows for layout checks, relaunch with the long-list fixture
+in its own store:
+
+```sh
+SIMCTL_CHILD_SNIP_SNAP_UI_TESTING=1 SIMCTL_CHILD_SNIP_SNAP_UI_TEST_STORE=duo \
+SIMCTL_CHILD_SNIP_SNAP_UI_TEST_LONG_LIST=1 \
+  simlock simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID"
+```
+
+`BUNDLE_ID` is the `Bundle:` line the runner prints. Keyboard input does not
+reach iOS 27 guests through SimLock, so `agent-device fill` cannot type.
+
+### Run UI tests on the Duo
+
+UI tests build, install, run, and type on the leased Duo:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$UDID" --simulator-set "$SET" \
+  --ui-test testCreatesAndEditsTextSnip
+```
+
+Use XCUITest for typed input. A test cannot fold the Duo itself, but it sees a
+fold the host makes while it runs: the window changes between 466×678 (closed)
+and 951×669 (open or half-open), and XCTest logs "Interface orientation
+changed". To sequence poses, pass a directory with
+`TEST_RUNNER_<NAME>=<dir>`. The test reads it as `<NAME>`, writes a request
+file there, and waits for the host to fold and write a reply file.
+
+### Change the pose
+
+The Duo has an outer panel (466×678 points, lit when closed) and an inner panel
+(669×951 points, lit when open or half-open). The app gets a 951×669 window on
+the inner panel.
+
+`agent-device fold` refuses SimLock-set simulators. Run its fold helper
+through SimLock instead. agent-device caches a built helper after its first
+fold on a default-set Duo. Otherwise build one from its source:
+
+```sh
+FOLD_HELPER="$(ls -d ~/.agent-device/fold-helper/*/fold-helper 2>/dev/null | head -1)"
+if [[ -z "$FOLD_HELPER" ]]; then
+  FOLD_HELPER="$PWD/artifacts/duo/fold-helper"
+  mkdir -p "${FOLD_HELPER:h}"
+  xcrun --sdk iphonesimulator clang -mios-simulator-version-min=15.0 -fobjc-arc \
+    -framework Foundation -framework IOKit \
+    "$(ls -d ~/.t3/tools/agent-device/*/node_modules/agent-device/apple/fold-helper/Fold.m | tail -1)" \
+    -o "$FOLD_HELPER"
+fi
+simlock simctl spawn "$UDID" "$FOLD_HELPER" closed    # or open, half-open
+```
+
+The helper sends the hinge angle but does not verify it. Check the lit panel
+with `"$AD" snapshot --json "${AD_ARGS[@]}"`: `data.viewport` is 466×678
+when closed and 951×669 when open or half-open. Half-open moves the sidebar
+edge to the hinge. Refs and coordinates change with every pose, so snapshot
+again after a fold.
+
+### Capture each panel
+
+`agent-device screenshot` and T3's `device_screenshot` cannot choose between
+the two panels. Name the lit panel:
+
+```sh
+simlock simctl io "$UDID" screenshot --display=primary closed.png      # outer
+simlock simctl io "$UDID" screenshot --display=primary-1 open.png      # inner
+```
+
+`simlock simctl io "$UDID" enumerate` lists the screens. The dark panel
+captures as a black image.
+
+### Known limits
+
+- Rotation does nothing on the leased Duo, so closed landscape is not
+  reachable. `"$AD" orientation landscape-left "${AD_ARGS[@]}"` reports
+  "unconfirmed". In a UI test, `XCUIDevice.shared.orientation = .landscapeLeft`
+  reports landscape, but the window and panel capture stay unchanged when
+  closed or open. `simlock rotate` refuses a T3-owned lease.
+- Typing works only through XCUITest.
+- Half-open is checked only through the layout change, not the hinge angle. Its
+  window matches open.
+- After the app moves from the inner panel back to the outer panel, XCTest can
+  wait 60 seconds per action for the app to report idle.
+- `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
+  fail on SimLock-set simulators, as described above.
+
+When done, call `device_close` with `shutdown: true`. That ends the lease, and
+SimLock wipes the device.
 
 ## Development, PR, and integration cadence
 

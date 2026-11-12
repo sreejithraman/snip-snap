@@ -77,6 +77,7 @@ signing_policy_capture_build_settings() {
     local output_file="$4"
     local derived_data="${5:-}"
     local scheme="${6:-SnipSnap}"
+    local -a extra_arguments=("${@:7}")
     local xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
     local -a shared_arguments
     local command=(
@@ -108,7 +109,7 @@ signing_policy_capture_build_settings() {
         command+=("CODE_SIGN_ENTITLEMENTS=$SNIP_SNAP_CODE_SIGN_ENTITLEMENTS")
     [[ -z "${SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS:-}" ]] || \
         shared_arguments+=("SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS=$SNIP_SNAP_IOS_APP_CODE_SIGN_ENTITLEMENTS")
-    command+=("${shared_arguments[@]}")
+    command+=("${shared_arguments[@]}" "${extra_arguments[@]}")
 
     "${command[@]}" > "$output_file" 2> "$output_file.stderr" || {
         /bin/rm -f "$output_file.stderr"
@@ -125,7 +126,7 @@ signing_policy_capture_build_settings() {
             -showBuildSettings
         )
         # Xcode rejects -derivedDataPath when build settings use -target.
-        share_command+=("${shared_arguments[@]}")
+        share_command+=("${shared_arguments[@]}" "${extra_arguments[@]}")
         "${share_command[@]}" >> "$output_file" 2>> "$output_file.stderr" || {
             /bin/rm -f "$output_file.stderr"
             signing_policy_fail "could not resolve Share extension build settings"
