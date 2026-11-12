@@ -494,6 +494,7 @@ final class ListPageTransitionTests: XCTestCase {
             )
             XCTAssertTrue(motion.isDragging)
             motion.interrupt()
+            XCTAssertFalse(motion.isDragging)
             return motion
         }
         var cancelled = interruptedDrag()
