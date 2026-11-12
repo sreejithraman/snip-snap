@@ -302,19 +302,22 @@ private struct ListPageMotionStage<PageContent: View>: View {
                 holdsAtAdd: motion.isCreatingFromEdge || motion.transition?.settlement?.createsList == true
             )
             let cancelSource = frame.directEntrance?.source ?? frame.pages.last
+            // Layers: destination, cancel source, then cues. Cues draw over their page's
+            // safe-area margin, which a full-width page covers.
             ZStack {
                 if !reduceMotion, creationCueProgress > 0, frame.directEntrance == nil {
                     edgeCue(kind: .add, progress: creationCueProgress)
                         .offset(x: frame.pages.last.map {
                             frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
                         } ?? 0)
+                        .zIndex(2)
                 }
                 if !reduceMotion, frame.edgeCancelProgress > 0 {
                     edgeCue(kind: .cancel, progress: frame.edgeCancelProgress)
                         .offset(x: cancelSource.map {
                             frame.offset(for: $0, width: width, layoutDirection: layoutDirection, reduceMotion: reduceMotion)
                         } ?? 0)
-                        .zIndex(1)
+                        .zIndex(2)
                 }
                 ForEach(content) { page in
                     let isRetained = frame.retainedPages.contains(page.id)
@@ -327,8 +330,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
                         .accessibilityHidden(page.id != selectedPage)
                         .disabled(frame.isMoving || page.id != selectedPage)
                         .allowsHitTesting(!frame.isMoving && page.id == selectedPage)
-                        // All layers share this stack: destination, cancel cue, then source.
-                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 2 : 0)
+                        .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 1 : 0)
                 }
             }
             .onChange(of: frame.retainedPages, initial: true) { _, pages in
