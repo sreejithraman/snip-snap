@@ -346,7 +346,8 @@ final class IOSComposerTests: IOSModelTestCase {
         view.smartInsertDeleteType = .no
         view.selectedRange = NSRange(location: 7, length: 0)
         view.paste(itemProviders: [NSItemProvider(object: pastedText as NSString)])
-        await fulfillment(of: [attached], timeout: 2)
+        // A fresh iOS 27 CI simulator took 4.6 seconds to deliver this paste; a warm one takes under 0.5.
+        await fulfillment(of: [attached], timeout: 10)
         XCTAssertEqual(divertedText, pastedText)
         XCTAssertEqual(body, "before after")
         XCTAssertEqual(view.text, "before after")
