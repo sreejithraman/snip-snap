@@ -213,13 +213,36 @@ simlock simctl io "$UDID" screenshot --display=primary-1 open.png      # inner
 `simlock simctl io "$UDID" enumerate` lists the screens. The dark panel
 captures as a black image.
 
+### Open Split View on the inner panel
+
+Fold open, then go to the Home Screen:
+
+```sh
+"$AD" open com.apple.springboard "${AD_ARGS[@]}"
+```
+
+Long-press the app icon and choose "Open in Split View". The app opens on the
+left in a 469×669 window, and the Home Screen fills the right side. To put the
+app on the right instead, long-press another app's icon, such as Settings,
+choose "Open in Split View", then tap the app's icon in the right-hand Home
+Screen.
+
+The app gets the compact layout in both halves. On the right, the window
+includes the status-bar column, so its trailing safe-area inset is about 84
+points, as on the closed panel. On the left, the system puts the toolbar column
+on the leading side. Capture with `--display=primary-1`.
+
+Opening SpringBoard through agent-device ends Split View, so arrange the split
+last.
+
 ### Known limits
 
 - Rotation does nothing on the leased Duo, so closed landscape is not
   reachable. `"$AD" orientation landscape-left "${AD_ARGS[@]}"` reports
   "unconfirmed". In a UI test, `XCUIDevice.shared.orientation = .landscapeLeft`
   reports landscape, but the window and panel capture stay unchanged when
-  closed or open. `simlock rotate` refuses a T3-owned lease.
+  closed or open. `simlock rotate` refuses a T3-owned lease, so closed
+  landscape stays unverified on this lane.
 - Typing works only through XCUITest, and only on the outer panel. XCTest key
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
@@ -232,6 +255,15 @@ captures as a black image.
   wait 60 seconds per action for the app to report idle.
 - `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
   fail on SimLock-set simulators, as described above.
+- On the closed panel, the system places every mounted list page's
+  navigation-bar items in the status column at the same position. XCTest then
+  finds one `library-actions` button per mounted page, and a bare
+  `app.buttons["library-actions"].tap()` fails with "Multiple matching
+  elements". `testSelectionPersistsAcrossLists` hits this. It also fails on
+  `b25245bf`.
+- `testListEditorIconSearchKeepsControlsReachable` fails on the closed panel
+  ("Icon search must stay pinned"). It asks for landscape, and the leased Duo
+  does not rotate. It also fails on `b25245bf`.
 
 When done, call `device_close` with `shutdown: true`. That ends the lease, and
 SimLock wipes the device.
