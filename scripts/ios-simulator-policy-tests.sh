@@ -31,12 +31,16 @@ export SNIP_SNAP_DEV_STATE_DIR="$test_dir/state"
 export SNIP_SNAP_DEV_WORKTREE="${script_dir:h}"
 export FAKE_SIM_LOG="$test_dir/sim.log"
 export FAKE_BUILD_LOG="$test_dir/build.log"
+export FAKE_ARGV_DIR="$test_dir/argv"
 export FAKE_FIXTURE_PID_FILE="$test_dir/fixture.pid"
 export FAKE_FIXTURE_LOG="$test_dir/fixture.log"
 export SNIP_SNAP_PYTHON="$test_dir/bin/python3"
 unset SNIP_SNAP_DEV_SLOT SNIP_SNAP_IOS_DERIVED_DATA SNIP_SNAP_XCODEBUILD SIMLOCK_IOS_DEVICE_SET
+mkdir -p "$FAKE_ARGV_DIR"
+# Keep each call's exact argument vector; joined logs cannot show where one argument ends.
 cat > "$test_dir/bin/xcrun" <<'STUB'
 #!/bin/zsh
+print -rN -- "$@" > "$(mktemp "$FAKE_ARGV_DIR/${0:t}.XXXXXX")"
 simulator_set=""
 if [[ "$1" == simctl && "$2" == --set ]]; then
  simulator_set="$3"
@@ -63,6 +67,7 @@ fi
 STUB
 cat > "$test_dir/bin/xcodebuild" <<'STUB'
 #!/bin/zsh
+print -rN -- "$@" > "$(mktemp "$FAKE_ARGV_DIR/${0:t}.XXXXXX")"
 if [[ "$*" == *'-showBuildSettings'* ]]; then
  print -r -- "$*" >> "$FAKE_BUILD_LOG.settings"
  print -r -- 'Build settings for action build and target SnipSnapiOS:'
@@ -177,8 +182,27 @@ for arguments in 'SET-SIM --simulator-set' 'SET-SIM --unknown set' "SET-SIM --si
 done
 grep -F "Simulator set not found: $test_dir/missing-set" "$test_dir/output" >/dev/null
 cmp "$test_dir/before-set" "$FAKE_SIM_LOG"
+# Each call must carry the set path as one argument, even though the path has a space.
+assert_whole_set_arguments() {
+ /usr/bin/ruby - "$FAKE_ARGV_DIR" "$simlock_set" "$@" <<'RUBY_CHECK' || exit 1
+dir, set, *expected = ARGV
+location = "-DVTSimulatorSetLocation=#{set}"
+actions = Dir["#{dir}/*"].map do |file|
+  argv = File.read(file).split("\0")
+  if File.basename(file).start_with?('xcrun.')
+    next unless argv.first == 'simctl'
+    argv[0, 3] == ['simctl', '--set', set] or abort "simctl split or missed the set: #{argv.inspect}"
+    argv[3]
+  else
+    argv.include?(location) or abort "xcodebuild split or missed the set: #{argv.inspect}"
+    argv.include?('-showBuildSettings') ? 'settings' : argv.last
+  end
+end.compact
+actions.sort == expected.sort or abort "Expected #{expected.inspect} with the set, got #{actions.inspect}"
+RUBY_CHECK
+}
 for set_source in environment option; do
- : > "$FAKE_SIM_LOG"; : > "$FAKE_BUILD_LOG"; : > "$FAKE_BUILD_LOG.settings"
+ /bin/rm -f "$FAKE_ARGV_DIR"/*(N)
  if [[ "$set_source" == environment ]]; then
   SIMLOCK_IOS_DEVICE_SET="$simlock_set" "$script_dir/run.sh" ios-simulator SET-SIM > "$test_dir/output" 2>&1
  else
@@ -186,23 +210,13 @@ for set_source in environment option; do
   SIMLOCK_IOS_DEVICE_SET="$test_dir/missing-set" \
    "$script_dir/run.sh" ios-simulator SET-SIM --simulator-set "$simlock_set" > "$test_dir/output" 2>&1
  fi || { cat "$test_dir/output" >&2; exit 1; }
- for stage in terminate install launch; do
-  grep -F "simctl $stage SET-SIM" "$FAKE_SIM_LOG" | grep -F "[set=$simlock_set]" >/dev/null || {
-   print -u2 "Simulator $stage from the $set_source missed the custom set"; exit 1
-  }
- done
- (( $(grep -cF -- "-DVTSimulatorSetLocation=$simlock_set" "$FAKE_BUILD_LOG.settings") == 2 )) || {
-  print -u2 "App and Share build settings from the $set_source missed the custom set"; exit 1
- }
- grep -F -- "-DVTSimulatorSetLocation=$simlock_set" "$FAKE_BUILD_LOG" | grep -F 'id=SET-SIM' >/dev/null || {
-  print -u2 "The build from the $set_source missed the custom set"; exit 1
- }
+ # App and Share settings, the build, and each simulator stage.
+ assert_whole_set_arguments settings settings build list terminate install launch
 done
+/bin/rm -f "$FAKE_ARGV_DIR"/*(N)
 SIMLOCK_IOS_DEVICE_SET="$simlock_set" "$script_dir/run.sh" --ios-simulator --simulator-id SET-SIM \
  --unit-test IOSAppModelTests > "$test_dir/output" 2>&1 || { cat "$test_dir/output" >&2; exit 1; }
-[[ "$(tail -n 1 "$FAKE_BUILD_LOG")" == *"-DVTSimulatorSetLocation=$simlock_set"*' test' ]] || {
- print -u2 'Selected tests missed the custom set'; exit 1
-}
+assert_whole_set_arguments settings settings list build test
 cp "$FAKE_SIM_LOG" "$test_dir/before-test-selection"
 "$script_dir/run.sh" --ios-simulator --simulator-id TEST-SIM --unit-test IOSAppModelTests > "$test_dir/output" 2>&1 || {
  cat "$test_dir/output" >&2; exit 1

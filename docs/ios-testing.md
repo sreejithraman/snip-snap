@@ -99,13 +99,16 @@ Without a set, the runner uses the default set as before.
 
 The iPhone Duo needs Xcode 27.1 or later and the iOS 27.1 runtime. In T3, call
 `device_list`, then `device_open` with the `simlock-` host and
-`simlock:ios:iPhone Duo`. Save the `agent-device` path it returns as `AD` and
-its `agentDevice.session` as `SESSION`. `session list` shows every T3 thread's
-sessions on that host, so select yours by name. Then read the lease's UDID and
-set, and launch:
+`simlock:ios:iPhone Duo`. Copy three values from its `agentDevice` result.
+Pass `AD_ARGS` to every `$AD` call so each call targets your lease.
+`session list` shows every T3 thread's sessions on that host, so select yours
+by name. Then read the lease's UDID and set, and launch:
 
 ```sh
-sessions="$("$AD" session list --json)"
+AD='/…/agent-device'                                       # command
+AD_ARGS=('--config' '/…/hosts/….json' '--session' 't3-…')  # targetArgs, in order
+SESSION='t3-…'                                             # session
+sessions="$("$AD" session list --json "${AD_ARGS[@]}")"
 field() {
   print -r -- "$sessions" | ruby -rjson -e '
     mine = JSON.parse(STDIN.read).dig("data", "sessions").find { |s| s["name"].end_with?(":#{ARGV[0]}") }
@@ -168,9 +171,10 @@ simlock simctl spawn "$UDID" "$FOLD_HELPER" closed    # or open, half-open
 ```
 
 The helper sends the hinge angle but does not verify it. Check the lit panel
-with `"$AD" snapshot --json`: `data.viewport` is 466×678 when closed and
-951×669 when open or half-open. Half-open moves the sidebar edge to the hinge.
-Refs and coordinates change with every pose, so snapshot again after a fold.
+with `"$AD" snapshot --json "${AD_ARGS[@]}"`: `data.viewport` is 466×678
+when closed and 951×669 when open or half-open. Half-open moves the sidebar
+edge to the hinge. Refs and coordinates change with every pose, so snapshot
+again after a fold.
 
 ### Capture each panel
 
@@ -188,10 +192,10 @@ captures as a black image.
 ### Known limits
 
 - Rotation does nothing on the leased Duo, so closed landscape is not
-  reachable. `"$AD" orientation` reports "unconfirmed". In a UI test,
-  `XCUIDevice.shared.orientation = .landscapeLeft` reports landscape, but the
-  window and panel capture stay unchanged when closed or open. `simlock rotate`
-  refuses a T3-owned lease.
+  reachable. `"$AD" orientation landscape-left "${AD_ARGS[@]}"` reports
+  "unconfirmed". In a UI test, `XCUIDevice.shared.orientation = .landscapeLeft`
+  reports landscape, but the window and panel capture stay unchanged when
+  closed or open. `simlock rotate` refuses a T3-owned lease.
 - Typing works only through XCUITest.
 - Half-open is checked only through the layout change, not the hinge angle. Its
   window matches open.
