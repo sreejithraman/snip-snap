@@ -255,8 +255,9 @@ last.
 - Typing works only through XCUITest, and only on the outer panel. XCTest key
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
-  focused field. In testing it did after every half-open and after some opens.
-  The composer then drops its focus, and one tap resumes typing.
+  focused field. Runs for PR 279 saw this after half-opens; later runs kept
+  focus. When it happens, the composer drops its focus, and one tap resumes
+  typing.
 - A run that ends on the inner panel can leave the next run unable to give a
   text field keyboard focus. Fold open, then closed, before the next run.
 - Half-open is checked only through the layout change, not the hinge angle. Its
