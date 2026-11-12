@@ -66,16 +66,16 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let attachment = try addInboxDraft("Unsent", to: storage)
         let root = try RootHarness(test: self, storage: storage)
         let gate = SaveGate()
-        let saving = try startSaveAndSwap(storage, root: root, gate: gate)
+        let saving = try await startSaveAndSwap(storage, root: root, gate: gate)
         XCTAssertEqual(gate.draft?.attachments, [attachment])
 
         gate.finish(saved: false)
         let saved = await saving.value
         XCTAssertFalse(saved)
-        let restored = root.wait("regular composer shows the unsent draft") {
+        let restored = await TestReadiness.wait {
             root.composer?.text == "Unsent" && root.composer?.isEditable == true
         }
-        XCTAssertTrue(restored, root.diagnostics)
+        XCTAssertTrue(restored, "The regular composer must show the unsent draft. \(root.diagnostics)")
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
     }
 
@@ -84,14 +84,15 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         _ = try addInboxDraft("Sent", to: storage)
         let root = try RootHarness(test: self, storage: storage)
         let gate = SaveGate()
-        let saving = try startSaveAndSwap(storage, root: root, gate: gate)
+        let saving = try await startSaveAndSwap(storage, root: root, gate: gate)
 
         gate.finish(saved: true)
         let saved = await saving.value
         XCTAssertTrue(saved)
-        let ended = root.wait("regular composer accepts typing again") { root.composer?.isEditable == true }
-        XCTAssertTrue(ended, root.diagnostics)
-        root.settle()
+        let ended = await TestReadiness.wait { root.composer?.isEditable == true }
+        XCTAssertTrue(ended, "The regular composer must accept typing again. \(root.diagnostics)")
+        // Suspends rather than spinning the run loop, so a wrong reload queued on the main actor would run.
+        try await Task.sleep(for: .seconds(1))
         XCTAssertEqual(root.composer?.text, "", root.diagnostics)
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
     }
@@ -166,12 +167,14 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
     /// Holds a save of the Inbox draft in `gate` while the compact composer is replaced by a regular one.
     private func startSaveAndSwap(
         _ storage: CompactComposerStorage, root: RootHarness, gate: SaveGate
-    ) throws -> Task<Bool, Never> {
+    ) async throws -> Task<Bool, Never> {
         let draft = storage.draftStore.draft(for: SnipList.inboxID).text
         XCTAssertTrue(root.wait("compact composer") { root.composer?.text == draft }, root.diagnostics)
         let compact = try XCTUnwrap(root.composer)
         let saving = Task { await storage.save(listID: SnipList.inboxID, create: gate.create) }
-        XCTAssertTrue(root.wait("save started") { gate.draft != nil })
+        // The save runs on the main actor, so the test must suspend, not spin the run loop, to let it start.
+        let started = await TestReadiness.wait { gate.draft != nil }
+        XCTAssertTrue(started, "The save must start and wait in the gate.")
         XCTAssertEqual(gate.draft?.text, draft)
         root.swap(to: .regular)
         let mounted = root.wait("regular composer mounted mid-save") {
