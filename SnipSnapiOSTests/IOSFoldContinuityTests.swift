@@ -112,12 +112,42 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertNil(selector.transition)
     }
 
+    /// When focus cannot move to the composer after a swap, the binding must not claim it.
+    func testComposerClearsFocusWhenTheSystemRefusesIt() throws {
+        var focused = false
+        let blocker = FocusKeepingTextField()
+        let host = UIHostingController(rootView: ComposerTextInput(
+            prompt: "Add", text: .constant("Draft"),
+            isFocused: Binding(get: { focused }, set: { focused = $0 }),
+            onPasteAttachments: { _, _ in }
+        ))
+        let window = try makeWindow(host)
+        defer { window.isHidden = true }
+        host.view.addSubview(blocker)
+        XCTAssertTrue(blocker.becomeFirstResponder())
+
+        focused = true
+        host.rootView = ComposerTextInput(
+            prompt: "Add", text: .constant("Draft"),
+            isFocused: Binding(get: { focused }, set: { focused = $0 }),
+            onPasteAttachments: { _, _ in }
+        )
+        host.view.layoutIfNeeded()
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !focused }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: TestReadiness.timeout), .completed)
+        XCTAssertTrue(blocker.isFirstResponder)
+    }
+
     private func makeComposerStorage() -> CompactComposerStorage {
         let suite = "fold-continuity-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return CompactComposerStorage(defaults: defaults)
     }
+}
+
+private final class FocusKeepingTextField: UITextField {
+    override var canResignFirstResponder: Bool { false }
 }
 
 @MainActor

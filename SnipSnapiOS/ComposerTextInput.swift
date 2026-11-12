@@ -16,6 +16,7 @@ struct ComposerTextInput: UIViewRepresentable {
     func makeUIView(context: Context) -> ComposerTextView {
         let view = ComposerTextView()
         view.delegate = context.coordinator
+        view.onFocusRefused = { [weak coordinator = context.coordinator] in coordinator?.followSystemFocusLoss() }
         view.backgroundColor = .clear
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
@@ -116,8 +117,15 @@ struct ComposerTextInput: UIViewRepresentable {
             // a field on purpose clear focus themselves.
             DispatchQueue.main.async { [self] in
                 guard !isDismantled, textView.window != nil, !textView.isFirstResponder else { return }
-                parent.isFocused = false
+                followSystemFocusLoss()
             }
+        }
+
+        /// Moving between iPhone Duo panels can end editing or refuse focus. Follow the system
+        /// instead of forcing focus back: clear focus so navigation returns, and one tap resumes typing.
+        func followSystemFocusLoss() {
+            guard !isDismantled else { return }
+            parent.isFocused = false
         }
 
         /// SwiftUI-driven focus changes must not echo back through the binding.
@@ -132,6 +140,8 @@ final class ComposerTextView: UITextView {
     var onPasteAttachments: ([NSItemProvider], NSRange) -> Void = { _, _ in }
     var isPasteEnabled = true
     var attachmentPasteSelection: NSRange?
+    /// Called when requested focus cannot be applied, such as when another responder keeps it.
+    var onFocusRefused: () -> Void = {}
     let placeholder = UILabel()
     private(set) var isApplyingRequestedFocus = false
     private var requestedFocus = false
@@ -173,7 +183,11 @@ final class ComposerTextView: UITextView {
             guard window != nil, requestedFocus != isFirstResponder else { return }
             isApplyingRequestedFocus = true
             defer { isApplyingRequestedFocus = false }
-            if requestedFocus { becomeFirstResponder() } else { resignFirstResponder() }
+            if !requestedFocus {
+                resignFirstResponder()
+            } else if !becomeFirstResponder() {
+                onFocusRefused()
+            }
         }
     }
 
