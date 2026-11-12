@@ -53,11 +53,7 @@ struct ComposerTextInput: UIViewRepresentable {
         view.placeholder.font = view.font
         view.placeholder.isHidden = !text.isEmpty
         view.accessibilityLabel = prompt
-        if isEnabled, isFocused, !view.isFirstResponder, view.window != nil {
-            view.becomeFirstResponder()
-        } else if (!isFocused || !isEnabled), view.isFirstResponder {
-            view.resignFirstResponder()
-        }
+        view.requestFocus(isEnabled && isFocused)
         view.invalidateIntrinsicContentSize()
     }
 
@@ -72,9 +68,14 @@ struct ComposerTextInput: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
+    static func dismantleUIView(_ view: ComposerTextView, coordinator: Coordinator) {
+        coordinator.isDismantled = true
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextInput
         var isUpdatingView = false
+        var isDismantled = false
         private var selectionBeforeChange: NSRange?
         init(parent: ComposerTextInput) { self.parent = parent }
 
@@ -103,13 +104,26 @@ struct ComposerTextInput: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            guard !isUpdatingView else { return }
+            guard isUserFocusChange(textView) else { return }
             parent.isFocused = true
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
-            guard !isUpdatingView else { return }
-            parent.isFocused = false
+            guard isUserFocusChange(textView) else { return }
+            // UIKit also resigns a field SwiftUI is removing, such as when a rotation or fold swaps
+            // the compact and regular composers, and SwiftUI may dismantle it only afterwards.
+            // That is not a blur, so decide once the removal has finished. Owners that replace
+            // a field on purpose clear focus themselves.
+            DispatchQueue.main.async { [self] in
+                guard !isDismantled, textView.window != nil, !textView.isFirstResponder else { return }
+                parent.isFocused = false
+            }
+        }
+
+        /// SwiftUI-driven focus changes must not echo back through the binding.
+        private func isUserFocusChange(_ textView: UITextView) -> Bool {
+            !isUpdatingView && !isDismantled
+                && (textView as? ComposerTextView)?.isApplyingRequestedFocus != true
         }
     }
 }
@@ -119,6 +133,9 @@ final class ComposerTextView: UITextView {
     var isPasteEnabled = true
     var attachmentPasteSelection: NSRange?
     let placeholder = UILabel()
+    private(set) var isApplyingRequestedFocus = false
+    private var requestedFocus = false
+    private var isFocusSyncScheduled = false
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -132,6 +149,32 @@ final class ComposerTextView: UITextView {
     override func layoutSubviews() {
         super.layoutSubviews()
         placeholder.frame = CGRect(origin: .zero, size: CGSize(width: bounds.width, height: font?.lineHeight ?? 20))
+    }
+
+    /// Applies SwiftUI's focus after the current SwiftUI update. A responder change inside that
+    /// update re-enters SwiftUI's view graph, which loops forever when a rotation or fold swaps
+    /// the compact and regular layouts.
+    func requestFocus(_ focused: Bool) {
+        requestedFocus = focused
+        scheduleFocusSync()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        scheduleFocusSync()
+    }
+
+    private func scheduleFocusSync() {
+        guard !isFocusSyncScheduled, window != nil, requestedFocus != isFirstResponder else { return }
+        isFocusSyncScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            isFocusSyncScheduled = false
+            guard window != nil, requestedFocus != isFirstResponder else { return }
+            isApplyingRequestedFocus = true
+            defer { isApplyingRequestedFocus = false }
+            if requestedFocus { becomeFirstResponder() } else { resignFirstResponder() }
+        }
     }
 
     override func paste(_ sender: Any?) {

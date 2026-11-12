@@ -179,7 +179,7 @@ struct CompactLibraryControls: View {
         }
         .onChange(of: model.lastSelectedListID) { _, listID in
             sendDestination = nil
-            composerFieldID = UUID()
+            replaceComposerField()
             draftListID = listID
             draft = storage.savingListID == listID
                 ? ComposerDraft()
@@ -528,6 +528,12 @@ struct CompactLibraryControls: View {
         )
     }
 
+    /// A new field identity ends editing in the old field; keep the keyboard decision explicit.
+    private func replaceComposerField() {
+        composerFieldID = UUID()
+        isComposerFocused = false
+    }
+
     private func canSend(draft: ComposerDraft) -> Bool {
         AttachmentDraftLifecycle.allowsSaving(
             isSaving: storage.isSaving,
@@ -550,7 +556,7 @@ struct CompactLibraryControls: View {
         let snapshot = storage.draftStore.beginSave(listID: sourceID)
         storage.savingListID = snapshot.listID
         storage.isSaving = true
-        composerFieldID = UUID()
+        replaceComposerField()
         draft = ComposerDraft()
         let saved = await model.createSnip(
             content: snapshot.draft.text,
@@ -569,7 +575,7 @@ struct CompactLibraryControls: View {
             draft = storage.draftStore.draft(for: snapshot.listID)
         }
         if !saved {
-            composerFieldID = UUID()
+            replaceComposerField()
         }
     }
 

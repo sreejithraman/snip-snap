@@ -143,9 +143,8 @@ UI tests build, install, run, and type on the leased Duo:
 Use XCUITest for typed input. A test cannot fold the Duo itself, but it sees a
 fold the host makes while it runs: the window changes between 466×678 (closed)
 and 951×669 (open or half-open), and XCTest logs "Interface orientation
-changed". To sequence poses, pass a directory with
-`TEST_RUNNER_<NAME>=<dir>`. The test reads it as `<NAME>`, writes a request
-file there, and waits for the host to fold and write a reply file.
+changed". [Fold during a UI test](#fold-during-a-ui-test) shows how a test asks
+the host for each pose.
 
 ### Change the pose
 
@@ -176,6 +175,31 @@ when closed and 951×669 when open or half-open. Half-open moves the sidebar
 edge to the hinge. Refs and coordinates change with every pose, so snapshot
 again after a fold.
 
+### Fold during a UI test
+
+`testFocusedComposerSurvivesFoldingTheDuo` types into the composer, then asks
+for each pose by writing `NN-<pose>.request` into the directory named by
+`SNIP_SNAP_UI_TEST_FOLD_DIR`. The host folds and answers with `NN-<pose>.done`.
+Without that directory, the test skips. Start the host loop, then the test:
+
+```sh
+FOLDS="$(mktemp -d)"
+while sleep 0.5; do
+  for request in "$FOLDS"/*.request(N); do
+    name="${request:t:r}"
+    [[ -e "$FOLDS/$name.done" ]] && continue
+    simlock simctl spawn "$UDID" "$FOLD_HELPER" "${name#*-}" && sleep 3
+    : > "$FOLDS/$name.done"
+  done
+done &
+TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR="$FOLDS" ./scripts/run.sh --ios-simulator \
+  --simulator-id "$UDID" --simulator-set "$SET" --ui-test testFocusedComposerSurvivesFoldingTheDuo
+kill %1
+# Reset the keyboard; see Known limits.
+simlock simctl spawn "$UDID" "$FOLD_HELPER" open && sleep 3
+simlock simctl spawn "$UDID" "$FOLD_HELPER" closed
+```
+
 ### Capture each panel
 
 `agent-device screenshot` and T3's `device_screenshot` cannot choose between
@@ -196,7 +220,12 @@ captures as a black image.
   "unconfirmed". In a UI test, `XCUIDevice.shared.orientation = .landscapeLeft`
   reports landscape, but the window and panel capture stay unchanged when
   closed or open. `simlock rotate` refuses a T3-owned lease.
-- Typing works only through XCUITest.
+- Typing works only through XCUITest, and only on the outer panel. XCTest key
+  events do not reach the inner panel.
+- Moving between panels can end text editing: the system keyboard resigns the
+  focused field. In testing it did after every half-open and after some opens.
+- A run that ends on the inner panel can leave the next run unable to give a
+  text field keyboard focus. Fold open, then closed, before the next run.
 - Half-open is checked only through the layout change, not the hinge angle. Its
   window matches open.
 - After the app moves from the inner panel back to the outer panel, XCTest can
