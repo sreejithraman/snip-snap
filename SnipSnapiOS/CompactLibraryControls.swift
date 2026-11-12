@@ -196,7 +196,7 @@ struct CompactLibraryControls: View {
         .onChange(of: sheet) { _, sheet in
             if sheet != nil { sendDestination = nil }
         }
-        .onChange(of: storage.stagedDraftRevision) { _, _ in
+        .onChange(of: storage.draftRevision) { _, _ in
             let listID = model.lastSelectedListID
             guard draftListID == listID, storage.savingListID != listID else { return }
             draft = storage.draftStore.draft(for: listID)
@@ -571,11 +571,7 @@ struct CompactLibraryControls: View {
         if saved {
             storage.draftStore.flushText()
         }
-        storage.savingListID = nil
-        storage.isSaving = false
-        if model.lastSelectedListID == snapshot.listID {
-            draft = storage.draftStore.draft(for: snapshot.listID)
-        }
+        storage.finishSaving()
         if !saved {
             replaceComposerField()
         }
@@ -705,8 +701,8 @@ final class CompactComposerStorage {
     /// Staging outlives a composer that a size-class change replaces, such as opening an iPhone Duo.
     var stagingTask: Task<Void, Never>?
     var isStagingPaste = false
-    /// Changes when staging adds to a draft, so the mounted composer reloads it.
-    private(set) var stagedDraftRevision = 0
+    /// Changes when storage changes a draft outside the mounted composer, so the composer reloads it.
+    private(set) var draftRevision = 0
 
     init(defaults: UserDefaults = .standard) {
         let stagingDirectory = FileManager.default.temporaryDirectory
@@ -737,7 +733,14 @@ final class CompactComposerStorage {
         for url in urls {
             draftStore.addTemporary(url, to: listID)
         }
-        stagedDraftRevision += 1
+        draftRevision += 1
+    }
+
+    /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
+    func finishSaving() {
+        savingListID = nil
+        isSaving = false
+        draftRevision += 1
     }
 }
 

@@ -11,15 +11,7 @@ import XCTest
 final class IOSFoldContinuityTests: IOSModelTestCase {
     func testDraftTextAndAttachmentSurviveSizeClassSwaps() throws {
         let storage = makeComposerStorage()
-        let attachment = storage.stagingDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathComponent("fold-attachment.txt")
-        try FileManager.default.createDirectory(
-            at: attachment.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        try Data("attached".utf8).write(to: attachment)
-        storage.draftStore.setText("Fold draft", for: SnipList.inboxID)
-        storage.draftStore.addTemporary(attachment, to: SnipList.inboxID)
+        let attachment = try addInboxDraft("Fold draft", to: storage)
         let root = try RootHarness(test: self, storage: storage)
 
         for sizeClass in [UIUserInterfaceSizeClass.compact, .regular, .compact, .regular] {
@@ -67,6 +59,30 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(staged, root.diagnostics)
         let file = try XCTUnwrap(storage.draftStore.draft(for: SnipList.inboxID).attachments.first)
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testFailedSendShowsItsDraftInTheComposerMountedDuringTheSave() throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("Unsent", to: storage)
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Unsent" }, root.diagnostics)
+        let compact = try XCTUnwrap(root.composer)
+
+        // This harness can't press SwiftUI's Send button, so the test does send's storage steps.
+        let snapshot = storage.draftStore.beginSave(listID: SnipList.inboxID)
+        storage.savingListID = snapshot.listID
+        storage.isSaving = true
+        root.swap(to: .regular)
+        let hidden = root.wait("regular composer mounted mid-save") {
+            root.composer !== compact && root.composer?.text == ""
+        }
+        XCTAssertTrue(hidden, root.diagnostics)
+        storage.draftStore.finishSave(snapshot, saved: false)
+        storage.finishSaving()
+
+        let restored = root.wait("regular composer shows the unsent draft") { root.composer?.text == "Unsent" }
+        XCTAssertTrue(restored, root.diagnostics)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
     }
 
     func testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps() async throws {
@@ -134,6 +150,20 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !focused }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: TestReadiness.timeout), .completed)
         XCTAssertTrue(blocker.isFirstResponder)
+    }
+
+    /// Returns the draft's attachment, a staged file.
+    private func addInboxDraft(_ text: String, to storage: CompactComposerStorage) throws -> URL {
+        let attachment = storage.stagingDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("fold-attachment.txt")
+        try FileManager.default.createDirectory(
+            at: attachment.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("attached".utf8).write(to: attachment)
+        storage.draftStore.setText(text, for: SnipList.inboxID)
+        storage.draftStore.addTemporary(attachment, to: SnipList.inboxID)
+        return attachment
     }
 
     private func makeComposerStorage() -> CompactComposerStorage {
