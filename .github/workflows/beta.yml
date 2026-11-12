@@ -21,7 +21,7 @@ jobs:
   prepare:
     name: Prepare release source
     if: github.event.workflow_run.conclusion == 'success'
-    runs-on: macos-26
+    runs-on: xcode-27
     outputs:
       current: ${{ steps.source.outputs.current }}
       build: ${{ steps.release.outputs.build }}
@@ -32,6 +32,9 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Check current main
         id: source
@@ -76,7 +79,7 @@ jobs:
     name: Build signed Mac beta
     needs: prepare
     if: needs.prepare.outputs.current == 'true' && vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     environment: apple-release
     env:
       GH_TOKEN: ${{ github.token }}
@@ -99,6 +102,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Set release paths
         run: |
@@ -133,7 +139,7 @@ jobs:
     name: Upload internal TestFlight beta
     needs: prepare
     if: needs.prepare.outputs.current == 'true' && vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     environment: apple-release
     outputs:
       bundle_identifier: ${{ steps.upload.outputs.bundle_identifier }}
@@ -165,6 +171,9 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
+
       - name: Install Metal compiler
         run: xcodebuild -downloadComponent MetalToolchain
 
@@ -188,13 +197,16 @@ jobs:
   ios-notes:
     name: Publish iOS beta notes
     needs: [prepare, ios-upload]
-    runs-on: macos-26
+    runs-on: xcode-27
     environment: apple-release
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Download platform release notes
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -221,7 +233,7 @@ jobs:
   mac-publish:
     name: Publish Mac beta channels
     needs: [prepare, mac-build, ios-upload, ios-notes]
-    runs-on: macos-26
+    runs-on: xcode-27
     environment: apple-release
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}
@@ -236,6 +248,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Set release paths
         run: echo "SNIP_SNAP_SPARKLE_PRIVATE_KEY_FILE=$RUNNER_TEMP/sparkle.key" >> "$GITHUB_ENV"

@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - ".github/actions/**"
       - ".github/workflows/beta-candidate.yml"
       - ".github/workflows/beta.yml"
       - ".github/workflows/ci.yml"
@@ -33,10 +34,13 @@ concurrency:
 jobs:
   test:
     name: Test beta candidate
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Install Metal compiler
         run: xcodebuild -downloadComponent MetalToolchain

@@ -6,7 +6,7 @@ repo_dir="${script_dir:h}"
 run_common_tests=YES
 run_mac_app_tests=YES
 run_ios_app_tests=YES
-ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro,OS=latest}"
+ios_test_destination="${SNIP_SNAP_IOS_TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 18 Pro}"
 
 usage() {
     print -u2 "Usage: $0 [--mac-only | --ios-only | --without-mac-app-tests]"

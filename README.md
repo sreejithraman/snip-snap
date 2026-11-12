@@ -104,7 +104,7 @@ Release builds contact the public update feed to check for new versions.
 
 ## Build from source
 
-Use Xcode 26 or later with Apple’s Metal toolchain. A clean checkout needs no Apple Developer account:
+Use Xcode 27.1 or later with Apple’s Metal toolchain. A clean checkout needs no Apple Developer account:
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain

@@ -297,4 +297,17 @@ abort 'PR checks must not be path-filtered at workflow level' unless events.key?
 
 RUBY
 
+/usr/bin/ruby -ryaml - "$script_dir/../.github/workflows" <<'RUBY'
+Dir[File.join(ARGV.fetch(0), '*.yml')].each do |path|
+  YAML.load_file(path).fetch('jobs').each do |name, job|
+    next if job.fetch('runs-on').start_with?('ubuntu-')
+    label = "#{File.basename(path)} #{name}"
+    abort "#{label} must run on the Xcode 27 image" unless job['runs-on'] == 'xcode-27'
+    first, second = job.fetch('steps')
+    abort "#{label} must select Xcode right after checkout" unless
+      first.fetch('uses', '').start_with?('actions/checkout@') && second['uses'] == './.github/actions/xcode'
+  end
+end
+RUBY
+
 print "Test runner checks passed."

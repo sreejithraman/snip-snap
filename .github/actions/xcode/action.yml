@@ -1,0 +1,17 @@
+name: Select Xcode
+description: Select the Xcode that builds Snip Snap and print its toolchain.
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      shell: bash
+      run: echo "DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer" >> "$GITHUB_ENV"
+
+    - name: Print toolchain
+      shell: bash
+      run: |
+        xcodebuild -version
+        echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
+        echo "iOS Simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+        echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
