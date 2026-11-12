@@ -116,7 +116,7 @@ struct ComposerTextInput: UIViewRepresentable {
             // That is not a blur, so decide once the removal has finished. Owners that replace
             // a field on purpose clear focus themselves.
             DispatchQueue.main.async { [self] in
-                guard !isDismantled, textView.window != nil, !textView.isFirstResponder else { return }
+                guard textView.window != nil, !textView.isFirstResponder else { return }
                 followSystemFocusLoss()
             }
         }

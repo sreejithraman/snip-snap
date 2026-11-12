@@ -587,24 +587,19 @@ struct CompactLibraryControls: View {
         let scope = storage.draftStore.scope
         storage.isStagingPaste = true
         storage.stagingTask = Task {
-            var files: [StagedAttachment] = []
             defer {
                 storage.stagingTask = nil
                 storage.isStagingPaste = false
             }
             do {
                 let pasted = try await ComposerPasteboard.stage(providers, in: storage.stagingDirectory)
-                files = pasted.files
-                try Task.checkCancellation()
                 guard storage.draftStore.scope == scope,
                       model.lists.contains(where: { $0.id == listID }) else {
-                    AttachmentDraftStager.clean(files)
+                    AttachmentDraftStager.clean(pasted.files)
                     return
                 }
                 storage.draftStore.setText(pasted.inserting(into: body, at: selection), for: listID)
-                addStagedFiles(files, to: listID)
-            } catch is CancellationError {
-                AttachmentDraftStager.clean(files)
+                storage.addStagedAttachments(pasted.files.map(\.url), to: listID)
             } catch {
                 model.presentError(error, operation: "composer.paste_stage")
             }
@@ -623,16 +618,9 @@ struct CompactLibraryControls: View {
             do {
                 let url = try LargePastedText.write(text, to: storage.stagingDirectory)
                 unclaimedURL = url
-                try Task.checkCancellation()
                 guard model.lists.contains(where: { $0.id == listID }) else { return }
-                storage.draftStore.addTemporary(url, to: listID)
+                storage.addStagedAttachments([url], to: listID)
                 unclaimedURL = nil
-                storage.stagedDraftRevision += 1
-                if model.lastSelectedListID == listID {
-                    draft = storage.draftStore.draft(for: listID)
-                }
-            } catch is CancellationError {
-                return
             } catch {
                 model.presentError(
                     String(localized: "Couldn’t prepare pasted text. Try again."),
@@ -660,33 +648,19 @@ struct CompactLibraryControls: View {
         guard storage.stagingTask == nil else { return }
         let listID = model.lastSelectedListID
         storage.stagingTask = Task {
-            var stagedFiles: [StagedAttachment] = []
             defer { storage.stagingTask = nil }
             do {
-                stagedFiles = try await AttachmentMediaStager.stage(
+                let stagedFiles = try await AttachmentMediaStager.stage(
                     input, in: storage.stagingDirectory
                 )
-                try Task.checkCancellation()
                 if !model.lists.contains(where: { $0.id == listID }) {
                     AttachmentDraftStager.clean(stagedFiles)
                     return
                 }
-                addStagedFiles(stagedFiles, to: listID)
-            } catch is CancellationError {
-                AttachmentDraftStager.clean(stagedFiles)
+                storage.addStagedAttachments(stagedFiles.map(\.url), to: listID)
             } catch {
                 model.presentError(error, operation: "attachment.import_stage")
             }
-        }
-    }
-
-    private func addStagedFiles(_ files: [StagedAttachment], to listID: UUID) {
-        for file in files {
-            storage.draftStore.addTemporary(file.url, to: listID)
-        }
-        storage.stagedDraftRevision += 1
-        if model.lastSelectedListID == listID {
-            draft = storage.draftStore.draft(for: listID)
         }
     }
 
@@ -732,7 +706,7 @@ final class CompactComposerStorage {
     var stagingTask: Task<Void, Never>?
     var isStagingPaste = false
     /// Changes when staging adds to a draft, so the mounted composer reloads it.
-    var stagedDraftRevision = 0
+    private(set) var stagedDraftRevision = 0
 
     init(defaults: UserDefaults = .standard) {
         let stagingDirectory = FileManager.default.temporaryDirectory
@@ -757,6 +731,13 @@ final class CompactComposerStorage {
             textDefaultsKey: textDefaultsKey,
             temporaryRootDirectory: stagingDirectory
         )
+    }
+
+    func addStagedAttachments(_ urls: [URL], to listID: UUID) {
+        for url in urls {
+            draftStore.addTemporary(url, to: listID)
+        }
+        stagedDraftRevision += 1
     }
 }
 
