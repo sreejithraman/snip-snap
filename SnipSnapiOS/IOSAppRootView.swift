@@ -73,7 +73,7 @@ struct IOSAppRootView: View {
 
     private var searchNavigation: some View {
         appNavigation
-        .modifier(ComposerAttachmentPresentations(model: model, storage: compactComposerStorage))
+        .background { Color.clear.frame(width: 0, height: 0).modifier(ComposerAttachmentPresentations(model: model, storage: compactComposerStorage)) }
         .onChange(of: model.isSearchPresented) { _, presented in
             if presented {
                 isCompactComposerFocused = false

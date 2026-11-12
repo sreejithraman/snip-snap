@@ -72,6 +72,7 @@ module IOSTestSelection
       description: 'Attachment menus, preview, copy, editing, persistence, and seeded pickers.',
       tests: %w[
         testAttachmentAddMenuOffersFilesAndPhotos
+        testInlineEditorFilesPickerOpensAndCancels
         testAttachmentListImagePreviewAndSwipeDismiss
         testCopiesFileOnlySnipAttachments
         testLocalAttachmentsPreviewRemoveAndSurviveRelaunch
