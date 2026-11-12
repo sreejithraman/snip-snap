@@ -17,7 +17,7 @@ struct IOSAppRootView: View {
     @State private var newMoveListName = ""
     @FocusState private var isMoveListNameFocused: Bool
     @State private var copyShare = IOSCopyShareCoordinator()
-    @State private var compactComposerStorage = CompactComposerStorage()
+    @State private var compactComposerStorage: CompactComposerStorage
     @State private var listPageMotionState = ListPageMotionState()
     @State private var edgeCreationTask: Task<Void, Never>?
     @State private var edgeCreationTaskID: UUID?
@@ -33,7 +33,8 @@ struct IOSAppRootView: View {
         session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
-        shareProcessToken: String? = nil
+        shareProcessToken: String? = nil,
+        composerStorage: CompactComposerStorage = CompactComposerStorage()
     ) {
 #if DEBUG
         if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
@@ -41,6 +42,7 @@ struct IOSAppRootView: View {
         }
 #endif
         self.session = session
+        _compactComposerStorage = State(initialValue: composerStorage)
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken

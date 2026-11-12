@@ -1523,7 +1523,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.descendants(matching: .any)["global-search-results"].swipeDown()
         closeSearch(in: app)
 
-        listControl(named: "Inbox", in: app).tap()
+        selectList(named: "Inbox", in: app)
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
         XCTAssertEqual(editor.value as? String, text)
         XCTAssertFalse(app.buttons["remove-attachment-sample.png"].exists)
@@ -1716,11 +1716,8 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
     func testFocusedComposerSurvivesFoldingTheDuo() throws {
-        guard let directory = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_FOLD_DIR"] else {
-            throw XCTSkip("Folding needs TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR and a host that answers its requests.")
-        }
+        let folds = try duoFoldDirectory()
         continueAfterFailure = false
-        let folds = URL(fileURLWithPath: directory)
         let app = launchApp()
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
@@ -1730,20 +1727,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         var draft = "Fold draft"
 
         let keyboardFocus = NSPredicate(format: "hasKeyboardFocus == true")
-        // Window widths on the inner and outer panels.
-        let poses: [(name: String, width: CGFloat)] = [("open", 951), ("closed", 466), ("half-open", 951), ("closed", 466)]
-        for (step, (pose, width)) in poses.enumerated() {
-            let request = String(format: "%02d-%@", step + 1, pose)
-            try Data().write(to: folds.appendingPathComponent("\(request).request"))
-            let reply = folds.appendingPathComponent("\(request).done").path
-            let folded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                FileManager.default.fileExists(atPath: reply)
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [folded], timeout: 60), .completed, "The host did not fold to \(pose)")
-
-            let window = app.windows.firstMatch
-            let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in window.frame.width == width }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 30), .completed, "The app did not move to the \(pose) panel")
+        for pose in [DuoPose.open, .closed, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
             XCTAssertTrue(composer.waitForExistence(timeout: 10), "The app stopped responding after folding to \(pose)")
             XCTAssertEqual(composer.value as? String, draft, "The draft changed after folding to \(pose)")
             // Moving between panels can make the system keyboard end editing. The composer may keep
@@ -1753,9 +1738,10 @@ final class SnipSnapiOSUITests: XCTestCase {
                 composerFocused || app.descendants(matching: .any).matching(keyboardFocus).count == 0,
                 "Keyboard focus moved off the composer after folding to \(pose)"
             )
+            assertNavigationReturnsWithoutComposerFocus(composer, after: pose, in: app)
             // XCTest key events do not reach the Duo's inner panel, so type only when closed. A tap
             // at the end resumes editing if the system ended it.
-            guard pose == "closed" else { continue }
+            guard pose == .closed else { continue }
             composer.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
             composer.typeText("!")
             draft += "!"
@@ -1788,6 +1774,79 @@ final class SnipSnapiOSUITests: XCTestCase {
         let relaunched = launchApp()
         returnToLists(in: relaunched)
         assertTapStartsNewList(offset: 21.5, in: relaunched)
+    }
+
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    /// Types only on the closed panel and ends there with the composer focused.
+    func testFoldingTheDuoKeepsPlaceAndUnsentWork() throws {
+        let folds = try duoFoldDirectory()
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        try requireCompactSelector(in: app)
+
+        try visibleTouchCenter(of: row(named: "Copy mixed fixture", in: app), in: app).press(forDuration: 1)
+        XCTAssertTrue(app.buttons["select-snip"].waitForExistence(timeout: 3))
+        app.buttons["select-snip"].tap()
+        let gathered = app.buttons["gathered-stack"]
+        XCTAssertTrue(gathered.waitForExistence(timeout: 3))
+        XCTAssertEqual(gathered.value as? String, "1 item")
+        for pose in [DuoPose.open, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(gathered.waitForExistence(timeout: 10), "Gathering ended after \(pose)")
+            XCTAssertEqual(gathered.value as? String, "1 item", "Gathered snips changed after \(pose)")
+        }
+        app.buttons["finish-selecting"].tap()
+        XCTAssertTrue(gathered.waitForNonExistence(timeout: 5))
+
+        let search = openSearch(in: app)
+        search.typeText("mixed")
+        let result = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Copy mixed fixture")
+        ).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+        for pose in [DuoPose.open, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(search.waitForExistence(timeout: 10), "Search closed after \(pose)")
+            XCTAssertEqual(search.value as? String, "mixed", "The search query changed after \(pose)")
+            XCTAssertTrue(result.waitForExistence(timeout: 3), "Search results changed after \(pose)")
+        }
+        closeSearch(in: app)
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+
+        openSettings(in: app)
+        let settings = app.switches["haptics-toggle"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        for pose in [DuoPose.open, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(settings.waitForExistence(timeout: 10), "Settings closed after \(pose)")
+        }
+        app.buttons["Done"].tap()
+        XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+
+        // A list with an unsent draft and an attachment: the copied photo snip pasted into its composer.
+        try visibleTouchCenter(of: row(named: "Copy mixed fixture", in: app), in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        createList("Fold", in: app)
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.press(forDuration: 1)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+        let attachment = app.buttons["composer-attachment-sample.png"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+        composer.typeText(" to fold")
+        let draft = "Copy mixed fixture to fold"
+        XCTAssertEqual(composer.value as? String, draft)
+        for pose in [DuoPose.open, .closed, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(composer.waitForExistence(timeout: 10), "No composer after \(pose)")
+            XCTAssertEqual(composer.label, "Add to Fold…", "The selected list changed after \(pose)")
+            XCTAssertEqual(composer.value as? String, draft, "The draft changed after \(pose)")
+            XCTAssertTrue(attachment.exists, "The staged attachment was lost after \(pose)")
+            assertNavigationReturnsWithoutComposerFocus(composer, after: pose, in: app)
+        }
     }
 
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
@@ -2053,7 +2112,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Prefix: ")
         XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
 
-        listControl(named: "Inbox", in: app).tap()
+        selectList(named: "Inbox", in: app)
         XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
@@ -4770,7 +4829,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         var app = launchApp(storeName: storeName)
         createList("Work", in: app)
         returnToLists(in: app)
-        listControl(named: "Inbox", in: app).tap()
+        selectList(named: "Inbox", in: app)
         createSnip("One", in: app)
         returnToCollection(in: app)
         createSnip("Two", in: app)
@@ -4820,7 +4879,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(app.buttons["gathered-stack"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
-        listControl(named: "Inbox", in: app).tap()
+        selectList(named: "Inbox", in: app)
         XCTAssertFalse(collectionRow(named: "Sketch a simpler selection flow", in: app).exists)
         try visibleTouchCenter(of: app.buttons["finish-selecting"], in: app).tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
@@ -4887,7 +4946,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         createSnip("From Work", in: app)
         returnToCollection(in: app)
-        listControl(named: "Inbox", in: app).tap()
+        selectList(named: "Inbox", in: app)
         enterSelection(in: app)
         try visibleTouchCenter(of: row(named: "Sketch a simpler selection flow", in: app), in: app).tap()
         try visibleTouchCenter(of: row(named: "Try the stack interaction on iPhone", in: app), in: app).tap()
@@ -5295,7 +5354,8 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func closeSearch(in app: XCUIApplication) {
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        let closeIsVisible = cancel.isHittable
+        let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: cancel)
+        let closeIsVisible = XCTWaiter.wait(for: [hittable], timeout: 10) == .completed
         if !closeIsVisible { attachUIState("Search Close unavailable", in: app) }
         XCTAssertTrue(closeIsVisible, "Search Close must be visible before tapping it.")
         cancel.tap()
@@ -5386,10 +5446,72 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
     }
 
+    private func selectList(
+        named name: String,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        tapVisibleSelectorTab(listControl(named: name, in: app), in: app, file: file, line: line)
+        XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: 3), file: file, line: line)
+    }
+
     private func listControl(named name: String, in app: XCUIApplication) -> XCUIElement {
         let sidebarList = app.buttons["list-\(name)"]
         if sidebarList.exists { return sidebarList }
         return compactListTab(named: name, in: app)
+    }
+
+    private enum DuoPose: String, CustomStringConvertible {
+        case open, closed, halfOpen = "half-open"
+
+        var description: String { rawValue }
+        /// Window width on the lit panel.
+        var windowWidth: CGFloat { self == .closed ? 466 : 951 }
+    }
+
+    private func duoFoldDirectory() throws -> URL {
+        guard let directory = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_FOLD_DIR"] else {
+            throw XCTSkip("Folding needs TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR and a host that answers its requests.")
+        }
+        return URL(fileURLWithPath: directory)
+    }
+
+    /// Asks the host for a pose with `NN-<pose>.request`, waits for `NN-<pose>.done`, then for the app's window.
+    private func fold(
+        to pose: DuoPose, through folds: URL, in app: XCUIApplication,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let previous = (try? FileManager.default.contentsOfDirectory(atPath: folds.path))?
+            .filter { $0.hasSuffix(".request") }.count ?? 0
+        let request = String(format: "%02d-%@", previous + 1, pose.rawValue)
+        XCTAssertNoThrow(try Data().write(to: folds.appendingPathComponent("\(request).request")), file: file, line: line)
+        let reply = folds.appendingPathComponent("\(request).done").path
+        let folded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: reply)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [folded], timeout: 60), .completed, "The host did not fold to \(pose)", file: file, line: line)
+        let window = app.windows.firstMatch
+        let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            window.frame.width == pose.windowWidth
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 30), .completed, "The app did not move to the \(pose) panel", file: file, line: line)
+    }
+
+    private func assertNavigationReturnsWithoutComposerFocus(
+        _ composer: XCUIElement, after pose: DuoPose, in app: XCUIApplication,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        guard composer.value(forKey: "hasKeyboardFocus") as? Bool != true else { return }
+        let paste = app.buttons["paste-to-clipboard"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "Paste stayed hidden after \(pose)", file: file, line: line)
+        XCTAssertTrue(paste.isHittable, "Paste is not reachable after \(pose)", file: file, line: line)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        if pose == .closed {
+            XCTAssertTrue(selector.waitForExistence(timeout: 5), "The list tabs stayed hidden after \(pose)", file: file, line: line)
+        } else {
+            XCTAssertFalse(selector.exists, "The sidebar layout must not show list tabs", file: file, line: line)
+        }
     }
 
     private func compactListTab(named name: String, in app: XCUIApplication) -> XCUIElement {

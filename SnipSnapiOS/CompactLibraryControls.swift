@@ -59,8 +59,6 @@ struct CompactLibraryControls: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isTakingPhoto = false
     @State private var composerFieldID = UUID()
-    @State private var stagingTask: Task<Void, Never>?
-    @State private var isStagingPaste = false
     @Binding private var isComposerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var scaledControlLength =
         CompactControlMetrics.minimumInteractiveLength
@@ -103,7 +101,7 @@ struct CompactLibraryControls: View {
         _sheet = sheet
     }
 
-    private var isStaging: Bool { stagingTask != nil }
+    private var isStaging: Bool { storage.stagingTask != nil }
     private var isClipboardSelected: Bool { model.selectedPage == .clipboard }
 
     private var showsComposerPages: Bool {
@@ -198,9 +196,13 @@ struct CompactLibraryControls: View {
         .onChange(of: sheet) { _, sheet in
             if sheet != nil { sendDestination = nil }
         }
+        .onChange(of: storage.draftRevision) { _, _ in
+            let listID = model.lastSelectedListID
+            guard draftListID == listID, storage.savingListID != listID else { return }
+            draft = storage.draftStore.draft(for: listID)
+        }
         .onDisappear {
             sendDestination = nil
-            stagingTask?.cancel()
             storage.draftStore.flushText()
         }
     }
@@ -407,7 +409,7 @@ struct CompactLibraryControls: View {
                             isFocused: isPreview ? .constant(false) : $isComposerFocused,
                             isEnabled: !isPreview && !storage.isSaving,
                             isPasteEnabled: !isStaging,
-                            isTextInputEnabled: !isStagingPaste,
+                            isTextInputEnabled: !storage.isStagingPaste,
                             onPasteAttachments: { providers, selection in
                                 if !isPreview { stagePastedAttachments(providers, at: selection, to: list.id) }
                             }
@@ -553,26 +555,16 @@ struct CompactLibraryControls: View {
               !frame.isMoving, sourceID == model.lastSelectedListID,
               model.lists.contains(where: { $0.id == destinationID }),
               canSend(draft: draft(for: sourceID)) else { return }
-        let snapshot = storage.draftStore.beginSave(listID: sourceID)
-        storage.savingListID = snapshot.listID
-        storage.isSaving = true
         replaceComposerField()
         draft = ComposerDraft()
-        let saved = await model.createSnip(
-            content: snapshot.draft.text,
-            in: destinationID,
-            attachmentURLs: snapshot.draft.attachments,
-            selectCreatedSnip: false,
-            expectedLibraryRevision: expectedLibraryRevision, expectedSourceListID: sourceID
-        )
-        storage.draftStore.finishSave(snapshot, saved: saved)
-        if saved {
-            storage.draftStore.flushText()
-        }
-        storage.savingListID = nil
-        storage.isSaving = false
-        if model.lastSelectedListID == snapshot.listID {
-            draft = storage.draftStore.draft(for: snapshot.listID)
+        let saved = await storage.save(listID: sourceID) { saving in
+            await model.createSnip(
+                content: saving.text,
+                in: destinationID,
+                attachmentURLs: saving.attachments,
+                selectCreatedSnip: false,
+                expectedLibraryRevision: expectedLibraryRevision, expectedSourceListID: sourceID
+            )
         }
         if !saved {
             replaceComposerField()
@@ -583,26 +575,21 @@ struct CompactLibraryControls: View {
         guard !isStaging, !storage.isSaving else { return }
         let body = storage.draftStore.draft(for: listID).text
         let scope = storage.draftStore.scope
-        isStagingPaste = true
-        stagingTask = Task {
-            var files: [StagedAttachment] = []
+        storage.isStagingPaste = true
+        storage.stagingTask = Task {
             defer {
-                stagingTask = nil
-                isStagingPaste = false
+                storage.stagingTask = nil
+                storage.isStagingPaste = false
             }
             do {
                 let pasted = try await ComposerPasteboard.stage(providers, in: storage.stagingDirectory)
-                files = pasted.files
-                try Task.checkCancellation()
                 guard storage.draftStore.scope == scope,
                       model.lists.contains(where: { $0.id == listID }) else {
-                    AttachmentDraftStager.clean(files)
+                    AttachmentDraftStager.clean(pasted.files)
                     return
                 }
                 storage.draftStore.setText(pasted.inserting(into: body, at: selection), for: listID)
-                addStagedFiles(files, to: listID)
-            } catch is CancellationError {
-                AttachmentDraftStager.clean(files)
+                storage.addStagedAttachments(pasted.files.map(\.url), to: listID)
             } catch {
                 model.presentError(error, operation: "composer.paste_stage")
             }
@@ -610,26 +597,20 @@ struct CompactLibraryControls: View {
     }
 
     private func stagePastedText(_ text: String) {
-        guard stagingTask == nil else { return }
+        guard storage.stagingTask == nil else { return }
         let listID = model.lastSelectedListID
-        stagingTask = Task {
+        storage.stagingTask = Task {
             var unclaimedURL: URL?
             defer {
                 if let unclaimedURL { try? FileManager.default.removeItem(at: unclaimedURL) }
-                stagingTask = nil
+                storage.stagingTask = nil
             }
             do {
                 let url = try LargePastedText.write(text, to: storage.stagingDirectory)
                 unclaimedURL = url
-                try Task.checkCancellation()
                 guard model.lists.contains(where: { $0.id == listID }) else { return }
-                storage.draftStore.addTemporary(url, to: listID)
+                storage.addStagedAttachments([url], to: listID)
                 unclaimedURL = nil
-                if model.lastSelectedListID == listID {
-                    draft = storage.draftStore.draft(for: listID)
-                }
-            } catch is CancellationError {
-                return
             } catch {
                 model.presentError(
                     String(localized: "Couldn’t prepare pasted text. Try again."),
@@ -654,35 +635,22 @@ struct CompactLibraryControls: View {
     }
 
     private func stageMedia(_ input: AttachmentMediaInput) {
-        guard stagingTask == nil else { return }
+        guard storage.stagingTask == nil else { return }
         let listID = model.lastSelectedListID
-        stagingTask = Task {
-            var stagedFiles: [StagedAttachment] = []
-            defer { stagingTask = nil }
+        storage.stagingTask = Task {
+            defer { storage.stagingTask = nil }
             do {
-                stagedFiles = try await AttachmentMediaStager.stage(
+                let stagedFiles = try await AttachmentMediaStager.stage(
                     input, in: storage.stagingDirectory
                 )
-                try Task.checkCancellation()
                 if !model.lists.contains(where: { $0.id == listID }) {
                     AttachmentDraftStager.clean(stagedFiles)
                     return
                 }
-                addStagedFiles(stagedFiles, to: listID)
-            } catch is CancellationError {
-                AttachmentDraftStager.clean(stagedFiles)
+                storage.addStagedAttachments(stagedFiles.map(\.url), to: listID)
             } catch {
                 model.presentError(error, operation: "attachment.import_stage")
             }
-        }
-    }
-
-    private func addStagedFiles(_ files: [StagedAttachment], to listID: UUID) {
-        for file in files {
-            storage.draftStore.addTemporary(file.url, to: listID)
-        }
-        if model.lastSelectedListID == listID {
-            draft = storage.draftStore.draft(for: listID)
         }
     }
 
@@ -724,8 +692,13 @@ final class CompactComposerStorage {
     let stagingDirectory: URL
     var isSaving = false
     var savingListID: UUID?
+    /// Staging outlives a composer that a size-class change replaces, such as opening an iPhone Duo.
+    var stagingTask: Task<Void, Never>?
+    var isStagingPaste = false
+    /// Changes when storage changes a draft outside the mounted composer, so the composer reloads it.
+    private(set) var draftRevision = 0
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
         let stagingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCompactDrafts", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -744,9 +717,38 @@ final class CompactComposerStorage {
 #endif
         self.stagingDirectory = stagingDirectory
         draftStore = ComposerDraftStore(
+            defaults: defaults,
             textDefaultsKey: textDefaultsKey,
             temporaryRootDirectory: stagingDirectory
         )
+    }
+
+    func addStagedAttachments(_ urls: [URL], to listID: UUID) {
+        for url in urls {
+            draftStore.addTemporary(url, to: listID)
+        }
+        draftRevision += 1
+    }
+
+    /// Saves the list's draft through `create`, which returns whether it saved.
+    func save(listID: UUID, create: @MainActor (ComposerDraft) async -> Bool) async -> Bool {
+        let snapshot = draftStore.beginSave(listID: listID)
+        savingListID = listID
+        isSaving = true
+        let saved = await create(snapshot.draft)
+        draftStore.finishSave(snapshot, saved: saved)
+        if saved {
+            draftStore.flushText()
+        }
+        finishSaving()
+        return saved
+    }
+
+    /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
+    private func finishSaving() {
+        savingListID = nil
+        isSaving = false
+        draftRevision += 1
     }
 }
 

@@ -177,10 +177,18 @@ again after a fold.
 
 ### Fold during a UI test
 
-`testFocusedComposerSurvivesFoldingTheDuo` types into the composer, then asks
-for each pose by writing `NN-<pose>.request` into the directory named by
-`SNIP_SNAP_UI_TEST_FOLD_DIR`. The host folds and answers with `NN-<pose>.done`.
-Without that directory, the test skips. Start the host loop, then the test:
+Two tests fold the Duo:
+
+- `testFocusedComposerSurvivesFoldingTheDuo` types into the composer and
+  checks its draft and keyboard focus after each pose.
+- `testFoldingTheDuoKeepsPlaceAndUnsentWork` checks gathered snips, an active
+  search, the Settings sheet, and a list's draft with an attachment.
+
+Each test asks for a pose by writing `NN-<pose>.request` into the directory
+named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the
+directory, so both tests can share it. The host folds and answers with
+`NN-<pose>.done`. Without that directory, the tests skip. Start the host loop,
+then a test:
 
 ```sh
 FOLDS="$(mktemp -d)"
@@ -195,10 +203,19 @@ done &
 TEST_RUNNER_SNIP_SNAP_UI_TEST_FOLD_DIR="$FOLDS" ./scripts/run.sh --ios-simulator \
   --simulator-id "$UDID" --simulator-set "$SET" --ui-test testFocusedComposerSurvivesFoldingTheDuo
 kill %1
-# Reset the keyboard; see Known limits.
-simlock simctl spawn "$UDID" "$FOLD_HELPER" open && sleep 3
-simlock simctl spawn "$UDID" "$FOLD_HELPER" closed
 ```
+
+Before the next run, reset with the app in front:
+
+```sh
+simlock simctl spawn "$UDID" "$FOLD_HELPER" open && sleep 3
+"$AD" open "$BUNDLE_ID" "${AD_ARGS[@]}" && sleep 3
+simlock simctl spawn "$UDID" "$FOLD_HELPER" closed && sleep 3
+simlock simctl io "$UDID" screenshot --display=primary reset-closed.png
+```
+
+Check that `reset-closed.png` shows the app, not the Home Screen, before the
+next run. See Known limits.
 
 ### Capture each panel
 
@@ -247,13 +264,23 @@ last.
 - Typing works only through XCUITest, and only on the outer panel. XCTest key
   events do not reach the inner panel.
 - Moving between panels can end text editing: the system keyboard resigns the
-  focused field. In testing it did after every half-open and after some opens.
+  focused field. Runs for PR 279 saw this after half-opens; later runs kept
+  focus. When it happens, the composer drops its focus, and one tap resumes
+  typing.
 - A run that ends on the inner panel can leave the next run unable to give a
-  text field keyboard focus. Fold open, then closed, before the next run.
+  text field keyboard focus. Reset with the app in front before the next run,
+  as in [Fold during a UI test](#fold-during-a-ui-test).
+- A reset with the Home Screen in front can leave apps that launch on the
+  closed panel off screen. XCTest then sees a 466×678 window while the outer
+  panel shows the Home Screen, and taps reach SpringBoard.
 - Half-open is checked only through the layout change, not the hinge angle. Its
   window matches open.
 - After the app moves from the inner panel back to the outer panel, XCTest can
-  wait 60 seconds per action for the app to report idle.
+  wait 60 seconds per action and log "App animations complete notification not
+  received". The app is idle then: a sample shows its main thread waiting for
+  events, and its windows hold no running Core Animation animations. It stalled
+  with and without a focused composer. Expect slow runs; the wait is not an app
+  animation.
 - `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
   fail on SimLock-set simulators, as described above.
 - On the closed panel, the system places every mounted list page's
