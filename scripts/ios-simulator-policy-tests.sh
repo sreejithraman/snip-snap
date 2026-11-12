@@ -182,19 +182,24 @@ for arguments in 'SET-SIM --simulator-set' 'SET-SIM --unknown set' "SET-SIM --si
 done
 grep -F "Simulator set not found: $test_dir/missing-set" "$test_dir/output" >/dev/null
 cmp "$test_dir/before-set" "$FAKE_SIM_LOG"
-# Each call must carry the set path as one argument, even though the path has a space.
+# Each call must target SET-SIM and carry the set path as one argument, even though the path
+# has a space.
 assert_whole_set_arguments() {
- /usr/bin/ruby - "$FAKE_ARGV_DIR" "$simlock_set" "$@" <<'RUBY_CHECK' || exit 1
-dir, set, *expected = ARGV
+ /usr/bin/ruby - "$FAKE_ARGV_DIR" "$simlock_set" SET-SIM "$@" <<'RUBY_CHECK' || exit 1
+dir, set, device, *expected = ARGV
 location = "-DVTSimulatorSetLocation=#{set}"
 actions = Dir["#{dir}/*"].map do |file|
   argv = File.read(file).split("\0")
   if File.basename(file).start_with?('xcrun.')
     next unless argv.first == 'simctl'
     argv[0, 3] == ['simctl', '--set', set] or abort "simctl split or missed the set: #{argv.inspect}"
-    argv[3]
+    action = argv[3]
+    action == 'list' || argv[4] == device or abort "simctl #{action} missed #{device}: #{argv.inspect}"
+    action
   else
     argv.include?(location) or abort "xcodebuild split or missed the set: #{argv.inspect}"
+    destination = argv[(argv.index('-destination') || argv.size) + 1]
+    destination.to_s.split(',').include?("id=#{device}") or abort "xcodebuild missed #{device}: #{argv.inspect}"
     argv.include?('-showBuildSettings') ? 'settings' : argv.last
   end
 end.compact
