@@ -191,7 +191,7 @@ final class IOSListModelTests: IOSModelTestCase {
                 }
             }
         }
-        await fulfillment(of: [motionStarted], timeout: 2)
+        await fulfillment(of: [motionStarted], timeout: TestReadiness.timeout)
 
         XCTAssertTrue(draft.isSaving)
         let saveDuringMotion = await model.saveListDraft(id: list.id)
@@ -577,11 +577,7 @@ final class IOSListModelTests: IOSModelTestCase {
             return XCTFail("New List editor was not opened before the refresh")
         }
         let cancellation = Task { await model.cancelNewList(id: openedID) }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while model.selectedPage != .clipboard && clock.now < deadline {
-            await Task.yield()
-        }
+        _ = await TestReadiness.wait { model.selectedPage == .clipboard }
         XCTAssertEqual(model.selectedPage, .clipboard)
         await library.resumeRecovery()
         await creation.value

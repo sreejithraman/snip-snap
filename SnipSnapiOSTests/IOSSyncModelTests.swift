@@ -205,7 +205,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
             updated.fulfill()
         }
         automatic.continuation.yield(.contentUpdated)
-        let result = await XCTWaiter.fulfillment(of: [updated], timeout: 2)
+        let result = await XCTWaiter.fulfillment(of: [updated], timeout: TestReadiness.timeout)
 
         XCTAssertEqual(result, .completed)
         XCTAssertEqual(session.model.snips.first?.content, "After")
@@ -231,10 +231,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(session.syncedContentSettings.state, .failed(.iCloudStorageFull))
 
         automatic.continuation.yield(.syncCompleted)
-        for _ in 0..<50 {
-            if session.syncedContentSettings.state == .ready { break }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        _ = await TestReadiness.wait { session.syncedContentSettings.state == .ready }
         XCTAssertEqual(session.syncedContentSettings.state, .ready)
     }
 
@@ -530,9 +527,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         try bytes.write(to: source)
         defer { try? FileManager.default.removeItem(at: source) }
         draft.stageMedia(.files([source]), using: model)
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while draft.isStaging && clock.now < deadline { await Task.yield() }
+        _ = await TestReadiness.wait { !draft.isStaging }
         XCTAssertFalse(draft.isStaging)
         let stagedURL = try XCTUnwrap(draft.attachments.first?.url)
 
@@ -568,9 +563,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         let blockingEdit = Task { await model.editSnip(blocker, content: "Lock held") }
         await library.waitUntilFirstCommandStarts()
         let save = Task { await draft.save(using: model) }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while !draft.isSaving && clock.now < deadline { await Task.yield() }
+        _ = await TestReadiness.wait { draft.isSaving }
         XCTAssertTrue(draft.isSaving)
         model.finishInlineSnipEdit(draft)
         await library.resumeFirstCommand()

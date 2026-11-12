@@ -124,9 +124,9 @@ final class IOSComposerTests: IOSModelTestCase {
             } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
             finished.fulfill()
         }
-        await fulfillment(of: [started], timeout: 2)
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
         task.cancel()
-        await fulfillment(of: [finished, cancelled], timeout: 1)
+        await fulfillment(of: [finished, cancelled], timeout: TestReadiness.timeout)
         release.signal()
         await task.value
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: staging.path).isEmpty)
@@ -157,7 +157,7 @@ final class IOSComposerTests: IOSModelTestCase {
             finished = true
             return result
         }
-        await fulfillment(of: [started], timeout: 2)
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
         XCTAssertFalse(finished, "A paste cannot finish while its text is still loading")
         release.signal()
         let result = try await task.value
@@ -227,7 +227,7 @@ final class IOSComposerTests: IOSModelTestCase {
         }
         view.paste(itemProviders: [text, NSItemProvider(object: image)])
         let task = Task { try await ComposerPasteboard.stage(providers, in: root) }
-        await fulfillment(of: [started], timeout: 2)
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
         view.selectedRange = NSRange(location: 0, length: 0)
         release.signal()
         let result = try await task.value
@@ -339,14 +339,14 @@ final class IOSComposerTests: IOSModelTestCase {
         let view = try XCTUnwrap(textView(in: host.view))
         let editing = expectation(forNotification: UITextView.textDidBeginEditingNotification, object: view)
         XCTAssertTrue(view.becomeFirstResponder())
-        await fulfillment(of: [editing], timeout: 2)
+        await fulfillment(of: [editing], timeout: TestReadiness.timeout)
         XCTAssertTrue(view.isFirstResponder)
         XCTAssertTrue(focused)
         XCTAssertEqual(view.text, body)
         view.smartInsertDeleteType = .no
         view.selectedRange = NSRange(location: 7, length: 0)
         view.paste(itemProviders: [NSItemProvider(object: pastedText as NSString)])
-        await fulfillment(of: [attached], timeout: 2)
+        await fulfillment(of: [attached], timeout: TestReadiness.timeout)
         XCTAssertEqual(divertedText, pastedText)
         XCTAssertEqual(body, "before after")
         XCTAssertEqual(view.text, "before after")

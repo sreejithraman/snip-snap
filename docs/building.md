@@ -5,7 +5,7 @@ not select an Apple team or signing identity.
 
 ## Build and test
 
-Use Xcode 26 or later with Apple’s Metal toolchain:
+Use Xcode 27.1 or later with Apple’s Metal toolchain:
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain
@@ -16,7 +16,9 @@ xcodebuild -downloadComponent MetalToolchain
 These commands do not sign the app. They need no Apple Developer account,
 certificate, provisioning profile, or CloudKit access. The test command runs
 the package tests, Mac app tests, and iOS unit tests. It stores Mac test data
-and both app test builds under a fresh DerivedData folder. Set
+and both app test builds under a fresh DerivedData folder. iOS tests default to
+the iPhone 18 Pro Simulator. The iOS 27.1 runtime offers only iPhone Duo, so
+install the iOS 27.0 or 27.2 runtime in Xcode Settings > Components, or set
 `SNIP_SNAP_IOS_TEST_DESTINATION` to use another installed iOS Simulator.
 After iOS tests pass, it checks the built app's Share extension and both privacy
 manifests.

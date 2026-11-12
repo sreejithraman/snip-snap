@@ -311,7 +311,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
             requested.fulfill()
             return await model.deleteSelection()
         }
-        await fulfillment(of: [requested], timeout: 2)
+        await fulfillment(of: [requested], timeout: TestReadiness.timeout)
         model.endSelectingSnips()
         model.selectSnips([second.id])
         await library.resumeFirstCommand()
@@ -344,7 +344,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
                 requested.fulfill()
                 return merges ? await model.mergeSelection() : await model.setSelectionDone(false)
             }
-            await fulfillment(of: [requested], timeout: 2)
+            await fulfillment(of: [requested], timeout: TestReadiness.timeout)
             model.endSelectingSnips()
             model.selectSnips([later.id, otherLater.id])
             await library.resumeFirstCommand()
@@ -388,7 +388,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
                 requested.fulfill()
                 return await model.mergeSelection()
             }
-            await fulfillment(of: [requested], timeout: 2)
+            await fulfillment(of: [requested], timeout: TestReadiness.timeout)
             model.endSelectingSnips()
             model.selectList(laterListID)
             model.selectSnips([later.id])
@@ -447,7 +447,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
             moveStarted.fulfill()
             return await model.moveSelection(to: destinationID)
         }
-        await fulfillment(of: [moveStarted], timeout: 2)
+        await fulfillment(of: [moveStarted], timeout: TestReadiness.timeout)
         model.selectList(laterID)
         model.sortMode = .chronological
         model.selectSnips([laterSnip.id])
@@ -506,7 +506,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
             moveStarted.fulfill()
             return await model.moveSelection(to: destinationID)
         }
-        await fulfillment(of: [moveStarted], timeout: 2)
+        await fulfillment(of: [moveStarted], timeout: TestReadiness.timeout)
         model.selectPage(.clipboard)
         model.selectList(SnipList.inboxID)
         model.selectSnips([newlyGathered.id])
@@ -554,7 +554,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
                     ? await model.moveSelection(to: destinationID)
                     : await model.moveSnip(id: original.id, to: destinationID)
             }
-            await fulfillment(of: [requested], timeout: 2)
+            await fulfillment(of: [requested], timeout: TestReadiness.timeout)
             model.endSelectingSnips()
             model.selectSnips([original.id])
             let newSessionID = model.gatheringSessionID

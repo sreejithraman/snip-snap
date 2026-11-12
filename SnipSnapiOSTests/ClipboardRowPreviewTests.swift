@@ -42,10 +42,7 @@ final class ClipboardRowPreviewTests: XCTestCase {
         func cached() -> [CGImage] {
             keys.compactMap { AttachmentThumbnailCache.shared.cachedClipboardImage(id: $0, size: size, scale: scale) }
         }
-        for _ in 0..<100 {
-            if cached().count == 3 { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        _ = await TestReadiness.wait { cached().count == 3 }
         let before = cached()
         XCTAssertEqual(before.count, 3)
         let revision = model.filePreviewRevision
@@ -96,23 +93,20 @@ final class ClipboardRowPreviewTests: XCTestCase {
         defer { window.isHidden = true }
         host.view.layoutIfNeeded()
         let scale = host.traitCollection.displayScale
-        func waitForThumbnail(width: Int) async throws -> Bool {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while ContinuousClock.now < deadline {
-                if AttachmentThumbnailCache.shared.cachedImage(
+        func waitForThumbnail(width: Int) async -> Bool {
+            await TestReadiness.wait {
+                AttachmentThumbnailCache.shared.cachedImage(
                     for: url, size: AttachmentThumbnailCache.tileSize, scale: scale
-                )?.width == width { return true }
-                try await Task.sleep(for: .milliseconds(20))
+                )?.width == width
             }
-            return false
         }
-        let initiallyLoaded = try await waitForThumbnail(width: 4)
+        let initiallyLoaded = await waitForThumbnail(width: 4)
         XCTAssertTrue(initiallyLoaded)
         try FileManager.default.removeItem(at: url)
         try imageData(width: 16).write(to: url)
         await model.load()
         XCTAssertEqual(model.entries.map(\.id), [entry.id])
-        let restored = try await waitForThumbnail(width: 16)
+        let restored = await waitForThumbnail(width: 16)
         XCTAssertTrue(restored, "A mounted row must retry the same URL after its file is restored.")
     }
 }

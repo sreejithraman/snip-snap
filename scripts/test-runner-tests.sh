@@ -87,9 +87,14 @@ print -r -- "xcrun:$*" >> "$SNIP_SNAP_TEST_CALLS"
 XCRUN
 /bin/chmod +x "$test_root/bin/swift" "$test_root/bin/xcodebuild" "$test_root/bin/xcrun"
 
+print -r -- '#!/bin/zsh
+print -r -- "boot:$*" >> "$SNIP_SNAP_TEST_CALLS"
+print -r -- STUB-SIMULATOR' > "$fixture/scripts/ci-boot-ios-simulator.sh"
+/bin/chmod +x "$fixture/scripts/ci-boot-ios-simulator.sh"
+
 export SNIP_SNAP_TEST_CALLS="$test_root/calls"
 export PATH="$test_root/bin:$PATH"
-unset SNIP_SNAP_DERIVED_DATA
+unset SNIP_SNAP_DERIVED_DATA SNIP_SNAP_IOS_TEST_DESTINATION
 unset SNIP_SNAP_TEST_FAILURE SNIP_SNAP_TEST_MISSING_FILE
 
 run_tests() {
@@ -121,6 +126,20 @@ assert_groups 0 0 1
 /usr/bin/grep -F -- '-only-testing:SnipSnapiOSTests test' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- '-parallel-testing-enabled NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+CI=true run_tests --ios-only
+/usr/bin/grep -Fx 'boot:iPhone 18 Pro' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+/usr/bin/grep -F -- '-destination platform=iOS Simulator,id=STUB-SIMULATOR ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+assert_destination_without_boot() {
+    if /usr/bin/grep -q '^boot:' "$SNIP_SNAP_TEST_CALLS"; then
+        print -u2 "Only CI runs on the default destination may boot a Simulator."
+        exit 1
+    fi
+    /usr/bin/grep -F -- "-destination $1 " "$SNIP_SNAP_TEST_CALLS" >/dev/null
+}
+CI=false run_tests --ios-only
+assert_destination_without_boot 'platform=iOS Simulator,name=iPhone 18 Pro'
+CI=true SNIP_SNAP_IOS_TEST_DESTINATION='platform=iOS Simulator,name=Chosen' run_tests --ios-only
+assert_destination_without_boot 'platform=iOS Simulator,name=Chosen'
 run_tests --without-mac-app-tests
 assert_groups 1 0 1
 
@@ -240,7 +259,7 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
   abort "#{group} must install its tools and run its test group without a second build" unless
     commands == expected_commands
   upload = job.fetch('steps').find { |step| step.fetch('uses', '').start_with?('actions/upload-artifact@') }
-  abort "#{group} must preserve failure output" unless upload && upload['if'] == 'failure()'
+  abort "#{group} must preserve failed and interrupted output" unless upload && upload['if'] == 'failure() || cancelled()'
   abort "#{group} must upload only its task-owned output" unless
     upload.fetch('with').fetch('path') == "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log"
   abort "#{group} must bound artifact retention" unless upload.fetch('with')['retention-days'] == 7
@@ -295,6 +314,29 @@ abort 'Main must not run duplicate CI' if events.key?('push')
 abort 'PR checks must not be path-filtered at workflow level' unless events.key?('pull_request') &&
   events['pull_request'].nil?
 
+RUBY
+
+/usr/bin/ruby -ryaml - "$script_dir/../.github/workflows" <<'RUBY'
+# Beta prepare checks out the candidate's own commit, which may predate the Xcode action, and
+# needs no Xcode to decide whether that commit is still current.
+xcode_free = ['beta.yml prepare']
+Dir[File.join(ARGV.fetch(0), '*.yml')].each do |path|
+  YAML.load_file(path).fetch('jobs').each do |name, job|
+    next if job.fetch('runs-on').start_with?('ubuntu-')
+    label = "#{File.basename(path)} #{name}"
+    abort "#{label} must run on the Xcode 27 image" unless job['runs-on'] == 'xcode-27'
+    abort "#{label} must set a job time limit" unless job['timeout-minutes'].is_a?(Integer)
+    steps = job.fetch('steps')
+    if xcode_free.include?(label)
+      abort "#{label} must stay free of Xcode" if
+        steps.any? { |step| step['uses'] == './.github/actions/xcode' || step['run'].to_s.match?(/\b(xcodebuild|xcrun|swift)\b/) }
+      next
+    end
+    first, second = steps
+    abort "#{label} must select Xcode right after checkout" unless
+      first.fetch('uses', '').start_with?('actions/checkout@') && second['uses'] == './.github/actions/xcode'
+  end
+end
 RUBY
 
 print "Test runner checks passed."

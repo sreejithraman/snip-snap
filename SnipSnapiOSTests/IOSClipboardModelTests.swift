@@ -172,7 +172,7 @@ final class IOSClipboardModelTests: IOSModelTestCase {
             return nil
         }
         let firstPaste = Task { await model.capture([provider]) }
-        await fulfillment(of: [started], timeout: 2)
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
         await model.capture([NSItemProvider(object: "Second paste" as NSString)])
         release.signal()
         await firstPaste.value

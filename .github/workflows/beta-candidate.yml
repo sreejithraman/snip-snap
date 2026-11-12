@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - ".github/actions/**"
       - ".github/workflows/beta-candidate.yml"
       - ".github/workflows/beta.yml"
       - ".github/workflows/ci.yml"
@@ -33,15 +34,29 @@ concurrency:
 jobs:
   test:
     name: Test beta candidate
-    runs-on: macos-26
+    runs-on: xcode-27
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
       - name: Install Metal compiler
         run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Run tests
         run: |
-          ./scripts/test.sh
-          ./scripts/build-matrix.sh
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/snip-snap-ci"
+          { ./scripts/test.sh && ./scripts/build-matrix.sh; } 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/beta-candidate.log"
+
+      - name: Preserve failed test output
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-candidate-test-output
+          path: ${{ runner.temp }}/snip-snap-ci/beta-candidate.log
+          retention-days: 7
+          if-no-files-found: ignore
