@@ -527,7 +527,7 @@ struct IOSAppRootView: View {
                     .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
                                   usesFixedExpiry: true)
                     // Bar hosting drops field focus updates on iOS 26.5.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                    .tableHingeControls {
                         libraryControls(showsListTabs: false)
                             .background {
                                 if !model.isSearchPresented { regularControlsFade }
