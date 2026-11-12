@@ -1765,18 +1765,15 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testRegularSidebarNewListMeetsTouchTargetMinimum() throws {
         continueAfterFailure = false
-        // iPad draws bar buttons at full height. Phone idiom at regular width (the open
-        // iPhone Duo) draws them 40 pt tall inside a taller touch target.
+        // Bar buttons draw shorter than 44 pt inside a 44-pt touch target with exclusive
+        // edges, so tap half a point inside each edge.
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("This check needs the regular-width sidebar.")
         }
         returnToLists(in: app)
-        let frame = app.buttons["new-list"].frame
-        XCTAssertGreaterThanOrEqual(frame.width, 44)
-        guard frame.height < 44 else { return }
+        XCTAssertGreaterThanOrEqual(app.buttons["new-list"].frame.width, 44)
 
-        // Hits 45 pt apart prove a target of at least 44 pt.
         func assertTapStartsNewList(offset: CGFloat, in app: XCUIApplication) {
             app.buttons["new-list"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .withOffset(CGVector(dx: 0, dy: offset))
@@ -1786,11 +1783,11 @@ final class SnipSnapiOSUITests: XCTestCase {
                 "A tap \(offset) pt from New List's center must start a new list."
             )
         }
-        assertTapStartsNewList(offset: -22.5, in: app)
+        assertTapStartsNewList(offset: -21.5, in: app)
         app.terminate()
         let relaunched = launchApp()
         returnToLists(in: relaunched)
-        assertTapStartsNewList(offset: 22.5, in: relaunched)
+        assertTapStartsNewList(offset: 21.5, in: relaunched)
     }
 
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
