@@ -1810,10 +1810,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             XCTAssertEqual(search.value as? String, "mixed", "The search query changed after \(pose)")
             XCTAssertTrue(result.waitForExistence(timeout: 3), "Search results changed after \(pose)")
         }
-        // Not closeSearch(in:): after a fold's idle stall its button can exist without being hittable (W2-F3).
-        let closeSearchButton = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
-        XCTAssertTrue(closeSearchButton.waitForExistence(timeout: 3))
-        closeSearchButton.tap()
+        closeSearch(in: app)
         XCTAssertTrue(search.waitForNonExistence(timeout: 5))
 
         openSettings(in: app)
@@ -5357,7 +5354,8 @@ final class SnipSnapiOSUITests: XCTestCase {
     private func closeSearch(in app: XCUIApplication) {
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Cancel Search", "close"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
-        let closeIsVisible = cancel.isHittable
+        let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: cancel)
+        let closeIsVisible = XCTWaiter.wait(for: [hittable], timeout: 10) == .completed
         if !closeIsVisible { attachUIState("Search Close unavailable", in: app) }
         XCTAssertTrue(closeIsVisible, "Search Close must be visible before tapping it.")
         cancel.tap()
