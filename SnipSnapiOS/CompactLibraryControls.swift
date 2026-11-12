@@ -130,20 +130,24 @@ struct CompactLibraryControls: View {
                 }
             }
 
-            if !showsListTabs && showsNavigation {
-                GlassEffectContainer {
-                    pasteButton
-                }
-            } else if showsNavigation {
+            if showsListTabs && showsNavigation {
                 navigationControls
             }
         }
-
         .frame(maxWidth: .infinity)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, showsListEditor ? 0 : SnipSnapSpacing.relatedContent)
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+        .toolbar {
+            if !showsListTabs {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
+                        .disabled(isPasteDisabled)
+                        .accessibilityIdentifier("paste-to-clipboard")
+                }
+            }
+        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.data],
@@ -266,24 +270,32 @@ struct CompactLibraryControls: View {
     }
 
     private var pasteButton: some View {
-        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
-            if isClipboardSelected {
-                let providers = UIPasteboard.general.itemProviders
-                Task { await clipboard.capture(providers) }
-            } else {
-                pasteAndSave()
-            }
-        } label: {
+        CompactGlassCircleButton(length: navigationControlLength, action: paste) {
             Image(systemName: "doc.on.clipboard")
-                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
+                .font(.system(size: navigationControlLength * 20 / 48, weight: .medium))
         }
-        .disabled(motion.isDragging || (isClipboardSelected
-            ? clipboard.isPasting
-            : !showsComposer || storage.isSaving || isStaging))
-        .accessibilityLabel(isClipboardSelected ? "Paste" : "Paste and Save")
+        .disabled(isPasteDisabled)
+        .accessibilityLabel(pasteLabel)
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
+    }
+
+    private var pasteLabel: String { isClipboardSelected ? "Paste" : "Paste and Save" }
+
+    private var isPasteDisabled: Bool {
+        motion.isDragging || (isClipboardSelected
+            ? clipboard.isPasting
+            : !showsComposer || storage.isSaving || isStaging)
+    }
+
+    private func paste() {
+        if isClipboardSelected {
+            let providers = UIPasteboard.general.itemProviders
+            Task { await clipboard.capture(providers) }
+        } else {
+            pasteAndSave()
+        }
     }
 
     private func pasteAndSave() {

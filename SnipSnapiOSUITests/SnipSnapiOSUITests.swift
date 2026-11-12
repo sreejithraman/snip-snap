@@ -2089,7 +2089,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         let paste = app.buttons["paste-to-clipboard"]
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
-        XCTAssertTrue(hasVisibleTouchTarget(paste, in: app))
+        // The sidebar layout puts Paste in the toolbar. On the iPhone Duo's inner panel,
+        // app.frame stays portrait while elements use the landscape window, so a native
+        // toolbar button is checked by its own hit point rather than by app.frame.
+        let usesToolbarPaste = !app.descendants(matching: .any)["list-selector"].exists
+        func pasteIsReachable() -> Bool {
+            usesToolbarPaste ? paste.isHittable && paste.isEnabled : hasVisibleTouchTarget(paste, in: app)
+        }
+        XCTAssertTrue(pasteIsReachable())
         XCTAssertTrue(paste.isEnabled)
 
         let composer = app.descendants(matching: .any)["composer-text"]
@@ -2103,11 +2110,20 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         try visibleTouchCenter(of: composer, in: app).tap()
         composer.typeText("Prefix: ")
-        XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        if usesToolbarPaste {
+            // The toolbar keeps Paste while the composer is focused.
+            XCTAssertTrue(pasteIsReachable())
+        } else {
+            XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        }
         dismissComposerKeyboard(in: app)
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
-        XCTAssertTrue(hasVisibleTouchTarget(paste, in: app))
-        try visibleTouchCenter(of: paste, in: app).tap()
+        XCTAssertTrue(pasteIsReachable())
+        if usesToolbarPaste {
+            paste.tap()
+        } else {
+            try visibleTouchCenter(of: paste, in: app).tap()
+        }
         XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
         XCTAssertEqual(composer.value as? String, "Prefix: ")
         XCTAssertFalse(collectionRow(named: "Prefix: Quick paste fixture", in: app).exists)
@@ -2117,7 +2133,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(row(named: "Quick paste fixture", in: app).exists)
         XCTAssertEqual(composer.value as? String, "Prefix: ")
-        XCTAssertTrue(hasVisibleTouchTarget(paste, in: app))
+        XCTAssertTrue(pasteIsReachable())
     }
 
     func testLeadingClipboardPasteCapturesCopiedText() throws {
