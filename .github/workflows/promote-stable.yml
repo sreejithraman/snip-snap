@@ -24,6 +24,7 @@ jobs:
   promote:
     name: Promote exact beta files
     runs-on: xcode-27
+    timeout-minutes: 20
     environment: apple-release
     permissions:
       contents: write

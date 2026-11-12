@@ -15,7 +15,18 @@ udid="$(/usr/bin/xcrun simctl list devices available -j | /usr/bin/ruby -rjson -
   puts device.fetch("udid")
 ' "$name")"
 
+boot_limit=300
 SECONDS=0
-/usr/bin/xcrun simctl bootstatus "$udid" -b >&2
+/usr/bin/xcrun simctl bootstatus "$udid" -b >&2 &
+boot_pid=$!
+while kill -0 "$boot_pid" 2>/dev/null; do
+    if (( SECONDS >= boot_limit )); then
+        kill "$boot_pid" 2>/dev/null || true
+        print -u2 "Simulator $name ($udid) did not finish booting within ${boot_limit}s."
+        exit 1
+    fi
+    sleep 1
+done
+wait "$boot_pid" || { print -u2 "Simulator $name ($udid) failed to boot."; exit 1; }
 print -u2 "Booted $name ($udid) in ${SECONDS}s."
 print -r -- "$udid"

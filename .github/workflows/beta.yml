@@ -22,6 +22,7 @@ jobs:
     name: Prepare release source
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: xcode-27
+    timeout-minutes: 10
     outputs:
       current: ${{ steps.source.outputs.current }}
       build: ${{ steps.release.outputs.build }}
@@ -77,6 +78,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.current == 'true' && vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
     runs-on: xcode-27
+    timeout-minutes: 60
     environment: apple-release
     env:
       GH_TOKEN: ${{ github.token }}
@@ -137,6 +139,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.current == 'true' && vars.SNIP_SNAP_BETA_DELIVERY_ENABLED == 'true'
     runs-on: xcode-27
+    timeout-minutes: 30
     environment: apple-release
     outputs:
       bundle_identifier: ${{ steps.upload.outputs.bundle_identifier }}
@@ -195,6 +198,7 @@ jobs:
     name: Publish iOS beta notes
     needs: [prepare, ios-upload]
     runs-on: xcode-27
+    timeout-minutes: 25
     environment: apple-release
     steps:
       - name: Check out source
@@ -231,6 +235,7 @@ jobs:
     name: Publish Mac beta channels
     needs: [prepare, mac-build, ios-upload, ios-notes]
     runs-on: xcode-27
+    timeout-minutes: 20
     environment: apple-release
     env:
       GH_TOKEN: ${{ secrets.SNIP_SNAP_PUBLISH_TOKEN }}

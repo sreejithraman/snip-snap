@@ -225,10 +225,7 @@ final class IOSCopyShareTests: XCTestCase {
     }
 
     private func pendingRequest(in delivery: IOSDiagnosticShareDelivery) async throws -> IOSShareRequest {
-        for _ in 0..<1_000 {
-            if let request = delivery.request { return request }
-            await Task.yield()
-        }
+        _ = await TestReadiness.wait { delivery.request != nil }
         return try XCTUnwrap(delivery.request)
     }
 

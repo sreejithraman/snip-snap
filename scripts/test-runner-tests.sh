@@ -325,6 +325,7 @@ Dir[File.join(ARGV.fetch(0), '*.yml')].each do |path|
     next if job.fetch('runs-on').start_with?('ubuntu-')
     label = "#{File.basename(path)} #{name}"
     abort "#{label} must run on the Xcode 27 image" unless job['runs-on'] == 'xcode-27'
+    abort "#{label} must set a job time limit" unless job['timeout-minutes'].is_a?(Integer)
     steps = job.fetch('steps')
     if xcode_free.include?(label)
       abort "#{label} must stay free of Xcode" if

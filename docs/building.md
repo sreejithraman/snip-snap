@@ -20,8 +20,7 @@ and both app test builds under a fresh DerivedData folder. iOS tests default to
 the iPhone 18 Pro Simulator. The iOS 27.1 runtime offers only iPhone Duo, so
 install the iOS 27.0 or 27.2 runtime in Xcode Settings > Components, or set
 `SNIP_SNAP_IOS_TEST_DESTINATION` to use another installed iOS Simulator.
-In CI, it boots that Simulator and waits for it to settle first, because a cold
-Simulator runs the tests several times slower. After iOS tests pass, it checks the built app's Share extension and both privacy
+After iOS tests pass, it checks the built app's Share extension and both privacy
 manifests.
 
 Failed Mac and iOS app tests preserve evidence under ignored
