@@ -99,12 +99,18 @@ Without a set, the runner uses the default set as before.
 
 The iPhone Duo needs Xcode 27.1 or later and the iOS 27.1 runtime. In T3, call
 `device_list`, then `device_open` with the `simlock-` host and
-`simlock:ios:iPhone Duo`. Save the `agent-device` path it returns as `AD`.
-Then read the lease's UDID and set, and launch:
+`simlock:ios:iPhone Duo`. Save the `agent-device` path it returns as `AD` and
+its `agentDevice.session` as `SESSION`. `session list` shows every T3 thread's
+sessions on that host, so select yours by name. Then read the lease's UDID and
+set, and launch:
 
 ```sh
-session="$("$AD" session list --json)"
-field() { print -r -- "$session" | ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("data", "sessions", 0, ARGV[0])' "$1"; }
+sessions="$("$AD" session list --json)"
+field() {
+  print -r -- "$sessions" | ruby -rjson -e '
+    mine = JSON.parse(STDIN.read).dig("data", "sessions").find { |s| s["name"].end_with?(":#{ARGV[0]}") }
+    puts mine.fetch(ARGV[1])' "$SESSION" "$1"
+}
 UDID="$(field device_udid)"
 SET="$(field ios_simulator_device_set)"
 SIMLOCK_IOS_DEVICE_SET="$SET" ./scripts/run.sh ios-simulator "$UDID"
@@ -121,6 +127,22 @@ SIMCTL_CHILD_SNIP_SNAP_UI_TEST_LONG_LIST=1 \
 
 `BUNDLE_ID` is the `Bundle:` line the runner prints. Keyboard input does not
 reach iOS 27 guests through SimLock, so `agent-device fill` cannot type.
+
+### Run UI tests on the Duo
+
+UI tests build, install, run, and type on the leased Duo:
+
+```sh
+./scripts/run.sh --ios-simulator --simulator-id "$UDID" --simulator-set "$SET" \
+  --ui-test testCreatesAndEditsTextSnip
+```
+
+Use XCUITest for typed input. A test cannot fold the Duo itself, but it sees a
+fold the host makes while it runs: the window changes between 466×678 (closed)
+and 951×669 (open or half-open), and XCTest logs "Interface orientation
+changed". To sequence poses, pass a directory with
+`TEST_RUNNER_<NAME>=<dir>`. The test reads it as `<NAME>`, writes a request
+file there, and waits for the host to fold and write a reply file.
 
 ### Change the pose
 
@@ -165,10 +187,16 @@ captures as a black image.
 
 ### Known limits
 
-- Rotation does nothing on the leased Duo. `"$AD" orientation` reports
-  "unconfirmed" and the app stays put in every pose. `simlock rotate` refuses
-  a T3-owned lease. No rotated captures are possible on this lane yet.
-- Half-open is checked only through the layout change, not the hinge angle.
+- Rotation does nothing on the leased Duo, so closed landscape is not
+  reachable. `"$AD" orientation` reports "unconfirmed". In a UI test,
+  `XCUIDevice.shared.orientation = .landscapeLeft` reports landscape, but the
+  window and panel capture stay unchanged when closed or open. `simlock rotate`
+  refuses a T3-owned lease.
+- Typing works only through XCUITest.
+- Half-open is checked only through the layout change, not the hinge angle. Its
+  window matches open.
+- After the app moves from the inner panel back to the outer panel, XCTest can
+  wait 60 seconds per action for the app to report idle.
 - `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
   fail on SimLock-set simulators, as described above.
 
