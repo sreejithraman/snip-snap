@@ -19,6 +19,15 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     func pauseNextSave() { pauseSave = true }
     func hasPaused() -> Bool { paused != nil }
     func resumeSave() { paused?.resume(); paused = nil }
+    /// Waits for a save to pause. On timeout it disarms the pause, so no later save hangs.
+    func savePaused(within timeout: Duration = .seconds(5)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while paused == nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        if paused == nil { pauseSave = false }
+        return paused != nil
+    }
     func setUnavailable(_ value: Bool) { unavailable = value }
     func setConflict() { conflictOnce = true }
     func rateLimitFetches(_ count: Int) { rateLimitedFetches = count }
@@ -64,6 +73,21 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: enabled, generation: scope)
     }
+    /// Runs on the caller's actor up to the sync's first suspension, so a sync blocked on a
+    /// stopped run is already waiting when this returns.
+    func startRun() -> Task<ClipboardHistoryState, any Error> {
+        Task.immediate { try await self.run() }
+    }
+}
+
+/// Ends the test, cancelling `run`, if its save doesn't pause.
+private func requireSavePaused<Success: Sendable>(
+    _ cloud: ClipboardTestCloud,
+    during run: Task<Success, any Error>
+) async throws {
+    let paused = await cloud.savePaused()
+    if !paused { run.cancel() }
+    try #require(paused, "The save never paused")
 }
 
 @Suite @MainActor struct ClipboardCloudSyncTests {
@@ -254,6 +278,43 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         #expect(try await cloud.fetch().entries.isEmpty)
         #expect(try await client.run(scope: "new-generation").entries.isEmpty)
     }
+    @Test func syncAfterStopWaitsForTheStoppedRunInsteadOfReportingBusy() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let clip = entry("upload after restart")
+        try await client.store.insert(clip)
+        await cloud.pauseNextSave()
+        let stopped = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: stopped)
+
+        client.sync.stop()
+        let restarted = client.startRun()
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await stopped.value }
+        #expect(try await restarted.value.entries.map(\.id) == [clip.id])
+        #expect(Set(try await cloud.fetch().entries.keys) == [clip.id])
+    }
+
+    @Test func stopEndsASyncWaitingForTheStoppedRun() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays local"))
+        await cloud.pauseNextSave()
+        let stopped = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: stopped)
+
+        client.sync.stop()
+        let waiting = client.startRun()
+        client.sync.stop()
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+        await #expect(throws: CancellationError.self) { try await stopped.value }
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
     @Test func rejectsOversizedPinnedPayloadBeforeUpload() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }

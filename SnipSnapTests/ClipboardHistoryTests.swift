@@ -51,6 +51,39 @@ private final class ClipboardConversionGate: @unchecked Sendable {
 }
 
 @MainActor
+private final class ClipboardSyncGenerationGate {
+    private(set) var requestCount = 0
+    private let heldRequests: Set<Int>
+    private var held: [Int: CheckedContinuation<String?, any Error>] = [:]
+
+    init(holding requests: Set<Int>) {
+        heldRequests = requests
+    }
+
+    func generation() async throws -> String? {
+        requestCount += 1
+        let request = requestCount
+        guard heldRequests.contains(request) else { return nil }
+        return try await withCheckedThrowingContinuation { held[request] = $0 }
+    }
+
+    func isHolding(_ request: Int) -> Bool {
+        held[request] != nil
+    }
+
+    func release(_ request: Int, throwing error: (any Error)? = nil) {
+        guard let continuation = held.removeValue(forKey: request) else { return }
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume(returning: nil)
+        }
+    }
+}
+
+private struct ClipboardSyncTestFailure: Error {}
+
+@MainActor
 final class ClipboardHistoryTests: XCTestCase {
     func testCapturesAndRestoresEveryPasteboardItem() throws {
         let context = try makeContext()
@@ -512,6 +545,50 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(context.history.entries.isEmpty)
     }
 
+    func testDisablingSyncDuringASuspendedRunEndsItAtOnce() async throws {
+        let gate = ClipboardSyncGenerationGate(holding: [1, 2])
+        let history = try makeSyncedHistory(gate)
+        history.setSyncEnabled(true)
+        let stoppedRun = Task { await history.syncNow() }
+        try await waitUntil { gate.isHolding(1) }
+        XCTAssertTrue(history.isSyncing)
+
+        history.setSyncEnabled(false)
+        XCTAssertFalse(history.isSyncing)
+
+        history.setSyncEnabled(true)
+        let nextRun = Task { await history.syncNow() }
+        try await waitUntil { gate.isHolding(2) }
+        let previewRevision = history.filePreviewRevision
+        gate.release(1, throwing: ClipboardSyncTestFailure())
+        await stoppedRun.value
+        XCTAssertTrue(history.isSyncing)
+        XCTAssertNil(history.syncError)
+        XCTAssertEqual(history.filePreviewRevision, previewRevision)
+
+        gate.release(2)
+        await nextRun.value
+        XCTAssertFalse(history.isSyncing)
+    }
+
+    func testStoppedSyncRequestDoesNotReleaseTheNewerRequest() async throws {
+        let gate = ClipboardSyncGenerationGate(holding: [1, 2])
+        let history = try makeSyncedHistory(gate)
+        history.setSyncEnabled(true)
+        try await waitUntil { gate.isHolding(1) }
+
+        history.stopSync()
+        history.requestSync()
+        gate.release(1)
+        try await waitUntil { gate.isHolding(2) }
+        history.requestSync()
+        gate.release(2)
+        // A third run could start only after the 300 ms debounce; the wait ends early if one does.
+        try await waitUntil(timeout: .seconds(3), reportingTimeout: false) { gate.requestCount > 2 }
+
+        XCTAssertEqual(gate.requestCount, 2)
+    }
+
     func testPauseSurvivesRelaunch() throws {
         let context = try makeContext()
         context.history.setPaused(true)
@@ -827,12 +904,28 @@ final class ClipboardHistoryTests: XCTestCase {
         )
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+    private func makeSyncedHistory(_ gate: ClipboardSyncGenerationGate) throws -> ClipboardHistory {
+        let context = try makeContext()
+        context.history.configureSync(
+            containerIdentifier: "iCloud.world.sree.snipsnap.tests",
+            rootURL: context.storeURL.deletingLastPathComponent()
+                .appendingPathComponent("SyncMode", isDirectory: true),
+            mainEnabled: { true },
+            generation: { try await gate.generation() }
+        )
+        return context.history
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        reportingTimeout: Bool = true,
+        _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(condition())
+        if reportingTimeout { XCTAssertTrue(condition()) }
     }
 
     private func writeText(_ text: String, to pasteboard: NSPasteboard) {
