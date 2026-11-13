@@ -3,11 +3,13 @@ import SwiftUI
 extension View {
     /// Places controls in the bottom safe area. When a horizontal hinge divides the view,
     /// as in a partly folded device's table pose, the view ends above the hinge and the
-    /// controls start below it.
+    /// controls start below it. Pass `splitsAtHinge: false` when the controls have nothing
+    /// to show below the hinge, so the view fills the window as it does unfolded.
     func tableHingeControls<Controls: View>(
+        splitsAtHinge: Bool = true,
         @ViewBuilder _ controls: () -> Controls
     ) -> some View {
-        modifier(TableHingeControls(controls: controls()))
+        modifier(TableHingeControls(splitsAtHinge: splitsAtHinge, controls: controls()))
     }
 }
 
@@ -35,8 +37,13 @@ private struct TableHinge: Equatable {
 }
 
 private struct TableHingeControls<Controls: View>: ViewModifier {
+    let splitsAtHinge: Bool
     let controls: Controls
     @State private var hinge: TableHinge?
+
+    // Gated here rather than in the geometry read, which reruns on geometry changes, not when
+    // only `splitsAtHinge` changes.
+    private var activeHinge: TableHinge? { splitsAtHinge ? hinge : nil }
 
     func body(content: Content) -> some View {
         // The controls keep one place in the tree in every pose, so a fold moves them
@@ -44,15 +51,15 @@ private struct TableHingeControls<Controls: View>: ViewModifier {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 controls
-                    .padding(.top, hinge.map { $0.controlsTop - $0.pageBottom } ?? 0)
-                    .frame(height: hinge?.insetHeight, alignment: .top)
+                    .padding(.top, activeHinge.map { $0.controlsTop - $0.pageBottom } ?? 0)
+                    .frame(height: activeHinge?.insetHeight, alignment: .top)
                     .background {
                         // Page rows scroll under the inset; keep them off the hinge and the bottom half.
                         Rectangle()
                             .fill(.background)
                             .ignoresSafeArea(edges: .bottom)
-                            .opacity(hinge == nil ? 0 : 1)
-                            .allowsHitTesting(hinge != nil)
+                            .opacity(activeHinge == nil ? 0 : 1)
+                            .allowsHitTesting(activeHinge != nil)
                             .accessibilityHidden(true)
                     }
             }
@@ -65,6 +72,6 @@ private struct TableHingeControls<Controls: View>: ViewModifier {
             // In the table pose the keyboard rises over the bottom half and the controls stay
             // under the hinge. The read above sits inside this, so it measures the same
             // keyboard-free frame the inset is laid out in.
-            .ignoresSafeArea(.keyboard, edges: hinge == nil ? [] : .all)
+            .ignoresSafeArea(.keyboard, edges: activeHinge == nil ? [] : .all)
     }
 }

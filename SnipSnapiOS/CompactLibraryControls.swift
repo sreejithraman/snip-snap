@@ -141,11 +141,16 @@ struct CompactLibraryControls: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
             if !showsListTabs {
+                // Fixed spacers give Paste its own glass circle, apart from the page's items,
+                // and placing Search after it keeps the two together on every page.
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
                         .disabled(isPasteDisabled)
                         .accessibilityIdentifier("paste-to-clipboard")
                 }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
             }
         }
         .fileImporter(
