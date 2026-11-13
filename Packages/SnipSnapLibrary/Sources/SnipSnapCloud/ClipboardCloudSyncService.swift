@@ -98,12 +98,34 @@ private struct ClipboardCloudUnwindingRun {
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         try await waitForStoppedRun()
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
+        let (run, transport) = try beginRun(generation: generation)
+        return try await performRun(run, using: transport)
+    }
+
+    /// Reads both flags once, on entry. It never waits for a stopped run, so flags that went stale
+    /// can't be admitted later: anything but an idle service reports busy. Only the iOS model still
+    /// calls this.
+    @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
+                                               generation: String) async throws -> ClipboardHistoryState {
+        guard mainSyncEnabled && clipboardSyncEnabled else { return try await stopAndLoadLocalHistory() }
+        let (run, transport) = try beginRun(generation: generation)
+        return try await performRun(run, using: transport)
+    }
+
+    private func beginRun(generation: String) throws -> (ClipboardCloudOperation, any ClipboardCloudTransport) {
         guard case .idle = lifecycle else { throw ClipboardCloudError.busy }
         guard !generation.isEmpty else { throw ClipboardCloudError.unavailable }
         try bind(to: generation)
         guard let transport else { throw ClipboardCloudError.unavailable }
         let run = ClipboardCloudOperation()
         lifecycle = .syncing(run); lastError = nil
+        return (run, transport)
+    }
+
+    private func performRun(
+        _ run: ClipboardCloudOperation,
+        using transport: any ClipboardCloudTransport
+    ) async throws -> ClipboardHistoryState {
         defer { finishRun(run.id) }
         do {
             for _ in 0..<4 {
@@ -139,12 +161,6 @@ private struct ClipboardCloudUnwindingRun {
             if isCurrentRun(run.id) { lastError = error.localizedDescription }
             throw error
         }
-    }
-
-    /// Reads both flags once, on entry. Only the iOS model still calls this.
-    @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
-                                               generation: String) async throws -> ClipboardHistoryState {
-        try await synchronize(generation: generation, isEnabled: { mainSyncEnabled && clipboardSyncEnabled })
     }
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
