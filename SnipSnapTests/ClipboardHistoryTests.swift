@@ -472,6 +472,25 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(context.history.entries.isEmpty)
     }
 
+    func testClearingBeforeTheGeneralBoardReadKeepsTheCopyForTheNextPoll() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(
+            persistedEntries: [clipboardEntry("Earlier")],
+            capture: (generalPasteboard: true, conversion: gate.convert)
+        )
+        await context.history.flushPersistence()
+        writeText("Copied during clear", to: context.pasteboard)
+
+        context.history.poll()
+        context.history.clear()
+        context.history.poll()
+        try await waitUntil { gate.isHolding && context.history.entries.isEmpty }
+        gate.release()
+        await context.history.flushPersistence()
+
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied during clear"])
+    }
+
     func testPausingDuringLargeCaptureConversionAdmitsNothing() async throws {
         let gate = ClipboardConversionGate()
         let context = try makeContext(capture: (generalPasteboard: false, conversion: gate.convert))
