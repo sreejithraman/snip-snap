@@ -102,7 +102,7 @@ final class ShareExtensionModel {
                 staging: staging
             )
             let loadedLists = await imports.availableLists()
-            guard phase == .loading, !Task.isCancelled else {
+            guard phase != .cancelled, !Task.isCancelled else {
                 staging.discard()
                 return
             }
@@ -118,20 +118,20 @@ final class ShareExtensionModel {
             phase = .editing
         } catch {
             staging.discard()
-            guard phase == .loading, !Task.isCancelled else { return }
+            guard phase != .cancelled, !Task.isCancelled else { return }
             if isDiagnosticCancellation(error) {
                 cancel()
                 return
             }
             diagnostics.record(.failure(operation: "share.extension_load", error: error, visibility: .user))
             _ = await diagnostics.flush(timeout: 0.5)
-            guard phase == .loading, !Task.isCancelled else { return }
+            guard phase != .cancelled, !Task.isCancelled else { return }
             phase = .failed(error.localizedDescription)
         }
     }
 
     func cancel() {
-        guard phase != .cancelled, phase != .published else { return }
+        guard phase != .cancelled else { return }
         phase = .cancelled
         staging?.discard()
         Task {

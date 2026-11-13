@@ -149,7 +149,7 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         XCTAssertTrue(context.completed)
     }
 
-    func testSaveFailureCancelledDuringFlushReturnsToEditing() async throws {
+    func testSaveFailureWhoseTaskIsCancelledReturnsToEditing() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let context = DiagnosticExtensionContext()
@@ -175,6 +175,26 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         await Task { await model.save() }.value
         XCTAssertEqual(model.phase, .published)
         XCTAssertFalse(context.completed)
+    }
+
+    func testUserCancelAfterCancelledDurableSaveCancelsRequest() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: ExtensionDiagnosticEvents().recorder,
+            saveImport: { _ in withUnsafeCurrentTask { $0?.cancel() } })
+        await model.load()
+        model.content = "private snip"
+        await Task { await model.save() }.value
+        XCTAssertEqual(model.phase, .published)
+        XCTAssertFalse(context.completed)
+        model.cancel()
+        _ = await TestReadiness.wait { context.cancellation != nil }
+        XCTAssertEqual(model.phase, .cancelled)
+        XCTAssertFalse(context.completed)
+        XCTAssertEqual(context.cancellation?.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(context.cancellation?.code, NSUserCancelledError)
     }
 
     func testUserCancelDuringSaveCancelsRequest() async throws {
