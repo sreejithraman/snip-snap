@@ -8,9 +8,38 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     var files: [UUID: Data]
 }
 
+/// Owns the clipboard cloud binding and history store: one run or transition at a time.
+private enum ClipboardCloudLifecycle {
+    case idle
+    case syncing(ClipboardCloudOperation)
+    /// `stop()` ended this run. It keeps the store until it unwinds, and sync calls wait for it.
+    case stopping(runID: UUID, syncWaiters: [CheckedContinuation<Bool, Never>])
+    /// `deleteSyncedHistory` or `resetAccountBinding` owns the binding and history once any
+    /// stopped run has unwound.
+    case transitioning(ClipboardCloudOperation, unwindingRun: ClipboardCloudUnwindingRun?)
+}
+
+private struct ClipboardCloudOperation {
+    let id = UUID()
+    let cancellation = ClipboardCloudCancellation()
+    var cancelRetry: (@Sendable () -> Void)?
+
+    func cancel() {
+        cancellation.cancel()
+        cancelRetry?()
+    }
+}
+
+private struct ClipboardCloudUnwindingRun {
+    let id: UUID
+    let waiter: CheckedContinuation<Void, Never>
+}
+
 /// Shares the saved-snips account/generation scope, but requires its own opt-in.
 @MainActor public final class ClipboardCloudSyncService {
-    public private(set) var isSyncing = false
+    public var isSyncing: Bool {
+        if case .syncing = lifecycle { true } else { false }
+    }
     public private(set) var pendingEntryIDs: Set<UUID> = []
     public private(set) var lastError: String?
     private let store: ClipboardHistoryStore
@@ -20,11 +49,7 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     private let retry: CloudKitOperationRetry
     private var transport: (any ClipboardCloudTransport)?
     private var scope: String?
-    private var transitioning = false
-    private var epoch = 0
-    private var cancellation = ClipboardCloudCancellation()
-    private var cancelActiveRetry: (() -> Void)?
-    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var lifecycle = ClipboardCloudLifecycle.idle
 
     public convenience init(store: ClipboardHistoryStore,
                             containerIdentifier: String, syncRootURL: URL) {
@@ -43,45 +68,53 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         self.retry = retry
     }
 
-    /// Call before disabling sync or responding to an account change.
+    /// Call before disabling sync or responding to an account change. A sync call waiting for a
+    /// stopped run ends with `CancellationError`.
     public func stop() {
-        epoch += 1
-        cancellation.cancel()
-        cancelActiveRetry?()
         pendingEntryIDs = []
+        switch lifecycle {
+        case .idle:
+            break
+        case .syncing(let run):
+            run.cancel()
+            lifecycle = .stopping(runID: run.id, syncWaiters: [])
+        case .stopping(let runID, let waiters):
+            lifecycle = .stopping(runID: runID, syncWaiters: [])
+            for waiter in waiters { waiter.resume(returning: false) }
+        case .transitioning(let transition, _):
+            transition.cancel()
+        }
     }
 
     @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
                                                generation: String) async throws -> ClipboardHistoryState {
         guard mainSyncEnabled && clipboardSyncEnabled else { stop(); return try await store.load() }
-        guard !isSyncing && !transitioning else { throw ClipboardCloudError.busy }
+        try await waitForStoppedRun()
+        guard case .idle = lifecycle else { throw ClipboardCloudError.busy }
         guard !generation.isEmpty else { throw ClipboardCloudError.unavailable }
         try bind(to: generation)
         guard let transport else { throw ClipboardCloudError.unavailable }
-        isSyncing = true; lastError = nil
-        cancellation = ClipboardCloudCancellation()
-        let started = epoch
-        defer {
-            isSyncing = false
-            let waiters = idleWaiters; idleWaiters = []
-            for waiter in waiters { waiter.resume() }
-        }
+        let run = ClipboardCloudOperation()
+        lifecycle = .syncing(run); lastError = nil
+        defer { finishRun(run.id) }
         do {
             for _ in 0..<4 {
-                let remote = try await performWithRetry(operationName: "clipboard fetch") { try await transport.fetch() }
-                try checkEpoch(started)
-                let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: cancellation)
-                try checkEpoch(started)
+                try checkCurrentRun(run.id)
+                let remote = try await performWithRetry(operationName: "clipboard fetch", owner: run.id) { try await transport.fetch() }
+                try checkCurrentRun(run.id)
+                let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: run.cancellation)
+                try checkCurrentRun(run.id)
                 pendingEntryIDs = pending
-                try checkEpoch(started)
                 do {
                     if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
                         let snapshot = ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version)
-                        try await performWithRetry(operationName: "clipboard save") { try await transport.save(snapshot, cancellation: self.cancellation) }
+                        try await performWithRetry(operationName: "clipboard save", owner: run.id) { [cancellation = run.cancellation] in
+                            try await transport.save(snapshot, cancellation: cancellation)
+                        }
                     }
                 }
                 catch ClipboardCloudError.conflict { continue }
-                try checkEpoch(started)
+                try checkCurrentRun(run.id)
                 pendingEntryIDs = []
                 let acknowledgments = local.entries.filter { outgoing[$0.id] != nil }.map { item in
                     var item = item; item.hasBeenShared = true; return item
@@ -95,20 +128,18 @@ package struct ClipboardCloudPayload: Codable, Sendable {
             }
             throw ClipboardCloudError.conflict
         } catch {
-            lastError = error.localizedDescription
+            if isCurrentRun(run.id) { lastError = error.localizedDescription }
             throw error
         }
     }
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
     public func deleteSyncedHistory(generation: String) async throws {
-        guard !transitioning else { throw ClipboardCloudError.busy }
-        transitioning = true; defer { transitioning = false }
-        stop()
-        await waitUntilIdle()
+        let transition = try await beginTransition()
+        defer { endTransition(transition) }
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         try bind(to: generation)
-        if let transport { try await performWithRetry(operationName: "clipboard delete") { try await transport.deleteAll() } }
+        if let transport { try await performWithRetry(operationName: "clipboard delete", owner: transition) { try await transport.deleteAll() } }
         if hadBinding {
             try quarantineHistory()
             try await store.save(ClipboardHistoryState())
@@ -120,10 +151,8 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     /// Keep the previous account's history on disk but never upload it to another account.
     public func resetAccountBinding() async throws {
         guard FileManager.default.fileExists(atPath: bindingURL.path) else { return }
-        guard !transitioning else { throw ClipboardCloudError.busy }
-        transitioning = true; defer { transitioning = false }
-        stop()
-        await waitUntilIdle()
+        let transition = try await beginTransition()
+        defer { endTransition(transition) }
         try quarantineHistory()
         try await store.save(ClipboardHistoryState())
         try removeBinding()
@@ -140,9 +169,60 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
         scope = nil; transport = nil
     }
-    private func waitUntilIdle() async {
-        guard isSyncing else { return }
-        await withCheckedContinuation { idleWaiters.append($0) }
+
+    private func waitForStoppedRun() async throws {
+        while case .stopping(let runID, let waiters) = lifecycle {
+            let mayStart: Bool = await withCheckedContinuation { waiter in
+                lifecycle = .stopping(runID: runID, syncWaiters: waiters + [waiter])
+            }
+            guard mayStart else { throw CancellationError() }
+        }
+    }
+
+    private func finishRun(_ id: UUID) {
+        switch lifecycle {
+        case .syncing(let run) where run.id == id:
+            lifecycle = .idle
+        case .stopping(let runID, let waiters) where runID == id:
+            lifecycle = .idle
+            for waiter in waiters { waiter.resume(returning: true) }
+        case .transitioning(let transition, let unwinding?) where unwinding.id == id:
+            lifecycle = .transitioning(transition, unwindingRun: nil)
+            unwinding.waiter.resume()
+        default:
+            break
+        }
+    }
+
+    private func isCurrentRun(_ id: UUID) -> Bool {
+        if case .syncing(let run) = lifecycle { run.id == id } else { false }
+    }
+
+    private func checkCurrentRun(_ id: UUID) throws {
+        guard isCurrentRun(id) else { throw CancellationError() }
+    }
+
+    /// Stops any run, waits for it to unwind, then owns the binding and history.
+    private func beginTransition() async throws -> UUID {
+        if case .transitioning = lifecycle { throw ClipboardCloudError.busy }
+        stop()
+        let transition = ClipboardCloudOperation()
+        if case .stopping(let runID, _) = lifecycle {
+            await withCheckedContinuation { waiter in
+                lifecycle = .transitioning(
+                    transition,
+                    unwindingRun: ClipboardCloudUnwindingRun(id: runID, waiter: waiter)
+                )
+            }
+        } else {
+            lifecycle = .transitioning(transition, unwindingRun: nil)
+        }
+        return transition.id
+    }
+
+    private func endTransition(_ id: UUID) {
+        guard case .transitioning(let transition, _) = lifecycle, transition.id == id else { return }
+        lifecycle = .idle
     }
     private func bind(to generation: String) throws {
         if let data = try? Data(contentsOf: bindingURL) {
@@ -153,23 +233,33 @@ package struct ClipboardCloudPayload: Codable, Sendable {
         }
         if scope != generation { transport = makeTransport(generation); scope = generation }
     }
-    private func checkEpoch(_ expected: Int) throws {
-        guard epoch == expected else { throw CancellationError() }
-    }
-
-    /// Keeps retries scoped to the current cloud operation so `stop()` can cancel a pending delay.
+    /// Keeps retries scoped to the owning cloud operation so `stop()` can cancel a pending delay.
     private func performWithRetry<Value: Sendable>(
         operationName: String,
+        owner: UUID,
         _ operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
         let task = Task { [retry] in try await retry.run(operationName: operationName, operation) }
-        cancelActiveRetry = { task.cancel() }
-        defer { cancelActiveRetry = nil }
+        setRetryCancellation(for: owner) { task.cancel() }
+        defer { setRetryCancellation(for: owner, nil) }
         return try await withTaskCancellationHandler(operation: {
             try await task.value
         }, onCancel: {
             task.cancel()
         })
+    }
+
+    private func setRetryCancellation(for owner: UUID, _ cancel: (@Sendable () -> Void)?) {
+        switch lifecycle {
+        case .syncing(var run) where run.id == owner:
+            run.cancelRetry = cancel
+            lifecycle = .syncing(run)
+        case .transitioning(var transition, let unwinding) where transition.id == owner:
+            transition.cancelRetry = cancel
+            lifecycle = .transitioning(transition, unwindingRun: unwinding)
+        default:
+            cancel?()
+        }
     }
 }
 
