@@ -45,13 +45,7 @@ struct SnipListView: View {
     @State private var hasScrolledFromTop = false
     @State private var addedSnipRevealState = AddedSnipRevealState()
     @State private var editSession: InlineEditSession?
-    @State private var pendingOrderByList: [UUID: [UUID]] = [:]
-    @State private var activeDragPayload: SnipDragPayload?
-    @State private var activeDragOriginalOrder: [UUID] = []
-    @State private var activeDragScrollOffsetY: CGFloat = 0
-    @State private var activeDropTarget: SnipListReorderTarget?
-    @State private var isCommittingDrop = false
-    @State private var activeDragRowFrames: [UUID: CGRect] = [:]
+    @State private var drag = SnipListDrag()
     @State private var commandNumberOwner = CommandNumberOwner()
     @StateObject private var cardInteractionController = PanelCardInteractionController()
     @StateObject private var reorderGeometry = SnipListReorderGeometry()
@@ -350,7 +344,7 @@ struct SnipListView: View {
     ) -> some View {
         let payload = snapshot.dragPayload(for: snip)
         return snipCard(snip, snapshot: snapshot)
-                .opacity(isShowingDragGap(for: snip.id) ? 0 : 1)
+                .opacity(drag.isShowingGap(for: snip.id) ? 0 : 1)
                 .background {
                     if model.editingID != snip.id {
                         PanelDragSourceRegion(
@@ -429,20 +423,6 @@ struct SnipListView: View {
         .panelListRowLayout()
     }
 
-    private func beginDrag(_ payload: SnipDragPayload, orderedIDs: [UUID]) {
-        activeDragPayload = payload
-        activeDropTarget = nil
-        isCommittingDrop = false
-        guard canDragReorder else {
-            activeDragOriginalOrder = []
-            activeDragRowFrames = [:]
-            return
-        }
-        activeDragOriginalOrder = orderedIDs
-        activeDragRowFrames = reorderGeometry.rowFrames
-        activeDragScrollOffsetY = reorderGeometry.scrollOffsetY
-    }
-
     private func snipDragAdapter(
         payload: SnipDragPayload,
         source: Snip,
@@ -463,149 +443,89 @@ struct SnipListView: View {
                 }
             },
             callbacks: PanelDragSessionCallbacks(
-                onBegan: {
-                    beginDrag(payload, orderedIDs: snips.map(\.id))
-                },
-                onMoved: { point in
-                    updateDrag(at: point, listID: listID, snips: snips)
-                },
-                onEnded: { outcome, point in
-                    endDrag(
-                        payload,
-                        outcome: outcome,
-                        at: point,
+                onBegan: { token in
+                    drag.begin(
+                        token,
+                        payload: payload,
                         listID: listID,
-                        snips: snips
+                        reorderingFrom: canDragReorder ? snips.map(\.id) : nil,
+                        geometry: reorderGeometry
                     )
-                }
+                },
+                onMoved: updateDrag,
+                onEnded: endDrag
             )
         )
     }
 
-    private func updateDrag(
-        at location: CGPoint,
-        listID: UUID,
-        snips: [Snip]
-    ) {
-        guard activeDragPayload != nil, !activeDragOriginalOrder.isEmpty else { return }
-        guard reorderGeometry.listFrame.contains(location) else {
-            if activeDropTarget != nil {
-                activeDropTarget = nil
-                pendingOrderByList[listID] = nil
+    private func updateDrag(_ token: PanelDragSessionToken, at location: CGPoint) {
+        var next = drag
+        switch next.move(token, to: location, geometry: reorderGeometry) {
+        case .none:
+            return
+        case .pendingOrderCleared:
+            drag = next
+        case .pendingOrderChanged:
+            animateIfAllowed(.easeOut(duration: 0.12)) {
+                drag = next
             }
-            return
-        }
-        let target = reorderTarget(at: location, snips: snips)
-        activeDropTarget = target
-        updatePendingOrder(listID: listID, target: target)
-    }
-
-    private func reorderTarget(
-        at location: CGPoint,
-        snips: [Snip]
-    ) -> SnipListReorderTarget {
-        let placementFrames = activeDragRowFrames.isEmpty
-            ? reorderGeometry.rowFrames
-            : activeDragRowFrames
-        return SnipListReorderPlan.target(
-            atWindowY: location.y,
-            orderedIDs: snips.map(\.id),
-            movingIDs: Set(activeDragPayload?.ids ?? []),
-            rowFrames: placementFrames,
-            rowFrameOffsetY: reorderGeometry.scrollOffsetY - activeDragScrollOffsetY
-        )
-    }
-
-    private func updatePendingOrder(
-        listID: UUID,
-        target: SnipListReorderTarget
-    ) {
-        guard let payload = activeDragPayload else { return }
-        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
-            from: activeDragOriginalOrder,
-            movingIDs: payload.ids,
-            target: target
-        ) else { return }
-        guard pendingOrderByList[listID] != reorderedIDs else { return }
-        animateIfAllowed(.easeOut(duration: 0.12)) {
-            pendingOrderByList[listID] = reorderedIDs
-        }
-    }
-
-    private func commitDrop(
-        _ payload: SnipDragPayload,
-        target: SnipListReorderTarget,
-        listID: UUID
-    ) {
-        guard payload == activeDragPayload else { return }
-        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
-            from: activeDragOriginalOrder,
-            movingIDs: payload.ids,
-            target: target
-        ), reorderedIDs != activeDragOriginalOrder else {
-            clearDrag(listID: listID)
-            return
-        }
-        activeDropTarget = target
-        updatePendingOrder(listID: listID, target: target)
-        isCommittingDrop = true
-        Task { @MainActor in
-            _ = await model.move(
-                ids: payload.ids,
-                to: listID,
-                before: target.beforeID
-            )
-            guard payload == activeDragPayload, isCommittingDrop else { return }
-            clearDrag(listID: listID)
         }
     }
 
     private func endDrag(
-        _ payload: SnipDragPayload,
+        _ token: PanelDragSessionToken,
         outcome: PanelDragSessionOutcome,
-        at location: CGPoint,
-        listID: UUID,
-        snips: [Snip]
+        at location: CGPoint
     ) {
-        guard payload == activeDragPayload else { return }
-        let droppedInList = !activeDragOriginalOrder.isEmpty
-            && reorderGeometry.listFrame.contains(location)
-        if droppedInList {
-            let finalTarget = reorderTarget(at: location, snips: snips)
-            commitDrop(payload, target: finalTarget, listID: listID)
-            return
-        }
-        if outcome == .copy {
+        var next = drag
+        guard let ending = next.end(
+            token,
+            outcome: outcome,
+            at: location,
+            geometry: reorderGeometry
+        ) else { return }
+        switch ending {
+        case .cleared:
+            clearDrag(to: next)
+        case .clearedAfterExternalCopy(let payload):
             model.setDoneAfterExternalDrop(versions: payload.versions)
             let placed = payload.ids.compactMap { id in
                 model.snips.first { $0.id == id }
             }
             _ = model.placeOnClipboard(.snips(placed), feedback: .silent)
-        }
-        guard outcome == .move else {
-            clearDrag(listID: listID)
-            return
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard payload == activeDragPayload, !isCommittingDrop else { return }
-            clearDrag(listID: listID)
+            clearDrag(to: next)
+        case .committing(let move, let pendingOrderChanged):
+            if pendingOrderChanged {
+                animateIfAllowed(.easeOut(duration: 0.12)) {
+                    drag = next
+                }
+            } else {
+                drag = next
+            }
+            Task { @MainActor in
+                _ = await model.move(
+                    ids: move.ids,
+                    to: move.listID,
+                    before: move.beforeID
+                )
+                var landed = drag
+                guard landed.finishCommit(token) else { return }
+                clearDrag(to: landed)
+            }
+        case .settling:
+            drag = next
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                var settled = drag
+                guard settled.finishSettle(token) else { return }
+                clearDrag(to: settled)
+            }
         }
     }
 
-    private func isShowingDragGap(for snipID: UUID) -> Bool {
-        activeDragPayload?.ids.contains(snipID) == true
-    }
-
-    private func clearDrag(listID: UUID) {
+    private func clearDrag(to cleared: SnipListDrag) {
         animateIfAllowed(.snappy(duration: 0.12)) {
-            pendingOrderByList[listID] = nil
-            activeDragPayload = nil
-            activeDragOriginalOrder = []
-            activeDragScrollOffsetY = 0
-            activeDragRowFrames = [:]
-            activeDropTarget = nil
-            isCommittingDrop = false
+            drag = cleared
         }
     }
 
@@ -636,7 +556,7 @@ struct SnipListView: View {
     }
 
     private func orderedSnips(in group: SnipListGroup) -> [Snip] {
-        guard let pendingOrder = pendingOrderByList[group.listID],
+        guard let pendingOrder = drag.pendingOrder(in: group.listID),
               Set(pendingOrder) == Set(group.snips.map(\.id)) else {
             return group.snips
         }
