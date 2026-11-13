@@ -1747,6 +1747,110 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testUndoSnackbarMovesTheReplacedWarningFailureInline() async throws {
+        for deleting in [false, true] {
+            let library = try JSONSnipLibrary(fileURL: storeURL())
+            let added = try await library.add(content: "Undoable", origin: .quickEntry)
+            let snip = try XCTUnwrap(added)
+            let model = AppModel(library: library, defaults: defaults())
+            await model.reload()
+            model.presentError(SnipLibraryError.storeUnavailable, operation: "snip.move")
+            let failure = try XCTUnwrap(model.latestFailure)
+            XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+            XCTAssertNil(model.inlineFailure)
+
+            if deleting {
+                await model.deleteSelectionNow(ids: [snip.id])
+            } else {
+                await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
+            }
+
+            let undo = try XCTUnwrap(model.toast)
+            XCTAssertEqual(undo.action, deleting ? .undoDelete : .undoDone)
+            XCTAssertEqual(model.inlineFailure?.id, failure.id,
+                           "The Undo snackbar must keep the replaced warning visible inline.")
+            XCTAssertNil(model.dialogFailure)
+            XCTAssertEqual(model.presentedError, failure.message)
+            model.toast = nil
+            XCTAssertEqual(model.inlineFailure?.id, failure.id)
+            model.dismissPresentedError()
+            XCTAssertNil(model.inlineFailure)
+            XCTAssertEqual(model.latestFailure?.id, failure.id)
+        }
+    }
+
+    @MainActor
+    func testCopyConfirmationNeverReplacesAnActionableSnackbar() async throws {
+        let pinned = Snip(content: "Copy only", origin: .quickEntry, pinnedAt: Date())
+        let deletable = Snip(content: "Delete me", origin: .quickEntry)
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        _ = try await library.perform(.restore(snips: [pinned, deletable]), sortedBy: .chronological)
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-confirmation-\(UUID())"))
+
+        let firstCopy = await model.placeOnClipboardNow(.snips([pinned]), to: pasteboard)
+        XCTAssertTrue(firstCopy)
+        let confirmation = try XCTUnwrap(model.toast)
+        XCTAssertEqual(confirmation.message, "Snapped")
+        XCTAssertNil(confirmation.action)
+        let secondCopy = await model.placeOnClipboardNow(.snips([pinned]), to: pasteboard)
+        XCTAssertTrue(secondCopy)
+        XCTAssertNotEqual(model.toast?.id, confirmation.id, "A newer confirmation replaces an older one.")
+
+        model.presentError(SnipLibraryError.storeUnavailable, operation: "snip.move")
+        let failure = try XCTUnwrap(model.latestFailure)
+        let warning = try XCTUnwrap(model.toast)
+        XCTAssertEqual(warning.action, .showErrorDetails(failure.id))
+        let copiedOverWarning = await model.placeOnClipboardNow(.snips([pinned]), to: pasteboard)
+        XCTAssertTrue(copiedOverWarning)
+        XCTAssertEqual(model.toast?.id, warning.id, "Mac keeps a warning instead of confirming the copy.")
+
+        await model.deleteSelectionNow(ids: [deletable.id])
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDelete)
+        let copiedOverUndo = await model.copySnipsAndMarkDoneNow([pinned], to: pasteboard)
+        XCTAssertTrue(copiedOverUndo)
+        XCTAssertEqual(model.toast?.id, undo.id)
+    }
+
+    @MainActor
+    func testRepeatedAttachmentPreparationFailureIsRecordedOnceWhilePresented() {
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []), defaults: defaults(), diagnostics: probe.recorder
+        )
+        let defaultTitle = AppFailure(message: "", operation: "attachment.prepare", diagnosticCode: "").title
+
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "attachment.prepare")
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "attachment.prepare")
+        XCTAssertEqual(probe.events.count, 1, "The same presented preparation failure is recorded once.")
+
+        model.presentError("Download failed", title: defaultTitle, operation: "attachment.prepare",
+                           diagnosticCode: "attachment.download")
+        model.presentError("Download failed", title: defaultTitle, operation: "attachment.prepare",
+                           diagnosticCode: "attachment.download")
+        XCTAssertEqual(probe.events.count, 2)
+        model.presentError("Download failed", operation: "attachment.prepare", diagnosticCode: "attachment.download")
+        XCTAssertEqual(probe.events.count, 3, "Only the caller's explicit title identifies the presentation.")
+
+        model.presentError("Download failed", operation: "attachment.prepare",
+                           diagnosticCode: "attachment.download", presentation: .detailsOnly)
+        XCTAssertEqual(probe.events.count, 3)
+        XCTAssertNil(model.presentedError)
+        model.presentError("Download failed", operation: "attachment.prepare", diagnosticCode: "attachment.download")
+        XCTAssertEqual(probe.events.count, 4, "A failure that is no longer presented is recorded again.")
+
+        model.dismissPresentedError()
+        model.presentError("Download failed", operation: "attachment.prepare", diagnosticCode: "attachment.download")
+        XCTAssertEqual(probe.events.count, 5)
+
+        model.presentError("Copy failed", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
+        model.presentError("Copy failed", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
+        XCTAssertEqual(probe.events.count, 7, "Other operations record every presented failure.")
+    }
+
+    @MainActor
     func testRapidDoneTogglesOnlyApplyTheSuccessfulCopy() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Snip", origin: .quickEntry)
