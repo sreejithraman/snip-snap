@@ -546,9 +546,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(clipboard.isSelected)
 
-        // The iPad sidebar has its own actions menu; the iPhone Duo's rail leaves only the page's.
-        let sidebar = app.navigationBars["Lists"]
-        let actions = sidebar.exists ? sidebar.buttons["library-actions"] : app.buttons["library-actions"]
+        // The iPad sidebar has its own actions menu; the iPhone rail leaves only the page's.
+        let actions = UIDevice.current.userInterfaceIdiom == .pad
+            ? app.navigationBars["Lists"].buttons["library-actions"]
+            : app.buttons["library-actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
         XCTAssertFalse(app.buttons["select-snips"].exists)

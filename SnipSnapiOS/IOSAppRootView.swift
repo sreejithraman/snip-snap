@@ -29,12 +29,14 @@ struct IOSAppRootView: View {
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
+    private let regularLayout: RegularLibraryLayout
     init(
         session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil,
-        composerStorage: CompactComposerStorage = CompactComposerStorage()
+        composerStorage: CompactComposerStorage = CompactComposerStorage(),
+        regularLayout: RegularLibraryLayout = .current
     ) {
 #if DEBUG
         if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
@@ -46,6 +48,7 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
+        self.regularLayout = regularLayout
     }
 
     private var listPageMotion: ListPageMotion {
@@ -143,7 +146,7 @@ struct IOSAppRootView: View {
         }
         .overlay(alignment: .bottomLeading) {
             // The rail's New List button anchors the badge instead.
-            if horizontalSizeClass == .regular, RegularLibraryLayout.current == .sidebar,
+            if horizontalSizeClass == .regular, regularLayout == .sidebar,
                let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,
                bundleID.contains(".dev"), let slot = Int(suffix) {
@@ -494,7 +497,7 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         } else {
-            switch RegularLibraryLayout.current {
+            switch regularLayout {
             case .sidebar:
                 NavigationSplitView {
                     ListSidebarView(
@@ -515,7 +518,7 @@ struct IOSAppRootView: View {
                         .ignoresSafeArea(.keyboard)
                     regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
                         .librarySearchable(model: model)
-                        .environment(\.prefersSideButtons, true)
+                        .environment(\.prefersSideButtons, SideButtons.areSupported)
                         .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
                         .mask { railCardShape.ignoresSafeArea() }
                 }

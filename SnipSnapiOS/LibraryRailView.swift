@@ -28,6 +28,15 @@ extension EnvironmentValues {
     @Entry var prefersSideButtons = false
 }
 
+enum SideButtons {
+    /// The rail asks for side buttons only where items can join the trailing column. Before
+    /// iOS 27.1 it keeps the iPad toolbar, where an explicit Search item would become a full field.
+    static let areSupported: Bool = {
+        if #available(iOS 27.1, *) { return true }
+        return false
+    }()
+}
+
 extension ToolbarContent {
     /// Joins the open iPhone Duo's trailing column of round buttons. Without that column it stays put.
     @ToolbarContentBuilder
