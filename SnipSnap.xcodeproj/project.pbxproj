@@ -113,6 +113,7 @@
 		B1B000000000000000000001 /* CompactLibraryPageStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B000000000000000000101 /* CompactLibraryPageStack.swift */; };
 		E10000000000000000000005 /* SnipCollectionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* SnipCollectionViews.swift */; };
 		C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* LibrarySidebarViews.swift */; };
+		D9A100000000000000000002 /* LibraryRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000001 /* LibraryRailView.swift */; };
 		C10000000000000000000004 /* RecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* RecoveryViews.swift */; };
 		C10000000000000000000005 /* MoveSnipMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* MoveSnipMenu.swift */; };
 		E10000000000000000000006 /* EditorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000006 /* EditorViews.swift */; };
@@ -146,7 +147,6 @@
 		E10000000000000000000030 /* IOSCopyShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000030 /* IOSCopyShare.swift */; };
 		E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000042 /* IOSHapticFeedback.swift */; };
 		E10000000000000000000033 /* CompactLibraryControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000033 /* CompactLibraryControls.swift */; };
-		B31000000000000000000001 /* TableHingeControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32000000000000000000001 /* TableHingeControls.swift */; };
 		E10000000000000000000034 /* ComposerDraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* ComposerDraftStore.swift */; };
 		E10000000000000000000036 /* SnipListIconCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000040 /* SnipListIconCatalog.swift */; };
 		E10000000000000000000037 /* SnipListIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000036 /* SnipListIconPicker.swift */; };
@@ -206,6 +206,7 @@
 		C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000009 /* IOSBackupModelTests.swift */; };
 		C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */; };
 		C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000B /* ListSelectorGeometryTests.swift */; };
+		D9A100000000000000000004 /* LibraryRailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000003 /* LibraryRailTests.swift */; };
 		C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000C /* ListSelectorExpansionTests.swift */; };
 		C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */; };
 		C2610B26000000000000000E /* AttachmentThumbnailCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */; };
@@ -385,6 +386,7 @@
 		B0E000000000000000000002 /* ListPagePanObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPagePanObserver.swift; sourceTree = "<group>"; };
 		E20000000000000000000005 /* SnipCollectionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCollectionViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000003 /* LibrarySidebarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarViews.swift; sourceTree = "<group>"; };
+		D9A100000000000000000001 /* LibraryRailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRailView.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* RecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000005 /* MoveSnipMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveSnipMenu.swift; sourceTree = "<group>"; };
 		E20000000000000000000006 /* EditorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViews.swift; sourceTree = "<group>"; };
@@ -421,7 +423,6 @@
 		E20000000000000000000030 /* IOSCopyShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSCopyShare.swift; sourceTree = "<group>"; };
 		E20000000000000000000042 /* IOSHapticFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedback.swift; sourceTree = "<group>"; };
 		E20000000000000000000033 /* CompactLibraryControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLibraryControls.swift; sourceTree = "<group>"; };
-		B32000000000000000000001 /* TableHingeControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableHingeControls.swift; sourceTree = "<group>"; };
 		E20000000000000000000035 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F2000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E200000000000000000000F1 /* IOSClipboardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModel.swift; sourceTree = "<group>"; };
@@ -452,6 +453,7 @@
 		C2610A260000000000000009 /* IOSBackupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSBackupModelTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedbackTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000B /* ListSelectorGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorGeometryTests.swift; sourceTree = "<group>"; };
+		D9A100000000000000000003 /* LibraryRailTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRailTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000C /* ListSelectorExpansionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorExpansionTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardRowPreviewTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentThumbnailCacheTests.swift; sourceTree = "<group>"; };
@@ -712,6 +714,7 @@
 				B0E000000000000000000002 /* ListPagePanObserver.swift */,
 				B1B000000000000000000101 /* CompactLibraryPageStack.swift */,
 				C20000000000000000000003 /* LibrarySidebarViews.swift */,
+				D9A100000000000000000001 /* LibraryRailView.swift */,
 				E20000000000000000000005 /* SnipCollectionViews.swift */,
 				A940E1000000000000000004 /* CollectionScreenPresentation.swift */,
 				C20000000000000000000004 /* RecoveryViews.swift */,
@@ -728,7 +731,6 @@
 				E200000000000000000000F1 /* IOSClipboardModel.swift */,
 				E20000000000000000000042 /* IOSHapticFeedback.swift */,
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
-				B32000000000000000000001 /* TableHingeControls.swift */,
 				A92000000000000000000001 /* ListSelector.swift */,
                 AF5200000000000000000001 /* ListManagementPanel.swift */,
 				A92000000000000000000003 /* ListPageMotion.swift */,
@@ -754,6 +756,7 @@
 				C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */,
 				C2610A26000000000000000C /* ListSelectorExpansionTests.swift */,
 				C2610A26000000000000000B /* ListSelectorGeometryTests.swift */,
+				D9A100000000000000000003 /* LibraryRailTests.swift */,
 				C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */,
 				C2610A260000000000000009 /* IOSBackupModelTests.swift */,
 				C2610A260000000000000008 /* IOSComposerTests.swift */,
@@ -1182,6 +1185,7 @@
 				B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */,
 				B1B000000000000000000001 /* CompactLibraryPageStack.swift in Sources */,
 				C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */,
+				D9A100000000000000000002 /* LibraryRailView.swift in Sources */,
 				E10000000000000000000005 /* SnipCollectionViews.swift in Sources */,
 				A940E1000000000000000003 /* CollectionScreenPresentation.swift in Sources */,
 				C10000000000000000000004 /* RecoveryViews.swift in Sources */,
@@ -1199,7 +1203,6 @@
 				E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */,
 				E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
-				B31000000000000000000001 /* TableHingeControls.swift in Sources */,
 				A91000000000000000000001 /* ListSelector.swift in Sources */,
                 AF5100000000000000000001 /* ListManagementPanel.swift in Sources */,
 				A91000000000000000000003 /* ListPageMotion.swift in Sources */,
@@ -1237,6 +1240,7 @@
 				C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */,
 				C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */,
 				C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */,
+				D9A100000000000000000004 /* LibraryRailTests.swift in Sources */,
 				C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */,
 				C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */,
 				C2610B260000000000000008 /* IOSComposerTests.swift in Sources */,

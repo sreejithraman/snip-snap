@@ -248,9 +248,9 @@ struct ClipboardEntryRow: View {
                 )
             },
             callbacks: PanelDragSessionCallbacks(
-                onBegan: {},
-                onMoved: { _ in },
-                onEnded: { outcome, _ in
+                onBegan: { _ in },
+                onMoved: { _, _ in },
+                onEnded: { _, outcome, _ in
                     if outcome == .copy {
                         _ = place(.silent)
                     }

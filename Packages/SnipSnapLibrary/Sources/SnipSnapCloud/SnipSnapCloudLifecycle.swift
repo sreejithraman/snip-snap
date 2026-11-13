@@ -114,37 +114,101 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case oldSyncedContentRemovalCompleted
 }
 
+/// The pending iCloud enable marker. No marker means no enable is pending: it finished,
+/// was cancelled, or never started.
 enum PendingICloudSyncEnable {
+  private enum Phase: Equatable {
+    case pending
+    case retrying(SyncedContentSyncIssue)
+    case needsAttention(SyncedContentSyncIssue)
+  }
+
   private static let fileName = "icloud-sync-enable-pending"
-  private static let failedValue = Data("needs-attention".utf8)
+  private static let pendingValue = "pending"
+  private static let legacyFailedValue = Data("needs-attention".utf8)
   private static let legacyRetryPrefix = "retry:"
   private static let retryPrefix = "retry-v2:"
   private static let failurePrefix = "failure-v2:"
 
   static func exists(at rootURL: URL) -> Bool {
-    guard let data = try? Data(contentsOf: url(at: rootURL)) else { return false }
-    guard data != failedValue else { return false }
-    return String(data: data, encoding: .utf8)?.hasPrefix(failurePrefix) != true
+    switch phase(at: rootURL) {
+    case .pending, .retrying: true
+    case .needsAttention, nil: false
+    }
   }
 
   static func needsAttention(at rootURL: URL) -> Bool {
-    guard let data = try? Data(contentsOf: url(at: rootURL)) else { return false }
-    return data == failedValue
-      || String(data: data, encoding: .utf8)?.hasPrefix(failurePrefix) == true
+    failureIssue(at: rootURL) != nil
   }
 
   static func failureIssue(at rootURL: URL) -> SyncedContentSyncIssue? {
-    guard let data = try? Data(contentsOf: url(at: rootURL)) else { return nil }
-    if data == failedValue { return .appDataIssue }
-    return issue(in: data, prefix: failurePrefix)
+    guard case .needsAttention(let issue) = phase(at: rootURL) else { return nil }
+    return issue
   }
 
   static func retryIssue(at rootURL: URL) -> SyncedContentSyncIssue? {
+    guard case .retrying(let issue) = phase(at: rootURL) else { return nil }
+    return issue
+  }
+
+  fileprivate static func mark(at rootURL: URL) throws {
+    try write(.pending, at: rootURL)
+  }
+
+  fileprivate static func markNeedsAttention(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
+    try? write(.needsAttention(issue), at: rootURL)
+  }
+
+  fileprivate static func markRetrying(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
+    try? write(.retrying(issue), at: rootURL)
+  }
+
+  fileprivate static func clear(at rootURL: URL) throws {
+    do {
+      try FileManager.default.removeItem(at: url(at: rootURL))
+    } catch CocoaError.fileNoSuchFile {}
+  }
+
+  private static func url(at rootURL: URL) -> URL {
+    rootURL.appendingPathComponent(fileName, isDirectory: false)
+  }
+
+  private static func phase(at rootURL: URL) -> Phase? {
     guard let data = try? Data(contentsOf: url(at: rootURL)) else { return nil }
-    if let issue = issue(in: data, prefix: retryPrefix) { return issue }
-    guard let value = String(data: data, encoding: .utf8),
-      value.hasPrefix(legacyRetryPrefix)
+    if data == legacyFailedValue { return .needsAttention(.appDataIssue) }
+    guard let value = String(data: data, encoding: .utf8) else { return .pending }
+    if value.hasPrefix(failurePrefix) {
+      return .needsAttention(issue(in: value, after: failurePrefix) ?? .appDataIssue)
+    }
+    if let issue = issue(in: value, after: retryPrefix) ?? legacyRetryIssue(in: value) {
+      return .retrying(issue)
+    }
+    return .pending
+  }
+
+  private static func write(_ phase: Phase, at rootURL: URL) throws {
+    let value: String
+    switch phase {
+    case .pending: value = pendingValue
+    case .retrying(let issue): value = try retryPrefix + payload(for: issue)
+    case .needsAttention(let issue): value = try failurePrefix + payload(for: issue)
+    }
+    try DurableFile.write(Data(value.utf8), to: url(at: rootURL))
+  }
+
+  private static func payload(for issue: SyncedContentSyncIssue) throws -> String {
+    try JSONEncoder().encode(issue).base64EncodedString()
+  }
+
+  private static func issue(in value: String, after prefix: String) -> SyncedContentSyncIssue? {
+    guard value.hasPrefix(prefix),
+      let payload = Data(base64Encoded: String(value.dropFirst(prefix.count)))
     else { return nil }
+    return try? JSONDecoder().decode(SyncedContentSyncIssue.self, from: payload)
+  }
+
+  private static func legacyRetryIssue(in value: String) -> SyncedContentSyncIssue? {
+    guard value.hasPrefix(legacyRetryPrefix) else { return nil }
     return switch String(value.dropFirst(legacyRetryPrefix.count)) {
     case "waiting-for-connection": .waitingForConnection
     case "icloud-unavailable": .iCloudUnavailable
@@ -155,46 +219,6 @@ enum PendingICloudSyncEnable {
     case "attachment-unavailable": .attachmentUnavailable
     default: nil
     }
-  }
-
-  static func mark(at rootURL: URL) throws {
-    try DurableFile.write(Data("pending".utf8), to: url(at: rootURL))
-  }
-
-  static func markNeedsAttention(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
-    try? write(issue, prefix: failurePrefix, at: rootURL)
-  }
-
-  static func markRetrying(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
-    try? write(issue, prefix: retryPrefix, at: rootURL)
-  }
-
-  static func clear(at rootURL: URL) {
-    try? FileManager.default.removeItem(at: url(at: rootURL))
-  }
-
-  private static func url(at rootURL: URL) -> URL {
-    rootURL.appendingPathComponent(fileName, isDirectory: false)
-  }
-
-  private static func write(
-    _ issue: SyncedContentSyncIssue,
-    prefix: String,
-    at rootURL: URL
-  ) throws {
-    let payload = try JSONEncoder().encode(issue).base64EncodedString()
-    try DurableFile.write(Data("\(prefix)\(payload)".utf8), to: url(at: rootURL))
-  }
-
-  private static func issue(
-    in data: Data,
-    prefix: String
-  ) -> SyncedContentSyncIssue? {
-    guard let value = String(data: data, encoding: .utf8),
-      value.hasPrefix(prefix),
-      let payload = Data(base64Encoded: String(value.dropFirst(prefix.count)))
-    else { return nil }
-    return try? JSONDecoder().decode(SyncedContentSyncIssue.self, from: payload)
   }
 }
 
@@ -264,12 +288,12 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   private func resumePendingEnable() async throws -> SyncedContentEnableOutcome {
+    let wasICloudActive = SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: rootURL
+    ) != nil
+    let outcome: SyncedContentEnableOutcome
     do {
-      let outcome = try await finishPendingEnable()
-      if case .settingUp(let issue?) = outcome {
-        PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
-      }
-      return outcome
+      outcome = try await finishPendingEnable()
     } catch where Self.isRetryableSetupError(error) {
       let issue = SnipSnapCloudSyncIssueMapper.issue(for: error)
       PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
@@ -281,10 +305,27 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       )
       throw error
     }
+    switch outcome {
+    case .enabled:
+      do {
+        try PendingICloudSyncEnable.clear(at: rootURL)
+      } catch where !wasICloudActive {
+        // This attempt switched to the iCloud store, so the caller must reload it.
+        // The marker stays, and the next sync finishes the cleanup.
+        AppDiagnosticRecorder.live.record(
+          .failure(operation: "sync.enable", error: error, visibility: .background)
+        )
+      }
+    case .settingUp(let issue?):
+      PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
+    case .settingUp(nil):
+      break
+    }
+    return outcome
   }
 
   package func cancelPendingEnable() async throws {
-    PendingICloudSyncEnable.clear(at: rootURL)
+    try PendingICloudSyncEnable.clear(at: rootURL)
     let activePersistence: SwiftDataSyncModePersistence?
     if let persistence {
       activePersistence = persistence
@@ -371,7 +412,6 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     }
     await clearCollectionCoordinator()
     collectionCoordinator = try makeCollectionCoordinator(modePersistence)
-    PendingICloudSyncEnable.clear(at: rootURL)
     return .enabled
   }
 
@@ -459,6 +499,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     guard snapshot.activeStore.kind == .iCloudSync,
       let activeBinding = snapshot.activeStore.namespace
     else { return }
+    try PendingICloudSyncEnable.clear(at: rootURL)
     let descriptor = try await descriptor(
       for: activeBinding,
       allowsCachedRoles: choice == .useCurrentCache

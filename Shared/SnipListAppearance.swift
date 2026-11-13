@@ -110,13 +110,15 @@ extension SnipList {
 }
 
 enum ListIconSymbol {
+    static let defaultName = "list.bullet"
+
     static func supportedName(_ name: String) -> String {
 #if os(macOS)
         let isAvailable = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
 #else
         let isAvailable = UIImage(systemName: name) != nil
 #endif
-        return isAvailable ? name : "list.bullet"
+        return isAvailable ? name : defaultName
     }
 }
 

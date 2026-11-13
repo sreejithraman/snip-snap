@@ -113,7 +113,9 @@ struct SnipCollectionView: View {
             titleColor: displayedList.accent.color,
             showsControls: !model.isSearchPresented,
             recedesControls: showsListEditor,
-            trailingControls: collectionToolbar
+            trailingControls: collectionToolbar,
+            libraryActions: showsLibraryActions
+                ? libraryActions.map { $0.disabled(model.isPerformingGatheredAction) } : nil
         ))
         .overlay(alignment: .top) {
             if isEditingList {
@@ -398,6 +400,8 @@ struct SnipCollectionView: View {
 
     private var emptyTitle: String { model.completionFilter.emptyStateTitle }
 
+    private var showsLibraryActions: Bool { !isReordering && !isSelecting }
+
     @ViewBuilder
     private var collectionToolbar: some View {
         Group {
@@ -417,9 +421,6 @@ struct SnipCollectionView: View {
                     isReordering = true
                 }
                 .disabled(inlineEditDraft?.canDismiss == false)
-            }
-            if let libraryActions, !isReordering, !isSelecting {
-                libraryActions
             }
         }
         .disabled(model.isPerformingGatheredAction)

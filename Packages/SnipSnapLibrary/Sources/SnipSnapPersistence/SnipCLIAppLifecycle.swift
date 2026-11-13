@@ -6,15 +6,82 @@ public final class SnipCLIAppLifecycle {
   public typealias Reconcile = @MainActor @Sendable () async throws -> String
   public typealias ScheduleSync = @MainActor @Sendable () async -> Void
 
+  private struct Handlers {
+    let reconcile: Reconcile
+    let scheduleSync: ScheduleSync
+  }
+
+  private enum Phase {
+    case awaitingStart
+    /// The app session marker is not written yet, or writing it failed.
+    case started(Handlers)
+    case inAppSession(Handlers)
+    case terminated
+
+    var handlers: Handlers? {
+      switch self {
+      case .started(let handlers), .inAppSession(let handlers): handlers
+      case .awaitingStart, .terminated: nil
+      }
+    }
+  }
+
+  private enum ReadinessCheck {
+    case idle
+    case running(id: UUID, task: Task<Void, any Error>, rerunRequested: Bool)
+
+    var task: Task<Void, any Error>? {
+      guard case .running(_, let task, _) = self else { return nil }
+      return task
+    }
+
+    /// Asks the running check for another pass and returns the task to join.
+    mutating func requestRerun() -> Task<Void, any Error>? {
+      guard case .running(let id, let task, _) = self else { return nil }
+      self = .running(id: id, task: task, rerunRequested: true)
+      return task
+    }
+
+    mutating func beginPass(_ id: UUID) {
+      guard case .running(id, let task, _) = self else { return }
+      self = .running(id: id, task: task, rerunRequested: false)
+    }
+
+    func isRerunRequested(_ id: UUID) -> Bool {
+      guard case .running(id, _, let rerunRequested) = self else { return false }
+      return rerunRequested
+    }
+
+    mutating func end(_ id: UUID) {
+      guard case .running(id, _, _) = self else { return }
+      self = .idle
+    }
+  }
+
+  private enum SyncScheduling {
+    case idle
+    case scheduling(id: UUID, task: Task<Void, Never>)
+
+    var task: Task<Void, Never>? {
+      guard case .scheduling(_, let task) = self else { return nil }
+      return task
+    }
+
+    mutating func end(_ id: UUID) {
+      guard case .scheduling(id, _) = self else { return }
+      self = .idle
+    }
+  }
+
   private let store: SnipCLIRequestStore
   private let instance: SnipCLIAppInstance
-  private var reconcile: Reconcile?
-  private var scheduleSync: ScheduleSync?
-  private var refreshTask: Task<Void, any Error>?
-  private var syncTask: Task<Void, Never>?
-  private var needsAnotherRefresh = false
-  private var sessionStarted = false
-  private var stopped = false
+  private var phase = Phase.awaitingStart
+  private var readinessCheck = ReadinessCheck.idle
+  private var syncScheduling = SyncScheduling.idle
+
+  private var isTerminated: Bool {
+    if case .terminated = phase { true } else { false }
+  }
 
   public init(store: SnipCLIRequestStore, instance: SnipCLIAppInstance) {
     self.store = store
@@ -22,54 +89,57 @@ public final class SnipCLIAppLifecycle {
   }
 
   public func start(reconcile: @escaping Reconcile, scheduleSync: @escaping ScheduleSync) async throws {
-    guard self.reconcile == nil, !stopped else { throw SnipCLIAppReadinessError.unavailable }
-    self.reconcile = reconcile
-    self.scheduleSync = scheduleSync
+    guard case .awaitingStart = phase else { throw SnipCLIAppReadinessError.unavailable }
+    phase = .started(Handlers(reconcile: reconcile, scheduleSync: scheduleSync))
     try await refresh()
   }
 
   public func refresh() async throws {
-    guard !stopped, let reconcile else { throw SnipCLIAppReadinessError.unavailable }
-    if let refreshTask {
-      needsAnotherRefresh = true
+    guard let handlers = phase.handlers else { throw SnipCLIAppReadinessError.unavailable }
+    if let joined = readinessCheck.requestRerun() {
       try await store.suspendActiveScope()
-      try await refreshTask.value
+      try await joined.value
       return
     }
+    // Read before the task runs: termination may replace the phase first.
+    let needsAppSession = if case .started = phase { true } else { false }
+    let id = UUID()
     let task = Task { @MainActor [self] in
-      defer { refreshTask = nil }
-      if !sessionStarted {
+      defer { readinessCheck.end(id) }
+      if needsAppSession {
         try await store.beginAppSession(instance)
-        sessionStarted = true
+        if case .started(let handlers) = phase { phase = .inAppSession(handlers) }
       }
       while true {
         try Task.checkCancellation()
-        guard !stopped else { throw SnipCLIAppReadinessError.unavailable }
-        needsAnotherRefresh = false
+        guard !isTerminated else { throw SnipCLIAppReadinessError.unavailable }
+        readinessCheck.beginPass(id)
         let revision = try await store.beginReadinessCheck()
-        let token = try await reconcile()
+        let token = try await handlers.reconcile()
         try Task.checkCancellation()
-        guard !stopped else { throw SnipCLIAppReadinessError.unavailable }
-        if needsAnotherRefresh { continue }
+        guard !isTerminated else { throw SnipCLIAppReadinessError.unavailable }
+        if readinessCheck.isRerunRequested(id) { continue }
         let published = try await store.publishActiveScopeToken(token, ifUnchangedSince: revision)
-        if needsAnotherRefresh || !published { continue }
+        if readinessCheck.isRerunRequested(id) || !published { continue }
         break
       }
-      guard !stopped, syncTask == nil else { return }
-      syncTask = Task { @MainActor [self] in
-        defer { syncTask = nil }
-        guard !stopped, !Task.isCancelled else { return }
-        await scheduleSync?()
+      guard !isTerminated, case .idle = syncScheduling else { return }
+      let syncID = UUID()
+      let syncWork = Task { @MainActor [self] in
+        defer { syncScheduling.end(syncID) }
+        guard !isTerminated, !Task.isCancelled else { return }
+        await handlers.scheduleSync()
       }
+      syncScheduling = .scheduling(id: syncID, task: syncWork)
     }
-    refreshTask = task
+    readinessCheck = .running(id: id, task: task, rerunRequested: false)
     try await task.value
   }
 
   public func beginTermination() {
-    stopped = true
-    refreshTask?.cancel()
-    syncTask?.cancel()
+    phase = .terminated
+    readinessCheck.task?.cancel()
+    syncScheduling.task?.cancel()
   }
 
   public func stop() async throws {
