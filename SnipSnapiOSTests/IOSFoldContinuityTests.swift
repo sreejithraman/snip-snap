@@ -278,6 +278,34 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         )
     }
 
+    /// The camera can't redraw for a new size, so a swap closes it. Files, Photos, and a preview stay open.
+    /// Storage-level, because presenting the real camera raises where the simulator has none.
+    func testLayoutSwapClosesOnlyTheCameraAndKeepsTheDraft() throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("Camera draft", to: storage)
+        let draft = storage.draftStore.draft(for: SnipList.inboxID)
+
+        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .camera, listID: SnipList.inboxID)
+        storage.layoutDidSwap()
+        XCTAssertNil(storage.attachmentPicker, "A layout swap must close the camera")
+        XCTAssertNil(storage.stagingTask)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), draft)
+
+        for source in [AttachmentSource.files, .photos] {
+            let request = ComposerAttachmentPickerRequest(source: source, listID: SnipList.inboxID)
+            storage.attachmentPicker = request
+            storage.layoutDidSwap()
+            XCTAssertEqual(storage.attachmentPicker, request, "\(source)")
+        }
+        storage.attachmentPicker = nil
+        let preview = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID)
+        storage.attachmentPreview = preview
+        storage.layoutDidSwap()
+        XCTAssertEqual(storage.attachmentPreview, preview)
+        XCTAssertNil(storage.stagingTask)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), draft)
+    }
+
     func testCancelledPickerClearsItsRequestAndStagesNothing() {
         let storage = makeComposerStorage()
         let model = makeModel(library: ModelTestLibrary())

@@ -74,6 +74,7 @@ struct IOSAppRootView: View {
     private var searchNavigation: some View {
         appNavigation
         .background { Color.clear.frame(width: 0, height: 0).modifier(ComposerAttachmentPresentations(model: model, storage: compactComposerStorage)) }
+        .onChange(of: usesCompactLayout) { compactComposerStorage.layoutDidSwap() }
         .onChange(of: model.isSearchPresented) { _, presented in
             if presented {
                 isCompactComposerFocused = false
@@ -394,9 +395,12 @@ struct IOSAppRootView: View {
         }
     }
 
+    /// Picks the compact or regular tree; a change, such as folding an iPhone Duo, swaps them.
+    private var usesCompactLayout: Bool { horizontalSizeClass == .compact }
+
     @ViewBuilder
     private var appNavigation: some View {
-        if horizontalSizeClass == .compact {
+        if usesCompactLayout {
             GeometryReader { proxy in
                 VStack(spacing: 0) {
                     CompactLibraryPageStack(

@@ -732,6 +732,9 @@ final class CompactComposerStorage {
         return saved
     }
 
+    /// The root calls this when it swaps its compact and regular trees.
+    func layoutDidSwap() {}
+
     /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
     private func finishSaving() {
         savingListID = nil
