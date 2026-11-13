@@ -766,7 +766,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         await model.load()
         _ = await model.toggleDone(id: current.id)
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         await model.performToastActionNow(undo)
         let inverseFailure = try XCTUnwrap(model.failure)
         model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")

@@ -197,7 +197,7 @@ final class IOSBackupModelTests: IOSModelTestCase {
         })
         let model = IOSAppModel(library: target, userActions: actions)
         await model.load()
-        model.errorMessage = "Unrelated library error"
+        model.presentDialogFailure("Unrelated library error")
         let lifetime = IOSSettingsBackupLifetime()
         lifetime.begin()
         let previewTask = Task { try await model.previewBackupImport(from: backupURL) }
@@ -225,7 +225,7 @@ final class IOSBackupModelTests: IOSModelTestCase {
     func testBackupPickerFailureRecordsTheLocalAlertAndIgnoresCancellation() {
         let diagnostics = IOSDiagnosticRecorderProbe()
         let model = IOSAppModel(library: ModelTestLibrary(), diagnostics: diagnostics.recorder)
-        model.errorMessage = "Unrelated library error"
+        model.presentDialogFailure("Unrelated library error")
         let error = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
                             userInfo: [NSLocalizedDescriptionKey: "private backup path"])
 
@@ -253,7 +253,7 @@ final class IOSBackupModelTests: IOSModelTestCase {
         let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("Target.json"))
         let model = makeImportModel(library: target)
         await model.load()
-        model.errorMessage = "Unrelated library error"
+        model.presentDialogFailure("Unrelated library error")
 
         do {
             try await model.previewBackupImport(from: root.appendingPathComponent("Missing.json"))
@@ -281,7 +281,7 @@ final class IOSBackupModelTests: IOSModelTestCase {
         try await model.previewBackupImport(from: backupURL)
         let saved = await model.createSnip(content: "Changed after preview", in: SnipList.inboxID)
         XCTAssertTrue(saved)
-        model.errorMessage = "Unrelated library error"
+        model.presentDialogFailure("Unrelated library error")
 
         do {
             try await model.confirmBackupImport()
