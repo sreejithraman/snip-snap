@@ -50,7 +50,7 @@ private struct TableHingeControls<Controls: View>: ViewModifier {
                         // Page rows scroll under the inset; keep them off the hinge and the bottom half.
                         Rectangle()
                             .fill(.background)
-                            .ignoresSafeArea(.container, edges: .bottom)
+                            .ignoresSafeArea(edges: .bottom)
                             .opacity(hinge == nil ? 0 : 1)
                             .allowsHitTesting(hinge != nil)
                             .accessibilityHidden(true)
