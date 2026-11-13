@@ -1815,6 +1815,26 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSuccessfulCopyRetryClosesTheResolvedFailureDetails() async throws {
+        let pinned = Snip(content: "Retry copy", origin: .quickEntry, pinnedAt: Date())
+        let model = AppModel(library: InMemorySnipLibrary(snips: [pinned]), defaults: defaults())
+        await model.reload()
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+        let failure = try XCTUnwrap(model.latestFailure)
+        model.showLatestErrorDetails()
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-resolved-details-\(UUID())"))
+
+        let copied = await model.placeOnClipboardNow(.snips([pinned]), to: pasteboard)
+
+        XCTAssertTrue(copied)
+        XCTAssertNil(model.errorDetails, "Mac closes the details of the failure a retry resolved.")
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(model.latestFailure?.id, failure.id)
+        XCTAssertEqual(model.toast?.message, "Snapped")
+        XCTAssertNil(model.toast?.action)
+    }
+
+    @MainActor
     func testRepeatedAttachmentPreparationFailureIsRecordedOnceWhilePresented() {
         let probe = MacDiagnosticRecorderProbe()
         let model = AppModel(

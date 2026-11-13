@@ -158,6 +158,26 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         XCTAssertEqual(model.toast?.id, undo.id, "A copy confirmation never replaces Undo.")
     }
 
+    func testSuccessfulCopyRetryKeepsTheResolvedFailureDetailsOpen() async throws {
+        let pinned = Snip(content: "Retry copy", origin: .quickEntry, pinnedAt: Date())
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [pinned]))
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+        let failure = try XCTUnwrap(model.failure)
+        XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+        model.showLatestErrorDetails()
+
+        let copied = await coordinator.copy(snips: [pinned], model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertNil(model.failure)
+        XCTAssertEqual(model.errorDetails?.id, failure.id, "iOS keeps details open after the retry succeeds.")
+        XCTAssertEqual(model.latestFailure?.id, failure.id)
+        XCTAssertEqual(model.toast?.message, "Snapped")
+        XCTAssertNil(model.toast?.action)
+    }
+
     func testExpiringSnackbarClosesThroughTheModelBeforeItsDismissalRuns() async throws {
         let readyBy = ContinuousClock().now.advanced(by: .seconds(3))
         while UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).isEmpty,
