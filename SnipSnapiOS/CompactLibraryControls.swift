@@ -141,16 +141,22 @@ struct CompactLibraryControls: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
             if !showsListTabs {
-                // Fixed spacers give Paste its own glass circle, apart from the page's items,
-                // and placing Search after it keeps the two together on every page.
+                // Paste draws its own glass circle because the system folds the Search item into
+                // the shared background of the item before it. Placing Search explicitly instead
+                // turns it into a full search field on iPad.
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
-                        .disabled(isPasteDisabled)
-                        .accessibilityIdentifier("paste-to-clipboard")
+                    CompactGlassCircleButton(length: Self.toolbarCircleLength, action: paste) {
+                        Image(systemName: "doc.on.clipboard")
+                            .font(.system(size: 18))
+                            .imageScale(.medium)
+                    }
+                    .disabled(isPasteDisabled)
+                    .accessibilityLabel(pasteLabel)
+                    .accessibilityIdentifier("paste-to-clipboard")
                 }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
             }
         }
         .fileImporter(
@@ -215,6 +221,9 @@ struct CompactLibraryControls: View {
             storage.draftStore.flushText()
         }
     }
+
+    // Matches the system's glass circles in the navigation bar.
+    private static let toolbarCircleLength: CGFloat = 44
 
     private var navigationWidth: CGFloat { max(0, toolbarWidth - 32) }
 
