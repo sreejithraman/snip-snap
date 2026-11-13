@@ -102,6 +102,33 @@ final class AppModelCLIDataTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testAppPreviewReplacingACLIPreviewMakesTheCLIPreviewStale() async throws {
+        let backup = try await makeBackup(content: "From backup")
+        let (target, targetLibrary) = try makeImportTarget()
+        let cliPreview = try await target.handleCLIRequest(request(.previewBackup(path: backup.path), target))
+        let cliPreviewID = try XCTUnwrap(data(cliPreview).importPreview?.id)
+
+        await target.previewBackupImport(from: backup)
+        XCTAssertNotNil(target.pendingImportPreview)
+
+        do {
+            _ = try await target.handleCLIRequest(request(.cancelBackup(previewID: cliPreviewID), target))
+            XCTFail("Cancelling a replaced CLI preview must report that the import changed")
+        } catch SnipLibraryError.importChanged {}
+        do {
+            _ = try await target.handleCLIRequest(request(.importBackup(previewID: cliPreviewID), target))
+            XCTFail("Importing a replaced CLI preview must report that the import changed")
+        } catch SnipLibraryError.importChanged {}
+        XCTAssertNotNil(target.pendingImportPreview, "The app preview must stay presented")
+
+        await target.confirmBackupImport()
+
+        XCTAssertNil(target.pendingImportPreview)
+        let archive = try await targetLibrary.archive()
+        XCTAssertEqual(archive.snips.map(\.content), ["From backup"])
+    }
+
+    @MainActor
     func testDraftMoveGuardsBothEndsAndSaveAsSnipKeepsAttachmentBytes() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())
@@ -140,6 +167,25 @@ final class AppModelCLIDataTests: StoreBackedTestCase {
             throw XCTUnwrapError()
         }
         return result
+    }
+
+    @MainActor
+    private func makeBackup(content: String) async throws -> URL {
+        let url = try storeURL()
+        let backup = try JSONSnipLibrary(fileURL: url)
+        _ = try await backup.add(content: content, origin: .quickEntry)
+        return url
+    }
+
+    @MainActor
+    private func makeImportTarget() throws -> (AppModel, JSONSnipLibrary) {
+        let library = try JSONSnipLibrary(fileURL: storeURL())
+        let model = AppModel(library: library, defaults: defaults(), userActionsFactory: { library in
+            DirectSnipLibraryUserActions(library: library, previewBackupImport: { url, target in
+                try await SnipLibraryImport.preview(backupURL: url, target: target)
+            })
+        })
+        return (model, library)
     }
 
     @MainActor
