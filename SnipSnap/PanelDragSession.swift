@@ -44,16 +44,22 @@ protocol PanelDragExportPackage {
     func pasteboardWriters() -> [NSPasteboardWriting]
 }
 
+/// Identifies one native drag session, so late callbacks from an earlier
+/// drag of the same snips cannot act on a newer one.
+struct PanelDragSessionToken: Hashable {
+    private let id = UUID()
+}
+
 @MainActor
 struct PanelDragSessionCallbacks {
-    let onBegan: () -> Void
-    let onMoved: (NSPoint) -> Void
-    let onEnded: (PanelDragSessionOutcome, NSPoint) -> Void
+    let onBegan: (PanelDragSessionToken) -> Void
+    let onMoved: (PanelDragSessionToken, NSPoint) -> Void
+    let onEnded: (PanelDragSessionToken, PanelDragSessionOutcome, NSPoint) -> Void
 
     static let none = Self(
-        onBegan: {},
-        onMoved: { _ in },
-        onEnded: { _, _ in }
+        onBegan: { _ in },
+        onMoved: { _, _ in },
+        onEnded: { _, _, _ in }
     )
 }
 
@@ -90,9 +96,9 @@ struct PanelDragSessionAdapter {
     let onBlocked: () -> Void
     let makeSession: (PanelDragSourceContext) -> PanelDragSessionContent
     let sourceOperationMask: (NSDraggingContext) -> NSDragOperation
-    let onBegan: () -> Void
-    let onMoved: (NSPoint) -> Void
-    let onEnded: (PanelDragSessionOutcome, NSPoint) -> Void
+    let onBegan: (PanelDragSessionToken) -> Void
+    let onMoved: (PanelDragSessionToken, NSPoint) -> Void
+    let onEnded: (PanelDragSessionToken, PanelDragSessionOutcome, NSPoint) -> Void
 
     static func exporting<Export: PanelDragExportPackage>(
         makeExport: @escaping () -> Export,
@@ -229,12 +235,31 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
         }
     }
 
+    private struct Drag {
+        let token: PanelDragSessionToken
+        let region: Region
+        /// Keeps the export alive until the session ends.
+        let content: PanelDragSessionContent
+        /// Nil until `beginDraggingSession` returns. AppKit may call back
+        /// before then, and those callbacks belong to this drag.
+        var session: NSDraggingSession?
+
+        func owns(_ candidate: NSDraggingSession) -> Bool {
+            session.map { $0 === candidate } ?? true
+        }
+    }
+
+    private enum Phase {
+        case idle
+        /// Mouse down on a region; the pan has not begun.
+        case armed(Region)
+        case dragging(Drag)
+    }
+
     private weak var hostView: NSView?
     private var regions: [PanelDragSessionRegionID: Region] = [:]
     private var blockingViews: [UUID: WeakView] = [:]
-    private var pendingRegion: Region?
-    private var activeRegion: Region?
-    private var activeSessionContent: PanelDragSessionContent?
+    private var phase = Phase.idle
     private lazy var panRecognizer: NSPanGestureRecognizer = {
         let recognizer = PanelDragPanGestureRecognizer(
             target: self,
@@ -270,8 +295,8 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
     func unregisterRegion(id: PanelDragSessionRegionID, view: NSView) {
         guard let registeredView = regions[id]?.view, registeredView === view else { return }
         regions.removeValue(forKey: id)
-        if pendingRegion?.id == id {
-            pendingRegion = nil
+        if case .armed(let region) = phase, region.id == id {
+            phase = .idle
         }
     }
 
@@ -294,7 +319,7 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
     }
 
     var hasPendingRegionForTesting: Bool {
-        pendingRegion != nil
+        if case .armed = phase { true } else { false }
     }
 
     private func region(atWindowPoint point: NSPoint) -> Region? {
@@ -329,8 +354,15 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
         shouldAttemptToRecognizeWith event: NSEvent
     ) -> Bool {
         guard event.type == .leftMouseDown else { return false }
-        pendingRegion = region(atWindowPoint: event.locationInWindow)
-        return pendingRegion != nil
+        // AppKit's drag loop consumes mouse events during a drag. A mouse down
+        // here while dragging means AppKit never ended that session, so drop
+        // it; its late callbacks no longer match the current drag.
+        guard let region = region(atWindowPoint: event.locationInWindow) else {
+            phase = .idle
+            return false
+        }
+        phase = .armed(region)
+        return true
     }
 
     func gestureRecognizer(
@@ -342,22 +374,19 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
 
     @objc
     private func handlePan(_ recognizer: NSPanGestureRecognizer) {
+        guard case .armed(let region) = phase else { return }
         guard recognizer.state == .began else {
             if recognizer.state == .failed
                 || recognizer.state == .cancelled
                 || recognizer.state == .ended {
-                pendingRegion = nil
+                phase = .idle
             }
             return
         }
+        phase = .idle
         guard let hostView,
               let event = NSApp.currentEvent,
-              let region = pendingRegion,
-              let regionView = region.view else {
-            pendingRegion = nil
-            return
-        }
-        defer { pendingRegion = nil }
+              let regionView = region.view else { return }
         guard region.adapter.canBegin() else {
             region.adapter.onBlocked()
             return
@@ -375,14 +404,18 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
             )
         )
         guard !sessionContent.draggingItems.isEmpty else { return }
-        region.adapter.onBegan()
-        activeRegion = region
-        activeSessionContent = sessionContent
+        let token = PanelDragSessionToken()
+        region.adapter.onBegan(token)
+        phase = .dragging(Drag(token: token, region: region, content: sessionContent))
         let session = hostView.beginDraggingSession(
             with: sessionContent.draggingItems,
             event: event,
             source: self
         )
+        if case .dragging(var drag) = phase, drag.token == token {
+            drag.session = session
+            phase = .dragging(drag)
+        }
         session.animatesToStartingPositionsOnCancelOrFail = false
         session.draggingFormation = .none
     }
@@ -391,14 +424,16 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
         _ session: NSDraggingSession,
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
-        activeRegion?.adapter.sourceOperationMask(context) ?? []
+        guard let drag = currentDrag(for: session) else { return [] }
+        return drag.region.adapter.sourceOperationMask(context)
     }
 
     func draggingSession(
         _ session: NSDraggingSession,
         movedTo screenPoint: NSPoint
     ) {
-        activeRegion?.adapter.onMoved(windowPoint(from: screenPoint))
+        guard let drag = currentDrag(for: session) else { return }
+        drag.region.adapter.onMoved(drag.token, windowPoint(from: screenPoint))
     }
 
     func draggingSession(
@@ -406,14 +441,18 @@ final class PanelDragSessionController: NSObject, NSDraggingSource, NSGestureRec
         endedAt screenPoint: NSPoint,
         operation: NSDragOperation
     ) {
-        let region = activeRegion
-        activeRegion = nil
-        activeSessionContent = nil
-        pendingRegion = nil
-        region?.adapter.onEnded(
+        guard let drag = currentDrag(for: session) else { return }
+        phase = .idle
+        drag.region.adapter.onEnded(
+            drag.token,
             PanelDragSessionOutcome(operation: operation),
             windowPoint(from: screenPoint)
         )
+    }
+
+    private func currentDrag(for session: NSDraggingSession) -> Drag? {
+        guard case .dragging(let drag) = phase, drag.owns(session) else { return nil }
+        return drag
     }
 
     private func windowPoint(from screenPoint: NSPoint) -> NSPoint {
