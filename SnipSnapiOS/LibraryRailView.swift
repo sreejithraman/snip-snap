@@ -71,8 +71,11 @@ private struct VerticalBarProbe: UIViewRepresentable {
     }
 
     func updateUIView(_ view: ProbeView, context: Context) {
+        // Reports can arrive while SwiftUI mounts the probe, where a state write is dropped.
         view.report = { [binding = $hasVerticalBar] value in
-            if binding.wrappedValue != value { binding.wrappedValue = value }
+            DispatchQueue.main.async {
+                if binding.wrappedValue != value { binding.wrappedValue = value }
+            }
         }
     }
 
