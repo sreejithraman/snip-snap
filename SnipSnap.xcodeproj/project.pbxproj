@@ -177,6 +177,7 @@
 		BC1000000000000000000004 /* SnipMarkdownContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2000000000000000000003 /* SnipMarkdownContent.swift */; };
 		BC1000000000000000000005 /* SnipMarkdownContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2000000000000000000003 /* SnipMarkdownContent.swift */; };
 		E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F1 /* IOSClipboardModel.swift */; };
+		D3A10C000000000000000011 /* IOSSharedContainerLockLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A10C000000000000000001 /* IOSSharedContainerLockLifecycle.swift */; };
 		E100000000000000000000F2 /* IOSClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E200000000000000000000F2 /* IOSClipboardView.swift */; };
 		AF1000000000000000000001 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
 		AF1000000000000000000002 /* SFSymbolNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2000000000000000000001 /* SFSymbolNames.swift */; };
@@ -195,6 +196,7 @@
 		C2610B260000000000000001 /* IOSListModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000001 /* IOSListModelTests.swift */; };
 		C2610B260000000000000002 /* IOSSelectionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000002 /* IOSSelectionModelTests.swift */; };
 		C2610B260000000000000003 /* IOSClipboardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000003 /* IOSClipboardModelTests.swift */; };
+		D3A10C000000000000000012 /* IOSSharedContainerLockLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */; };
 		C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000004 /* IOSSyncModelTests.swift */; };
 		C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */; };
 		C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000006 /* IOSShareImportTests.swift */; };
@@ -421,6 +423,7 @@
 		E20000000000000000000035 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		F2000000000000000000000A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		E200000000000000000000F1 /* IOSClipboardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModel.swift; sourceTree = "<group>"; };
+		D3A10C000000000000000001 /* IOSSharedContainerLockLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSharedContainerLockLifecycle.swift; sourceTree = "<group>"; };
 		E200000000000000000000F2 /* IOSClipboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardView.swift; sourceTree = "<group>"; };
 		AF2000000000000000000001 /* SFSymbolNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFSymbolNames.swift; sourceTree = "<group>"; };
 				927FB1964550BA812F693419 /* AppModel+CLILibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+CLILibrary.swift"; sourceTree = "<group>"; };
@@ -438,6 +441,7 @@
 		C2610A260000000000000001 /* IOSListModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSListModelTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000002 /* IOSSelectionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSelectionModelTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000003 /* IOSClipboardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSClipboardModelTests.swift; sourceTree = "<group>"; };
+		D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSharedContainerLockLifecycleTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000004 /* IOSSyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSyncModelTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentPreviewTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000006 /* IOSShareImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSShareImportTests.swift; sourceTree = "<group>"; };
@@ -720,6 +724,7 @@
 				E20000000000000000000030 /* IOSCopyShare.swift */,
 				E200000000000000000000F2 /* IOSClipboardView.swift */,
 				E200000000000000000000F1 /* IOSClipboardModel.swift */,
+				D3A10C000000000000000001 /* IOSSharedContainerLockLifecycle.swift */,
 				E20000000000000000000042 /* IOSHapticFeedback.swift */,
 				E20000000000000000000033 /* CompactLibraryControls.swift */,
 				A92000000000000000000001 /* ListSelector.swift */,
@@ -757,6 +762,7 @@
 				C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */,
 				C2610A260000000000000004 /* IOSSyncModelTests.swift */,
 				C2610A260000000000000003 /* IOSClipboardModelTests.swift */,
+				D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */,
 				C2610A260000000000000002 /* IOSSelectionModelTests.swift */,
 				C2610A260000000000000001 /* IOSListModelTests.swift */,
 				F8A1D64C09284B9B91D17A02 /* IOSCopyShareTests.swift */,
@@ -1189,6 +1195,7 @@
 				E10000000000000000000030 /* IOSCopyShare.swift in Sources */,
 				E100000000000000000000F2 /* IOSClipboardView.swift in Sources */,
 				E100000000000000000000F1 /* IOSClipboardModel.swift in Sources */,
+				D3A10C000000000000000011 /* IOSSharedContainerLockLifecycle.swift in Sources */,
 				E10000000000000000000042 /* IOSHapticFeedback.swift in Sources */,
 				E10000000000000000000033 /* CompactLibraryControls.swift in Sources */,
 				A91000000000000000000001 /* ListSelector.swift in Sources */,
@@ -1237,6 +1244,7 @@
 				C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */,
 				C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */,
 				C2610B260000000000000003 /* IOSClipboardModelTests.swift in Sources */,
+				D3A10C000000000000000012 /* IOSSharedContainerLockLifecycleTests.swift in Sources */,
 				C2610B260000000000000002 /* IOSSelectionModelTests.swift in Sources */,
 				C2610B260000000000000001 /* IOSListModelTests.swift in Sources */,
 				AF7100000000000000000007 /* AppFeedbackTests.swift in Sources */,
