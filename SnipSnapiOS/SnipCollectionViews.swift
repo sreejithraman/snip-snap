@@ -35,6 +35,7 @@ struct SnipCollectionView: View {
     @FocusState private var isInlineEditorFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.prefersSideButtons) private var prefersSideButtons
 
     private var displayedListID: UUID { listID ?? model.lastSelectedListID }
     private var displayedList: SnipList {
@@ -113,7 +114,9 @@ struct SnipCollectionView: View {
             titleColor: displayedList.accent.color,
             showsControls: !model.isSearchPresented,
             recedesControls: showsListEditor,
-            trailingControls: collectionToolbar
+            trailingControls: collectionToolbar,
+            libraryActions: showsLibraryActions
+                ? libraryActions.map { $0.disabled(model.isPerformingGatheredAction) } : nil
         ))
         .overlay(alignment: .top) {
             if isEditingList {
@@ -398,6 +401,8 @@ struct SnipCollectionView: View {
 
     private var emptyTitle: String { model.completionFilter.emptyStateTitle }
 
+    private var showsLibraryActions: Bool { !isReordering && !isSelecting }
+
     @ViewBuilder
     private var collectionToolbar: some View {
         Group {
@@ -418,7 +423,7 @@ struct SnipCollectionView: View {
                 }
                 .disabled(inlineEditDraft?.canDismiss == false)
             }
-            if let libraryActions, !isReordering, !isSelecting {
+            if !prefersSideButtons, let libraryActions, showsLibraryActions {
                 libraryActions
             }
         }

@@ -22,6 +22,7 @@ struct IOSClipboardView: View {
     var isActivePage = true
     @State var viewState = ClipboardViewState()
     @State private var confirmsClear = false
+    @Environment(\.prefersSideButtons) private var prefersSideButtons
 
     private var isSearching: Bool { isActivePage && libraryModel.isSearchPresented }
 
@@ -41,39 +42,46 @@ struct IOSClipboardView: View {
             : String(localized: "Paste here to add content.")
     }
 
-    @ViewBuilder
     private var clipboardToolbar: some View {
         Group {
-            Menu("View options", systemImage: "line.3.horizontal.decrease") {
-                Section("Show") {
-                    Picker("Show", selection: $viewState.onlyPinned) {
-                        Text("All").tag(false)
-                        Text("Pinned").tag(true)
-                    }.pickerStyle(.inline)
-                }
-                Section("Sort") {
-                    Picker("Sort", selection: $viewState.newestFirst) {
-                        Text("Newest first").tag(true)
-                        Text("Oldest first").tag(false)
-                    }.pickerStyle(.inline)
-                }
-            }
-            .accessibilityIdentifier("workflow-options")
-            Menu("Library actions", systemImage: "ellipsis") {
-                Button("Clear unpinned history", systemImage: "trash", role: .destructive) { confirmsClear = true }
-                    .disabled(!model.entries.contains { !$0.isPinned })
-                Divider()
-                LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
-                if libraryModel.latestFailure != nil {
-                    Button("Error Details", systemImage: "exclamationmark.bubble") {
-                        libraryModel.showLatestErrorDetails()
-                    }
-                }
-                Button("Settings", systemImage: "gearshape", action: settings)
-                    .accessibilityIdentifier("settings")
-            }
-            .accessibilityIdentifier("library-actions")
+            viewOptionsMenu
+            if !prefersSideButtons { clipboardActionsMenu }
         }
+    }
+
+    private var viewOptionsMenu: some View {
+        Menu("View options", systemImage: "line.3.horizontal.decrease") {
+            Section("Show") {
+                Picker("Show", selection: $viewState.onlyPinned) {
+                    Text("All").tag(false)
+                    Text("Pinned").tag(true)
+                }.pickerStyle(.inline)
+            }
+            Section("Sort") {
+                Picker("Sort", selection: $viewState.newestFirst) {
+                    Text("Newest first").tag(true)
+                    Text("Oldest first").tag(false)
+                }.pickerStyle(.inline)
+            }
+        }
+        .accessibilityIdentifier("workflow-options")
+    }
+
+    private var clipboardActionsMenu: some View {
+        Menu("Library actions", systemImage: "ellipsis") {
+            Button("Clear unpinned history", systemImage: "trash", role: .destructive) { confirmsClear = true }
+                .disabled(!model.entries.contains { !$0.isPinned })
+            Divider()
+            LibrarySyncAction(syncedContentSettings: syncedContentSettings, syncNow: syncNow)
+            if libraryModel.latestFailure != nil {
+                Button("Error Details", systemImage: "exclamationmark.bubble") {
+                    libraryModel.showLatestErrorDetails()
+                }
+            }
+            Button("Settings", systemImage: "gearshape", action: settings)
+                .accessibilityIdentifier("settings")
+        }
+        .accessibilityIdentifier("library-actions")
     }
 
     var body: some View {
@@ -90,7 +98,8 @@ struct IOSClipboardView: View {
         .modifier(CollectionScreenPresentation(
             title: String(localized: "Clipboard"),
             showsControls: !libraryModel.isSearchPresented,
-            trailingControls: clipboardToolbar
+            trailingControls: clipboardToolbar,
+            libraryActions: prefersSideButtons ? clipboardActionsMenu : nil
         ))
         .onChange(of: isActivePage) { _, active in
             if !active { confirmsClear = false }

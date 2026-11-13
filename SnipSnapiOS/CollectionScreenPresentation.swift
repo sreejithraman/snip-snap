@@ -12,13 +12,19 @@ extension EnvironmentValues {
     }
 }
 
-struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
+struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View>: ViewModifier {
     @Environment(\.suppliesPageToolbar) private var suppliesPageToolbar
+    @Environment(\.prefersSideButtons) private var prefersSideButtons
     let title: String
     var titleColor: Color = .primary
     var showsControls = true
     var recedesControls = false
     let trailingControls: TrailingControls
+    /// Gets its own side button. Without side buttons the caller keeps it in `trailingControls`.
+    let libraryActions: LibraryActions?
+
+    private var controlTint: Color { recedesControls ? Color.secondary : SnipSnapTheme.controlTint }
+    private var sharedBackground: Visibility { recedesControls ? .hidden : .automatic }
 
     func body(content: Content) -> some View {
         content
@@ -30,11 +36,28 @@ struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
             }
             .toolbar {
                 if showsControls && suppliesPageToolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        trailingControls
-                            .tint(recedesControls ? Color.secondary : SnipSnapTheme.controlTint)
+                    if prefersSideButtons {
+                        // Fixed spacers keep each control in its own circle in the trailing column.
+                        ToolbarItem(placement: .topBarTrailing) {
+                            trailingControls.tint(controlTint)
+                        }
+                        .sharedBackgroundVisibility(sharedBackground)
+                        .sideButton()
+                        if let libraryActions {
+                            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                                .sideButton()
+                            ToolbarItem(placement: .topBarTrailing) {
+                                libraryActions.tint(controlTint)
+                            }
+                            .sharedBackgroundVisibility(sharedBackground)
+                            .sideButton()
+                        }
+                    } else {
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            trailingControls.tint(controlTint)
+                        }
+                        .sharedBackgroundVisibility(sharedBackground)
                     }
-                    .sharedBackgroundVisibility(recedesControls ? .hidden : .automatic)
                 }
             }
     }

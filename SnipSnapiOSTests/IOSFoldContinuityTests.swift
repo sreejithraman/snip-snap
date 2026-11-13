@@ -128,7 +128,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         model.searchText = "Gather"
         for sizeClass in [UIUserInterfaceSizeClass.regular, .compact, .regular] {
             root.swap(to: sizeClass)
-            // The regular layout's search field is not in this harness's view tree; the Duo UI test checks it.
+            // This harness checks only the compact search field; the Duo UI test checks the regular layouts'.
             if sizeClass == .compact {
                 let presented = root.wait("compact search field shows the query") { root.visibleSearchFieldTexts.contains("Gather") }
                 XCTAssertTrue(presented, root.searchFieldDiagnostics)
@@ -532,7 +532,12 @@ private final class RootHarness {
         return "regular=\(isRegular) composers=\(composers) windowFrame=\(window.frame)"
     }
 
-    var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
+    /// The compact tree pages lists through `ListPagePanObserver`; neither regular tree (the iPad sidebar or the iPhone rail) has one.
+    var isRegular: Bool {
+        first(UISplitViewController.self, in: host) != nil
+            || (first(UINavigationController.self, in: host) != nil
+                && allViews(ListPagePanObserver.AttachmentView.self).isEmpty)
+    }
 
     /// A controller the root presents, such as a system picker, or one anywhere inside a presented container,
     /// as a full-screen cover nests its content.

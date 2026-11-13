@@ -546,7 +546,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(clipboard.isSelected)
 
-        let actions = app.navigationBars["Lists"].buttons["library-actions"]
+        // The iPad sidebar has its own actions menu; the iPhone Duo's rail leaves only the page's.
+        let sidebar = app.navigationBars["Lists"]
+        let actions = sidebar.exists ? sidebar.buttons["library-actions"] : app.buttons["library-actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
         XCTAssertFalse(app.buttons["select-snips"].exists)
@@ -5615,11 +5617,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             return
         }
-        guard app.navigationBars["Lists"].exists, app.buttons["list-Inbox"].exists else {
-            XCTFail("The loaded library must expose either its compact selector or its sidebar.")
+        guard app.buttons["list-Inbox"].exists else {
+            XCTFail("The loaded library must expose either its compact selector or its sidebar or rail.")
             return
         }
-        throw XCTSkip("This workflow requires the compact library layout; the current window uses a sidebar.")
+        throw XCTSkip("This workflow requires the compact library layout; the current window uses a sidebar or rail.")
     }
 
     private func openListEditor(named name: String, in app: XCUIApplication) {

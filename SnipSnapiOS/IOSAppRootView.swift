@@ -142,7 +142,8 @@ struct IOSAppRootView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if horizontalSizeClass == .regular,
+            // The rail's New List button anchors the badge instead.
+            if horizontalSizeClass == .regular, RegularLibraryLayout.current == .sidebar,
                let bundleID = Bundle.main.bundleIdentifier,
                let suffix = bundleID.components(separatedBy: ".dev").last,
                bundleID.contains(".dev"), let slot = Int(suffix) {
@@ -304,6 +305,7 @@ struct IOSAppRootView: View {
             await seedGatheringFixtureIfRequested()
             await seedLongListFixtureIfRequested()
             await seedClipboardFixtureIfRequested()
+            await seedRailListsFixtureIfRequested()
 #endif
             if seedsCopyShareFixtures, model.snips.isEmpty {
                 await seedCopyShareFixtures()
@@ -414,7 +416,7 @@ struct IOSAppRootView: View {
                         isComposerFocused: isCompactComposerFocused,
                         dismissComposerKeyboard: { isCompactComposerFocused = false },
                         cancelNewList: requestCancelNewList,
-                        libraryActions: compactLibraryActions
+                        libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: true)
                     )
                     .libraryToast(
                         model: model,
@@ -492,60 +494,79 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         } else {
-            NavigationSplitView {
-                ListSidebarView(
-                    model: model,
-                    sheet: $sheet,
-                    editMode: collectionEditModeBinding,
-                    syncedContentSettings: session.syncedContentSettings,
-                    syncNow: { await session.retrySyncWhenPossible() },
-                    deleteList: deleteList
-                )
-            } detail: {
-                NavigationStack {
-                    ZStack {
-                        if model.selectedPage == .clipboard {
-                            IOSClipboardView(
-                                model: session.clipboard,
-                                libraryModel: model,
-                                copyShare: copyShare,
-                                syncedContentSettings: session.syncedContentSettings,
-                                syncNow: { await session.retrySyncWhenPossible() },
-                                sheet: $sheet,
-                                settings: { sheet = .settings }
-                            )
-                        } else {
-                        SnipCollectionView(
-                            model: model,
-                            clipboard: session.clipboard,
-                            copyShare: copyShare,
-                            sheet: $sheet,
-                            layout: .inlineList,
-                            editMode: collectionEditModeBinding,
-                            cancelNewList: { await cancelNewList($0) },
-                            dismissComposerKeyboard: {
-                                isCompactComposerFocused = false
-                            }
-                        )
-                        }
-                    }
-                    .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
-                                  usesFixedExpiry: true)
-                    // Bar hosting drops field focus updates on iOS 26.5.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        libraryControls(showsListTabs: false)
-                            .background {
-                                if !model.isSearchPresented { regularControlsFade }
-                            }
-                    }
+            switch RegularLibraryLayout.current {
+            case .sidebar:
+                NavigationSplitView {
+                    ListSidebarView(
+                        model: model,
+                        sheet: $sheet,
+                        editMode: collectionEditModeBinding,
+                        syncedContentSettings: session.syncedContentSettings,
+                        syncNow: { await session.retrySyncWhenPossible() },
+                        deleteList: deleteList
+                    )
+                } detail: {
+                    regularDetail(libraryActions: nil)
+                }
+                .librarySearchable(model: model)
+            case .rail:
+                HStack(spacing: 0) {
+                    LibraryRailView(model: model, sheet: $sheet, deleteList: deleteList)
+                        .ignoresSafeArea(.keyboard)
+                    regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
+                        .librarySearchable(model: model)
+                        .environment(\.prefersSideButtons, true)
+                        .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
+                        .mask { railCardShape.ignoresSafeArea() }
+                }
+                .background(Color(.secondarySystemBackground).ignoresSafeArea())
+            }
+        }
+    }
+
+    /// The page card beside the rail. It runs under the bars, and its leading corners stay round.
+    private var railCardShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 26, bottomLeadingRadius: 26, style: .continuous)
+    }
+
+    private func regularDetail(libraryActions: LibraryActionsMenu?) -> some View {
+        NavigationStack {
+            ZStack {
+                if model.selectedPage == .clipboard {
+                    IOSClipboardView(
+                        model: session.clipboard,
+                        libraryModel: model,
+                        copyShare: copyShare,
+                        syncedContentSettings: session.syncedContentSettings,
+                        syncNow: { await session.retrySyncWhenPossible() },
+                        sheet: $sheet,
+                        settings: { sheet = .settings }
+                    )
+                } else {
+                    SnipCollectionView(
+                        model: model,
+                        clipboard: session.clipboard,
+                        copyShare: copyShare,
+                        sheet: $sheet,
+                        layout: .inlineList,
+                        editMode: collectionEditModeBinding,
+                        cancelNewList: { await cancelNewList($0) },
+                        dismissComposerKeyboard: {
+                            isCompactComposerFocused = false
+                        },
+                        libraryActions: libraryActions
+                    )
                 }
             }
-            .searchable(
-                text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
-                isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
-                prompt: "Search"
-            )
-            .searchToolbarBehavior(.minimize)
+            .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
+                          usesFixedExpiry: true)
+            // Bar hosting drops field focus updates on iOS 26.5.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                libraryControls(showsListTabs: false)
+                    .background {
+                        if !model.isSearchPresented { regularControlsFade }
+                    }
+            }
         }
     }
 
@@ -604,7 +625,7 @@ struct IOSAppRootView: View {
         }
     }
 
-    private var compactLibraryActions: LibraryActionsMenu {
+    private func libraryActionsMenu(anchorsDevelopmentBadge: Bool) -> LibraryActionsMenu {
         LibraryActionsMenu(
             model: model,
             settings: { sheet = .settings },
@@ -617,7 +638,7 @@ struct IOSAppRootView: View {
             editSelectedList: model.lastSelectedListID == SnipList.inboxID
                 ? nil : { model.editListInline(id: model.lastSelectedListID) },
             deleteList: deleteList,
-            anchorsDevelopmentBadge: true
+            anchorsDevelopmentBadge: anchorsDevelopmentBadge
         )
     }
 
@@ -780,6 +801,21 @@ struct IOSAppRootView: View {
         }
     }
 
+    /// Default-icon lists show letter marks in the rail; the others keep their icon.
+    private func seedRailListsFixtureIfRequested() async {
+        guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_RAIL_LISTS"] == "1",
+              model.snips.isEmpty else { return }
+        for content in ["Pick up the dry cleaning", "Call the dentist", "Draft the trip plan"] {
+            _ = await model.createSnip(content: content, in: SnipList.inboxID)
+        }
+        for name in ["Groceries", "Work", "Reading list"] {
+            _ = await model.createList(name: name)
+        }
+        _ = await model.createList(name: "Travel", systemImage: "airplane", color: .blue)
+        _ = await model.createList(name: "Ideas", color: .orange)
+        model.selectList(SnipList.inboxID)
+    }
+
     private func seedClipboardFixtureIfRequested() async {
         guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_CLIPBOARD_ENTRY"] == "1",
               session.clipboard.entries.isEmpty else { return }
@@ -862,6 +898,15 @@ private struct AppleAccountNoticeBanner: View {
 }
 
 extension View {
+    func librarySearchable(model: IOSAppModel) -> some View {
+        searchable(
+            text: Binding(get: { model.searchText }, set: { model.searchText = $0 }),
+            isPresented: Binding(get: { model.isSearchPresented }, set: { model.isSearchPresented = $0 }),
+            prompt: "Search"
+        )
+        .searchToolbarBehavior(.minimize)
+    }
+
     func libraryToast(
         model: IOSAppModel,
         isHidden: Bool = false,
