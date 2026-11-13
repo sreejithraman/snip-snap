@@ -549,7 +549,8 @@ private final class RootHarness {
             first(UISplitViewController.self, in: host) != nil
         case .rail:
             // The compact tree pages lists through `ListPagePanObserver`; the rail has none.
-            first(UINavigationController.self, in: host) != nil
+            first(UISplitViewController.self, in: host) == nil
+                && first(UINavigationController.self, in: host) != nil
                 && allViews(ListPagePanObserver.AttachmentView.self).isEmpty
         }
     }
