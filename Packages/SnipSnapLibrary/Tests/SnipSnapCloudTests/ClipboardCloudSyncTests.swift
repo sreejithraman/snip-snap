@@ -315,6 +315,44 @@ private func requireSavePaused<Success: Sendable>(
         #expect(try await cloud.fetch().entries.isEmpty)
     }
 
+    @Test func stopRevokesAnAdmissionTheWaitingSyncHasNotClaimed() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays local"))
+        await cloud.pauseNextSave()
+        // The defer runs in the main-actor turn that admits the waiting sync, before it resumes.
+        let stopped = Task {
+            defer { client.sync.stop() }
+            try await client.run()
+        }
+        try await requireSavePaused(cloud, during: stopped)
+
+        client.sync.stop()
+        let waiting = client.startRun()
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await stopped.value }
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func overlappingSyncReportsBusy() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let clip = entry("in flight")
+        try await client.store.insert(clip)
+        await cloud.pauseNextSave()
+        let running = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: running)
+
+        await #expect(throws: ClipboardCloudError.busy) { try await client.run() }
+        await cloud.resumeSave()
+
+        #expect(try await running.value.entries.map(\.id) == [clip.id])
+        #expect(await cloud.fetchCount() == 1)
+    }
+
     @Test func rejectsOversizedPinnedPayloadBeforeUpload() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
