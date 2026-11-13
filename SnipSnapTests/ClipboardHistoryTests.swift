@@ -19,6 +19,38 @@ private final class ClipboardDiagnosticProbe: @unchecked Sendable {
     }
 }
 
+/// Holds the first clipboard entry conversion until the test releases it.
+private final class ClipboardConversionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var holdsNextConversion = true
+    private var heldConversion: CheckedContinuation<Void, Never>?
+
+    var isHolding: Bool {
+        lock.withLock { heldConversion != nil }
+    }
+
+    func convert(_ build: @escaping @Sendable () -> ClipboardEntry) async -> ClipboardEntry {
+        await withCheckedContinuation { continuation in
+            let holds = lock.withLock {
+                guard holdsNextConversion else { return false }
+                holdsNextConversion = false
+                heldConversion = continuation
+                return true
+            }
+            if !holds { continuation.resume() }
+        }
+        return build()
+    }
+
+    func release() {
+        let continuation = lock.withLock {
+            defer { heldConversion = nil }
+            return heldConversion
+        }
+        continuation?.resume()
+    }
+}
+
 @MainActor
 final class ClipboardHistoryTests: XCTestCase {
     func testCapturesAndRestoresEveryPasteboardItem() throws {
@@ -388,6 +420,80 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(context.history.entries.map(\.text), ["User copy", "Initial"])
     }
 
+    func testPausingDuringGeneralBoardConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: gate.convert))
+        writeText("Copied before pause", to: context.pasteboard)
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        context.history.setPaused(true)
+        gate.release()
+        await context.history.flushPersistence()
+
+        context.history.setPaused(false)
+        writeText("Copied after resume", to: context.pasteboard)
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied after resume"])
+    }
+
+    func testSuppressingDuringGeneralBoardConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: gate.convert))
+        writeText("Copied before suppression", to: context.pasteboard)
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        let token = context.history.beginSuppression()
+        gate.release()
+        await context.history.flushPersistence()
+
+        context.history.endSuppression(token)
+        writeText("Copied after suppression", to: context.pasteboard)
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied after suppression"])
+    }
+
+    func testPausingOrSuppressingBeforeTheGeneralBoardReadAdmitsNothing() async throws {
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: { build in build() }))
+        writeText("Copied before pause", to: context.pasteboard)
+        context.history.poll()
+        context.history.setPaused(true)
+        await context.history.flushPersistence()
+        context.history.setPaused(false)
+
+        writeText("Copied before suppression", to: context.pasteboard)
+        context.history.poll()
+        let token = context.history.beginSuppression()
+        await context.history.flushPersistence()
+        context.history.endSuppression(token)
+
+        XCTAssertTrue(context.history.entries.isEmpty)
+    }
+
+    func testPausingDuringLargeCaptureConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: false, conversion: gate.convert))
+        let item = NSPasteboardItem()
+        item.setString("Large private image", forType: .string)
+        item.setData(
+            Data(repeating: 7, count: ClipboardHistory.backgroundProcessingThreshold),
+            forType: .png
+        )
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([item]))
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        context.history.setPaused(true)
+        gate.release()
+        await context.history.flushPersistence()
+
+        XCTAssertTrue(context.history.entries.isEmpty)
+    }
+
     func testPauseSurvivesRelaunch() throws {
         let context = try makeContext()
         context.history.setPaused(true)
@@ -615,7 +721,8 @@ final class ClipboardHistoryTests: XCTestCase {
 
     private func makeContext(
         persistedEntries: [ClipboardEntry] = [],
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        capture: (generalPasteboard: Bool, conversion: ClipboardEntryConversion)? = nil
     ) throws -> (
         history: ClipboardHistory,
         pasteboard: NSPasteboard,
@@ -642,13 +749,23 @@ final class ClipboardHistoryTests: XCTestCase {
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
         }
-        return (
+        let history = capture.map { capture in
             ClipboardHistory(
                 pasteboard: pasteboard,
                 defaults: defaults,
                 storeURL: storeURL,
-                diagnostics: diagnostics
-            ),
+                diagnostics: diagnostics,
+                generalPasteboardName: capture.generalPasteboard ? pasteboard.name : .general,
+                convertEntry: capture.conversion
+            )
+        } ?? ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: storeURL,
+            diagnostics: diagnostics
+        )
+        return (
+            history,
             pasteboard,
             storeURL,
             defaults
@@ -690,6 +807,14 @@ final class ClipboardHistoryTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(condition())
     }
 
     private func writeText(_ text: String, to pasteboard: NSPasteboard) {

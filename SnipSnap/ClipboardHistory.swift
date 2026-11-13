@@ -238,6 +238,11 @@ private final class ClipboardCaptureReader {
     }
 }
 
+/// Builds a clipboard entry off the main actor.
+typealias ClipboardEntryConversion = @Sendable (
+    _ build: @escaping @Sendable () -> ClipboardEntry
+) async -> ClipboardEntry
+
 @MainActor
 final class ClipboardHistory: ObservableObject {
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
@@ -259,6 +264,8 @@ final class ClipboardHistory: ObservableObject {
     private var lastSyncRequest = Date.distantPast
 
     private let pasteboard: NSPasteboard
+    private let generalPasteboardName: NSPasteboard.Name
+    private let convertEntry: ClipboardEntryConversion
     let sharedStore: ClipboardHistoryStore
     let ownedFileStore: ClipboardFileStore
     private var state = ClipboardHistoryState()
@@ -280,9 +287,15 @@ final class ClipboardHistory: ObservableObject {
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
         storeURL: URL = ClipboardHistory.defaultStoreURL(),
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        generalPasteboardName: NSPasteboard.Name = .general,
+        convertEntry: @escaping ClipboardEntryConversion = { build in
+            await Task.detached(priority: .utility, operation: build).value
+        }
     ) {
         self.pasteboard = pasteboard
+        self.generalPasteboardName = generalPasteboardName
+        self.convertEntry = convertEntry
         self.defaults = defaults
         self.diagnostics = diagnostics
         pendingUploadIDs = Set((defaults.stringArray(forKey: "clipboardPendingUploadIDs") ?? []).compactMap(UUID.init(uuidString:)))
@@ -538,12 +551,12 @@ final class ClipboardHistory: ObservableObject {
             lastChangeCount = capturedChangeCount
             return
         }
-        if pasteboard.name == .general {
+        if pasteboard.name == generalPasteboardName {
             guard inFlightChangeCount != capturedChangeCount else { return }
             captureTask?.cancel()
             inFlightChangeCount = capturedChangeCount
             let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
-            captureTask = Task { [weak self, captureReader] in
+            captureTask = Task { [weak self, captureReader, convertEntry] in
                 let snapshot = captureReader.capture(changeCount: capturedChangeCount)
                 guard let self,
                       self.inFlightChangeCount == capturedChangeCount else { return }
@@ -554,13 +567,13 @@ final class ClipboardHistory: ObservableObject {
                       self.pasteboard.changeCount == capturedChangeCount else { return }
                 self.lastChangeCount = capturedChangeCount
                 guard let snapshot else { return }
-                let entry = await Task.detached(priority: .utility) {
+                let entry = await convertEntry {
                     ClipboardEntry(
                         sourceApplication: sourceApplication,
                         items: snapshot.items,
                         plainText: snapshot.plainText
                     )
-                }.value
+                }
                 guard !Task.isCancelled,
                       self.pasteboard.changeCount == capturedChangeCount else { return }
                 self.insert(entry)
@@ -595,14 +608,14 @@ final class ClipboardHistory: ObservableObject {
             )
             return
         }
-        captureTask = Task { [weak self] in
-            let entry = await Task.detached(priority: .utility) {
+        captureTask = Task { [weak self, convertEntry] in
+            let entry = await convertEntry {
                 ClipboardEntry(
                     sourceApplication: sourceApplication,
                     items: snapshot.items,
                     plainText: snapshot.plainText
                 )
-            }.value
+            }
             guard !Task.isCancelled,
                   let self,
                   !self.isPaused,
