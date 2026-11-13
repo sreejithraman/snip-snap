@@ -288,6 +288,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   private func resumePendingEnable() async throws -> SyncedContentEnableOutcome {
+    let wasICloudActive = SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: rootURL
+    ) != nil
     let outcome: SyncedContentEnableOutcome
     do {
       outcome = try await finishPendingEnable()
@@ -304,7 +307,15 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     }
     switch outcome {
     case .enabled:
-      try PendingICloudSyncEnable.clear(at: rootURL)
+      do {
+        try PendingICloudSyncEnable.clear(at: rootURL)
+      } catch where !wasICloudActive {
+        // This attempt switched to the iCloud store, so the caller must reload it.
+        // The marker stays, and the next sync finishes the cleanup.
+        AppDiagnosticRecorder.live.record(
+          .failure(operation: "sync.enable", error: error, visibility: .background)
+        )
+      }
     case .settingUp(let issue?):
       PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
     case .settingUp(nil):

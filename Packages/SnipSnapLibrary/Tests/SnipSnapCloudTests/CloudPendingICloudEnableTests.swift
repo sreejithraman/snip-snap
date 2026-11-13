@@ -27,24 +27,19 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     try writeMarker("pending")
     setMarkerLocked(true)
 
-    XCTAssertThrowsError(try FileManager.default.removeItem(at: marker))
+    XCTAssertThrowsError(try FileManager.default.removeItem(at: marker)) { error in
+      XCTAssertTrue(error is CocoaError, "Unexpected error: \(error)")
+    }
     XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
   }
 
-  func testEnableWhoseMarkerCannotBeRemovedFinishesOnNextSync() async throws {
-    let server = FakeCloudServer()
-    let probe = PendingMarkerProbe(marker: marker, locksMarker: true)
-    let lifecycle = try await makeLifecycle(
-      server: server,
-      control: FakeCloudControlTransport(server: server),
-      probe: probe
-    )
+  func testEnableThatSwitchesToICloudReportsEnabledWhenMarkerCleanupFails() async throws {
+    let (lifecycle, _, _) = try await enabledICloudSyncWithPendingMarker()
 
-    do {
-      let outcome = try await lifecycle.enableICloudSync()
-      XCTFail("An enable whose pending marker remains must not report \(outcome)")
-    } catch {}
-    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    await assertMarkerRemovalFails("A sync must not finish while the pending marker remains") {
+      try await lifecycle.synchronize()
+    }
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
 
     setMarkerLocked(false)
     let finished = try await lifecycle.synchronize()
@@ -56,6 +51,58 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     if case .iCloudSyncSettingUp = next { XCTFail("Setup ran again: \(next)") }
   }
 
+  func testRelaunchWithICloudSyncOnAndPendingMarkerFinishesCleanupOnSync() async throws {
+    let (_, source, server) = try await enabledICloudSyncWithPendingMarker()
+    let restarted = startupSettings()
+    XCTAssertEqual(restarted.mode, .iCloudSync)
+    XCTAssertEqual(restarted.state, .ready)
+    let relaunched = try relaunchedLifecycle(source: source, server: server)
+
+    await assertMarkerRemovalFails("A sync must not finish while the pending marker remains") {
+      try await relaunched.synchronize()
+    }
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
+
+    setMarkerLocked(false)
+    let finished = try await relaunched.synchronize()
+    XCTAssertEqual(finished, .iCloudSyncEnabled)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+    let next = try await relaunched.synchronize()
+    XCTAssertNotEqual(next, .iCloudSyncEnabled)
+    if case .iCloudSyncSettingUp = next { XCTFail("Setup ran again: \(next)") }
+  }
+
+  @MainActor
+  func testSettingsTurnOnICloudSyncWhenEnableCleanupFails() async throws {
+    let marker = self.marker
+    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
+    _ = try await source.add(content: "stay local", origin: .quickEntry)
+    let server = FakeCloudServer()
+    let lifecycle = makeLifecycle(
+      source: source,
+      server: server,
+      probe: PendingMarkerProbe(marker: marker, locksMarker: true)
+    )
+    let reload = EnableCompletionProbe()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
+      enableAction: { try await lifecycle.enableICloudSync() },
+      disableAction: { choice in try await lifecycle.disableICloudSync(choice) },
+      diagnostics: AppDiagnosticRecorder(record: { _ in })
+    )
+    model.setEnableCompletionAction { reload.ran = true }
+
+    await model.enableICloudSync()
+
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+    XCTAssertTrue(model.canDisable)
+    XCTAssertTrue(reload.ran, "The app must reload into the iCloud store")
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
+  }
+
   func testCancelWhoseMarkerCannotBeRemovedKeepsTheEnablePending() async throws {
     let server = FakeCloudServer()
     let control = PendingOfflineThenOnlineControlTransport(server: server)
@@ -65,10 +112,9 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertEqual(enableOutcome, .settingUp(.waitingForConnection))
 
     setMarkerLocked(true)
-    do {
+    await assertMarkerRemovalFails("A cancel whose pending marker remains must not succeed") {
       try await lifecycle.cancelPendingEnable()
-      XCTFail("A cancel whose pending marker remains must not succeed")
-    } catch {}
+    }
     XCTAssertEqual(startupSettings().state, .enabling(.waitingForConnection))
 
     setMarkerLocked(false)
@@ -223,12 +269,34 @@ final class CloudPendingICloudEnableTests: XCTestCase {
 
   private func makeLifecycle(
     server: FakeCloudServer,
-    control: any CloudCollectionControlTransport,
+    control: (any CloudCollectionControlTransport)? = nil,
     probe: PendingMarkerProbe? = nil,
     accountState: ICloudAccountState? = nil
   ) async throws -> SnipSnapICloudSyncLifecycle {
+    let source = try await seededSource()
+    return makeLifecycle(
+      source: source,
+      server: server,
+      control: control,
+      probe: probe,
+      accountState: accountState
+    )
+  }
+
+  private func seededSource() async throws -> JSONSnipLibrary {
     let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
     _ = try await source.add(content: "stay local", origin: .quickEntry)
+    return source
+  }
+
+  private func makeLifecycle(
+    source: any SnipLibrary,
+    server: FakeCloudServer,
+    control: (any CloudCollectionControlTransport)? = nil,
+    syncModeStore: SnipSyncModeStore? = nil,
+    probe: PendingMarkerProbe? = nil,
+    accountState: ICloudAccountState? = nil
+  ) -> SnipSnapICloudSyncLifecycle {
     var lineageProvider: (@Sendable () async throws -> String)?
     if let probe {
       lineageProvider = { try await probe.accountLineage() }
@@ -237,21 +305,69 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     if let accountState {
       accountStateSource = FixedICloudAccountStateSource(state: accountState)
     }
+    let controlTransport: any CloudCollectionControlTransport =
+      control ?? FakeCloudControlTransport(server: server)
     return SnipSnapICloudSyncLifecycle(
       rootURL: syncRoot,
       sourceLibrary: source,
-      syncModeStore: nil,
+      syncModeStore: syncModeStore,
       cloudScope: "private",
       accountLineage: "account-a",
       accountLineageProvider: lineageProvider,
       accountStateSource: accountStateSource,
       ownerName: "owner",
-      controlTransport: control,
+      controlTransport: controlTransport,
       makeRecordTransport: { context in
         FakeCloudRecordTransport(server: server, namespace: context.namespace)
       },
       makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") }
     )
+  }
+
+  /// Opens the sync-mode store the way the app does on a new launch.
+  private func relaunchedLifecycle(
+    source: any SnipLibrary,
+    server: FakeCloudServer
+  ) throws -> SnipSnapICloudSyncLifecycle {
+    let assembly = SnipLibraryAssembly(library: source, syncModeRootURL: syncRoot)
+    let syncModeStore = try XCTUnwrap(assembly.syncModeStore)
+    return makeLifecycle(source: source, server: server, syncModeStore: syncModeStore)
+  }
+
+  /// iCloud sync is on, but the enable's pending marker is locked in place.
+  private func enabledICloudSyncWithPendingMarker() async throws -> (
+    lifecycle: SnipSnapICloudSyncLifecycle,
+    source: JSONSnipLibrary,
+    server: FakeCloudServer
+  ) {
+    let source = try await seededSource()
+    let server = FakeCloudServer()
+    let lifecycle = makeLifecycle(
+      source: source,
+      server: server,
+      probe: PendingMarkerProbe(marker: marker, locksMarker: true)
+    )
+    let outcome = try await lifecycle.enableICloudSync()
+    XCTAssertEqual(outcome, .enabled)
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
+    XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+    return (lifecycle, source, server)
+  }
+
+  private func assertMarkerRemovalFails<T>(
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ operation: () async throws -> T
+  ) async {
+    do {
+      let value = try await operation()
+      XCTFail("\(message); got \(value)", file: file, line: line)
+    } catch {
+      XCTAssertTrue(error is CocoaError, "Unexpected error: \(error)", file: file, line: line)
+    }
   }
 
   private func startupSettings(
@@ -277,6 +393,11 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     guard FileManager.default.fileExists(atPath: marker.path) else { return }
     try? FileManager.default.setAttributes([.immutable: locked], ofItemAtPath: marker.path)
   }
+}
+
+@MainActor
+private final class EnableCompletionProbe {
+  var ran = false
 }
 
 /// Runs as the account lineage lookup, after the pending marker is written and
@@ -313,18 +434,18 @@ private actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTr
 
   func fetchControl() async throws -> CloudCollectionControlRecord? {
     guard !isOffline else { throw CloudSyncIssueError(.waitingForConnection) }
-    return try await base.fetchControl()
+    return await base.fetchControl()
   }
 
   func createZones(_ zones: Set<CloudZoneID>) async throws {
-    try await base.createZones(zones)
+    await base.createZones(zones)
   }
 
   func saveControl(
     _ descriptor: CloudCollectionDescriptor,
     replacing version: Data?
   ) async throws -> CloudCollectionControlSaveResult {
-    try await base.saveControl(descriptor, replacing: version)
+    await base.saveControl(descriptor, replacing: version)
   }
 
   func deleteZones(_ zones: Set<CloudZoneID>) async throws {
