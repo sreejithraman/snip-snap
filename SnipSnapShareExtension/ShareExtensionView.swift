@@ -21,10 +21,10 @@ struct ShareExtensionView: View {
                             Image(systemName: "xmark")
                         }
                         .accessibilityLabel("Cancel")
-                        .disabled(model.phase == .saving)
+                        .disabled(model.isSubmitted)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        if model.phase == .saving {
+                        if model.isSubmitted {
                             ProgressView()
                                 .accessibilityLabel("Saving…")
                         } else {
@@ -62,7 +62,7 @@ struct ShareExtensionView: View {
             ProgressView("Loading shared content…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("share-loading")
-        case .editing, .saving:
+        case .editing, .saving, .published:
             Form {
                 Section("Preview") {
                     TextEditor(text: Bindable(model).content)
@@ -100,7 +100,7 @@ struct ShareExtensionView: View {
                     .accessibilityIdentifier("share-list-picker")
                 }
             }
-            .disabled(model.phase == .saving)
+            .disabled(model.isSubmitted)
         case .unavailable:
             ContentUnavailableView(
                 "Shared Storage Unavailable",

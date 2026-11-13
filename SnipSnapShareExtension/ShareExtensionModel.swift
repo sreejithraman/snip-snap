@@ -10,6 +10,7 @@ final class ShareExtensionModel {
         case loading
         case editing
         case saving
+        case published
         case failed(String)
         case unavailable
         case cancelled
@@ -31,7 +32,6 @@ final class ShareExtensionModel {
     private let diagnostics: AppDiagnosticRecorder
     private let saveImport: (@MainActor (ShareImportRequest) async throws -> Void)?
     private let defaults: UserDefaults
-    private var isCanceled = false
 
     convenience init(
         extensionContext: NSExtensionContext,
@@ -80,6 +80,10 @@ final class ShareExtensionModel {
         }
     }
 
+    var isSubmitted: Bool {
+        phase == .saving || phase == .published
+    }
+
     var canSave: Bool {
         phase == .editing
             && (!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -98,7 +102,7 @@ final class ShareExtensionModel {
                 staging: staging
             )
             let loadedLists = await imports.availableLists()
-            guard !isCanceled, !Task.isCancelled else {
+            guard phase == .loading, !Task.isCancelled else {
                 staging.discard()
                 return
             }
@@ -114,21 +118,20 @@ final class ShareExtensionModel {
             phase = .editing
         } catch {
             staging.discard()
-            guard !isCanceled, !Task.isCancelled else { return }
+            guard phase == .loading, !Task.isCancelled else { return }
             if isDiagnosticCancellation(error) {
                 cancel()
                 return
             }
             diagnostics.record(.failure(operation: "share.extension_load", error: error, visibility: .user))
             _ = await diagnostics.flush(timeout: 0.5)
-            guard !isCanceled, !Task.isCancelled else { return }
+            guard phase == .loading, !Task.isCancelled else { return }
             phase = .failed(error.localizedDescription)
         }
     }
 
     func cancel() {
-        guard !isCanceled else { return }
-        isCanceled = true
+        guard phase != .cancelled, phase != .published else { return }
         phase = .cancelled
         staging?.discard()
         Task {
@@ -140,7 +143,7 @@ final class ShareExtensionModel {
     }
 
     func save() async {
-        guard canSave, !isCanceled, !Task.isCancelled, let imports, let staging else { return }
+        guard canSave, !Task.isCancelled, let imports, let staging else { return }
         phase = .saving
         let request = ShareImportRequest(
             content: content,
@@ -151,20 +154,21 @@ final class ShareExtensionModel {
         do {
             if let saveImport { try await saveImport(request) }
             else { _ = try await imports.save(request) }
+            if phase == .saving { phase = .published }
             _ = await diagnostics.flush(timeout: 0.5)
-            guard !isCanceled, !Task.isCancelled else { return }
+            guard phase == .published, !Task.isCancelled else { return }
             defaults.set(destinationListID.uuidString, forKey: Self.destinationKey)
             extensionContext.completeRequest(returningItems: nil)
         } catch {
-            guard !isCanceled else { return }
+            guard phase == .saving else { return }
             if Task.isCancelled || isDiagnosticCancellation(error) {
                 phase = .editing
                 return
             }
             diagnostics.record(.failure(operation: "share.extension_save", error: error, visibility: .user))
             _ = await diagnostics.flush(timeout: 0.5)
-            guard !isCanceled, !Task.isCancelled else { return }
-            phase = .failed(error.localizedDescription)
+            guard phase == .saving else { return }
+            phase = Task.isCancelled ? .editing : .failed(error.localizedDescription)
         }
     }
     private static let destinationKey = "share.lastDestinationListID"

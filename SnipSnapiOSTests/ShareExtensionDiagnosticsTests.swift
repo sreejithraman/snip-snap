@@ -145,7 +145,7 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         await model.load()
         model.content = "private snip"
         await model.save()
-        XCTAssertNotEqual(model.phase, .saving)
+        XCTAssertEqual(model.phase, .published)
         XCTAssertTrue(context.completed)
     }
 
@@ -173,7 +173,7 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         await model.load()
         model.content = "private snip"
         await Task { await model.save() }.value
-        XCTAssertNotEqual(model.phase, .saving)
+        XCTAssertEqual(model.phase, .published)
         XCTAssertFalse(context.completed)
     }
 
