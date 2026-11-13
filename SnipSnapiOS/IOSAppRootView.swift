@@ -518,7 +518,7 @@ struct IOSAppRootView: View {
                         .ignoresSafeArea(.keyboard)
                     regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
                         .librarySearchable(model: model)
-                        .environment(\.prefersSideButtons, SideButtons.areSupported)
+                        .sideButtonsWhereVerticalBar()
                         .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
                         .mask { railCardShape.ignoresSafeArea() }
                 }

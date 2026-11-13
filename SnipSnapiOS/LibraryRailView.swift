@@ -28,13 +28,79 @@ extension EnvironmentValues {
     @Entry var prefersSideButtons = false
 }
 
-enum SideButtons {
-    /// The rail asks for side buttons only where items can join the trailing column. Before
-    /// iOS 27.1 it keeps the iPad toolbar, where an explicit Search item would become a full field.
-    static let areSupported: Bool = {
-        if #available(iOS 27.1, *) { return true }
-        return false
-    }()
+extension View {
+    /// Asks for side buttons only where the system shows a vertical bar, such as the open iPhone
+    /// Duo. Elsewhere the rail keeps the iPad toolbar, where an explicit Search item would become
+    /// a full field.
+    func sideButtonsWhereVerticalBar() -> some View { modifier(VerticalBarSideButtons()) }
+}
+
+private struct VerticalBarSideButtons: ViewModifier {
+    // Seeded from the scene so the first frame matches; the probe follows later changes.
+    @State private var hasVerticalBar = VerticalBarProbe.sceneHasVerticalBar
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.prefersSideButtons, hasVerticalBar)
+            .background {
+                VerticalBarProbe(hasVerticalBar: $hasVerticalBar)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
+    }
+}
+
+/// SwiftUI has no environment value for the vertical bar, so this reads the UIKit trait.
+private struct VerticalBarProbe: UIViewRepresentable {
+    @Binding var hasVerticalBar: Bool
+
+    static func hasVerticalBar(in traits: UITraitCollection?) -> Bool {
+        guard #available(iOS 27.1, *), let traits else { return false }
+        return traits.verticalBarEdge != .unspecified
+    }
+
+    static var sceneHasVerticalBar: Bool {
+        hasVerticalBar(in: UIApplication.shared.connectedScenes
+            .lazy.compactMap { $0 as? UIWindowScene }.first?.traitCollection)
+    }
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        updateUIView(view, context: context)
+        return view
+    }
+
+    func updateUIView(_ view: ProbeView, context: Context) {
+        view.report = { [binding = $hasVerticalBar] value in
+            if binding.wrappedValue != value { binding.wrappedValue = value }
+        }
+    }
+
+    final class ProbeView: UIView {
+        var report: ((Bool) -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            if #available(iOS 27.1, *) {
+                registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) { (view: ProbeView, _: UITraitCollection) in
+                    view.reportVerticalBar()
+                }
+            }
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            reportVerticalBar()
+        }
+
+        func reportVerticalBar() {
+            guard window != nil else { return }
+            report?(VerticalBarProbe.hasVerticalBar(in: traitCollection))
+        }
+    }
 }
 
 extension ToolbarContent {
