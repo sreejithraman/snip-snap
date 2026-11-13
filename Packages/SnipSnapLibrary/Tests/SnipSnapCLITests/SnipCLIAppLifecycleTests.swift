@@ -116,6 +116,94 @@ final class SnipCLIAppLifecycleTests: XCTestCase {
     XCTAssertNil(ready)
   }
 
+  @MainActor
+  func testRefreshAfterFailedAppSessionStartRetriesTheSessionMarker() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A file where the commands directory belongs makes the session marker write fail.
+    let commands = root.appendingPathComponent("Agent/Commands")
+    try FileManager.default.createDirectory(at: commands.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    XCTAssertTrue(FileManager.default.createFile(atPath: commands.path, contents: Data()))
+    let store = SnipCLIRequestStore(rootURL: root)
+    let current = instance()
+    let lifecycle = SnipCLIAppLifecycle(store: store, instance: current)
+    var calls = 0
+    do {
+      try await lifecycle.start(reconcile: {
+        calls += 1
+        return "checked"
+      }, scheduleSync: {})
+      XCTFail("Startup must fail when the app session marker cannot be written.")
+    } catch SnipCLIAppReadinessError.unavailable {
+      XCTFail("A failed session marker write is not a lifecycle rejection.")
+    } catch {}
+    XCTAssertEqual(calls, 0)
+    do {
+      try await lifecycle.start(reconcile: { "again" }, scheduleSync: {})
+      XCTFail("A started lifecycle cannot start twice.")
+    } catch SnipCLIAppReadinessError.unavailable {}
+
+    try FileManager.default.removeItem(at: commands)
+    try await lifecycle.refresh()
+    XCTAssertEqual(calls, 1)
+    let ready = try await store.appReadiness()
+    XCTAssertEqual(ready, SnipCLIAppReadiness(instance: current, scopeToken: "checked"))
+    try await lifecycle.stop()
+  }
+
+  @MainActor
+  func testTerminationWhileAppSessionStartWaitsForStoreLockDoesNotAdmit() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let commands = root.appendingPathComponent("Agent/Commands")
+    try FileManager.default.createDirectory(at: commands, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o755])
+    let lock = commands.appendingPathComponent("requests.lock")
+    XCTAssertTrue(FileManager.default.createFile(atPath: lock.path, contents: Data()))
+    let descriptor = open(lock.path, O_RDWR)
+    XCTAssertGreaterThanOrEqual(descriptor, 0)
+    XCTAssertEqual(flock(descriptor, LOCK_EX), 0)
+    defer { _ = flock(descriptor, LOCK_UN); _ = close(descriptor) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let current = instance()
+    let lifecycle = SnipCLIAppLifecycle(store: store, instance: current)
+    var calls = 0
+    var scheduled = false
+    let startup = Task {
+      try await lifecycle.start(reconcile: {
+        calls += 1
+        return "checked"
+      }, scheduleSync: { scheduled = true })
+    }
+    // The store tightens the directory to 0o700 just before it waits for the lock.
+    let deadline = Date().addingTimeInterval(5)
+    while try FileManager.default.attributesOfItem(atPath: commands.path)[.posixPermissions]
+      as? Int != 0o700, Date() < deadline {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    lifecycle.beginTermination()
+    XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+    do {
+      try await startup.value
+      XCTFail("Termination during the app session start must reject readiness.")
+    } catch is CancellationError {}
+    catch SnipCLIAppReadinessError.unavailable {}
+    do { try await lifecycle.refresh(); XCTFail("A terminated lifecycle cannot restart.") }
+    catch SnipCLIAppReadinessError.unavailable {}
+    XCTAssertEqual(calls, 0)
+    XCTAssertFalse(scheduled)
+    let ready = try await store.appReadiness()
+    XCTAssertNil(ready)
+    let request = SnipCLIRequest(action: .createList(name: "Must not be admitted"), scopeToken: "checked")
+    do {
+      _ = try await store.enqueue(request, readiness: .init(instance: current, scopeToken: "checked"))
+      XCTFail("A terminating app must not admit a new command.")
+    } catch SnipCLIRequestError.scopeChanged {}
+    catch SnipCLIAppReadinessError.unavailable {}
+    try await lifecycle.stop()
+  }
+
   private func instance() -> SnipCLIAppInstance {
     SnipCLIAppInstance(pid: 123, launchDate: Date(timeIntervalSince1970: 10),
                        applicationURL: URL(fileURLWithPath: "/tmp/Example.app"))
