@@ -117,6 +117,42 @@ final class SnipCLIReceiptFailureTests: XCTestCase {
     }
   }
 
+  func testDurableReceiptWinsOverProcessingMarkerLeftBesideIt() async throws {
+    for action in [SnipCLIAction.createList(name: "Groceries"), .listLists] {
+      let root = temporaryRoot()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let processingRoot = root.appendingPathComponent("Agent/Commands/Processing")
+      defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: processingRoot.path)
+      }
+      let store = SnipCLIRequestStore(rootURL: root)
+      let request = SnipCLIRequest(action: action)
+      _ = try await store.enqueue(request)
+      await store.processPending { received in
+        // The receipt still lands in Receipts/, but the processing marker cannot be removed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: processingRoot.path)
+        return SnipCLIReceipt(request: received, status: .success)
+      }
+
+      let processingURL = processingRoot.appendingPathComponent("\(request.requestID.uuidString).json")
+      XCTAssertTrue(FileManager.default.fileExists(atPath: receiptURL(request, root: root).path))
+      XCTAssertTrue(FileManager.default.fileExists(atPath: processingURL.path))
+      guard case .completed(let receipt) = try await store.state(for: request.requestID) else {
+        return XCTFail("The durable receipt must win over the processing marker beside it")
+      }
+      XCTAssertEqual(receipt.status, .success)
+      XCTAssertTrue(receipt.matches(request))
+      let retried = try await store.enqueue(request)
+      XCTAssertEqual(retried, .completed(receipt))
+      let cancelled = try await store.cancelPending(request.requestID)
+      XCTAssertEqual(cancelled, .completed(receipt))
+      await store.processPending { received in
+        XCTFail("A delivered request must never replay")
+        return SnipCLIReceipt(request: received, status: .success)
+      }
+    }
+  }
+
   private func temporaryRoot() -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("snipsnap-cli-error-fix-tests-\(UUID().uuidString)")
