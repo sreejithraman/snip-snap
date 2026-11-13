@@ -464,9 +464,11 @@ final class ClipboardHistory: ObservableObject {
 
     func configureSync(containerIdentifier: String, rootURL: URL,
                        mainEnabled: @escaping () -> Bool,
-                       generation: @escaping () async throws -> String?) {
-        cloudService = ClipboardCloudSyncService(store: sharedStore,
-            containerIdentifier: containerIdentifier, syncRootURL: rootURL)
+                       generation: @escaping () async throws -> String?,
+                       makeCloudService: @MainActor (_ store: ClipboardHistoryStore, _ containerIdentifier: String,
+                                                     _ syncRootURL: URL) -> ClipboardCloudSyncService
+                           = ClipboardCloudSyncService.init(store:containerIdentifier:syncRootURL:)) {
+        cloudService = makeCloudService(sharedStore, containerIdentifier, rootURL)
         mainSyncEnabled = mainEnabled
         syncGeneration = generation
         onChange = { [weak self] in self?.requestSync() }

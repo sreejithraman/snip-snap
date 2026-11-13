@@ -64,7 +64,10 @@ final class IOSClipboardModel {
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
          diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
-         readCopyFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+         readCopyFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+         makeCloudService: @MainActor (_ store: ClipboardHistoryStore, _ containerIdentifier: String,
+                                       _ syncRootURL: URL) -> ClipboardCloudSyncService
+             = ClipboardCloudSyncService.init(store:containerIdentifier:syncRootURL:)) {
         let store = ClipboardHistoryStore(url: rootURL.appendingPathComponent("clipboard.json"))
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store
@@ -80,8 +83,7 @@ final class IOSClipboardModel {
         cloud = containerIdentifier.flatMap {
             let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !identifier.isEmpty else { return nil }
-            return ClipboardCloudSyncService(store: store, containerIdentifier: identifier,
-                syncRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true))
+            return makeCloudService(store, identifier, rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
 
