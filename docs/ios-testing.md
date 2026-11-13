@@ -177,16 +177,31 @@ again after a fold.
 
 ### Fold during a UI test
 
-Two tests fold the Duo:
+Four tests fold the Duo:
 
 - `testFocusedComposerSurvivesFoldingTheDuo` types into the composer and
   checks its draft and keyboard focus after each pose.
 - `testFoldingTheDuoKeepsPlaceAndUnsentWork` checks gathered snips, an active
   search, the Settings sheet, and a list's draft with an attachment.
+- `testComposerPickersSurviveFoldingTheDuo` keeps the Files and Photos pickers
+  open through each pose, then picks a photo if the library has one.
+- `testComposerAttachmentPreviewSurvivesFoldingTheDuo` keeps a draft
+  attachment's preview open through each pose, with no keyboard over it.
+
+The composer camera closes on a fold and keeps the draft. No UI test drives
+it; three checks cover it:
+
+- `testLayoutSwapClosesOnlyTheCameraAndKeepsTheDraft` checks the rule in
+  storage and runs everywhere.
+- `testRootClosesTheCameraWhenItSwapsLayouts` swaps the real root with the
+  camera up. It runs only where `UIImagePickerController.isSourceTypeAvailable(.camera)`
+  is true, such as the iPhone Duo simulator. The iPhone simulator and CI may
+  have no camera, and presenting one there raises, so it skips.
+- A hand check on the Duo covers a real fold.
 
 Each test asks for a pose by writing `NN-<pose>.request` into the directory
 named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the
-directory, so both tests can share it. The host folds and answers with
+directory, so the tests can share it. The host folds and answers with
 `NN-<pose>.done`. Without that directory, the tests skip. Start the host loop,
 then a test:
 

@@ -1849,6 +1849,101 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
     }
 
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    /// The composer camera closes on a fold and keeps the draft. Hosted tests and a hand check on the Duo
+    /// cover it; see docs/ios-testing.md.
+    func testComposerPickersSurviveFoldingTheDuo() throws {
+        let folds = try duoFoldDirectory()
+        continueAfterFailure = false
+        let app = launchApp()
+        try requireCompactSelector(in: app)
+        let addAttachments = app.buttons["composer-add-attachments"]
+        XCTAssertTrue(addAttachments.waitForExistence(timeout: 5))
+
+        addAttachments.tap()
+        app.buttons["Choose Files"].firstMatch.tap()
+        let cancelFiles = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelFiles.waitForExistence(timeout: 10), "The Files picker did not open")
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(cancelFiles.waitForExistence(timeout: 10), "The Files picker closed after \(pose)")
+        }
+        cancelFiles.tap()
+        XCTAssertTrue(cancelFiles.waitForNonExistence(timeout: 5))
+
+        addAttachments.tap()
+        app.buttons["Choose Photos"].firstMatch.tap()
+        // After folds, the Photos sheet can show Loading… for longer than the default 5 seconds.
+        assertPhotosPickerReady(in: app, presentedWithin: 20)
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            assertPhotosPickerReady(in: app, presentedWithin: 20)
+        }
+        let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        guard firstPhoto.waitForExistence(timeout: 5) else {
+            // Declared skip of the result step only: the picker checks above still count.
+            attachUIState("Photo result step skipped: seed one image in the Photos library to run it", in: app)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.09, dy: 0.12)).tap()
+            XCTAssertTrue(app.buttons["Photos"].waitForNonExistence(timeout: 5))
+            return
+        }
+        // The system Photos picker exposes grid images but does not report them as hittable.
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        let attachment = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "composer-attachment-Photo."
+        )).firstMatch
+        XCTAssertTrue(attachment.waitForExistence(timeout: 8), "The picked photo did not reach the composer")
+    }
+
+    /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
+    /// An image attachment opens the full-screen viewer, which shares its presenter with Quick Look.
+    func testComposerAttachmentPreviewSurvivesFoldingTheDuo() throws {
+        let folds = try duoFoldDirectory()
+        continueAfterFailure = false
+        let app = launchApp(withCopyShareFixtures: true)
+        try requireCompactSelector(in: app)
+
+        // The copied photo snip pasted into the composer, as in testFoldingTheDuoKeepsPlaceAndUnsentWork.
+        try visibleTouchCenter(of: row(named: "Copy mixed fixture", in: app), in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        let composer = app.descendants(matching: .any)["composer-text"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        composer.tap()
+        composer.press(forDuration: 1)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+        let attachment = app.buttons["composer-attachment-sample.png"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+
+        try visibleTouchCenter(of: attachment, in: app).tap()
+        let preview = app.images["Image preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), "The attachment preview did not open")
+        let keyboardFocus = NSPredicate(format: "hasKeyboardFocus == true")
+        for pose in [DuoPose.open, .halfOpen, .closed] {
+            fold(to: pose, through: folds, in: app)
+            XCTAssertTrue(preview.waitForExistence(timeout: 10), "The attachment preview closed after \(pose)")
+            // Keyboard focus reads on both panels; the keyboard query covers the panel XCTest drives.
+            XCTAssertEqual(
+                app.descendants(matching: .any).matching(keyboardFocus).count, 0,
+                "An element took keyboard focus under the preview after \(pose)"
+            )
+            XCTAssertEqual(app.keyboards.count, 0, "The keyboard showed over the preview after \(pose)")
+        }
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
+        let pasteButton = app.buttons["paste-to-clipboard"]
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.value(forKey: "hasKeyboardFocus") as? Bool == true || (pasteButton.exists && pasteButton.isHittable)
+        }, object: nil)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [resumed], timeout: 5), .completed,
+            "After the preview closed, the composer neither took focus back nor returned Paste"
+        )
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5), "The staged attachment was lost")
+    }
+
     func testQuickComposerSendsWithoutOpeningTheEditor() throws {
         continueAfterFailure = false
         let app = launchApp()
@@ -1923,13 +2018,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Choose Photos"].firstMatch.exists)
     }
 
-    private func assertPhotosPickerReady(in app: XCUIApplication) {
+    private func assertPhotosPickerReady(in app: XCUIApplication, presentedWithin timeout: TimeInterval = 5) {
         let photos = app.buttons["Photos"]
         let loading = app.navigationBars["PUPickerUnavailableView"]
         let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             photos.exists || loading.exists
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: timeout), .completed)
         let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             photos.exists || !loading.exists
         }, object: nil)
@@ -1938,6 +2033,48 @@ final class SnipSnapiOSUITests: XCTestCase {
             "The system Photos picker did not finish loading."
         )
         XCTAssertTrue(photos.waitForExistence(timeout: 5))
+    }
+
+    /// The inline editor presents its own pickers; the composer's root presenter must not cover them.
+    func testInlineEditorFilesPickerOpensAndCancels() throws {
+        continueAfterFailure = false
+        let app = launchApp(withAttachments: true)
+        try openAttachmentFixture(in: app)
+        app.buttons["add-attachments"].tap()
+        app.buttons["Choose Files"].firstMatch.tap()
+        let browser = app.otherElements["Browse View (Picker)"]
+        let cancel = try XCTUnwrap(filesPickerCancel(inside: browser, in: app), "The inline editor's Files picker did not open")
+        cancel.tap()
+        XCTAssertTrue(browser.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].exists)
+    }
+
+    /// The Files picker's own Cancel: in its navigation bar on a sheet, and in a side toolbar on the closed
+    /// iPhone Duo panel. The picker can lay out twice as it opens, so a "Cancel" from the first layout can
+    /// linger; take one that's hittable inside the picker's browser and has held its frame between polls.
+    private func filesPickerCancel(inside browser: XCUIElement, in app: XCUIApplication) -> XCUIElement? {
+        let cancels = app.buttons.matching(NSPredicate(format: "label == %@", "Cancel"))
+        var lastFrame: CGRect?
+        var cancel: XCUIElement?
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard browser.exists else { return false }
+            let bounds = browser.frame
+            guard let candidate = cancels.allElementsBoundByIndex.first(where: {
+                $0.isHittable && bounds.contains($0.frame)
+            }) else {
+                lastFrame = nil
+                return false
+            }
+            defer { lastFrame = candidate.frame }
+            guard candidate.frame == lastFrame else { return false }
+            cancel = candidate
+            return true
+        }, object: nil)
+        guard XCTWaiter.wait(for: [settled], timeout: 10) == .completed else {
+            attachUIState("Files picker Cancel unavailable", in: app)
+            return nil
+        }
+        return cancel
     }
 
     func testPhotoPickerStagesAChosenImage() throws {
