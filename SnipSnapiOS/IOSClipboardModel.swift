@@ -170,8 +170,8 @@ final class IOSClipboardModel {
         default: break
         }
         guard let cloud, syncEnabled, settings.mode == .iCloudSync else {
-            await load()
             cloud?.stop()
+            await load()
             return
         }
         let run = ClipboardSyncPhase.syncing(id: UUID())
