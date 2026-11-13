@@ -117,4 +117,83 @@ final class SyncedContentSettingsDiagnosticsTests: XCTestCase {
       .failure(operation: "sync.stop", errorCode: "sync.signInRequired", visibility: .user)
     ])
   }
+
+  @MainActor
+  func testLateDisableFailureAfterASyncStopKeepsTheStopAndRecordsTheFailure() async {
+    struct Offline: Error {}
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      disableAction: { _ in
+        await gate.wait()
+        throw Offline()
+      },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let disable = Task { @MainActor in await model.disableICloudSync(.refreshThenCopy) }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudDataReset)
+    gate.open()
+    await disable.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudDataReset))
+    XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.stop", "sync.disable"])
+    XCTAssertEqual(events.withLock { $0.last?.outcome }, AppDiagnosticOutcome.failed)
+  }
+
+  @MainActor
+  func testLateSetupCancelFailureAfterASyncStopKeepsTheStopAndRecordsTheFailure() async {
+    struct Offline: Error {}
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      initialState: .enabling(),
+      cancelEnableAction: {
+        await gate.wait()
+        throw Offline()
+      },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let cancel = Task { @MainActor in await model.cancelICloudSyncSetup() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudAccountChanged)
+    gate.open()
+    await cancel.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+    XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.stop", "sync.cancel_setup"])
+    XCTAssertEqual(events.withLock { $0.last?.outcome }, AppDiagnosticOutcome.failed)
+  }
+
+  @MainActor
+  func testLateDeleteFailureAfterASyncStopKeepsTheStopAndRecordsTheFailure() async {
+    struct Offline: Error {}
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: {
+        await gate.wait()
+        throw Offline()
+      },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let delete = Task { @MainActor in await model.deleteSyncedContent() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.signInRequired)
+    gate.open()
+    await delete.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.signInRequired))
+    XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.stop", "sync.delete"])
+    XCTAssertEqual(events.withLock { $0.last?.outcome }, AppDiagnosticOutcome.failed)
+  }
 }

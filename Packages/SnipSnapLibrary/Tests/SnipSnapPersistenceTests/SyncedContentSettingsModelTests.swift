@@ -540,6 +540,54 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.mode, .iCloudSync)
     XCTAssertEqual(model.state, .ready)
   }
+
+  @MainActor
+  func testRepeatedSyncStopStillOutranksALateEnable() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: {
+        await gate.wait()
+        return .enabled
+      }
+    )
+
+    let enable = Task { @MainActor in await model.enableICloudSync() }
+    await gate.waitUntilSuspended()
+    model.recordSyncFailure(.iCloudAccountChanged)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+    model.recordSyncStopped(.iCloudAccountChanged)
+    gate.open()
+    await enable.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+  }
+
+  @MainActor
+  func testLateCompletedDeleteCannotReplaceASyncStop() async {
+    let calls = DeleteEventRecorder()
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: {
+        await gate.wait()
+        return .completed
+      }
+    )
+    model.setDeleteCompletionAction { await calls.record("replace-library") }
+
+    let delete = Task { @MainActor in await model.deleteSyncedContent() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.signInRequired)
+    gate.open()
+    await delete.value
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["replace-library"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.signInRequired))
+  }
 }
 
 /// Suspends a Synced Content action until the test opens it.
