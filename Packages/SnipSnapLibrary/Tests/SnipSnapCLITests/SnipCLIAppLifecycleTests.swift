@@ -182,6 +182,10 @@ final class SnipCLIAppLifecycleTests: XCTestCase {
       as? Int != 0o700, Date() < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
+    XCTAssertEqual(
+      try FileManager.default.attributesOfItem(atPath: commands.path)[.posixPermissions] as? Int, 0o700,
+      "The app session start must reach the store lock before termination."
+    )
     lifecycle.beginTermination()
     XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
     do {
