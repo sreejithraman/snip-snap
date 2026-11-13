@@ -1,7 +1,19 @@
 import SwiftUI
 import UIKit
 
+private struct SuppliesPageToolbarKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var suppliesPageToolbar: Bool {
+        get { self[SuppliesPageToolbarKey.self] }
+        set { self[SuppliesPageToolbarKey.self] = newValue }
+    }
+}
+
 struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
+    @Environment(\.suppliesPageToolbar) private var suppliesPageToolbar
     let title: String
     var titleColor: Color = .primary
     var showsControls = true
@@ -17,7 +29,7 @@ struct CollectionScreenPresentation<TrailingControls: View>: ViewModifier {
                     .frame(width: 0, height: 0)
             }
             .toolbar {
-                if showsControls {
+                if showsControls && suppliesPageToolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         trailingControls
                             .tint(recedesControls ? Color.secondary : SnipSnapTheme.controlTint)
