@@ -475,9 +475,9 @@ public final class SyncedContentSettingsModel {
   }
 
   public func recordSyncStopped(_ issue: SyncedContentSyncIssue) {
+    statusSession = UUID()
     if mode == .localOnly, state == .failed(issue) { return }
     record(issue, operation: "sync.stop")
-    statusSession = UUID()
     status = Status(mode: .localOnly, state: .failed(issue))
   }
 
