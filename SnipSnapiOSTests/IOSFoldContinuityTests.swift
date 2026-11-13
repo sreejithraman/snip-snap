@@ -337,6 +337,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(root.wait("compact composer focused") { root.composer?.isFirstResponder == true }, root.diagnostics)
 
         present()
+        // A system-style resign under the presentation must not clear the user's focus.
+        compact.resignFirstResponder()
         XCTAssertTrue(root.wait("compact composer yields the keyboard") { compact.isFirstResponder == false }, root.diagnostics)
         root.swap(to: .regular)
         root.settle()

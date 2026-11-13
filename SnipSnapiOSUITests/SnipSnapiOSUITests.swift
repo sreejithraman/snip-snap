@@ -1850,7 +1850,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
-    /// No automated test exercises the camera's presenter; a manual Duo fold check covers it.
+    /// Camera presentation still needs a manual Duo fold check; no test exercises its presenter.
     func testComposerPickersSurviveFoldingTheDuo() throws {
         let folds = try duoFoldDirectory()
         continueAfterFailure = false
@@ -1932,6 +1932,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.buttons["dismiss-attachment-image"].tap()
         XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
+        let paste = app.buttons["paste-to-clipboard"]
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.value(forKey: "hasKeyboardFocus") as? Bool == true || (paste.exists && paste.isHittable)
+        }, object: nil)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [resumed], timeout: 5), .completed,
+            "After the preview closed, the composer neither took focus back nor returned Paste"
+        )
         XCTAssertTrue(attachment.waitForExistence(timeout: 5), "The staged attachment was lost")
     }
 
