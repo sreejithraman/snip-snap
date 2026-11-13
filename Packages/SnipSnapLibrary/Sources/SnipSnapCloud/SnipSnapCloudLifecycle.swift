@@ -427,6 +427,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     retryingUserRecoverableFailures: Bool
   ) async throws -> SnipSnapCloudSyncResult {
     if PendingICloudSyncEnable.exists(at: rootURL) {
+      if try await hasFinishedICloudSwitch() {
+        // Only the enable's marker cleanup is left; setup must not run again.
+        try PendingICloudSyncEnable.clear(at: rootURL)
+        return .iCloudSyncEnabled
+      }
       return switch try await resumePendingEnable() {
       case .settingUp(let issue): .iCloudSyncSettingUp(issue)
       case .enabled: .iCloudSyncEnabled
@@ -476,6 +481,21 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let result = syncResult(for: status)
     if result == .iCloudDataReset { await clearCollectionCoordinator() }
     return result
+  }
+
+  /// iCloud is the active store and its enable transition is finished. A transition
+  /// that is still open, such as after a crash right after the pointer swap, needs
+  /// the enable to resume.
+  private func hasFinishedICloudSwitch() async throws -> Bool {
+    guard SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: rootURL) != nil
+    else { return false }
+    let modePersistence = try persistence ?? SwiftDataSyncModePersistence(
+      rootURL: rootURL,
+      attachmentCacheRootURL: attachmentCacheRootURL
+    )
+    persistence = modePersistence
+    let snapshot = try await modePersistence.snapshot()
+    return snapshot.activeStore.kind == .iCloudSync && snapshot.transition == nil
   }
 
   package func scheduleAutomaticSync() async throws {
