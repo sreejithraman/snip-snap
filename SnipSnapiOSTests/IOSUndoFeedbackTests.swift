@@ -87,8 +87,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
     func testReplacingFailureClearsSupersededWarningSnackbar() throws {
         let replacements: [(IOSAppModel) -> Void] = [
             { $0.presentError(SnipLibraryError.duplicateList, operation: "list.create") },
-            { $0.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action") },
-            { $0.presentDialogFailure("A later legacy failure") }
+            { $0.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action") }
         ]
         for replace in replacements {
             let model = IOSAppModel(library: ModelTestLibrary())

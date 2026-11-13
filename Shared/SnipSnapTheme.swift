@@ -402,8 +402,11 @@ private struct AppToastPresenter: ViewModifier {
 }
 
 extension View {
+    /// The presenter calls `close` with the snackbar it is closing before `onAction`
+    /// or `onDismiss`. By default, `close` clears `toast`.
     func appToast(
         _ toast: Binding<AppToast?>,
+        close: ((AppToast) -> Void)? = nil,
         alignment: Alignment,
         edge: Edge,
         isHidden: Bool = false,
@@ -416,7 +419,7 @@ extension View {
         modifier(
             AppToastPresenter(
                 toast: toast,
-                close: { _ in toast.wrappedValue = nil },
+                close: close ?? { _ in toast.wrappedValue = nil },
                 alignment: alignment,
                 edge: edge,
                 isHidden: isHidden,
@@ -429,8 +432,7 @@ extension View {
         )
     }
 
-    /// Presents a snackbar whose owner changes it only through events. The presenter
-    /// calls `close` with the snackbar it is closing before `onAction` or `onDismiss`.
+    /// Presents a snackbar whose owner changes it only through events.
     func appToast(
         showing toast: @autoclosure @escaping @MainActor () -> AppToast?,
         close: @escaping (AppToast) -> Void,
@@ -443,19 +445,11 @@ extension View {
         onAction: @escaping (AppToast) -> Void = { _ in },
         onDismiss: @escaping (AppToast) -> Void = { _ in }
     ) -> some View {
-        modifier(
-            AppToastPresenter(
-                toast: Binding(get: { toast() }, set: { _ in }),
-                close: close,
-                alignment: alignment,
-                edge: edge,
-                isHidden: isHidden,
-                reservesSpace: reservesSpace,
-                usesFixedExpiry: usesFixedExpiry,
-                bottomInset: bottomInset,
-                onAction: onAction,
-                onDismiss: onDismiss
-            )
+        appToast(
+            Binding(get: { toast() }, set: { _ in }), close: close,
+            alignment: alignment, edge: edge, isHidden: isHidden, reservesSpace: reservesSpace,
+            usesFixedExpiry: usesFixedExpiry, bottomInset: bottomInset,
+            onAction: onAction, onDismiss: onDismiss
         )
     }
 }

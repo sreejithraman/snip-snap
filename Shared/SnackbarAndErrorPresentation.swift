@@ -195,8 +195,8 @@ extension SnackbarAndErrorPresentation {
     /// Closes `closing`, or else the open details or the presented dialog. Closing
     /// a dialog failure's details also dismisses that failure.
     mutating func closeErrorDetails(_ closing: AppFailure?) {
-        let presentedDialog = presentedFailure.flatMap { $0.surface == .dialog ? $0 : nil }
-        let closingID = closing?.id ?? errorDetails?.id ?? presentedDialog?.id
+        let closingID = closing?.id ?? errorDetails?.id
+            ?? (presentedFailure?.surface == .dialog ? presentedFailure?.id : nil)
         if let errorDetails, errorDetails.id != closingID { return }
         errorDetails = nil
         if let latestFailure, latestFailure.id == closingID, latestFailure.surface == .dialog {
