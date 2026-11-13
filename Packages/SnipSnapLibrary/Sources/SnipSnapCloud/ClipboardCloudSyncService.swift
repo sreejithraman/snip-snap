@@ -89,10 +89,15 @@ private struct ClipboardCloudUnwindingRun {
         }
     }
 
-    @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
-                                               generation: String) async throws -> ClipboardHistoryState {
-        guard mainSyncEnabled && clipboardSyncEnabled else { stop(); return try await store.load() }
+    /// Syncs while `isEnabled` holds. It's checked on entry and again when the run is admitted;
+    /// if it doesn't hold, the service stops and returns local history.
+    @discardableResult public func synchronize(
+        generation: String,
+        isEnabled: @MainActor () -> Bool
+    ) async throws -> ClipboardHistoryState {
+        guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         try await waitForStoppedRun()
+        guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         guard case .idle = lifecycle else { throw ClipboardCloudError.busy }
         guard !generation.isEmpty else { throw ClipboardCloudError.unavailable }
         try bind(to: generation)
@@ -136,6 +141,12 @@ private struct ClipboardCloudUnwindingRun {
         }
     }
 
+    /// Reads both flags once, on entry. Only the iOS model still calls this.
+    @discardableResult public func synchronize(mainSyncEnabled: Bool, clipboardSyncEnabled: Bool,
+                                               generation: String) async throws -> ClipboardHistoryState {
+        try await synchronize(generation: generation, isEnabled: { mainSyncEnabled && clipboardSyncEnabled })
+    }
+
     /// Invoke before the saved-snips generation is deleted, using its current scope.
     public func deleteSyncedHistory(generation: String) async throws {
         let unbinding = try await beginUnbinding()
@@ -171,6 +182,11 @@ private struct ClipboardCloudUnwindingRun {
     private func removeBinding() throws {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
         scope = nil; transport = nil
+    }
+
+    private func stopAndLoadLocalHistory() async throws -> ClipboardHistoryState {
+        stop()
+        return try await store.load()
     }
 
     private func waitForStoppedRun() async throws {

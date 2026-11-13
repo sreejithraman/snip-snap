@@ -74,7 +74,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         try await run(scope: scope, isEnabled: { enabled })
     }
     @discardableResult func run(scope: String = "account-generation-A", isEnabled: @MainActor () -> Bool) async throws -> ClipboardHistoryState {
-        try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: isEnabled(), generation: scope)
+        try await sync.synchronize(generation: scope, isEnabled: isEnabled)
     }
     /// Runs on the caller's actor up to the sync's first suspension, so a sync blocked on a
     /// stopped run is already waiting when this returns.
