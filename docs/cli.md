@@ -152,6 +152,11 @@ the available history and omissions. This command creates no export file.
 Repeated identical errors can appear as one record with a count and first/last
 timestamps. `--errors-only` selects failed operations; it excludes routine events
 and cancellation notices.
+When MetricKit reports that an earlier run crashed or the system killed it, a
+later launch records an `app.termination` failure. It carries the payload time,
+the build that ended (`exit_version`, `exit_build`), and typed exit facts such as
+`exception`, `signal`, `termination_namespace`, and `termination_code`. A
+suspended app that the system reclaims normally records nothing.
 If another process holds the diagnostic store lock, fetching returns a bounded
 busy error (`diagnostics_busy` in JSON) instead of waiting indefinitely. Retry the
 read shortly; it does not change history or restart the app.
