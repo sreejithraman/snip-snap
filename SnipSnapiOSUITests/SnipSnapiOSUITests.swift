@@ -2382,7 +2382,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         try requireCompactSelector(in: app)
         let restingSelector = app.descendants(matching: .any)["list-selector"].frame
         let restingSelectorWidth = restingSelector.width
-        XCTAssertEqual(restingSelector.midX, app.frame.midX, accuracy: 2)
+        XCTAssertEqual(restingSelector.midX, compactControlsRow(in: app).midX, accuracy: 2)
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == 'Search'")).count, 1)
         XCTAssertFalse(app.searchFields["Search"].exists)
         app.buttons["clipboard-tab"].tap()
@@ -2416,7 +2416,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         XCTAssertEqual(selector.frame.width, restingSelectorWidth, accuracy: 2)
-        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertEqual(selector.frame.midX, compactControlsRow(in: app).midX, accuracy: 2)
         XCTAssertLessThan(selector.frame.maxX, app.buttons["Search"].frame.minX)
         compactListTab(named: "Inbox", in: app).tap()
         XCTAssertTrue(compactListTab(named: "Inbox", in: app).isSelected)
@@ -2510,7 +2510,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp(withHapticsTrace: true)
         try requireCompactSelector(in: app)
         let restingFrame = app.descendants(matching: .any)["list-selector"].frame
-        XCTAssertEqual(restingFrame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertEqual(restingFrame.midX, compactControlsRow(in: app).midX, accuracy: 2)
         app.buttons["clipboard-tab"].tap()
         let initialEvent = app.staticTexts["haptic-event"].label
         XCTAssertTrue(initialEvent.hasPrefix("selection:"))
@@ -2679,8 +2679,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         let paste = app.buttons["paste-to-clipboard"]
         let search = app.buttons["Search"]
         XCTAssertGreaterThan(paste.frame.width, 48)
-        XCTAssertEqual(selector.frame.midX, app.frame.midX, accuracy: 2)
-        XCTAssertEqual(selector.frame.width, min(256, app.frame.width - 168), accuracy: 2)
+        let row = compactControlsRow(in: app)
+        XCTAssertEqual(selector.frame.midX, row.midX, accuracy: 2)
+        XCTAssertEqual(selector.frame.width, min(256, row.width + 32 - 168), accuracy: 2)
         XCTAssertGreaterThanOrEqual(selector.frame.minX - paste.frame.maxX, 7)
         XCTAssertGreaterThanOrEqual(search.frame.minX - selector.frame.maxX, 7)
         XCTAssertFalse(app.searchFields["Search"].exists)
@@ -5603,6 +5604,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func collectionRows(named text: String, in container: XCUIElement) -> XCUIElementQuery {
         container.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", text))
+    }
+
+    /// The selector centers in this row, which follows the safe area rather than the window.
+    private func compactControlsRow(in app: XCUIApplication) -> CGRect {
+        app.buttons["paste-to-clipboard"].frame.union(app.buttons["Search"].frame)
     }
 
     private func requireCompactSelector(in app: XCUIApplication) throws {
