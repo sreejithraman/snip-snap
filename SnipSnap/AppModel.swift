@@ -89,53 +89,38 @@ final class AppModel: ObservableObject {
         }
     }
     private var editorOrigin: (list: SnipList, index: Int)?
-    @Published var presentedError: String?
-    @Published private(set) var presentedErrorTitle: String?
-    private var presentedErrorOperation: String?
-    @Published private(set) var latestFailure: AppFailure? {
-        didSet {
-            guard case .showErrorDetails(let id) = toast?.action,
-                  latestFailure?.id != id else { return }
-            toast = nil
-        }
-    }
-    @Published var errorDetails: AppFailure?
-    @Published private var failureUsesInlineSurface = false
-    private var retryableUndo: (failure: AppFailure, toast: AppToast)?
+    @Published private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    var toast: AppToast? { snackbarAndErrors.snackbar }
+    var presentedError: String? { snackbarAndErrors.presentedFailure?.message }
+    var presentedErrorTitle: String? { snackbarAndErrors.presentedTitle }
+    var latestFailure: AppFailure? { snackbarAndErrors.latestFailure }
+    var errorDetails: AppFailure? { snackbarAndErrors.errorDetails }
+    var inlineFailure: AppFailure? { snackbarAndErrors.inlineFailure }
+    var pendingUndoFailure: AppFailure? { snackbarAndErrors.pendingUndoFailure }
 
-    var canRetryErrorAction: Bool { dialogFailure?.id == retryableUndo?.failure.id && retryableUndo != nil }
+    var canRetryErrorAction: Bool {
+        dialogFailure.map { snackbarAndErrors.undoToRetry(for: $0) != nil } ?? false
+    }
 
     var errorRetryAction: (() -> Void)? {
         guard canRetryErrorAction, let failure = dialogFailure else { return nil }
         return { [weak self] in self?.retryPendingUndo(failure) }
     }
 
-    var pendingUndoFailure: AppFailure? {
-        guard let retryableUndo,
-              latestFailure?.id != retryableUndo.failure.id,
-              errorDetails?.id != retryableUndo.failure.id else { return nil }
-        return retryableUndo.failure
-    }
-
     func retryPendingUndo(_ failure: AppFailure) {
-        guard let retryableUndo, retryableUndo.failure.id == failure.id else { return }
-        Task { await performToastActionNow(retryableUndo.toast) }
+        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
+        Task { await performToastActionNow(undo) }
     }
 
     func retryPendingUndoNow(_ failure: AppFailure) async {
-        guard let retryableUndo, retryableUndo.failure.id == failure.id else { return }
-        await performToastActionNow(retryableUndo.toast)
+        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
+        await performToastActionNow(undo)
     }
 
     var dialogFailure: AppFailure? {
         if let errorDetails { return errorDetails }
-        guard presentedError != nil, latestFailure?.surface == .dialog else { return nil }
-        return latestFailure
-    }
-
-    var inlineFailure: AppFailure? {
-        guard presentedError != nil, failureUsesInlineSurface else { return nil }
-        return latestFailure
+        guard let presented = snackbarAndErrors.presentedFailure, presented.surface == .dialog else { return nil }
+        return presented
     }
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
@@ -145,14 +130,6 @@ final class AppModel: ObservableObject {
     @Published var pendingImportPreview: SnipImportPreview?
     var pendingImportPreviewID: UUID?
     var cliImportPreviewID: UUID?
-    @Published var toast: AppToast? {
-        didSet {
-            guard toast?.action == .undoDone || toast?.action == .undoDelete,
-                  case .showErrorDetails(let id) = oldValue?.action,
-                  presentedError != nil, latestFailure?.id == id else { return }
-            failureUsesInlineSurface = true
-        }
-    }
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     @Published private(set) var cliScopeChangeInProgress = false
     private(set) var cliMutationInProgress = false
@@ -370,11 +347,9 @@ final class AppModel: ObservableObject {
         }
         let failure = AppFailure(error: error, operation: operation, title: title)
         if case .detailsOnly = presentation {
-            setPresentedError(nil)
-            latestFailure = failure
+            snackbarAndErrors.record(failure)
         } else {
-            setPresentedError(message, title: title, operation: operationName)
-            retainFailure(failure)
+            snackbarAndErrors.present(failure, title: title)
         }
     }
 
@@ -394,52 +369,40 @@ final class AppModel: ObservableObject {
                 visibility: .user
             ))
         }
-        if case .detailsOnly = presentation, let message {
-            setPresentedError(nil)
-            latestFailure = AppFailure(message: message, title: title, operation: operation, diagnosticCode: diagnosticCode)
+        guard let message else {
+            snackbarAndErrors.hidePresentedFailure()
             return
         }
-        setPresentedError(message, title: title, operation: operationName)
-        if let message {
-            retainFailure(AppFailure(message: message, title: title, operation: operation, diagnosticCode: diagnosticCode))
+        let failure = AppFailure(message: message, title: title, operation: operation, diagnosticCode: diagnosticCode)
+        if case .detailsOnly = presentation {
+            snackbarAndErrors.record(failure)
+        } else {
+            snackbarAndErrors.present(failure, title: title)
         }
-    }
-
-    private func retainFailure(_ failure: AppFailure) {
-        let replacesUndoFailure = retryableUndo?.failure.operation == failure.operation
-        let updatesRetryDetails = replacesUndoFailure
-            && (retryableUndo.map { errorDetails?.id == $0.failure.id } ?? false)
-        let preservesUndo = toast?.action == .undoDone || toast?.action == .undoDelete
-        if replacesUndoFailure { retryableUndo = nil }
-        latestFailure = failure
-        failureUsesInlineSurface = failure.surface == .inline || (failure.surface == .snackbar && preservesUndo)
-        if updatesRetryDetails { errorDetails = failure }
-        if failure.surface == .snackbar && !preservesUndo { toast = .failed(failure) }
     }
 
     func showLatestErrorDetails() {
-        errorDetails = latestFailure
+        snackbarAndErrors.showLatestErrorDetails()
+    }
+
+    func showErrorDetails(_ failure: AppFailure) {
+        snackbarAndErrors.showErrorDetails(failure)
     }
 
     func dismissErrorDetails(_ failure: AppFailure? = nil) {
-        let closingID = failure?.id ?? errorDetails?.id ?? dialogFailure?.id
-        if let errorDetails, errorDetails.id != closingID { return }
-        errorDetails = nil
-        if latestFailure?.id == closingID, latestFailure?.surface == .dialog {
-            dismissPresentedError()
-        }
+        snackbarAndErrors.closeErrorDetails(failure)
     }
 
     private func dismissFailure(for operation: StaticString) {
         guard latestFailure?.operation == String(describing: operation) else { return }
-        dismissCurrentFailure()
+        snackbarAndErrors.resolveLatestFailure()
     }
 
     private func dismissCopyFailure(matching id: UUID?) {
         guard let id, let failure = latestFailure, failure.id == id,
               ["attachment.prepare", "clipboard.export", "clipboard.write"].contains(failure.operation)
         else { return }
-        dismissCurrentFailure()
+        snackbarAndErrors.resolveLatestFailure()
     }
 
     private func shouldRecordPresentedFailure(
@@ -447,33 +410,13 @@ final class AppModel: ObservableObject {
         message: String,
         title: String?
     ) -> Bool {
-        operation != "attachment.prepare" || presentedError == nil
-            || presentedErrorOperation != operation
-            || presentedError != message || presentedErrorTitle != title
-    }
-
-    private func setPresentedError(
-        _ message: String?,
-        title: String? = nil,
-        operation: String? = nil
-    ) {
-        presentedErrorTitle = title
-        presentedError = message
-        presentedErrorOperation = message == nil ? nil : operation
-    }
-
-    private func dismissCurrentFailure() {
-        if let id = latestFailure?.id {
-            if errorDetails?.id == id { errorDetails = nil }
-            if toast?.action == .showErrorDetails(id) { toast = nil }
-        }
-        setPresentedError(nil)
+        guard operation == "attachment.prepare",
+              let presented = snackbarAndErrors.presentedFailure else { return true }
+        return presented.operation != operation || presented.message != message || presentedErrorTitle != title
     }
 
     func dismissPresentedError() {
-        errorDetails = nil
-        setPresentedError(nil)
-        if case .showErrorDetails = toast?.action { toast = nil }
+        snackbarAndErrors.dismissPresentedFailure()
     }
 
     func setCloudSyncHandler(_ handler: (any OptionalCloudSyncHandling)?) {
@@ -1107,7 +1050,7 @@ final class AppModel: ObservableObject {
                 apply(result.update.snapshot)
                 guard result.didChange else { return }
                 clearPendingUndoToast()
-                toast = .deleted(count: snipsToDelete.count, id: token)
+                snackbarAndErrors.show(.deleted(count: snipsToDelete.count, id: token))
                 scheduleCloudSync()
             } catch {
                 presentError(error, operation: "snip.delete")
@@ -1131,26 +1074,23 @@ final class AppModel: ObservableObject {
                         return
                     }
                     apply(update.snapshot)
-                    if toast?.id == presentedToast.id { toast = nil }
-                    if errorDetails?.id == retryableUndo?.failure.id { errorDetails = nil }
-                    retryableUndo = nil
+                    snackbarAndErrors.undoSucceeded(presentedToast)
                     dismissFailure(for: "snip.undo_done")
                     scheduleCloudSync()
                 } catch {
                     presentError(error, operation: "snip.undo_done")
-                    if let failure = latestFailure { retryableUndo = (failure, presentedToast) }
+                    snackbarAndErrors.retainUndoFailure(of: presentedToast)
                 }
             }
         case .showErrorDetails(let id):
-            guard latestFailure?.id == id else { return }
-            errorDetails = latestFailure
+            snackbarAndErrors.showLatestErrorDetails(ifLatestIs: id)
         case nil:
             break
         }
     }
 
     private func expireUnavailableRetry(for presentedToast: AppToast) {
-        guard retryableUndo?.toast.id == presentedToast.id else { return }
+        guard snackbarAndErrors.retainsUndo(presentedToast.id) else { return }
         let operation: StaticString = presentedToast.action == .undoDelete ? "snip.undo_delete" : "snip.undo_done"
         presentError(
             String(localized: "Undo is no longer available because the snips changed."),
@@ -1170,8 +1110,20 @@ final class AppModel: ObservableObject {
                     break
                 }
             }
-            if toast?.id == presentedToast.id { toast = nil }
+            snackbarAndErrors.closeSnackbar(id: presentedToast.id)
         }
+    }
+
+    func closeSnackbar(_ snackbar: AppToast) {
+        snackbarAndErrors.closeSnackbar(id: snackbar.id)
+    }
+
+    func showSnackbar(_ snackbar: AppToast) {
+        snackbarAndErrors.show(snackbar)
+    }
+
+    func showSnackbarUnlessActionable(_ snackbar: AppToast) {
+        snackbarAndErrors.showUnlessActionable(snackbar)
     }
 
     private func restoreDeletion(token: UUID, presentedToast: AppToast) async {
@@ -1185,14 +1137,12 @@ final class AppModel: ObservableObject {
                     return
                 }
                 apply(update.snapshot)
-                if toast?.id == token { toast = nil }
-                if errorDetails?.id == retryableUndo?.failure.id { errorDetails = nil }
-                retryableUndo = nil
+                snackbarAndErrors.undoSucceeded(presentedToast)
                 dismissFailure(for: "snip.undo_delete")
                 scheduleCloudSync()
             } catch {
                 presentError(error, operation: "snip.undo_delete")
-                if let failure = latestFailure { retryableUndo = (failure, presentedToast) }
+                snackbarAndErrors.retainUndoFailure(of: presentedToast)
             }
         }
     }
@@ -1325,9 +1275,9 @@ final class AppModel: ObservableObject {
             clearPendingUndoToast()
             apply(change.update.snapshot)
             if let undo = change.undo {
-                toast = copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id)
-            } else if let copyToast, toast?.action == nil {
-                toast = copyToast
+                snackbarAndErrors.show(copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id))
+            } else if let copyToast {
+                snackbarAndErrors.showUnlessActionable(copyToast)
             }
             scheduleCloudSync()
             return true
@@ -1596,14 +1546,14 @@ final class AppModel: ObservableObject {
         }
         guard copied else { return false }
         guard requiresMutation else {
-            if generation == clipboardWriteGeneration, toast?.action == nil { toast = .copied(count: snips.count) }
+            if generation == clipboardWriteGeneration { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
             return true
         }
         return await withCommandLock {
             guard generation == clipboardWriteGeneration else { return true }
             let failureID = latestFailure?.id
             let markedDone = await mutation()
-            if latestFailure?.id == failureID, toast?.action == nil { toast = .copied(count: snips.count) }
+            if latestFailure?.id == failureID { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
             return markedDone
         }
     }
@@ -1692,7 +1642,7 @@ final class AppModel: ObservableObject {
             )
             guard copied, !Task.isCancelled, generation == clipboardWriteGeneration else { return copied }
             dismissCopyFailure(matching: failureID)
-            if feedback == .notify, toast?.action == nil { toast = .copied(count: snips.count) }
+            if feedback == .notify { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
             return copied
         }
     }
@@ -1819,8 +1769,7 @@ final class AppModel: ObservableObject {
         _ mutation: () async throws -> (SnipLibraryUpdate, Value)
     ) async -> Result<Value, Error> {
         do {
-            let undoToken = retryableUndo?.toast.id
-                ?? ((toast?.action == .undoDone || toast?.action == .undoDelete) ? toast?.id : nil)
+            let undoToken = snackbarAndErrors.undoToken
             let (update, value) = try await mutation()
             let changed = didMutate(value)
             if changed {
@@ -1893,9 +1842,7 @@ final class AppModel: ObservableObject {
     }
 
     func clearPendingUndoToast() {
-        retryableUndo = nil
-        guard let toast, toast.action == .undoDelete || toast.action == .undoDone else { return }
-        self.toast = nil
+        snackbarAndErrors.endUndoWindow()
     }
 
     func scheduleCloudSync() {

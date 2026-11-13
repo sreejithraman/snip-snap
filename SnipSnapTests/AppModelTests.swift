@@ -1245,7 +1245,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(toast.message, "2 snips snapped")
         let copied = pasteboard.string(forType: .string)
         XCTAssertNotNil(copied)
-        model.toast = nil
+        model.closeSnackbar(toast)
         await model.performToastActionNow(toast)
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == first.id }).isDone)
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == second.id }).isDone)
@@ -1348,7 +1348,7 @@ final class AppModelTests: StoreBackedTestCase {
             let history = ClipboardHistory(pasteboard: pasteboard, defaults: defaults(), storeURL: try storeURL())
             let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults(), clipboardHistory: history)
             let undo = protectsUndo ? AppToast.deleted(count: 1, id: UUID()) : nil
-            model.toast = undo
+            if let undo { model.showSnackbar(undo) }
             model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
             let incident = try XCTUnwrap(model.latestFailure)
             let entry = ClipboardEntry(sourceApplication: "Tests", items: [
@@ -1403,7 +1403,7 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         await library.failNextCheckedRead()
         await model.performToastActionNow(undo)
         let inverseFailure = try XCTUnwrap(model.dialogFailure)
@@ -1414,7 +1414,7 @@ final class AppModelTests: StoreBackedTestCase {
             await model.placeOnClipboardNow(.snips([copy]), to: pasteboard)
         }
         await gate.waitUntilPreparationStarts()
-        model.errorDetails = inverseFailure
+        model.showErrorDetails(inverseFailure)
         await gate.release()
 
         let copied = await copying.value
@@ -1479,7 +1479,7 @@ final class AppModelTests: StoreBackedTestCase {
             await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
             let undo = try XCTUnwrap(model.toast)
             if failingUndo {
-                model.toast = nil
+                model.closeSnackbar(undo)
                 await library.failNextCheckedRead()
                 await model.performToastActionNow(undo)
             }
@@ -1509,13 +1509,13 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         await model.setDoneAfterExternalDropNow(versions: [first.id: first.updatedAt])
         let firstUndo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(firstUndo)
         await library.failNextCheckedRead()
         await model.performToastActionNow(firstUndo)
         let olderRetry = try XCTUnwrap(model.errorRetryAction)
         await model.setDoneAfterExternalDropNow(versions: [second.id: second.updatedAt])
         let secondUndo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(secondUndo)
         await library.failNextCheckedRead()
         await model.performToastActionNow(secondUndo)
         let newerFailure = try XCTUnwrap(model.dialogFailure)
@@ -1571,7 +1571,7 @@ final class AppModelTests: StoreBackedTestCase {
         let clipboardWrites = pasteboard.changeCount
         let copying = Task { @MainActor in await model.copySnipsAndMarkDoneNow([copy], to: pasteboard) }
         await gate.waitUntilPreparationStarts()
-        model.toast = nil
+        model.closeSnackbar(undo)
         await library.failNextCheckedRead()
         await model.performToastActionNow(undo)
         XCTAssertTrue(model.canRetryErrorAction)
@@ -1584,7 +1584,7 @@ final class AppModelTests: StoreBackedTestCase {
         let recovery = try XCTUnwrap(model.pendingUndoFailure)
         XCTAssertEqual(recovery.id, inverseFailure.id)
         XCTAssertEqual(model.latestFailure?.operation, "clipboard.export")
-        model.errorDetails = recovery
+        model.showErrorDetails(recovery)
         XCTAssertTrue(model.canRetryErrorAction)
         XCTAssertNil(model.pendingUndoFailure, "Details must own the inverse failure while open.")
         model.dismissErrorDetails()
@@ -1607,7 +1607,7 @@ final class AppModelTests: StoreBackedTestCase {
         await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
         let toast = try XCTUnwrap(model.toast)
         let copied = pasteboard.string(forType: .string)
-        model.toast = nil
+        model.closeSnackbar(toast)
         await library.failNextCheckedRead()
 
         await model.performToastActionNow(toast)
@@ -1637,7 +1637,7 @@ final class AppModelTests: StoreBackedTestCase {
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-cli-undo-retry-\(UUID())"))
         await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         await library.failNextCheckedRead()
         await model.performToastActionNow(undo)
         XCTAssertTrue(model.canRetryErrorAction)
@@ -1714,7 +1714,7 @@ final class AppModelTests: StoreBackedTestCase {
         let toast = try XCTUnwrap(model.toast)
         let failure = try XCTUnwrap(model.latestFailure)
         XCTAssertEqual(failure.surface, .snackbar)
-        model.toast = nil
+        model.closeSnackbar(toast)
         await model.performToastActionNow(toast)
         XCTAssertEqual(model.errorDetails?.id, failure.id)
         XCTAssertNotNil(model.presentedError)
@@ -1771,7 +1771,7 @@ final class AppModelTests: StoreBackedTestCase {
                            "The Undo snackbar must keep the replaced warning visible inline.")
             XCTAssertNil(model.dialogFailure)
             XCTAssertEqual(model.presentedError, failure.message)
-            model.toast = nil
+            model.closeSnackbar(undo)
             XCTAssertEqual(model.inlineFailure?.id, failure.id)
             model.dismissPresentedError()
             XCTAssertNil(model.inlineFailure)
@@ -2856,7 +2856,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "Place me")
         XCTAssertEqual(model.toast?.message, "Snapped")
 
-        model.toast = .deleted(count: 1, id: UUID())
+        model.showSnackbar(.deleted(count: 1, id: UUID()))
         let silent = await model.placeOnClipboardNow(
             .snips([snip]),
             feedback: .silent,
@@ -2874,7 +2874,7 @@ final class AppModelTests: StoreBackedTestCase {
         let snip = try XCTUnwrap(added)
         let model = AppModel(library: repository)
         await model.reload()
-        model.toast = .deleted(count: 1, id: UUID())
+        model.showSnackbar(.deleted(count: 1, id: UUID()))
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-undo-\(UUID())"))
 
         let copied = await model.copySnipsAndMarkDoneNow([snip], to: pasteboard)

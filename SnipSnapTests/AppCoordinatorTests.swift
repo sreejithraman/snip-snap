@@ -623,7 +623,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         await model.reload()
         await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         let settings = ShortcutSettings(defaults: defaults)
         let coordinator = AppCoordinator(
             model: model,
