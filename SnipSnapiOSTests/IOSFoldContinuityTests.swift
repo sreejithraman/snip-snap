@@ -258,6 +258,26 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments.map(\.lastPathComponent), ["for-inbox.txt"])
     }
 
+    func testComposerKeyboardYieldsToAPreviewAcrossSizeClassSwap() throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("Preview draft", to: storage)
+        try assertKeyboardYields(
+            storage: storage,
+            present: { storage.attachmentPreview = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID) },
+            dismiss: { storage.attachmentPreview = nil }
+        )
+    }
+
+    func testComposerKeyboardYieldsToAFilesPickerAcrossSizeClassSwap() throws {
+        let storage = makeComposerStorage()
+        storage.draftStore.setText("Picker draft", for: SnipList.inboxID)
+        try assertKeyboardYields(
+            storage: storage,
+            present: { storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID) },
+            dismiss: { storage.attachmentPicker = nil }
+        )
+    }
+
     func testCancelledPickerClearsItsRequestAndStagesNothing() {
         let storage = makeComposerStorage()
         let model = makeModel(library: ModelTestLibrary())
@@ -305,6 +325,29 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         return attachment
     }
 
+    /// Focuses the compact composer, presents, swaps to regular, then dismisses. The composer the swap
+    /// mounts must leave the keyboard to the presentation, then take focus back once it closes.
+    private func assertKeyboardYields(
+        storage: CompactComposerStorage, present: () -> Void, dismiss: () -> Void
+    ) throws {
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer != nil }, root.diagnostics)
+        let compact = try XCTUnwrap(root.composer)
+        XCTAssertTrue(compact.becomeFirstResponder())
+        XCTAssertTrue(root.wait("compact composer focused") { root.composer?.isFirstResponder == true }, root.diagnostics)
+
+        present()
+        XCTAssertTrue(root.wait("compact composer yields the keyboard") { compact.isFirstResponder == false }, root.diagnostics)
+        root.swap(to: .regular)
+        root.settle()
+        let regular = try XCTUnwrap(root.composer)
+        XCTAssertFalse(regular === compact, root.diagnostics)
+        XCTAssertFalse(regular.isFirstResponder, "The mounted composer took the keyboard under the presentation. \(root.diagnostics)")
+
+        dismiss()
+        XCTAssertTrue(root.wait("regular composer takes focus back") { regular.isFirstResponder }, root.diagnostics)
+    }
+
     /// Opens the Files picker for `listID`, runs `meanwhile`, then picks `fileName` through the presented
     /// picker's delegate, so SwiftUI's own completion delivers it.
     private func deliverThroughFilesPicker(
@@ -318,6 +361,10 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         meanwhile()
         let delegate = try XCTUnwrap(picker.delegate, "SwiftUI's file importer must set the picker's delegate")
         let file = try makePickedFile(named: fileName)
+        // Mirrors UIKit, which dismisses the picker before it calls the delegate.
+        picker.dismiss(animated: false)
+        let dismissed = await TestReadiness.wait { root.presented(UIDocumentPickerViewController.self) == nil }
+        XCTAssertTrue(dismissed, "The Files picker must close before it delivers")
         let delivered: Void? = delegate.documentPicker?(picker, didPickDocumentsAt: [file])
         XCTAssertNotNil(delivered, "The picker's delegate must handle picked documents")
         let staged = await TestReadiness.wait {

@@ -1850,7 +1850,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
-    /// The simulator has no camera, so no test exercises the camera's presenter.
+    /// No automated test exercises the camera's presenter; a manual Duo fold check covers it.
     func testComposerPickersSurviveFoldingTheDuo() throws {
         let folds = try duoFoldDirectory()
         continueAfterFailure = false
@@ -1872,10 +1872,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         addAttachments.tap()
         app.buttons["Choose Photos"].firstMatch.tap()
-        assertPhotosPickerReady(in: app)
+        // After folds, the Photos sheet can show Loading… for longer than the default 5 seconds.
+        assertPhotosPickerReady(in: app, presentedWithin: 20)
         for pose in [DuoPose.open, .halfOpen, .closed] {
             fold(to: pose, through: folds, in: app)
-            assertPhotosPickerReady(in: app)
+            assertPhotosPickerReady(in: app, presentedWithin: 20)
         }
         let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
         guard firstPhoto.waitForExistence(timeout: 5) else {
@@ -1918,9 +1919,16 @@ final class SnipSnapiOSUITests: XCTestCase {
         try visibleTouchCenter(of: attachment, in: app).tap()
         let preview = app.images["Image preview"]
         XCTAssertTrue(preview.waitForExistence(timeout: 5), "The attachment preview did not open")
+        let keyboardFocus = NSPredicate(format: "hasKeyboardFocus == true")
         for pose in [DuoPose.open, .halfOpen, .closed] {
             fold(to: pose, through: folds, in: app)
             XCTAssertTrue(preview.waitForExistence(timeout: 10), "The attachment preview closed after \(pose)")
+            // Keyboard focus reads on both panels; the keyboard query covers the panel XCTest drives.
+            XCTAssertEqual(
+                app.descendants(matching: .any).matching(keyboardFocus).count, 0,
+                "An element took keyboard focus under the preview after \(pose)"
+            )
+            XCTAssertEqual(app.keyboards.count, 0, "The keyboard showed over the preview after \(pose)")
         }
         app.buttons["dismiss-attachment-image"].tap()
         XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
@@ -2001,13 +2009,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Choose Photos"].firstMatch.exists)
     }
 
-    private func assertPhotosPickerReady(in app: XCUIApplication) {
+    private func assertPhotosPickerReady(in app: XCUIApplication, presentedWithin timeout: TimeInterval = 5) {
         let photos = app.buttons["Photos"]
         let loading = app.navigationBars["PUPickerUnavailableView"]
         let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             photos.exists || loading.exists
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: timeout), .completed)
         let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             photos.exists || !loading.exists
         }, object: nil)

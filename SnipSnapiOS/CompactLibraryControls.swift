@@ -98,6 +98,20 @@ struct CompactLibraryControls: View {
 
     private var isStaging: Bool { storage.stagingTask != nil }
     private var previewURL: URL? { storage.attachmentPreview?.url }
+    private var isPresentingAttachment: Bool { storage.attachmentPicker != nil || storage.attachmentPreview != nil }
+
+    /// The keyboard yields to a presented picker or preview, and focus returns when it closes. Layout
+    /// keeps following `isComposerFocused`, so nothing under the presentation changes or flickers.
+    /// A resign caused by the presentation must not clear the user's focus.
+    private var composerKeyboardFocus: Binding<Bool> {
+        Binding(
+            get: { isComposerFocused && !isPresentingAttachment },
+            set: { focused in
+                guard !isPresentingAttachment else { return }
+                isComposerFocused = focused
+            }
+        )
+    }
     private var isClipboardSelected: Bool { model.selectedPage == .clipboard }
 
     private var showsComposerPages: Bool {
@@ -375,7 +389,7 @@ struct CompactLibraryControls: View {
                         ComposerTextInput(
                             prompt: "Add to \(list.displayName)…",
                             text: isPreview ? .constant(draft.text) : composerText(for: list.id),
-                            isFocused: isPreview ? .constant(false) : $isComposerFocused,
+                            isFocused: isPreview ? .constant(false) : composerKeyboardFocus,
                             isEnabled: !isPreview && !storage.isSaving,
                             isPasteEnabled: !isStaging,
                             isTextInputEnabled: !storage.isStagingPaste,

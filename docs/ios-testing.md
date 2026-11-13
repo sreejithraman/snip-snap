@@ -186,7 +186,7 @@ Four tests fold the Duo:
 - `testComposerPickersSurviveFoldingTheDuo` keeps the Files and Photos pickers
   open through each pose, then picks a photo if the library has one.
 - `testComposerAttachmentPreviewSurvivesFoldingTheDuo` keeps a draft
-  attachment's preview open through each pose.
+  attachment's preview open through each pose, with no keyboard over it.
 
 Each test asks for a pose by writing `NN-<pose>.request` into the directory
 named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the
