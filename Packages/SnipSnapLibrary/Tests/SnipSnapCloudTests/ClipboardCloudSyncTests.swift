@@ -70,6 +70,13 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         sync = ClipboardCloudSyncService(store: store, syncRootURL: root,
                                          makeTransport: { _ in cloud }, retry: retry)
     }
+    /// A new service on the same root and store, as after the old one is discarded.
+    init(reopening previous: ClipboardClient, _ cloud: ClipboardTestCloud) {
+        root = previous.root
+        files = previous.files
+        store = previous.store
+        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: { _ in cloud })
+    }
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await run(scope: scope, isEnabled: { enabled })
     }
@@ -358,6 +365,27 @@ private func requireSavePaused<Success: Sendable>(
 
         #expect(try await running.value.entries.map(\.id) == [clip.id])
         #expect(await cloud.fetchCount() == 1)
+    }
+
+    @Test func reopenedServiceSyncsWhileTheStoppedRunUnwinds() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let clip = entry("synced after reopening")
+        try await client.store.insert(clip)
+        await cloud.pauseNextSave()
+        let stopped = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: stopped)
+        client.sync.stop()
+
+        let reopened = ClipboardClient(reopening: client, cloud)
+        #expect(try await reopened.run().entries.map(\.id) == [clip.id])
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await stopped.value }
+        let stored = try await client.store.load().entries
+        #expect(stored.map { $0.id } == [clip.id])
+        #expect(stored.allSatisfy { $0.hasBeenShared })
+        #expect(Set(try await cloud.fetch().entries.keys) == [clip.id])
     }
 
     @Test func waitingSyncIsRefusedWhenItsOptInEndsBeforeAdmission() async throws {
