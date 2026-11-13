@@ -647,7 +647,7 @@ final class CompactComposerStorage {
     /// Staging outlives a composer that a size-class change replaces, such as opening an iPhone Duo.
     var stagingTask: Task<Void, Never>?
     var isStagingPaste = false
-    /// The root presents this picker, so a fold that replaces the composer leaves it open.
+    /// The root presents this picker, so a fold that replaces the composer leaves Files and Photos open.
     var attachmentPicker: ComposerAttachmentPickerRequest?
     /// The root presents this preview, so a fold that replaces the composer leaves it open.
     var attachmentPreview: ComposerAttachmentPreviewRequest?
@@ -732,8 +732,12 @@ final class CompactComposerStorage {
         return saved
     }
 
-    /// The root calls this when it swaps its compact and regular trees.
-    func layoutDidSwap() {}
+    /// The root calls this when it swaps its compact and regular trees. The camera can't redraw for the
+    /// new size, and on a closed iPhone Duo it can't be cancelled, so it closes. An unconfirmed photo is
+    /// discarded; the draft stays.
+    func layoutDidSwap() {
+        if attachmentPicker?.source == .camera { attachmentPicker = nil }
+    }
 
     /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
     private func finishSaving() {
@@ -753,7 +757,7 @@ struct ComposerAttachmentPreviewRequest: Equatable {
     let listID: UUID
 }
 
-/// Applied beside the root's compact and regular trees, so a fold doesn't dismiss a picker or preview.
+/// Applied beside the root's compact and regular trees, so a fold doesn't dismiss Files, Photos, or a preview.
 /// It sits in a sibling background, so the inline editor's own pickers aren't nested under it.
 struct ComposerAttachmentPresentations: ViewModifier {
     let model: IOSAppModel

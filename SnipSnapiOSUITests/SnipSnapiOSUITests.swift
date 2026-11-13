@@ -1850,7 +1850,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// Needs a host that folds an iPhone Duo; see "iPhone Duo and SimLock simulators" in docs/ios-testing.md.
-    /// Camera presentation still needs a manual Duo fold check; no test exercises its presenter.
+    /// The composer camera closes on a fold and keeps the draft; see docs/ios-testing.md.
     func testComposerPickersSurviveFoldingTheDuo() throws {
         let folds = try duoFoldDirectory()
         continueAfterFailure = false
