@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import Synchronization
 import XCTest
 @testable import SnipSnapPersistence
 
@@ -58,7 +59,159 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     XCTAssertEqual(Set(persisted.snips.map(\.content)), ["First updated", "Second updated"])
     XCTAssertTrue(persisted.snips.allSatisfy(\.isDone))
   }
+
+  func testQueuedUpdateSurvivesOneFailedSyncRelease() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let queued = expectation(description: "The update waits behind normal sync")
+    let diagnostics = AppDiagnosticRecorder { event in
+      if event == .writeAdmission(.started, reason: .syncBusy) { queued.fulfill() }
+    }
+    let faults = ManifestWriteFaults()
+    let persistence = try await makeICloudPersistence(root: root, faults: faults, diagnostics: diagnostics)
+    let library = try await persistence.activeLibrary()
+    let added = try await library.perform(addCommand("Before sync"), sortedBy: .manual)
+    let snip = try XCTUnwrap(added.snapshot.snips.first)
+
+    let lease = try await persistence.activeCloudMutationLease(
+      storeID: try await persistence.snapshot().activeStore.id)
+    let held = expectation(description: "Normal sync owns write admission")
+    let release = SequentialUpdateLatch()
+    let syncing = Task {
+      try await lease.run {
+        held.fulfill()
+        await release.wait()
+      }
+    }
+    await fulfillment(of: [held], timeout: 2)
+    let updating = Task {
+      try await library.perform(.update(id: snip.id, content: "Updated during sync",
+        attachmentURLs: nil, expectedUpdatedAt: snip.updatedAt, now: Date()), sortedBy: .manual)
+    }
+    await fulfillment(of: [queued], timeout: 2)
+    faults.failNextWrites(1)
+    await release.open()
+
+    do { try await syncing.value; XCTFail("Sync must see its failed release") }
+    catch SyncModePersistenceError.storageFailure {}
+    do {
+      let updated = try await updating.value
+      XCTAssertEqual(updated.snapshot.snips.first { $0.id == snip.id }?.content, "Updated during sync")
+    } catch {
+      XCTFail("The queued update must survive one failed sync release: \(error)")
+    }
+    let state = try await persistence.snapshot()
+    XCTAssertFalse(state.hasActiveMutationReservation)
+
+    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+    let persisted = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(persisted.snips.map(\.content), ["Updated during sync"])
+  }
+
+  func testEditAndSyncResumeAfterAReservationClearFailsTwice() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let faults = ManifestWriteFaults()
+    let persistence = try await makeICloudPersistence(root: root, faults: faults)
+    let library = try await persistence.activeLibrary()
+    faults.failNextReservationClear(writes: 2)
+    do {
+      _ = try await library.perform(addCommand("Saved before the failed clear"), sortedBy: .manual)
+      XCTFail("The edit must report the failed reservation clear")
+    } catch SyncModePersistenceError.storageFailure {}
+    let leftover = try await persistence.snapshot()
+    XCTAssertTrue(leftover.hasActiveMutationReservation)
+
+    let lease = try await persistence.activeCloudMutationLease(storeID: leftover.activeStore.id)
+    do { try await lease.run {} }
+    catch { XCTFail("Sync must run once the disk recovers: \(error)") }
+    do { _ = try await library.perform(addCommand("After the disk recovers"), sortedBy: .manual) }
+    catch { XCTFail("The next edit must save once the disk recovers: \(error)") }
+
+    let state = try await persistence.snapshot()
+    XCTAssertFalse(state.hasActiveMutationReservation)
+    let saved = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(saved.snips.map(\.content)),
+      ["Saved before the failed clear", "After the disk recovers"])
+  }
+
+  func testReopenClearsAReservationLeftByAFailedRelease() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let faults = ManifestWriteFaults()
+    let persistence = try await makeICloudPersistence(root: root, faults: faults)
+    let library = try await persistence.activeLibrary()
+    faults.failNextReservationClear(writes: 2)
+    do {
+      _ = try await library.perform(addCommand("Saved before the failed clear"), sortedBy: .manual)
+      XCTFail("The edit must report the failed reservation clear")
+    } catch SyncModePersistenceError.storageFailure {}
+
+    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+    let state = try await reopened.snapshot()
+    XCTAssertFalse(state.hasActiveMutationReservation)
+    XCTAssertEqual(state.activeStore.revision, 1)
+    let active = try await reopened.activeLibrary()
+    _ = try await active.perform(addCommand("After reopen"), sortedBy: .manual)
+    let saved = try await active.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(saved.snips.map(\.content)), ["Saved before the failed clear", "After reopen"])
+  }
 }
+
+private func makeICloudPersistence(
+  root: URL, faults: ManifestWriteFaults, diagnostics: AppDiagnosticRecorder = .live
+) async throws -> SwiftDataSyncModePersistence {
+  let persistence = try SwiftDataSyncModePersistence(rootURL: root, manifestWriter: faults.write,
+    writeHook: faults.armAtReservationClear, diagnostics: diagnostics)
+  let namespace = ICloudSyncNamespaceBinding(scope: "private", accountLineage: "test-account",
+    generation: UUID(), zones: [.init(name: "test-zone", ownerName: "test-owner")])
+  try await persistence.activateEmptyCollection(namespace: namespace)
+  return persistence
+}
+
+private func addCommand(_ content: String) -> SnipLibraryCommand {
+  .add(content: content, origin: .agent, source: nil, listID: SnipList.inboxID,
+    attachmentURLs: [], requestID: UUID(), now: Date())
+}
+
+/// Fails chosen activation-manifest writes the way a full or failing disk would.
+private final class ManifestWriteFaults: Sendable {
+  private struct Plan {
+    var failuresAtNextReservationClear = 0
+    var failingWrites = 0
+  }
+
+  private let plan = Mutex(Plan())
+
+  func failNextWrites(_ count: Int) {
+    plan.withLock { $0.failingWrites = count }
+  }
+
+  /// Fails writes starting at the next reservation clear, so the reservation itself still commits.
+  func failNextReservationClear(writes count: Int) {
+    plan.withLock { $0.failuresAtNextReservationClear = count }
+  }
+
+  func armAtReservationClear(_ point: SyncModeWritePoint) {
+    guard point == .beforeReservationCleared else { return }
+    plan.withLock {
+      $0.failingWrites += $0.failuresAtNextReservationClear
+      $0.failuresAtNextReservationClear = 0
+    }
+  }
+
+  func write(_ data: Data, to url: URL) throws {
+    let fails = plan.withLock { plan in
+      guard plan.failingWrites > 0 else { return false }
+      plan.failingWrites -= 1
+      return true
+    }
+    if fails { throw ManifestWriteFault.injected }
+    try DurableFile.write(data, to: url)
+  }
+}
+
+private enum ManifestWriteFault: Error { case injected }
 
 private actor SequentialUpdateLatch {
   private var isOpen = false
