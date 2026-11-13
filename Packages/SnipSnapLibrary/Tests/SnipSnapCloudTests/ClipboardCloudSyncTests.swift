@@ -71,13 +71,20 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
                                          makeTransport: { _ in cloud }, retry: retry)
     }
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
-        try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: enabled, generation: scope)
+        try await run(scope: scope, isEnabled: { enabled })
+    }
+    @discardableResult func run(scope: String = "account-generation-A", isEnabled: @MainActor () -> Bool) async throws -> ClipboardHistoryState {
+        try await sync.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: isEnabled(), generation: scope)
     }
     /// Runs on the caller's actor up to the sync's first suspension, so a sync blocked on a
     /// stopped run is already waiting when this returns.
-    func startRun() -> Task<ClipboardHistoryState, any Error> {
-        Task.immediate { try await self.run() }
+    func startRun(isEnabled: @escaping @MainActor @Sendable () -> Bool = { true }) -> Task<ClipboardHistoryState, any Error> {
+        Task.immediate { try await self.run(isEnabled: isEnabled) }
     }
+}
+
+@MainActor private final class ClipboardOptIn {
+    var isOn = true
 }
 
 /// Ends the test, cancelling `run`, if its save doesn't pause.
@@ -351,6 +358,46 @@ private func requireSavePaused<Success: Sendable>(
 
         #expect(try await running.value.entries.map(\.id) == [clip.id])
         #expect(await cloud.fetchCount() == 1)
+    }
+
+    @Test func waitingSyncIsRefusedWhenItsOptInEndsBeforeAdmission() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let clip = entry("stays local")
+        try await client.store.insert(clip)
+        await cloud.pauseNextSave()
+        let stopped = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: stopped)
+
+        client.sync.stop()
+        let optIn = ClipboardOptIn()
+        let waiting = client.startRun(isEnabled: { optIn.isOn })
+        optIn.isOn = false
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await stopped.value }
+        #expect(try await waiting.value.entries.map(\.id) == [clip.id])
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func syncWithItsOptInOffStopsTheRunBeforeWaiting() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let clip = entry("stays local")
+        try await client.store.insert(clip)
+        await cloud.pauseNextSave()
+        let running = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: running)
+
+        let disabled = client.startRun(isEnabled: { false })
+        #expect(!client.sync.isSyncing)
+        await cloud.resumeSave()
+
+        #expect(try await disabled.value.entries.map(\.id) == [clip.id])
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
     }
 
     @Test func rejectsOversizedPinnedPayloadBeforeUpload() async throws {
