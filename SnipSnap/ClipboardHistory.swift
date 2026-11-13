@@ -636,7 +636,8 @@ final class ClipboardHistory: ObservableObject {
         let id = UUID()
         let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
         let task = Task { [weak self] in
-            await self?.readDeferredCapture(id, sourceApplication: sourceApplication)
+            guard let self else { return }
+            await readDeferredCapture(id, sourceApplication: sourceApplication)
         }
         capture = .capturing(ClipboardCaptureAttempt(
             id: id,
@@ -681,7 +682,8 @@ final class ClipboardHistory: ObservableObject {
         }
         let id = UUID()
         let task = Task { [weak self] in
-            await self?.finishCapture(id, snapshot: snapshot, sourceApplication: sourceApplication)
+            guard let self else { return }
+            await finishCapture(id, snapshot: snapshot, sourceApplication: sourceApplication)
         }
         capture = .capturing(ClipboardCaptureAttempt(
             id: id,
