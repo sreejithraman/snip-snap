@@ -154,20 +154,20 @@ final class ShareExtensionModel {
         do {
             if let saveImport { try await saveImport(request) }
             else { _ = try await imports.save(request) }
-            if phase == .saving { phase = .published }
+            if phase != .cancelled { phase = .published }
             _ = await diagnostics.flush(timeout: 0.5)
-            guard phase == .published, !Task.isCancelled else { return }
+            guard phase != .cancelled, !Task.isCancelled else { return }
             defaults.set(destinationListID.uuidString, forKey: Self.destinationKey)
             extensionContext.completeRequest(returningItems: nil)
         } catch {
-            guard phase == .saving else { return }
+            guard phase != .cancelled else { return }
             if Task.isCancelled || isDiagnosticCancellation(error) {
                 phase = .editing
                 return
             }
             diagnostics.record(.failure(operation: "share.extension_save", error: error, visibility: .user))
             _ = await diagnostics.flush(timeout: 0.5)
-            guard phase == .saving else { return }
+            guard phase != .cancelled else { return }
             phase = Task.isCancelled ? .editing : .failed(error.localizedDescription)
         }
     }
