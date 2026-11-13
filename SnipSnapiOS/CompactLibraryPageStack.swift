@@ -326,6 +326,12 @@ private struct ListPageMotionStage<PageContent: View>: View {
                         ) : width * 2)
                         .opacity(isRetained ? frame.opacity(for: page.id, reduceMotion: reduceMotion) : 0)
                         .accessibilityHidden(page.id != selectedPage)
+                        // System bar items ignore ancestor accessibility hiding, so inactive pages
+                        // drop theirs where the bars can reach into the horizontal safe area.
+                        .environment(
+                            \.suppliesPageToolbar,
+                            page.id == selectedPage || (safeArea.leading == 0 && safeArea.trailing == 0)
+                        )
                         .disabled(frame.isMoving || page.id != selectedPage)
                         .allowsHitTesting(!frame.isMoving && page.id == selectedPage)
                         .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 1 : 0)
