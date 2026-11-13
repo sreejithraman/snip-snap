@@ -142,9 +142,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var appearance: AppAppearance
     @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published var legacyDraftCount = 0
-    @Published var pendingImportPreview: SnipImportPreview?
-    var pendingImportPreviewID: UUID?
-    var cliImportPreviewID: UUID?
+    @Published private(set) var pendingImportPreview: SavedSnipsImportPreview?
     @Published var toast: AppToast? {
         didSet {
             guard toast?.action == .undoDone || toast?.action == .undoDelete,
@@ -1198,7 +1196,7 @@ final class AppModel: ObservableObject {
     }
 
     var importPreviewSummary: String {
-        pendingImportPreview?.localizedSummary ?? ""
+        pendingImportPreview?.value.localizedSummary ?? ""
     }
 
     func previewBackupImport(from url: URL) async {
@@ -1206,11 +1204,8 @@ final class AppModel: ObservableObject {
             let didAccess = url.startAccessingSecurityScopedResource()
             defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
             do {
-                let preview = try await session.previewImport(from: url)
-                pendingImportPreviewID = preview.id
-                pendingImportPreview = preview.value
+                pendingImportPreview = try await session.previewImport(from: url)
             } catch {
-                pendingImportPreviewID = nil
                 pendingImportPreview = nil
                 presentError(error)
             }
@@ -1218,34 +1213,30 @@ final class AppModel: ObservableObject {
     }
 
     func cancelBackupImport() {
-        let id = pendingImportPreviewID
-        pendingImportPreviewID = nil
+        guard let preview = pendingImportPreview else { return }
         pendingImportPreview = nil
-        guard let id else { return }
         Task {
             await session.withExclusiveAccess { session in
-                await session.cancelImport(id: id)
+                _ = await session.cancelImport(id: preview.id)
             }
         }
     }
 
     func confirmBackupImport() async {
-        guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
+        guard let preview = pendingImportPreview else { return }
         await withCommandLock {
             guard editingID == nil else { return }
             do {
                 guard let (result, recovery) = try await session.applyPendingImport(
-                    id: id,
+                    id: preview.id,
                     sortedBy: sortMode
                 ) else { return }
                 clearPendingUndoToast()
-                pendingImportPreviewID = nil
                 pendingImportPreview = nil
                 apply(result.snapshot)
                 recoverySnapshot = recovery
                 scheduleCloudSync()
             } catch {
-                pendingImportPreviewID = nil
                 pendingImportPreview = nil
                 presentError(error)
                 await reloadUnlocked()

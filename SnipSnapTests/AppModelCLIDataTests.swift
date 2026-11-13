@@ -129,6 +129,45 @@ final class AppModelCLIDataTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCLICancelEndsItsOwnBackupPreview() async throws {
+        let backup = try await makeBackup(content: "From backup")
+        let (target, targetLibrary) = try makeImportTarget()
+        let preview = try await target.handleCLIRequest(request(.previewBackup(path: backup.path), target))
+        let previewID = try XCTUnwrap(data(preview).importPreview?.id)
+
+        let cancelled = try await target.handleCLIRequest(request(.cancelBackup(previewID: previewID), target))
+
+        XCTAssertEqual(cancelled.message, "Cancelled backup preview.")
+        do {
+            _ = try await target.handleCLIRequest(request(.importBackup(previewID: previewID), target))
+            XCTFail("A cancelled CLI preview must not import")
+        } catch SnipLibraryError.importChanged {}
+        let archive = try await targetLibrary.archive()
+        XCTAssertTrue(archive.snips.isEmpty)
+    }
+
+    @MainActor
+    func testCLIImportWithAnUnsavedDraftKeepsThePreviewImportable() async throws {
+        let backup = try await makeBackup(content: "From backup")
+        let (target, targetLibrary) = try makeImportTarget()
+        let preview = try await target.handleCLIRequest(request(.previewBackup(path: backup.path), target))
+        let previewID = try XCTUnwrap(data(preview).importPreview?.id)
+        target.saveComposerText("Unsaved draft", for: SnipList.inboxID)
+
+        do {
+            _ = try await target.handleCLIRequest(request(.importBackup(previewID: previewID), target))
+            XCTFail("An unsaved draft must block a CLI import")
+        } catch SnipCLIRequestError.draftInProgress {}
+        target.saveComposerText("", for: SnipList.inboxID)
+
+        let imported = try await target.handleCLIRequest(request(.importBackup(previewID: previewID), target))
+
+        XCTAssertEqual(try data(imported).addedSnipCount, 1)
+        let archive = try await targetLibrary.archive()
+        XCTAssertEqual(archive.snips.map(\.content), ["From backup"])
+    }
+
+    @MainActor
     func testDraftMoveGuardsBothEndsAndSaveAsSnipKeepsAttachmentBytes() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())

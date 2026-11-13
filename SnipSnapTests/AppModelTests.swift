@@ -3876,7 +3876,7 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.previewBackupImport(from: backupURL)
 
-        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+        XCTAssertEqual(model.pendingImportPreview?.value.addedSnipCount, 1)
         XCTAssertTrue(model.snips.isEmpty)
 
         await model.confirmBackupImport()
@@ -3899,7 +3899,7 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(library: target, defaults: defaults(), userActions: userActions(for: target))
         await model.reload()
         await model.previewBackupImport(from: backupURL)
-        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        XCTAssertEqual(model.pendingImportPreview?.value.addedListCount, 1)
         model.enterSearch()
         model.query = "Work"
         let opened = await model.beginEditing(edited.id)
@@ -3974,7 +3974,7 @@ final class AppModelTests: StoreBackedTestCase {
         await replacementTask.value
         await previewTask.value
 
-        XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
+        XCTAssertEqual(model.pendingImportPreview?.value.addedSnipCount, 1)
     }
 
     @MainActor
@@ -4010,7 +4010,7 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.previewBackupImport(from: backupFolder)
 
-        XCTAssertEqual(model.pendingImportPreview?.addedAttachmentCount, 1)
+        XCTAssertEqual(model.pendingImportPreview?.value.addedAttachmentCount, 1)
         XCTAssertTrue(model.snips.isEmpty)
         await model.confirmBackupImport()
         let attachmentID = try XCTUnwrap(model.snips.first?.attachments.first?.id)
@@ -4039,7 +4039,7 @@ final class AppModelTests: StoreBackedTestCase {
 
         await model.previewBackupImport(from: backupURL)
 
-        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
+        XCTAssertEqual(model.pendingImportPreview?.value.addedListCount, 1)
         XCTAssertEqual(model.importPreviewSummary, "0 snips, 1 new list")
     }
 
