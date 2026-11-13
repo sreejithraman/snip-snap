@@ -122,10 +122,11 @@ final class CloudPendingICloudEnableTests: XCTestCase {
   func testTurningOffICloudSyncFailsWhileThePendingEnableMarkerCannotBeRemoved() async throws {
     let (lifecycle, _, _) = try await enabledICloudSyncWithPendingMarker()
 
-    do {
+    await assertMarkerRemovalFails(
+      "Turning off iCloud sync must not succeed while the pending marker remains"
+    ) {
       try await lifecycle.disableICloudSync(.useCurrentCache)
-      XCTFail("Turning off iCloud sync must not succeed while the pending marker remains")
-    } catch {}
+    }
     XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
       atSyncModeRootURL: syncRoot
     ))
@@ -139,6 +140,24 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncRoot),
       .localOnly
     )
+  }
+
+  func testTurningOffICloudSyncStaysLocalAfterRelaunch() async throws {
+    let (lifecycle, source, server) = try await enabledICloudSyncWithPendingMarker()
+    setMarkerLocked(false)
+    try await lifecycle.disableICloudSync(.useCurrentCache)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+    let relaunched = try relaunchedLifecycle(source: source, server: server)
+    let next = try await relaunched.synchronize()
+
+    XCTAssertNotEqual(next, .iCloudSyncEnabled)
+    if case .iCloudSyncSettingUp = next { XCTFail("Setup resumed after relaunch: \(next)") }
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncRoot),
+      .localOnly
+    )
+    XCTAssertEqual(startupSettings().mode, .localOnly)
   }
 
   func testCancelWhoseMarkerCannotBeRemovedKeepsTheEnablePending() async throws {
