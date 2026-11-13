@@ -50,7 +50,8 @@ final class IOSClipboardModel {
         UIDevice.current.model == "iPad" ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
 
-    init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
+    init(rootURL: URL, syncRootURL: URL? = nil, settings: SyncedContentSettingsModel,
+         containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
          diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
@@ -71,7 +72,7 @@ final class IOSClipboardModel {
             let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !identifier.isEmpty else { return nil }
             return ClipboardCloudSyncService(store: store, containerIdentifier: identifier,
-                syncRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true))
+                syncRootURL: syncRootURL ?? rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
 

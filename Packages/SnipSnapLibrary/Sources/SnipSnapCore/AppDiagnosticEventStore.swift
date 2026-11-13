@@ -24,6 +24,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   private let runtimeTrace: RuntimeTrace
   private var activeTrace: RuntimeTrace.Span?
   private let backgroundActivityRunner: FileAccessBackgroundActivity.Runner?
+  private let lockGate: SharedContainerLockGate
   private var context: [Record] = []
   private var contextClearToken: Data?
 
@@ -34,10 +35,12 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
     now: @escaping () -> Date = Date.init, lockTimeout: TimeInterval = 0.25,
     runtimeTrace: RuntimeTrace = .live,
     backgroundActivityRunner: FileAccessBackgroundActivity.Runner? =
-      FileAccessBackgroundActivity.platformRunner
+      FileAccessBackgroundActivity.platformRunner,
+    lockGate: SharedContainerLockGate = .process
   ) {
     self.runtimeTrace = runtimeTrace
     self.backgroundActivityRunner = backgroundActivityRunner
+    self.lockGate = lockGate
     self.lockTimeout = lockTimeout.isFinite ? max(0, min(lockTimeout, 0.5)) : 0.25
     self.directoryURL = directoryURL
     self.legacyDirectoryURL = legacyDirectoryURL
@@ -244,7 +247,14 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
   ) throws -> T {
     let trace = runtimeTrace.span(.diagnostics, operation: name)
     defer { trace.mark(.accessEnded) }
-    // Execution protection must outlive every file lock. Busy preserves the writer's queued batch.
+    // The admission outlives every file lock, so closing the gate waits for this unlock.
+    // Busy preserves the writer's queued batch.
+    guard let admission = lockGate.admit() else {
+      trace.mark(.protectionDenied)
+      throw AppDiagnosticAccessError.busy
+    }
+    defer { admission.release() }
+    // Extra execution time for the share extension; it cannot prevent suspension.
     let activity: FileAccessBackgroundActivity?
     do {
       activity = try FileAccessBackgroundActivity.begin(runner: backgroundActivityRunner, trace: trace)
@@ -330,7 +340,8 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       let source = AppDiagnosticEventStore(
         directoryURL: sourceURL, policy: policy,
         appVersion: appVersion, appBuild: appBuild, now: now, lockTimeout: lockTimeout,
-        runtimeTrace: runtimeTrace, backgroundActivityRunner: backgroundActivityRunner)
+        runtimeTrace: runtimeTrace, backgroundActivityRunner: backgroundActivityRunner,
+        lockGate: lockGate)
       let optOutPending = url("migration-off-\(key).pending")
       if exists(marker), !exists(optOutPending), !source.exists(source.url("aggregate.json")),
         !source.exists(source.url("diagnostic-sync-health.txt")),

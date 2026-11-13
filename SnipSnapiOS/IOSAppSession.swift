@@ -44,6 +44,7 @@ struct IOSLibraryStartup {
     let recoveryScope: SnipRecoveryScope?
     let syncModeStore: SnipSyncModeStore?
     let syncModeRootURL: URL
+    let clipboardRootURL: URL
     let attachmentCacheRootURL: URL?
 }
 
@@ -80,6 +81,7 @@ final class IOSAppSession {
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
         clipboardRootURL: URL? = nil,
+        clipboardSyncRootURL: URL? = nil,
         clipboardContainerIdentifier: String? = nil,
         diagnostics: AppDiagnosticRecorder = .live
     ) {
@@ -106,6 +108,7 @@ final class IOSAppSession {
         self.shareDestinationPublisher = shareDestinationPublisher
         let clipboard = IOSClipboardModel(
             rootURL: clipboardRootURL ?? FileManager.default.temporaryDirectory.appendingPathComponent("Clipboard-Preview-" + UUID().uuidString),
+            syncRootURL: clipboardSyncRootURL,
             settings: syncedContentSettings,
             containerIdentifier: clipboardContainerIdentifier,
             generation: {
