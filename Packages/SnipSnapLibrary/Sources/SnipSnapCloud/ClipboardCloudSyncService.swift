@@ -12,8 +12,11 @@ package struct ClipboardCloudPayload: Codable, Sendable {
 private enum ClipboardCloudLifecycle {
     case idle
     case syncing(ClipboardCloudOperation)
-    /// `stop()` ended this run. It keeps the store until it unwinds, and sync calls wait for it.
-    case stopping(runID: UUID, syncWaiters: [CheckedContinuation<Bool, Never>])
+    /// `stop()` ended this run. It keeps the store until it unwinds, then admits the first sync
+    /// call waiting for it; later waiters are busy.
+    case stopping(runID: UUID, syncWaiters: [CheckedContinuation<UUID, any Error>])
+    /// The admitted sync starts only if it claims this admission before `stop()` revokes it.
+    case admitting(UUID)
     case unbinding(ClipboardCloudOperation, unwindingRun: ClipboardCloudUnwindingRun?)
 }
 
@@ -78,7 +81,9 @@ private struct ClipboardCloudUnwindingRun {
             lifecycle = .stopping(runID: run.id, syncWaiters: [])
         case .stopping(let runID, let waiters):
             lifecycle = .stopping(runID: runID, syncWaiters: [])
-            for waiter in waiters { waiter.resume(returning: false) }
+            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+        case .admitting:
+            lifecycle = .idle
         case .unbinding(let unbinding, _):
             unbinding.cancel()
         }
@@ -169,12 +174,12 @@ private struct ClipboardCloudUnwindingRun {
     }
 
     private func waitForStoppedRun() async throws {
-        while case .stopping(let runID, let waiters) = lifecycle {
-            let mayStart: Bool = await withCheckedContinuation { waiter in
-                lifecycle = .stopping(runID: runID, syncWaiters: waiters + [waiter])
-            }
-            guard mayStart else { throw CancellationError() }
+        guard case .stopping(let runID, let waiters) = lifecycle else { return }
+        let admission: UUID = try await withCheckedThrowingContinuation { waiter in
+            lifecycle = .stopping(runID: runID, syncWaiters: waiters + [waiter])
         }
+        guard case .admitting(let current) = lifecycle, current == admission else { throw CancellationError() }
+        lifecycle = .idle
     }
 
     private func finishRun(_ id: UUID) {
@@ -182,8 +187,14 @@ private struct ClipboardCloudUnwindingRun {
         case .syncing(let run) where run.id == id:
             lifecycle = .idle
         case .stopping(let runID, let waiters) where runID == id:
-            lifecycle = .idle
-            for waiter in waiters { waiter.resume(returning: true) }
+            guard let admitted = waiters.first else {
+                lifecycle = .idle
+                return
+            }
+            let admission = UUID()
+            lifecycle = .admitting(admission)
+            admitted.resume(returning: admission)
+            for waiter in waiters.dropFirst() { waiter.resume(throwing: ClipboardCloudError.busy) }
         case .unbinding(let unbinding, let unwinding?) where unwinding.id == id:
             lifecycle = .unbinding(unbinding, unwindingRun: nil)
             unwinding.waiter.resume()
