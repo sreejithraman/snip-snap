@@ -1,6 +1,8 @@
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
+import SwiftUI
+import UIKit
 import XCTest
 @testable import SnipSnapiOS
 
@@ -20,7 +22,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         let toast = try XCTUnwrap(model.toast)
         XCTAssertEqual(toast.action, .undoDone)
         let writes = pasteboard.writes
-        model.toast = nil
+        model.closeSnackbar(toast)
         await model.performToastActionNow(toast)
 
         XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == unfinished.id }).isDone)
@@ -73,7 +75,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         model.presentError("Copy failed", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
         let toast = try XCTUnwrap(model.toast)
         let failure = try XCTUnwrap(model.latestFailure)
-        model.toast = nil
+        model.closeSnackbar(toast)
 
         await model.performToastActionNow(toast)
 
@@ -85,8 +87,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
     func testReplacingFailureClearsSupersededWarningSnackbar() throws {
         let replacements: [(IOSAppModel) -> Void] = [
             { $0.presentError(SnipLibraryError.duplicateList, operation: "list.create") },
-            { $0.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action") },
-            { $0.errorMessage = "A later legacy failure" }
+            { $0.presentError(SnipLibraryError.storeUnavailable, operation: "app.user_action") }
         ]
         for replace in replacements {
             let model = IOSAppModel(library: ModelTestLibrary())
@@ -102,6 +103,114 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
             model.showLatestErrorDetails()
             XCTAssertEqual(model.errorDetails?.id, model.latestFailure?.id)
         }
+    }
+
+    func testUndoSnackbarMovesTheReplacedWarningFailureInline() async throws {
+        for deleting in [false, true] {
+            let snip = Snip(content: "Undoable", origin: .quickEntry)
+            let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]))
+            await model.load()
+            model.presentError(SnipLibraryError.storeUnavailable, operation: "snip.move")
+            let failure = try XCTUnwrap(model.failure)
+            XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+            XCTAssertNil(model.inlineFailure)
+            XCTAssertFalse(model.hasGlobalInlineFailure)
+
+            if deleting { _ = await model.deleteSnip(id: snip.id) }
+            else { _ = await model.toggleDone(id: snip.id) }
+
+            let undo = try XCTUnwrap(model.toast)
+            XCTAssertEqual(undo.action, deleting ? .undoDelete : .undoDone)
+            XCTAssertEqual(model.inlineFailure?.id, failure.id,
+                           "The Undo snackbar must keep the replaced warning visible inline.")
+            XCTAssertTrue(model.hasGlobalInlineFailure)
+            model.closeSnackbar(undo)
+            XCTAssertEqual(model.inlineFailure?.id, failure.id)
+            model.dismissError()
+            XCTAssertNil(model.inlineFailure)
+            XCTAssertEqual(model.latestFailure?.id, failure.id)
+        }
+    }
+
+    func testCopyConfirmationReplacesAWarningButNeverUndo() async throws {
+        let pinned = Snip(content: "Copy only", origin: .quickEntry, pinnedAt: Date())
+        let deletable = Snip(content: "Delete me", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [pinned, deletable]))
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        model.presentError(SnipLibraryError.storeUnavailable, operation: "snip.move")
+        let failure = try XCTUnwrap(model.failure)
+        XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+
+        let copiedOverWarning = await coordinator.copy(snips: [pinned], model: model)
+
+        XCTAssertTrue(copiedOverWarning)
+        XCTAssertEqual(model.toast?.message, "Snapped")
+        XCTAssertNil(model.toast?.action, "iOS replaces a warning with the copy confirmation.")
+        XCTAssertEqual(model.failure?.id, failure.id)
+
+        _ = await model.deleteSnip(id: deletable.id)
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDelete)
+        let copiedOverUndo = await coordinator.copy(snips: [pinned], model: model)
+        XCTAssertTrue(copiedOverUndo)
+        XCTAssertEqual(model.toast?.id, undo.id, "A copy confirmation never replaces Undo.")
+    }
+
+    func testSuccessfulCopyRetryKeepsTheResolvedFailureDetailsOpen() async throws {
+        let pinned = Snip(content: "Retry copy", origin: .quickEntry, pinnedAt: Date())
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [pinned]))
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.write")
+        let failure = try XCTUnwrap(model.failure)
+        XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+        model.showLatestErrorDetails()
+
+        let copied = await coordinator.copy(snips: [pinned], model: model)
+
+        XCTAssertTrue(copied)
+        XCTAssertNil(model.failure)
+        XCTAssertEqual(model.errorDetails?.id, failure.id, "iOS keeps details open after the retry succeeds.")
+        XCTAssertEqual(model.latestFailure?.id, failure.id)
+        XCTAssertEqual(model.toast?.message, "Snapped")
+        XCTAssertNil(model.toast?.action)
+    }
+
+    func testExpiringSnackbarClosesThroughTheModelBeforeItsDismissalRuns() async throws {
+        let readyBy = ContinuousClock().now.advanced(by: .seconds(3))
+        while UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).isEmpty,
+              ContinuousClock().now < readyBy {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousWindow = scene.windows.first(where: \.isKeyWindow)
+        let snip = Snip(content: "Holds the library", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [snip])
+        let model = IOSAppModel(library: library)
+        await model.load()
+        await library.suspendNextCommand()
+        let heldMutation = Task { await model.toggleDone(id: snip.id) }
+        await library.waitUntilFirstCommandStarts()
+        let snackbar = AppToast(systemImage: "doc.on.doc", message: "Short", duration: .milliseconds(300))
+        model.presentToast(snackbar)
+        let controller = UIHostingController(rootView: Color.clear.libraryToast(model: model, usesFixedExpiry: true))
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousWindow?.makeKey()
+        }
+
+        let closed = await TestReadiness.wait { model.toast == nil }
+
+        XCTAssertTrue(closed, "The presenter must close the expired snackbar through the model, "
+                      + "not wait for the dismissal that needs the library.")
+        await library.resumeFirstCommand()
+        _ = await heldMutation.value
     }
 
     func testFailedCopyKeepsDoneAndDeleteUndoAvailable() async throws {
@@ -129,10 +238,10 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         await model.load()
         _ = await model.toggleDone(id: snip.id)
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         await model.performToastActionNow(undo)
         let failure = try XCTUnwrap(model.failure)
-        model.errorDetails = failure
+        model.showErrorDetails(failure)
         await library.replaceText("Newer edit", for: snip.id)
 
         await model.performToastActionNow(undo)
@@ -176,7 +285,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         await model.load()
         _ = await model.toggleDone(id: snip.id)
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         await model.performToastActionNow(undo)
         let inverseFailure = try XCTUnwrap(model.failure)
         XCTAssertTrue(model.canRetryFailure(inverseFailure))
@@ -190,7 +299,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         let recovery = try XCTUnwrap(model.pendingUndoFailure)
         XCTAssertEqual(recovery.id, inverseFailure.id)
         XCTAssertEqual(model.failure?.operation, "clipboard.write")
-        model.errorDetails = recovery
+        model.showErrorDetails(recovery)
         XCTAssertTrue(model.canRetryFailure(recovery))
         XCTAssertNil(model.pendingUndoFailure, "Details must own the inverse failure while open.")
         model.dismissErrorDetails()
@@ -219,7 +328,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
                 else { _ = await model.toggleDone(id: snip.id) }
                 let undo = try XCTUnwrap(model.toast)
                 if failingUndo {
-                    model.toast = nil
+                    model.closeSnackbar(undo)
                     await model.performToastActionNow(undo)
                 }
                 let failure = model.failure
@@ -254,7 +363,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
             if deleting { _ = await model.deleteSnip(id: snip.id) }
             else { _ = await model.toggleDone(id: snip.id) }
             let undo = try XCTUnwrap(model.toast)
-            model.toast = nil
+            model.closeSnackbar(undo)
             await library.suspendNextCommand()
             let inverse = Task { await model.performToastActionNow(undo) }
             await library.waitUntilFirstCommandStarts()
@@ -282,14 +391,14 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         await model.load()
         _ = await model.toggleDone(id: snip.id)
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
 
         await model.performToastActionNow(undo)
         let failure = try XCTUnwrap(model.failure)
         XCTAssertTrue(model.canRetryFailure(failure))
         XCTAssertEqual(failure.surface, .dialog)
         XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
-        model.errorDetails = failure
+        model.showErrorDetails(failure)
 
         await model.performToastActionNow(undo)
 

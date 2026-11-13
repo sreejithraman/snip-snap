@@ -48,7 +48,7 @@ extension AppModel {
                 )
                 return (update, snips.count)
             }
-            toast = .deleted(count: count, id: token)
+            showSnackbar(.deleted(count: count, id: token))
             return SnipCLIReceipt(request: request, status: .success, message: "Deleted \(count) snip(s). Undo is available until the deletion toast expires or the next saved-snips change.",
                                   extendedResult: .library(.init(undoToken: token)))
 
@@ -133,10 +133,14 @@ extension AppModel {
             }
             let update = feedback.update
             if let undo = feedback.undo {
-                toast = feedback.copiedCount.map { AppToast.copied(count: $0).addingDoneUndo(undo) }
-                    ?? .markedDone(count: undo.count, id: undo.id)
-            } else if let count = feedback.copiedCount, !(feedback.preservesUndo && toast?.action != nil) {
-                toast = .copied(count: count)
+                showSnackbar(feedback.copiedCount.map { AppToast.copied(count: $0).addingDoneUndo(undo) }
+                    ?? .markedDone(count: undo.count, id: undo.id))
+            } else if let count = feedback.copiedCount {
+                if feedback.preservesUndo {
+                    showSnackbarUnlessActionable(.copied(count: count))
+                } else {
+                    showSnackbar(.copied(count: count))
+                }
             }
             let returnedSnips: [Snip]
             if case .merge = action {

@@ -32,7 +32,7 @@ private extension View {
             model.dialogFailure?.id == id
         } else { false }
         return appToast(
-            Binding(get: { model.toast }, set: { model.toast = $0 }),
+            showing: model.toast, close: model.closeSnackbar,
             alignment: .bottom, edge: .bottom,
             isHidden: isHidden || showsInspectedFailure, reservesSpace: true,
             onAction: model.performToastAction, onDismiss: model.dismissToast
@@ -64,7 +64,7 @@ struct PanelFailureNotices: View {
                     AppUndoRecoveryView(
                         failure: failure,
                         onRetry: { model.retryPendingUndo(failure) },
-                        onDetails: { model.errorDetails = failure }
+                        onDetails: { model.showErrorDetails(failure) }
                     )
                 }
             }

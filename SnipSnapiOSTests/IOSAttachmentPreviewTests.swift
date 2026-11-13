@@ -60,7 +60,7 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
             default:
                 break
             }
-            if change == 5 { model.errorMessage = "Newer action failed" }
+            if change == 5 { model.presentDialogFailure("Newer action failed") }
             await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed))
             let preview = await preparing.value
             XCTAssertNil(preview)
@@ -233,7 +233,7 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         XCTAssertNotNil(model.errorMessage)
         XCTAssertEqual(diagnostics.events.count, 1)
 
-        model.errorMessage = nil
+        model.dismissError()
         _ = await model.prepareAttachment(id, for: .preview)
         XCTAssertEqual(diagnostics.events.count, 2)
     }
