@@ -389,6 +389,35 @@ final class IOSBackupModelTests: IOSModelTestCase {
         XCTAssertEqual(model.errorMessage, "Unrelated library error")
     }
 
+    func testConfirmingABackupPreviewAfterTheLibraryIsReplacedReportsImportChanged() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOSImportReplacedTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backupURL = root.appendingPathComponent("Backup.json")
+        let source = try JSONSnipLibrary(fileURL: backupURL)
+        _ = try await source.perform(.add(
+            content: "From backup", origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+            attachmentURLs: [], requestID: UUID(), now: Date()
+        ), sortedBy: .chronological)
+        let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("Target.json"))
+        let model = makeImportModel(library: target)
+        await model.load()
+        try await model.previewBackupImport(from: backupURL)
+        XCTAssertNotNil(model.pendingImportPreview)
+        let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("Replacement.json"))
+        await model.replaceLibrary(replacement, recoveryScope: nil)
+
+        do {
+            try await model.confirmBackupImport()
+            XCTFail("A preview lost to a library replacement must report that the import changed.")
+        } catch {
+            XCTAssertEqual(error as? SnipLibraryError, .importChanged)
+        }
+        XCTAssertNil(model.pendingImportPreview)
+        let snapshot = try await replacement.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertTrue(snapshot.snips.isEmpty)
+    }
+
     func testIOSBackupImportWaitsForConfirmation() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSImportTests-\(UUID().uuidString)", isDirectory: true)

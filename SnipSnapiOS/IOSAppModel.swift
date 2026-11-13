@@ -1521,7 +1521,7 @@ final class IOSAppModel {
             guard let (result, recovery) = try await session.withExclusiveAccess({ session in
                 try Task.checkCancellation()
                 return try await session.applyPendingImport(id: id, sortedBy: .chronological)
-            }) else { return }
+            }) else { throw SnipLibraryError.importChanged }
             clearPendingUndoToast()
             apply(result.snapshot)
             recoverySnapshot = recovery
