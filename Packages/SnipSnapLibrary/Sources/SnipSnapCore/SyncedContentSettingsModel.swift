@@ -192,8 +192,18 @@ public final class SyncedContentSettingsModel {
   public typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
 
-  public private(set) var mode: SyncedContentMode
-  public private(set) var state: SyncedContentSettingsState
+  /// What Settings shows. Every transition replaces it whole.
+  private struct Status: Equatable {
+    var mode: SyncedContentMode
+    var state: SyncedContentSettingsState
+  }
+
+  private var status: Status
+  public var mode: SyncedContentMode { status.mode }
+  public var state: SyncedContentSettingsState { status.state }
+  /// A sync stop starts a new session. A user operation started in an earlier session
+  /// still finishes its work, but its late result can't replace the stop.
+  @ObservationIgnored private var statusSession = UUID()
   private var isPerformingExplicitSync = false
   private let enableAction: EnableAction?
   private let issueMapper: IssueMapper
@@ -215,14 +225,13 @@ public final class SyncedContentSettingsModel {
     deleteAction: DeleteAction? = nil,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
   ) {
-    self.mode = mode
+    status = Status(mode: mode, state: initialState)
     self.issueMapper = issueMapper
     self.enableAction = enableAction
     self.cancelEnableAction = cancelEnableAction
     self.disableAction = disableAction
     self.deleteAction = deleteAction
     self.diagnostics = diagnostics
-    state = initialState
     switch initialState {
     case .failed(let issue): record(issue, operation: "sync.run")
     case .enabling(let issue?): record(issue, operation: "sync.setup")
@@ -337,17 +346,18 @@ public final class SyncedContentSettingsModel {
 
   public func enableICloudSync() async {
     guard canEnable, let enableAction else { return }
-    state = .enabling()
+    status.state = .enabling()
+    let session = statusSession
     do {
       switch try await enableAction() {
       case .enabled:
         try await enableCompletionAction?()
-        mode = .iCloudSync
-        state = .ready
+        guard session == statusSession else { return }
+        status = Status(mode: .iCloudSync, state: .ready)
       case .settingUp(let issue):
+        guard session == statusSession else { return }
         if let issue { record(issue, operation: "sync.setup") }
-        mode = .localOnly
-        state = .enabling(issue)
+        status = Status(mode: .localOnly, state: .enabling(issue))
       }
     } catch {
       diagnostics.record(.failure(
@@ -355,48 +365,53 @@ public final class SyncedContentSettingsModel {
         error: error,
         visibility: .user
       ))
-      state = .failed(issueMapper(error))
+      guard session == statusSession else { return }
+      status.state = .failed(issueMapper(error))
     }
   }
 
   public func disableICloudSync(_ choice: SyncedContentDisableChoice) async {
     guard canDisable, let disableAction else { return }
-    state = .disabling
+    status.state = .disabling
+    let session = statusSession
     do {
       try await disableAction(choice)
       try await disableCompletionAction?()
-      mode = .localOnly
-      state = .ready
+      guard session == statusSession else { return }
+      status = Status(mode: .localOnly, state: .ready)
     } catch {
       diagnostics.record(.failure(
         operation: "sync.disable",
         error: error,
         visibility: .user
       ))
-      state = .failed(issueMapper(error))
+      guard session == statusSession else { return }
+      status.state = .failed(issueMapper(error))
     }
   }
 
   public func cancelICloudSyncSetup() async {
     guard canCancelEnable, let cancelEnableAction else { return }
+    let session = statusSession
     do {
       try await cancelEnableAction()
-      mode = .localOnly
-      state = .ready
+      guard session == statusSession else { return }
+      status = Status(mode: .localOnly, state: .ready)
     } catch {
       diagnostics.record(.failure(
         operation: "sync.cancel_setup",
         error: error,
         visibility: .user
       ))
-      state = .failed(issueMapper(error))
+      guard session == statusSession else { return }
+      status.state = .failed(issueMapper(error))
     }
   }
 
   public func recordRemovalPending(_ pending: Bool) {
     guard mode == .iCloudSync else { return }
     if pending, state != .removalPending { record(.someChangesPending, operation: "sync.delete") }
-    state = pending ? .removalPending : .deleted
+    status.state = pending ? .removalPending : .deleted
   }
 
   /// Shares admission across user retry controls without clearing an outstanding issue.
@@ -411,7 +426,7 @@ public final class SyncedContentSettingsModel {
     guard mode == .iCloudSync else { return }
     switch state {
     case .ready:
-      state = .syncing
+      status.state = .syncing
     case .enabling, .syncing, .disabling, .deleting, .removalPending, .deleted, .failed:
       break
     }
@@ -422,7 +437,7 @@ public final class SyncedContentSettingsModel {
     guard mode == .iCloudSync else { return }
     switch state {
     case .syncing:
-      state = .ready
+      status.state = .ready
     default:
       break
     }
@@ -433,7 +448,7 @@ public final class SyncedContentSettingsModel {
     guard mode == .iCloudSync else { return }
     switch state {
     case .syncing, .failed:
-      state = .ready
+      status.state = .ready
     default:
       break
     }
@@ -445,15 +460,15 @@ public final class SyncedContentSettingsModel {
       break
     case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
       record(issue, operation: "sync.run")
-      state = .failed(issue)
+      status.state = .failed(issue)
     case (.localOnly, .enabling(let existing)) where existing == issue:
       break
     case (.localOnly, .enabling) where issue.retriesAutomatically:
       record(issue, operation: "sync.setup")
-      state = .enabling(issue)
+      status.state = .enabling(issue)
     case (.localOnly, .enabling):
       record(issue, operation: "sync.setup")
-      state = .failed(issue)
+      status.state = .failed(issue)
     default:
       break
     }
@@ -462,37 +477,38 @@ public final class SyncedContentSettingsModel {
   public func recordSyncStopped(_ issue: SyncedContentSyncIssue) {
     if mode == .localOnly, state == .failed(issue) { return }
     record(issue, operation: "sync.stop")
-    mode = .localOnly
-    state = .failed(issue)
+    statusSession = UUID()
+    status = Status(mode: .localOnly, state: .failed(issue))
   }
 
   public func recordEnableSettingUp(_ issue: SyncedContentSyncIssue? = nil) {
     if mode == .localOnly, state == .enabling(issue) { return }
     if let issue { record(issue, operation: "sync.setup") }
-    mode = .localOnly
-    state = .enabling(issue)
+    status = Status(mode: .localOnly, state: .enabling(issue))
   }
 
   public func recordEnableCompleted() {
-    mode = .iCloudSync
-    state = .ready
+    status = Status(mode: .iCloudSync, state: .ready)
   }
 
   public func deleteSyncedContent() async {
     guard canDelete, let deleteAction else { return }
-    state = .deleting
+    status.state = .deleting
+    let session = statusSession
     do {
       let outcome = try await deleteAction()
       try await deleteCompletionAction?()
+      guard session == statusSession else { return }
       if outcome == .removalPending { record(.someChangesPending, operation: "sync.delete") }
-      state = outcome == .completed ? .deleted : .removalPending
+      status.state = outcome == .completed ? .deleted : .removalPending
     } catch {
       diagnostics.record(.failure(
         operation: "sync.delete",
         error: error,
         visibility: .user
       ))
-      state = .failed(issueMapper(error))
+      guard session == statusSession else { return }
+      status.state = .failed(issueMapper(error))
     }
   }
 
