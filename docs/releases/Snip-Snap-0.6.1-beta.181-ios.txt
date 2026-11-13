@@ -1,0 +1,3 @@
+Snip Snap 0.6.1 Beta 181 — iOS
+
+- Move the composer below the hinge in the iPhone Duo's table pose

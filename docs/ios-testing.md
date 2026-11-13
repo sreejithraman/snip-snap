@@ -298,11 +298,6 @@ last.
   animation.
 - `agent-device fold`, `agent-device screenshot`, and `device_screenshot`
   fail on SimLock-set simulators, as described above.
-- On the closed panel, the system places every mounted list page's
-  navigation-bar items in the status column at the same position. XCTest then
-  finds one `library-actions` button per mounted page, and a bare
-  `app.buttons["library-actions"].tap()` fails with "Multiple matching
-  elements". `testSelectionPersistsAcrossLists` hits this.
 
 When done, call `device_close` with `shutdown: true`. That ends the lease, and
 SimLock wipes the device.

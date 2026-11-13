@@ -532,7 +532,8 @@ struct IOSAppRootView: View {
                     .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
                                   usesFixedExpiry: true)
                     // Bar hosting drops field focus updates on iOS 26.5.
-                    .tableHingeControls {
+                    // Clipboard has no composer, so nothing would sit below the hinge.
+                    .tableHingeControls(splitsAtHinge: model.selectedPage != .clipboard) {
                         libraryControls(showsListTabs: false)
                             .background {
                                 if !model.isSearchPresented { regularControlsFade }
