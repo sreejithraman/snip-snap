@@ -35,7 +35,6 @@ struct SnipCollectionView: View {
     @FocusState private var isInlineEditorFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.prefersSideButtons) private var prefersSideButtons
 
     private var displayedListID: UUID { listID ?? model.lastSelectedListID }
     private var displayedList: SnipList {
@@ -422,9 +421,6 @@ struct SnipCollectionView: View {
                     isReordering = true
                 }
                 .disabled(inlineEditDraft?.canDismiss == false)
-            }
-            if !prefersSideButtons, let libraryActions, showsLibraryActions {
-                libraryActions
             }
         }
         .disabled(model.isPerformingGatheredAction)

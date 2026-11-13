@@ -22,7 +22,6 @@ struct IOSClipboardView: View {
     var isActivePage = true
     @State var viewState = ClipboardViewState()
     @State private var confirmsClear = false
-    @Environment(\.prefersSideButtons) private var prefersSideButtons
 
     private var isSearching: Bool { isActivePage && libraryModel.isSearchPresented }
 
@@ -40,13 +39,6 @@ struct IOSClipboardView: View {
     private var emptyDetail: String {
         return viewState.onlyPinned ? String(localized: "Pin a clipboard entry to keep it here.")
             : String(localized: "Paste here to add content.")
-    }
-
-    private var clipboardToolbar: some View {
-        Group {
-            viewOptionsMenu
-            if !prefersSideButtons { clipboardActionsMenu }
-        }
     }
 
     private var viewOptionsMenu: some View {
@@ -98,8 +90,8 @@ struct IOSClipboardView: View {
         .modifier(CollectionScreenPresentation(
             title: String(localized: "Clipboard"),
             showsControls: !libraryModel.isSearchPresented,
-            trailingControls: clipboardToolbar,
-            libraryActions: prefersSideButtons ? clipboardActionsMenu : nil
+            trailingControls: viewOptionsMenu,
+            libraryActions: clipboardActionsMenu
         ))
         .onChange(of: isActivePage) { _, active in
             if !active { confirmsClear = false }

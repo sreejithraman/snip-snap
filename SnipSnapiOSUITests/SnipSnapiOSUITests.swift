@@ -537,7 +537,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
-            throw XCTSkip("The sidebar is limited to regular-width iPad.")
+            throw XCTSkip("This check needs the regular-width sidebar or rail.")
         }
         createList("Work", in: app)
         let clipboard = app.buttons["clipboard-sidebar"]

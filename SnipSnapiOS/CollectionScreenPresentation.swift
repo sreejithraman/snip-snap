@@ -20,7 +20,6 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
     var showsControls = true
     var recedesControls = false
     let trailingControls: TrailingControls
-    /// Gets its own side button. Without side buttons the caller keeps it in `trailingControls`.
     let libraryActions: LibraryActions?
 
     private var controlTint: Color { recedesControls ? Color.secondary : SnipSnapTheme.controlTint }
@@ -55,6 +54,9 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
                     } else {
                         ToolbarItemGroup(placement: .topBarTrailing) {
                             trailingControls.tint(controlTint)
+                            if let libraryActions {
+                                libraryActions.tint(controlTint)
+                            }
                         }
                         .sharedBackgroundVisibility(sharedBackground)
                     }

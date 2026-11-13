@@ -73,7 +73,7 @@ enum RailListMark: Equatable {
     }
 
     /// Icons a list has until someone picks one: the app's new-list icon and the core fallback.
-    static let defaultIcons: Set<String> = ["list.bullet", "circle.grid.2x2.fill"]
+    static let defaultIcons: Set<String> = [ListIconSymbol.defaultName, "circle.grid.2x2.fill"]
 
     init(name: String, systemImage: String, policy: Policy = .current) {
         guard policy == .letterBadgeForDefaultIcon, Self.defaultIcons.contains(systemImage) else {
@@ -220,8 +220,7 @@ private struct RailButton<Mark: View>: View {
                     // The card's color ties the selected list to the page beside it.
                     if isSelected { Self.shape.fill(Color(.systemBackground)) }
                 }
-                .contentShape(Self.shape)
-                .contentShape(.contextMenuPreview, Self.shape)
+                .contentShape([.interaction, .contextMenuPreview], Self.shape)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)

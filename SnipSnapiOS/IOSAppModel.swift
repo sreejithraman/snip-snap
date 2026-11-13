@@ -390,7 +390,7 @@ final class IOSAppModel {
             guard request.selectionSessionID.map({ $0 == gatheringSessionID }) ?? true else { return false }
             let ids = request.ids.filter { id in snips.contains { $0.id == id } }
             guard !ids.isEmpty, let listID = await createListUnlocked(
-                name: name, systemImage: "list.bullet", color: nil, selectCreatedList: false
+                name: name, systemImage: ListIconSymbol.defaultName, color: nil, selectCreatedList: false
             ) else { return false }
             let moved = await moveSelectionUnlocked(
                 ids: ids, to: listID, sortedBy: request.sortMode, feedbackInteraction: interaction,
@@ -648,7 +648,7 @@ final class IOSAppModel {
                   expectedPage.map({ selectedPage == $0 }) ?? true else { return }
             var shouldRollBack = false
             guard let createdID = await createListUnlocked(
-                name: String(localized: "New List"), systemImage: "list.bullet", color: nil,
+                name: String(localized: "New List"), systemImage: ListIconSymbol.defaultName, color: nil,
                 namePolicy: .available, selectCreatedList: false,
                 onCreated: { createdID in
                     if Task.isCancelled || self.isSearchPresented
@@ -775,7 +775,7 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String, systemImage: String = "list.bullet", color: SnipListColorPreset? = nil) async -> Bool {
+    func createList(name: String, systemImage: String = ListIconSymbol.defaultName, color: SnipListColorPreset? = nil) async -> Bool {
         await withUserMutation { _ in
             await createListUnlocked(name: name, systemImage: systemImage, color: color) != nil
         }
