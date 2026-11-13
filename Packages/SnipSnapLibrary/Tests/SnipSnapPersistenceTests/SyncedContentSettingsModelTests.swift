@@ -415,6 +415,150 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertTrue(model.detail.contains("Retry sync"))
     XCTAssertFalse(model.detail.contains("error 7"))
   }
+
+  @MainActor
+  func testLateEnableSuccessCannotReplaceASyncStop() async {
+    let calls = DeleteEventRecorder()
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(mode: .localOnly, enableAction: { .enabled })
+    model.setEnableCompletionAction {
+      await calls.record("replace-library")
+      await gate.wait()
+    }
+
+    let enable = Task { @MainActor in await model.enableICloudSync() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudAccountChanged)
+    gate.open()
+    await enable.value
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["replace-library"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+  }
+
+  @MainActor
+  func testSyncStopDuringEnableKeepsTheStopAndStillReplacesTheLibrary() async {
+    let calls = DeleteEventRecorder()
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: {
+        await gate.wait()
+        return .enabled
+      }
+    )
+    model.setEnableCompletionAction { await calls.record("replace-library") }
+
+    let enable = Task { @MainActor in await model.enableICloudSync() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudAccountChanged)
+    gate.open()
+    await enable.value
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["replace-library"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+  }
+
+  @MainActor
+  func testLateDisableCannotReplaceAnICloudDataReset() async {
+    let calls = DeleteEventRecorder()
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      disableAction: { _ in await gate.wait() }
+    )
+    model.setDisableCompletionAction { await calls.record("replace-library") }
+
+    let disable = Task { @MainActor in await model.disableICloudSync(.useCurrentCache) }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudDataReset)
+    gate.open()
+    await disable.value
+
+    let events = await calls.values()
+    XCTAssertEqual(events, ["replace-library"])
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudDataReset))
+  }
+
+  @MainActor
+  func testLateSetupCancelCannotReplaceASyncStop() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      initialState: .enabling(),
+      cancelEnableAction: { await gate.wait() }
+    )
+
+    let cancel = Task { @MainActor in await model.cancelICloudSyncSetup() }
+    await gate.waitUntilSuspended()
+    model.recordSyncStopped(.iCloudAccountChanged)
+    gate.open()
+    await cancel.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+  }
+
+  @MainActor
+  func testSetupCancelDuringEnableStillLetsBothResultsApplyInOrder() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .localOnly,
+      enableAction: {
+        await gate.wait()
+        return .settingUp()
+      },
+      cancelEnableAction: {}
+    )
+
+    let enable = Task { @MainActor in await model.enableICloudSync() }
+    await gate.waitUntilSuspended()
+    await model.cancelICloudSyncSetup()
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .ready)
+
+    gate.open()
+    await enable.value
+
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertEqual(model.state, .enabling())
+  }
+
+  @MainActor
+  func testEnableAfterASettledSyncStopTurnsSyncOn() async {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync, enableAction: { .enabled })
+
+    model.recordSyncStopped(.iCloudAccountChanged)
+    XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
+    await model.enableICloudSync()
+
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+  }
+}
+
+/// Suspends a Synced Content action until the test opens it.
+@MainActor
+final class SyncedContentActionGate {
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  func wait() async {
+    await withCheckedContinuation { continuation = $0 }
+  }
+
+  func waitUntilSuspended() async {
+    while continuation == nil { await Task.yield() }
+  }
+
+  func open() {
+    continuation?.resume()
+    continuation = nil
+  }
 }
 
 private actor DeleteCallCounter {
