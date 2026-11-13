@@ -201,7 +201,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         let lifetime = IOSSettingsBackupLifetime()
         lifetime.begin()
         let previewTask = Task { try await model.previewBackupImport(from: backupURL) }
-        lifetime.task = Task { _ = try? await previewTask.value }
+        let started = lifetime.startPreviewingImport { _ in _ = try? await previewTask.value }
+        XCTAssertTrue(started)
         await gate.waitUntilPaused()
 
         lifetime.end(library: model)
@@ -213,6 +214,7 @@ final class IOSBackupModelTests: IOSModelTestCase {
             XCTAssertTrue(error is CancellationError)
         }
         XCTAssertFalse(lifetime.isActive)
+        XCTAssertFalse(lifetime.startPreviewingImport { _ in })
         XCTAssertNil(model.pendingImportPreview)
         XCTAssertEqual(model.errorMessage, "Unrelated library error")
         try await model.confirmBackupImport()
@@ -220,6 +222,99 @@ final class IOSBackupModelTests: IOSModelTestCase {
         try await model.previewBackupImport(from: backupURL)
         XCTAssertEqual(model.pendingImportPreview?.addedSnipCount, 1)
         model.cancelBackupImport()
+    }
+
+    func testEndingSettingsWhilePreparingABackupRemovesItsRootAndRefusesALateShare() async throws {
+        let root = try makeExportRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let lifetime = IOSSettingsBackupLifetime()
+        lifetime.begin()
+        let probe = BackupLifetimeOperationProbe()
+        let started = lifetime.startPreparingBackup(root: root) { operation in
+            await probe.hold()
+            probe.shareAccepted = lifetime.shareBackup(IOSBackupExport(url: root), operation: operation)
+        }
+        XCTAssertTrue(started)
+        while !probe.isHeld { await Task.yield() }
+        XCTAssertTrue(lifetime.isPreparingBackup)
+
+        lifetime.end(library: model)
+        probe.release()
+        while probe.shareAccepted == nil { await Task.yield() }
+
+        XCTAssertEqual(probe.shareAccepted, false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertNil(lifetime.sharedBackup)
+        XCTAssertFalse(lifetime.isActive)
+        XCTAssertFalse(lifetime.isPreparingBackup)
+    }
+
+    func testFinishingABackupShareRemovesItsRootAndReturnsToIdle() async throws {
+        let root = try makeExportRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lifetime = IOSSettingsBackupLifetime()
+        lifetime.begin()
+        let probe = BackupLifetimeOperationProbe()
+        let export = IOSBackupExport(url: root.appendingPathComponent("Backup", isDirectory: true))
+        lifetime.startPreparingBackup(root: root) { operation in
+            probe.shareAccepted = lifetime.shareBackup(export, operation: operation)
+        }
+        while probe.shareAccepted == nil { await Task.yield() }
+        await Task.yield()
+
+        XCTAssertEqual(probe.shareAccepted, true)
+        XCTAssertEqual(lifetime.sharedBackup?.id, export.id)
+        XCTAssertTrue(lifetime.isBusy)
+        XCTAssertFalse(lifetime.isPreparingBackup)
+        XCTAssertFalse(lifetime.chooseBackup())
+
+        lifetime.finishSharingBackup()
+        lifetime.finishSharingBackup()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertNil(lifetime.sharedBackup)
+        XCTAssertFalse(lifetime.isBusy)
+        XCTAssertTrue(lifetime.chooseBackup())
+    }
+
+    func testABackupOperationBlocksAnotherUntilItFinishes() async throws {
+        let root = try makeExportRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lifetime = IOSSettingsBackupLifetime()
+        lifetime.begin()
+        let probe = BackupLifetimeOperationProbe()
+        XCTAssertTrue(lifetime.startPreviewingImport { _ in await probe.hold() })
+        while !probe.isHeld { await Task.yield() }
+
+        XCTAssertTrue(lifetime.isBusy)
+        XCTAssertFalse(lifetime.startPreviewingImport { _ in })
+        XCTAssertFalse(lifetime.startConfirmingImport { _ in })
+        XCTAssertFalse(lifetime.startPreparingBackup(root: root) { _ in })
+        XCTAssertFalse(lifetime.chooseBackup())
+
+        probe.release()
+        while lifetime.isBusy { await Task.yield() }
+        XCTAssertTrue(lifetime.startConfirmingImport { _ in })
+    }
+
+    func testClosingTheBackupPickerAfterAPreviewStartsLeavesThePreviewRunning() async throws {
+        let lifetime = IOSSettingsBackupLifetime()
+        lifetime.begin()
+        let probe = BackupLifetimeOperationProbe()
+        XCTAssertTrue(lifetime.chooseBackup())
+        XCTAssertTrue(lifetime.isChoosingBackup)
+        XCTAssertTrue(lifetime.startPreviewingImport { _ in await probe.hold() })
+        while !probe.isHeld { await Task.yield() }
+
+        lifetime.finishChoosingBackup()
+
+        XCTAssertFalse(lifetime.isChoosingBackup)
+        XCTAssertTrue(lifetime.isBusy)
+        XCTAssertFalse(lifetime.startPreviewingImport { _ in })
+        probe.release()
+        while lifetime.isBusy { await Task.yield() }
+        XCTAssertTrue(lifetime.chooseBackup())
     }
 
     func testBackupPickerFailureRecordsTheLocalAlertAndIgnoresCancellation() {
@@ -390,6 +485,30 @@ final class IOSBackupModelTests: IOSModelTestCase {
         XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
         XCTAssertEqual(model.pendingImportPreview?.localizedSummary, "0 snips, 1 new list")
     }
+}
+
+@MainActor
+private final class BackupLifetimeOperationProbe {
+    var shareAccepted: Bool?
+    private(set) var isHeld = false
+    private var held: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        isHeld = true
+        await withCheckedContinuation { held = $0 }
+    }
+
+    func release() {
+        held?.resume()
+        held = nil
+    }
+}
+
+private func makeExportRoot() throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("IOSBackupLifetimeTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return root
 }
 
 private actor DelayedIOSBackupPreviewGate {
