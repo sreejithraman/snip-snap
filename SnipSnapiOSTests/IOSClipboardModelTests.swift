@@ -91,6 +91,28 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertFalse(model.isSyncing)
     }
 
+    func testTurningICloudSyncOffDuringAGenerationFetchShowsNoSyncError() async throws {
+        let gate = IOSClipboardGenerationGate(holding: [1])
+        let (disableFinished, finishDisable) = AsyncStream<Void>.makeStream()
+        let settings = SyncedContentSettingsModel(
+            mode: .iCloudSync,
+            disableAction: { _ in for await _ in disableFinished {} }
+        )
+        let model = makeSyncingClipboardModel(gate, settings: settings)
+        let sync = Task { await model.synchronize() }
+        try await waitUntil { gate.isHolding(1) }
+
+        let disabling = Task.immediate { await settings.disableICloudSync(.useCurrentCache) }
+        XCTAssertFalse(model.syncIsActive)
+        gate.releaseWithEmptyGeneration(1)
+        await sync.value
+        XCTAssertFalse(model.isSyncing)
+        XCTAssertNil(model.syncErrorMessage)
+
+        finishDisable.finish()
+        await disabling.value
+    }
+
     func testOverlappingClipboardSyncsStartOneRun() async throws {
         let gate = IOSClipboardGenerationGate(holding: [1])
         let model = makeSyncingClipboardModel(gate)
@@ -334,14 +356,17 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(clipboard.syncErrorMessage)
     }
 
-    private func makeSyncingClipboardModel(_ gate: IOSClipboardGenerationGate) -> IOSClipboardModel {
+    private func makeSyncingClipboardModel(
+        _ gate: IOSClipboardGenerationGate,
+        settings: SyncedContentSettingsModel = SyncedContentSettingsModel(mode: .iCloudSync)
+    ) -> IOSClipboardModel {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let preferences = UserDefaults(suiteName: UUID().uuidString)!
         preferences.set(true, forKey: "syncClipboardHistory")
         return IOSClipboardModel(
             rootURL: root,
-            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            settings: settings,
             containerIdentifier: "iCloud.world.sree.snipsnap.tests",
             preferences: preferences,
             generation: { try await gate.generation() }
