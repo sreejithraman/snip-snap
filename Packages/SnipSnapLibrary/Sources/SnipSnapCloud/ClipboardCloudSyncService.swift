@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import Observation
 import SnipSnapCore
 import SnipSnapPersistence
 
@@ -89,17 +90,27 @@ private struct ClipboardCloudUnwindingRun {
         }
     }
 
-    /// Syncs while `isEnabled` holds. It's checked on entry and again when the run is admitted;
-    /// if it doesn't hold, the service stops and returns local history.
+    /// Syncs while `isEnabled` holds. If it doesn't hold on entry or when the run is admitted, the
+    /// service stops and returns local history. If it stops holding during the run, the service
+    /// stops the run, which throws `CancellationError`: at once when observable state it reads
+    /// changes, otherwise at the run's next step.
     @discardableResult public func synchronize(
         generation: String,
-        isEnabled: @MainActor () -> Bool
+        isEnabled: @escaping @MainActor @Sendable () -> Bool
     ) async throws -> ClipboardHistoryState {
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         try await waitForStoppedRun()
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         let (run, transport) = try beginRun(generation: generation)
-        return try await performRun(run, using: transport)
+        let runID = run.id
+        let optInWatch = Task { [weak self] in
+            for await enabled in Observations(isEnabled) where !enabled {
+                self?.stopRun(runID)
+                return
+            }
+        }
+        defer { optInWatch.cancel() }
+        return try await performRun(run, using: transport, isEnabled: isEnabled)
     }
 
     private func beginRun(generation: String) throws -> (ClipboardCloudOperation, any ClipboardCloudTransport) {
@@ -114,16 +125,17 @@ private struct ClipboardCloudUnwindingRun {
 
     private func performRun(
         _ run: ClipboardCloudOperation,
-        using transport: any ClipboardCloudTransport
+        using transport: any ClipboardCloudTransport,
+        isEnabled: @MainActor () -> Bool
     ) async throws -> ClipboardHistoryState {
         defer { finishRun(run.id) }
         do {
             for _ in 0..<4 {
-                try checkCurrentRun(run.id)
+                try checkCurrentRun(run.id, isEnabled: isEnabled)
                 let remote = try await performWithRetry(operationName: "clipboard fetch", owner: run.id) { try await transport.fetch() }
-                try checkCurrentRun(run.id)
+                try checkCurrentRun(run.id, isEnabled: isEnabled)
                 let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: run.cancellation)
-                try checkCurrentRun(run.id)
+                try checkCurrentRun(run.id, isEnabled: isEnabled)
                 pendingEntryIDs = pending
                 do {
                     if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
@@ -134,7 +146,7 @@ private struct ClipboardCloudUnwindingRun {
                     }
                 }
                 catch ClipboardCloudError.conflict { continue }
-                try checkCurrentRun(run.id)
+                try checkCurrentRun(run.id, isEnabled: isEnabled)
                 pendingEntryIDs = []
                 let acknowledgments = local.entries.filter { outgoing[$0.id] != nil }.map { item in
                     var item = item; item.hasBeenShared = true; return item
@@ -229,8 +241,14 @@ private struct ClipboardCloudUnwindingRun {
         if case .syncing(let run) = lifecycle { run.id == id } else { false }
     }
 
-    private func checkCurrentRun(_ id: UUID) throws {
+    /// Stops the run first if `isEnabled` no longer holds.
+    private func checkCurrentRun(_ id: UUID, isEnabled: @MainActor () -> Bool) throws {
+        if !isEnabled() { stopRun(id) }
         guard isCurrentRun(id) else { throw CancellationError() }
+    }
+
+    private func stopRun(_ id: UUID) {
+        if isCurrentRun(id) { stop() }
     }
 
     private func beginUnbinding() async throws -> UUID {

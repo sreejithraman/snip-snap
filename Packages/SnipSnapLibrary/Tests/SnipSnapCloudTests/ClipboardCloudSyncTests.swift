@@ -438,6 +438,19 @@ private func requireSavePaused<Success: Sendable>(
         #expect(try await cloud.fetch().entries.isEmpty)
     }
 
+    @Test func finishedRunStopsWatchingItsOptIn() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        weak var released: ClipboardOptIn?
+        do {
+            let optIn = ClipboardOptIn()
+            released = optIn
+            try await client.run(isEnabled: { optIn.isOn })
+        }
+        let watchEnded = await eventually { released == nil }
+        #expect(watchEnded, "The opt-in watch outlived its run")
+    }
+
     @Test func syncWithItsOptInOffStopsTheRunBeforeWaiting() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }

@@ -184,8 +184,8 @@ final class IOSClipboardModel {
         guard syncIsActive else { cloud.stop(); return }
         do {
             guard let generation = try await generation(), syncPhase == run else { return }
-            // The service checks this on entry and again when it admits the run.
-            let synced = try await cloud.synchronize(generation: generation, isEnabled: { syncIsActive })
+            // The service checks this before the run and stops the run when it stops holding.
+            let synced = try await cloud.synchronize(generation: generation, isEnabled: { [self] in syncIsActive })
             guard syncPhase == run, syncIsActive else { return }
             entries = synced.entries
             syncErrorMessage = nil

@@ -528,7 +528,7 @@ final class ClipboardHistory: ObservableObject {
                   syncPhase == run else { return }
             let updated = try await cloudService.synchronize(
                 generation: generation,
-                isEnabled: { clipboardSyncEnabled && mainSyncEnabled?() == true }
+                isEnabled: { [self] in syncIsActive }
             )
             guard syncPhase == run else { return }
             state.merge(updated)
