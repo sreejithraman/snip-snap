@@ -188,10 +188,16 @@ Four tests fold the Duo:
 - `testComposerAttachmentPreviewSurvivesFoldingTheDuo` keeps a draft
   attachment's preview open through each pose, with no keyboard over it.
 
-The composer camera closes on a fold and keeps the draft. No UI test covers
-it: hosted tests can't present the camera where the simulator has none, so
-`testLayoutSwapClosesOnlyTheCameraAndKeepsTheDraft` checks the rule in
-storage, and a Duo fold check confirms it by hand.
+The composer camera closes on a fold and keeps the draft. No UI test drives
+it; three checks cover it:
+
+- `testLayoutSwapClosesOnlyTheCameraAndKeepsTheDraft` checks the rule in
+  storage and runs everywhere.
+- `testRootClosesTheCameraWhenItSwapsLayouts` swaps the real root with the
+  camera up. It runs only where `UIImagePickerController.isSourceTypeAvailable(.camera)`
+  is true, such as the iPhone Duo simulator. The iPhone simulator and CI may
+  have no camera, and presenting one there raises, so it skips.
+- A hand check on the Duo covers a real fold.
 
 Each test asks for a pose by writing `NN-<pose>.request` into the directory
 named by `SNIP_SNAP_UI_TEST_FOLD_DIR`. `NN` counts requests already in the

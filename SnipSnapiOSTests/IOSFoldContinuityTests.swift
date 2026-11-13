@@ -279,7 +279,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
     }
 
     /// The camera can't redraw for a new size, so a swap closes it. Files, Photos, and a preview stay open.
-    /// Storage-level, because presenting the real camera raises where the simulator has none.
+    /// This storage-level test runs everywhere; `testRootClosesTheCameraWhenItSwapsLayouts` covers the
+    /// root's wiring where a camera exists.
     func testLayoutSwapClosesOnlyTheCameraAndKeepsTheDraft() throws {
         let storage = makeComposerStorage()
         let attachment = try addInboxDraft("Camera draft", to: storage)
@@ -304,6 +305,34 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.attachmentPreview, preview)
         XCTAssertNil(storage.stagingTask)
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), draft)
+    }
+
+    /// Swaps the real root with the camera up. Presenting the camera raises where
+    /// `isSourceTypeAvailable(.camera)` is false, as on many iPhone simulators and CI, so it skips there;
+    /// the iPhone Duo simulator has a camera.
+    func testRootClosesTheCameraWhenItSwapsLayouts() throws {
+        try XCTSkipUnless(UIImagePickerController.isSourceTypeAvailable(.camera), "This simulator has no camera.")
+        let storage = makeComposerStorage()
+        _ = try addInboxDraft("Camera draft", to: storage)
+        let draft = storage.draftStore.draft(for: SnipList.inboxID)
+        let root = try RootHarness(test: self, storage: storage)
+        XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Camera draft" }, root.diagnostics)
+        let request = ComposerAttachmentPickerRequest(source: .camera, listID: SnipList.inboxID)
+        storage.attachmentPicker = request
+        XCTAssertTrue(root.wait("camera presented") { root.presented(UIImagePickerController.self) != nil })
+
+        root.swap(to: .regular)
+        root.settle()
+        XCTAssertNil(storage.attachmentPicker, "The root's layout swap must close the camera")
+        XCTAssertTrue(root.wait("camera dismissed") { root.presented(UIImagePickerController.self) == nil })
+        XCTAssertNil(storage.stagingTask)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), draft)
+
+        // Presentation state must still follow the request after the swap's dismissal.
+        storage.attachmentPicker = request
+        XCTAssertTrue(root.wait("camera presented again") { root.presented(UIImagePickerController.self) != nil })
+        storage.attachmentPicker = nil
+        XCTAssertTrue(root.wait("camera dismissed again") { root.presented(UIImagePickerController.self) == nil })
     }
 
     func testCancelledPickerClearsItsRequestAndStagesNothing() {
@@ -505,12 +534,15 @@ private final class RootHarness {
 
     var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
 
-    /// A controller the root presents, such as a system picker, or one inside a presented container.
+    /// A controller the root presents, such as a system picker, or one anywhere inside a presented container,
+    /// as a full-screen cover nests its content.
     func presented<Controller: UIViewController>(_ type: Controller.Type) -> Controller? {
+        func search(_ controller: UIViewController) -> Controller? {
+            (controller as? Controller) ?? controller.children.lazy.compactMap(search).first
+        }
         var next = host.presentedViewController
         while let controller = next {
-            if let match = controller as? Controller { return match }
-            if let match = controller.children.lazy.compactMap({ $0 as? Controller }).first { return match }
+            if let match = search(controller) { return match }
             next = controller.presentedViewController
         }
         return nil
