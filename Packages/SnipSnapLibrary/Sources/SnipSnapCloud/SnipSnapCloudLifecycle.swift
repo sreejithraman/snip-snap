@@ -483,9 +483,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return result
   }
 
-  /// iCloud is the active store and its enable transition is finished. A transition
-  /// that is still open, such as after a crash right after the pointer swap, needs
-  /// the enable to resume.
+  /// iCloud is the active store, its enable transition is finished, and no account
+  /// isolation is in progress. Any other state, such as a crash right after the
+  /// pointer swap, needs the enable to resume.
   private func hasFinishedICloudSwitch() async throws -> Bool {
     guard SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: rootURL) != nil
     else { return false }
@@ -496,6 +496,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     persistence = modePersistence
     let snapshot = try await modePersistence.snapshot()
     return snapshot.activeStore.kind == .iCloudSync && snapshot.transition == nil
+      && snapshot.accountIsolation == nil
   }
 
   package func scheduleAutomaticSync() async throws {
