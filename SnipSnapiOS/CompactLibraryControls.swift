@@ -152,9 +152,8 @@ struct CompactLibraryControls: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
             if prefersSideButtons {
-                // The spacer drops Paste to the bottom of the trailing column, and Search is declared
-                // here so Paste sits directly above it. Both stay during search, so Search keeps its
-                // place while Paste hides.
+                // Declaring Search right after Paste puts the two in one capsule, Paste on top,
+                // apart from the library actions.
                 ToolbarSpacer(.flexible, placement: .topBarTrailing)
                     .sideButton()
                 if !model.isSearchPresented {
