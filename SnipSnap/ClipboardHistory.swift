@@ -238,8 +238,7 @@ private final class ClipboardCaptureReader {
     }
 }
 
-/// Clipboard history capture admission. A pause or suppression hold ends any attempt, and only
-/// the current attempt can insert an entry.
+/// A pause or suppression hold ends any attempt, and only the current attempt can insert an entry.
 private enum ClipboardCapture {
     /// Leaving the hold accepts the pasteboard as it is then, so changes made while held stay out.
     case held(ClipboardCaptureHolds)
@@ -266,8 +265,7 @@ private struct ClipboardCaptureHolds {
 
 private struct ClipboardCaptureAttempt {
     enum Stage {
-        /// The read waits for a later main-actor turn. Until it runs, the change is not handled.
-        case reading(handledChangeCount: Int)
+        case awaitingRead(handledChangeCount: Int)
         case converting
     }
 
@@ -278,7 +276,7 @@ private struct ClipboardCaptureAttempt {
 
     var handledChangeCount: Int {
         switch stage {
-        case .reading(let handledChangeCount): handledChangeCount
+        case .awaitingRead(let handledChangeCount): handledChangeCount
         case .converting: changeCount
         }
     }
@@ -317,7 +315,6 @@ final class ClipboardHistory: ObservableObject {
     private var state = ClipboardHistoryState()
     var onChange: (() -> Void)?
     private let captureReader: ClipboardCaptureReader
-    /// Leaving an attempt cancels its work.
     private var capture: ClipboardCapture {
         willSet {
             if case .capturing(let attempt) = capture, newValue.attemptID != attempt.id {
@@ -644,7 +641,7 @@ final class ClipboardHistory: ObservableObject {
         capture = .capturing(ClipboardCaptureAttempt(
             id: id,
             changeCount: changeCount,
-            stage: .reading(handledChangeCount: handledChangeCount),
+            stage: .awaitingRead(handledChangeCount: handledChangeCount),
             task: task
         ))
     }

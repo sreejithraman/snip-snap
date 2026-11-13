@@ -19,7 +19,6 @@ private final class ClipboardDiagnosticProbe: @unchecked Sendable {
     }
 }
 
-/// Holds the first clipboard entry conversion until the test releases it.
 private final class ClipboardConversionGate: @unchecked Sendable {
     private let lock = NSLock()
     private var holdsNextConversion = true
