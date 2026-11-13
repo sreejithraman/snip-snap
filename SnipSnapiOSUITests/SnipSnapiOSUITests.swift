@@ -2041,11 +2041,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         try openAttachmentFixture(in: app)
         app.buttons["add-attachments"].tap()
         app.buttons["Choose Files"].firstMatch.tap()
-        let cancel = app.buttons["Cancel"].firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The inline editor's Files picker did not open")
+        let browser = app.otherElements["Browse View (Picker)"]
+        let cancel = try XCTUnwrap(filesPickerCancel(inside: browser, in: app), "The inline editor's Files picker did not open")
         cancel.tap()
-        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(browser.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["inline-snip-text"].exists)
+    }
+
+    /// The Files picker's own Cancel: in its navigation bar on a sheet, and in a side toolbar on the closed
+    /// iPhone Duo panel. The picker can lay out twice as it opens, so a "Cancel" from the first layout can
+    /// linger; take one that's hittable inside the picker's browser and has held its frame between polls.
+    private func filesPickerCancel(inside browser: XCUIElement, in app: XCUIApplication) -> XCUIElement? {
+        let cancels = app.buttons.matching(NSPredicate(format: "label == %@", "Cancel"))
+        var lastFrame: CGRect?
+        var cancel: XCUIElement?
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard browser.exists else { return false }
+            let bounds = browser.frame
+            guard let candidate = cancels.allElementsBoundByIndex.first(where: {
+                $0.isHittable && bounds.contains($0.frame)
+            }) else {
+                lastFrame = nil
+                return false
+            }
+            defer { lastFrame = candidate.frame }
+            guard candidate.frame == lastFrame else { return false }
+            cancel = candidate
+            return true
+        }, object: nil)
+        guard XCTWaiter.wait(for: [settled], timeout: 10) == .completed else {
+            attachUIState("Files picker Cancel unavailable", in: app)
+            return nil
+        }
+        return cancel
     }
 
     func testPhotoPickerStagesAChosenImage() throws {
