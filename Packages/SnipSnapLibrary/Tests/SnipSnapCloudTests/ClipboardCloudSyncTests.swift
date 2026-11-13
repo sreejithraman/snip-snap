@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import Observation
 import Synchronization
 import Testing
 import SnipSnapCore
@@ -80,7 +81,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await run(scope: scope, isEnabled: { enabled })
     }
-    @discardableResult func run(scope: String = "account-generation-A", isEnabled: @MainActor () -> Bool) async throws -> ClipboardHistoryState {
+    @discardableResult func run(scope: String = "account-generation-A", isEnabled: @escaping @MainActor @Sendable () -> Bool) async throws -> ClipboardHistoryState {
         try await sync.synchronize(generation: scope, isEnabled: isEnabled)
     }
     /// Runs on the caller's actor up to the sync's first suspension, so a sync blocked on a
@@ -90,8 +91,17 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     }
 }
 
-@MainActor private final class ClipboardOptIn {
+@MainActor @Observable private final class ClipboardOptIn {
     var isOn = true
+}
+
+/// Checks `condition` until it holds or `timeout` passes, and returns whether it holds.
+@MainActor private func eventually(within timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return condition()
 }
 
 /// Ends the test, cancelling `run`, if its save doesn't pause.
@@ -405,6 +415,25 @@ private func requireSavePaused<Success: Sendable>(
 
         await #expect(throws: CancellationError.self) { try await stopped.value }
         #expect(try await waiting.value.entries.map(\.id) == [clip.id])
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func runStopsWhenItsOptInEndsMidRun() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays local"))
+        await cloud.pauseNextSave()
+        let optIn = ClipboardOptIn()
+        let running = client.startRun(isEnabled: { optIn.isOn })
+        try await requireSavePaused(cloud, during: running)
+
+        optIn.isOn = false
+        let stopped = await eventually { !client.sync.isSyncing }
+        await cloud.resumeSave()
+
+        #expect(stopped, "The run kept syncing after its opt-in ended")
+        await #expect(throws: CancellationError.self) { try await running.value }
         #expect(await cloud.fetchCount() == 1)
         #expect(try await cloud.fetch().entries.isEmpty)
     }
