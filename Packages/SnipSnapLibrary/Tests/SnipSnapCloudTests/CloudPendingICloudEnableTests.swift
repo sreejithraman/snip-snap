@@ -246,6 +246,35 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertNil(reopened.transition)
   }
 
+  func testSyncDuringAnUnfinishedAccountIsolationDoesNotReportICloudSyncOn() async throws {
+    let source = try await seededSource()
+    let server = FakeCloudServer()
+    let crash = CrashInjector(point: .afterAccountIsolationManifest)
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot, crashHook: crash.hit)
+    let lifecycle = makeLifecycle(
+      source: source,
+      server: server,
+      syncModeStore: SnipSyncModeStore(persistence)
+    )
+    let outcome = try await lifecycle.enableICloudSync()
+    XCTAssertEqual(outcome, .enabled)
+    try writeMarker("pending")
+    do {
+      _ = try await persistence.isolateActiveCloudStore(reason: .accountChanged)
+      XCTFail("Expected the injected crash")
+    } catch CrashInjector.Failure.injected {}
+    let isolating = try await persistence.snapshot()
+    XCTAssertNotNil(isolating.accountIsolation)
+    XCTAssertEqual(isolating.activeStore.kind, .iCloudSync)
+
+    do {
+      let result = try await lifecycle.synchronize()
+      XCTAssertNotEqual(result, .iCloudSyncEnabled)
+    } catch {}
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+  }
+
   func testCancelWhoseMarkerCannotBeRemovedKeepsTheEnablePending() async throws {
     let server = FakeCloudServer()
     let control = PendingOfflineThenOnlineControlTransport(server: server)
