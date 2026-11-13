@@ -650,11 +650,7 @@ final class ClipboardHistory: ObservableObject {
     private func readDeferredCapture(_ id: UUID, sourceApplication: String?) async {
         guard case .capturing(var attempt) = capture, attempt.id == id else { return }
         let snapshot = captureReader.capture(changeCount: attempt.changeCount)
-        guard pasteboard.changeCount == attempt.changeCount else {
-            capture = .watching(handledChangeCount: attempt.handledChangeCount)
-            return
-        }
-        guard let snapshot else {
+        guard let snapshot, pasteboard.changeCount == attempt.changeCount else {
             capture = .watching(handledChangeCount: attempt.changeCount)
             return
         }
