@@ -6,7 +6,7 @@ import SnipSnapPersistence
 import UIKit
 import UniformTypeIdentifiers
 
-/// Clipboard history sync. Only the current run can change history or report an error.
+/// Only the current run can change history or report an error.
 private enum ClipboardSyncPhase: Equatable {
     case disabled
     case idle
@@ -87,8 +87,7 @@ final class IOSClipboardModel {
 
     func setSyncEnabled(_ enabled: Bool) async {
         if !enabled {
-            cloud?.stop()
-            endSyncRun(next: .disabled)
+            stop(entering: .disabled)
         } else if syncPhase == .disabled {
             syncPhase = .idle
         }
@@ -177,7 +176,7 @@ final class IOSClipboardModel {
         }
         let run = ClipboardSyncPhase.syncing(id: UUID())
         syncPhase = run
-        defer { if syncPhase == run { endSyncRun(next: .idle) } }
+        defer { if syncPhase == run { enterSyncPhase(.idle) } }
         await load()
         guard syncPhase == run else { return }
         guard settings.mode == .iCloudSync else { cloud.stop(); return }
@@ -207,11 +206,16 @@ final class IOSClipboardModel {
     }
 
     func stop() {
-        cloud?.stop()
-        if isSyncing { endSyncRun(next: .idle) }
+        stop(entering: syncEnabled ? .idle : .disabled)
     }
 
-    private func endSyncRun(next: ClipboardSyncPhase) {
+    private func stop(entering next: ClipboardSyncPhase) {
+        cloud?.stop()
+        enterSyncPhase(next)
+    }
+
+    private func enterSyncPhase(_ next: ClipboardSyncPhase) {
+        guard syncPhase != next else { return }
         if case .syncing = syncPhase { filePreviewRevision &+= 1 }
         syncPhase = next
     }
