@@ -488,6 +488,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     guard snapshot.activeStore.kind == .iCloudSync,
       let activeBinding = snapshot.activeStore.namespace
     else { return }
+    try PendingICloudSyncEnable.clear(at: rootURL)
     let descriptor = try await descriptor(
       for: activeBinding,
       allowsCachedRoles: choice == .useCurrentCache

@@ -32,19 +32,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
   }
 
   func testEnableWhoseMarkerCannotBeRemovedFinishesOnNextSync() async throws {
-    let server = FakeCloudServer()
-    let probe = PendingMarkerProbe(marker: marker, locksMarker: true)
-    let lifecycle = try await makeLifecycle(
-      server: server,
-      control: FakeCloudControlTransport(server: server),
-      probe: probe
-    )
-
-    do {
-      let outcome = try await lifecycle.enableICloudSync()
-      XCTFail("An enable whose pending marker remains must not report \(outcome)")
-    } catch {}
-    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    let lifecycle = try await enabledICloudSyncWithPendingMarker()
 
     setMarkerLocked(false)
     let finished = try await lifecycle.synchronize()
@@ -54,6 +42,44 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     let next = try await lifecycle.synchronize()
     XCTAssertNotEqual(next, .iCloudSyncEnabled)
     if case .iCloudSyncSettingUp = next { XCTFail("Setup ran again: \(next)") }
+  }
+
+  func testTurningOffICloudSyncClearsAPendingEnable() async throws {
+    let lifecycle = try await enabledICloudSyncWithPendingMarker()
+    setMarkerLocked(false)
+
+    try await lifecycle.disableICloudSync(.useCurrentCache)
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    let next = try await lifecycle.synchronize()
+    XCTAssertNotEqual(next, .iCloudSyncEnabled)
+    if case .iCloudSyncSettingUp = next { XCTFail("Setup resumed after turning off iCloud sync: \(next)") }
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncRoot),
+      .localOnly
+    )
+  }
+
+  func testTurningOffICloudSyncFailsWhileThePendingEnableMarkerCannotBeRemoved() async throws {
+    let lifecycle = try await enabledICloudSyncWithPendingMarker()
+
+    do {
+      try await lifecycle.disableICloudSync(.useCurrentCache)
+      XCTFail("Turning off iCloud sync must not succeed while the pending marker remains")
+    } catch {}
+    XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
+
+    setMarkerLocked(false)
+    try await lifecycle.disableICloudSync(.useCurrentCache)
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncRoot),
+      .localOnly
+    )
   }
 
   func testCancelWhoseMarkerCannotBeRemovedKeepsTheEnablePending() async throws {
@@ -252,6 +278,25 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       },
       makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") }
     )
+  }
+
+  /// iCloud sync is on, but the enable's pending marker is locked in place.
+  private func enabledICloudSyncWithPendingMarker() async throws -> SnipSnapICloudSyncLifecycle {
+    let server = FakeCloudServer()
+    let lifecycle = try await makeLifecycle(
+      server: server,
+      control: FakeCloudControlTransport(server: server),
+      probe: PendingMarkerProbe(marker: marker, locksMarker: true)
+    )
+    do {
+      let outcome = try await lifecycle.enableICloudSync()
+      XCTFail("An enable whose pending marker remains must not report \(outcome)")
+    } catch {}
+    XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
+    XCTAssertNotNil(SyncModeActivationManifestReader.activeCloudNamespace(
+      atSyncModeRootURL: syncRoot
+    ))
+    return lifecycle
   }
 
   private func startupSettings(
