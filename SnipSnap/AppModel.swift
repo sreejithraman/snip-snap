@@ -1230,7 +1230,7 @@ final class AppModel: ObservableObject {
                 guard let (result, recovery) = try await session.applyPendingImport(
                     id: preview.id,
                     sortedBy: sortMode
-                ) else { return }
+                ) else { throw SnipLibraryError.importChanged }
                 clearPendingUndoToast()
                 pendingImportPreview = nil
                 apply(result.snapshot)

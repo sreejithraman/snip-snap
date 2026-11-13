@@ -168,6 +168,24 @@ final class AppModelCLIDataTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testConfirmingABackupPreviewAfterTheLibraryIsReplacedReportsImportChanged() async throws {
+        let backup = try await makeBackup(content: "From backup")
+        let (target, _) = try makeImportTarget()
+        await target.reload()
+        await target.previewBackupImport(from: backup)
+        XCTAssertNotNil(target.pendingImportPreview)
+        let replacement = try JSONSnipLibrary(fileURL: storeURL())
+        await target.replaceLibrary(replacement, recoveryScope: nil)
+
+        await target.confirmBackupImport()
+
+        XCTAssertNil(target.pendingImportPreview, "The import dialog must close")
+        XCTAssertEqual(target.dialogFailure?.message, SnipLibraryError.importChanged.localizedDescription)
+        let snapshot = try await replacement.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertTrue(snapshot.snips.isEmpty)
+    }
+
+    @MainActor
     func testDraftMoveGuardsBothEndsAndSaveAsSnipKeepsAttachmentBytes() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())
