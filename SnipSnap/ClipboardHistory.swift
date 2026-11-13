@@ -282,6 +282,27 @@ private struct ClipboardCaptureAttempt {
     }
 }
 
+/// Clipboard history sync. Only the current run can change history or report an error.
+private enum ClipboardSyncPhase: Equatable {
+    case disabled
+    case idle
+    case syncing(id: UUID)
+}
+
+/// A debounced sync request. It stays scheduled through the run it starts, so requests made
+/// meanwhile are absorbed; the periodic request counts from `requestedAt`.
+private enum ClipboardSyncRequest {
+    case idle(lastRequestedAt: Date)
+    case scheduled(id: UUID, requestedAt: Date, task: Task<Void, Never>)
+
+    var lastRequestedAt: Date {
+        switch self {
+        case .idle(let lastRequestedAt): lastRequestedAt
+        case .scheduled(_, let requestedAt, _): requestedAt
+        }
+    }
+}
+
 /// Builds a clipboard entry off the main actor.
 typealias ClipboardEntryConversion = @Sendable (
     _ build: @escaping @Sendable () -> ClipboardEntry
@@ -294,8 +315,10 @@ final class ClipboardHistory: ObservableObject {
     @Published private(set) var entries: [ClipboardEntry] = []
     var isPaused: Bool { capture.isPaused }
     @Published private(set) var persistenceError: String?
-    @Published private(set) var clipboardSyncEnabled: Bool = false
-    @Published private(set) var isSyncing = false
+    var clipboardSyncEnabled: Bool { syncPhase != .disabled }
+    var isSyncing: Bool {
+        if case .syncing = syncPhase { true } else { false }
+    }
     @Published private(set) var filePreviewRevision = 0
     @Published private(set) var syncError: String?
     @Published private(set) var pendingUploadIDs: Set<UUID> = [] {
@@ -304,8 +327,8 @@ final class ClipboardHistory: ObservableObject {
     private var cloudService: ClipboardCloudSyncService?
     private var mainSyncEnabled: (() -> Bool)?
     private var syncGeneration: (() async throws -> String?)?
-    private var syncTask: Task<Void, Never>?
-    private var lastSyncRequest = Date.distantPast
+    @Published private var syncPhase: ClipboardSyncPhase
+    private var syncRequest = ClipboardSyncRequest.idle(lastRequestedAt: .distantPast)
 
     private let pasteboard: NSPasteboard
     private let generalPasteboardName: NSPasteboard.Name
@@ -350,7 +373,7 @@ final class ClipboardHistory: ObservableObject {
         sharedStore = ClipboardHistoryStore(url: storeURL)
         ownedFileStore = ClipboardFileStore(rootURL: storeURL.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
         captureReader = ClipboardCaptureReader(pasteboardName: pasteboard.name)
-        clipboardSyncEnabled = defaults.bool(forKey: "clipboardSyncEnabled")
+        syncPhase = defaults.bool(forKey: "clipboardSyncEnabled") ? .idle : .disabled
         capture = defaults.bool(forKey: Self.pausedDefaultsKey)
             ? .held(ClipboardCaptureHolds(isPaused: true))
             : .watching(handledChangeCount: pasteboard.changeCount)
@@ -399,7 +422,8 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func poll() {
-        if cloudService != nil, clipboardSyncEnabled, Date().timeIntervalSince(lastSyncRequest) > 15 {
+        if cloudService != nil, clipboardSyncEnabled,
+           Date().timeIntervalSince(syncRequest.lastRequestedAt) > 15 {
             requestSync()
         }
         let changeCount = pasteboard.changeCount
@@ -450,9 +474,8 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func stopSync() {
-        cloudService?.stop()
-        syncTask?.cancel()
-        syncTask = nil
+        cancelSyncWork()
+        if isSyncing { endSyncRun(next: .idle) }
     }
 
     func status(for entry: ClipboardEntry) -> String? {
@@ -466,45 +489,54 @@ final class ClipboardHistory: ObservableObject {
     var syncIsActive: Bool { clipboardSyncEnabled && mainSyncEnabled?() == true }
 
     func setSyncEnabled(_ enabled: Bool) {
-        clipboardSyncEnabled = enabled
         defaults.set(enabled, forKey: "clipboardSyncEnabled")
         if enabled {
+            if syncPhase == .disabled { syncPhase = .idle }
             pendingUploadIDs.formUnion(entries.filter(\.isSyncEligible).map(\.id))
             requestSync()
-        } else { stopSync(); syncError = nil }
+        } else {
+            cancelSyncWork()
+            endSyncRun(next: .disabled)
+            syncError = nil
+        }
     }
 
     func requestSync() {
-        guard clipboardSyncEnabled, mainSyncEnabled?() == true, syncTask == nil else { return }
-        lastSyncRequest = Date()
-        syncTask = Task { [weak self] in
+        guard clipboardSyncEnabled, mainSyncEnabled?() == true,
+              case .idle = syncRequest else { return }
+        let id = UUID()
+        let task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, let self else { return }
+            guard let self, case .scheduled(let scheduledID, _, _) = self.syncRequest,
+                  scheduledID == id else { return }
             await syncNow()
-            syncTask = nil
+            if case .scheduled(let scheduledID, let requestedAt, _) = syncRequest, scheduledID == id {
+                syncRequest = .idle(lastRequestedAt: requestedAt)
+            }
         }
+        syncRequest = .scheduled(id: id, requestedAt: Date(), task: task)
     }
 
     func syncNow() async {
         guard let cloudService, !isSyncing else { return }
         guard clipboardSyncEnabled, mainSyncEnabled?() == true else { cloudService.stop(); return }
-        isSyncing = true
-        defer {
-            isSyncing = false
-            // Downloads may restore bytes without changing entry metadata or URLs.
-            filePreviewRevision &+= 1
-        }
+        let run = ClipboardSyncPhase.syncing(id: UUID())
+        syncPhase = run
+        defer { if syncPhase == run { endSyncRun(next: .idle) } }
         do {
             await flushPersistence()
-            guard let generation = try await syncGeneration?() else { return }
+            guard syncPhase == run, let generation = try await syncGeneration?(),
+                  syncPhase == run else { return }
             let updated = try await cloudService.synchronize(mainSyncEnabled: mainSyncEnabled?() == true,
                 clipboardSyncEnabled: clipboardSyncEnabled, generation: generation)
+            guard syncPhase == run else { return }
             state.merge(updated)
             entries = state.entries
             pendingUploadIDs.subtract(updated.entries.map(\.id))
             syncError = nil
         } catch is CancellationError { }
         catch {
+            guard syncPhase == run else { return }
             diagnostics.record(.failure(
                 operation: "clipboard.sync",
                 error: error,
@@ -512,6 +544,23 @@ final class ClipboardHistory: ObservableObject {
             ))
             syncError = ClipboardSyncErrorMessage.sync(for: error)
         }
+    }
+
+    /// Stops cloud work and the scheduled request. The caller ends the run.
+    private func cancelSyncWork() {
+        cloudService?.stop()
+        if case .scheduled(_, let requestedAt, let task) = syncRequest {
+            task.cancel()
+            syncRequest = .idle(lastRequestedAt: requestedAt)
+        }
+    }
+
+    private func endSyncRun(next: ClipboardSyncPhase) {
+        if case .syncing = syncPhase {
+            // Downloads may restore bytes without changing entry metadata or URLs.
+            filePreviewRevision &+= 1
+        }
+        syncPhase = next
     }
 
     func resetCloudAccount() async {
