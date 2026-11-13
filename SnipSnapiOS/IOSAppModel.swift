@@ -1478,7 +1478,7 @@ final class IOSAppModel {
             }
             guard backupImportOperationID == operationID, !Task.isCancelled else {
                 await session.withExclusiveAccess { session in
-                    await session.cancelImport(id: preview.id)
+                    _ = await session.cancelImport(id: preview.id)
                 }
                 throw CancellationError()
             }
@@ -1526,7 +1526,7 @@ final class IOSAppModel {
             recoverySnapshot = recovery
         } catch {
             await session.withExclusiveAccess { session in
-                await session.cancelImport(id: id)
+                _ = await session.cancelImport(id: id)
             }
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_apply", error: error, visibility: .user))
