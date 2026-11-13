@@ -2111,13 +2111,19 @@ final class SnipSnapiOSUITests: XCTestCase {
         try visibleTouchCenter(of: composer, in: app).tap()
         composer.typeText("Prefix: ")
         if usesToolbarPaste {
-            // The toolbar keeps Paste while the composer is focused.
-            XCTAssertTrue(pasteIsReachable())
+            // The toolbar keeps Paste in place but turns it off while the composer is focused.
+            let disabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == false"), object: paste)
+            XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: 3), .completed)
+            XCTAssertTrue(paste.exists)
         } else {
             XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
         }
         dismissComposerKeyboard(in: app)
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        if usesToolbarPaste {
+            let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: paste)
+            XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 3), .completed)
+        }
         XCTAssertTrue(pasteIsReachable())
         if usesToolbarPaste {
             paste.tap()
@@ -2158,6 +2164,46 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertLessThan(paste.frame.maxX, selector.frame.minX)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Leading native Paste button"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    func testSidebarClipboardPasteCapturesCopiedText() throws {
+        continueAfterFailure = false
+        let app = launchApp()
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            throw XCTSkip("This check needs the regular-width sidebar.")
+        }
+        // On the iPhone Duo's inner panel, app.frame stays portrait while elements use the
+        // landscape window, so XCTest can't type or tap by coordinates there.
+        if app.windows.firstMatch.frame.width != app.frame.width {
+            throw XCTSkip("XCTest can't type into the iPhone Duo's inner panel.")
+        }
+        // Copy inside the app: the app can't read pasteboard items from another process.
+        createSnip("Sidebar paste fixture", in: app)
+        try visibleTouchCenter(of: row(named: "Sidebar paste fixture", in: app), in: app).press(forDuration: 1)
+        app.buttons["copy-snip"].tap()
+        let paste = app.buttons["paste-to-clipboard"]
+        waitForHittable(paste)
+        XCTAssertEqual(paste.label, "Paste and Save")
+        let listPageFrame = paste.frame
+
+        let clipboard = app.buttons["clipboard-sidebar"]
+        XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
+        clipboard.tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        waitForHittable(paste)
+        XCTAssertEqual(paste.label, "Paste")
+        XCTAssertEqual(paste.frame.midX, listPageFrame.midX, accuracy: 2)
+        XCTAssertEqual(paste.frame.midY, listPageFrame.midY, accuracy: 2)
+        paste.tap()
+        let entry = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "clipboard-entry-")
+        ).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sidebar paste fixture"].exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Sidebar toolbar Paste on Clipboard"
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }
@@ -5526,6 +5572,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         if pose == .closed {
             XCTAssertTrue(selector.waitForExistence(timeout: 5), "The list tabs stayed hidden after \(pose)", file: file, line: line)
         } else {
+            // The sidebar layout keeps Paste in the toolbar and turns it back on only once the
+            // composer's focus has cleared.
+            let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: paste)
+            XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed,
+                           "Composer focus stayed set after \(pose)", file: file, line: line)
             XCTAssertFalse(selector.exists, "The sidebar layout must not show list tabs", file: file, line: line)
         }
     }
