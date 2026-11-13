@@ -179,7 +179,7 @@ final class IOSClipboardModel {
         defer { if syncPhase == run { enterSyncPhase(.idle) } }
         await load()
         guard syncPhase == run else { return }
-        guard settings.mode == .iCloudSync else { cloud.stop(); return }
+        guard syncIsActive else { cloud.stop(); return }
         do {
             guard let generation = try await generation(), syncPhase == run else { return }
             let synced = try await cloud.synchronize(
@@ -187,13 +187,13 @@ final class IOSClipboardModel {
                 clipboardSyncEnabled: syncEnabled,
                 generation: generation
             )
-            guard syncPhase == run else { return }
+            guard syncPhase == run, syncIsActive else { return }
             entries = synced.entries
             syncErrorMessage = nil
             pendingUploadIDs = []
             savePendingUploads()
         } catch {
-            guard syncPhase == run, !(error is CancellationError) else { return }
+            guard syncPhase == run, syncIsActive, !(error is CancellationError) else { return }
             diagnostics.record(.failure(
                 operation: "clipboard.sync",
                 error: error,
