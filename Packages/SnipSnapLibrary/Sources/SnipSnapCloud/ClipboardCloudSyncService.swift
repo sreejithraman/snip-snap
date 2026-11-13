@@ -8,15 +8,13 @@ package struct ClipboardCloudPayload: Codable, Sendable {
     var files: [UUID: Data]
 }
 
-/// Owns the clipboard cloud binding and history store: one run or transition at a time.
+/// Owns the clipboard cloud binding and history store: one run or unbinding at a time.
 private enum ClipboardCloudLifecycle {
     case idle
     case syncing(ClipboardCloudOperation)
     /// `stop()` ended this run. It keeps the store until it unwinds, and sync calls wait for it.
     case stopping(runID: UUID, syncWaiters: [CheckedContinuation<Bool, Never>])
-    /// `deleteSyncedHistory` or `resetAccountBinding` owns the binding and history once any
-    /// stopped run has unwound.
-    case transitioning(ClipboardCloudOperation, unwindingRun: ClipboardCloudUnwindingRun?)
+    case unbinding(ClipboardCloudOperation, unwindingRun: ClipboardCloudUnwindingRun?)
 }
 
 private struct ClipboardCloudOperation {
@@ -81,8 +79,8 @@ private struct ClipboardCloudUnwindingRun {
         case .stopping(let runID, let waiters):
             lifecycle = .stopping(runID: runID, syncWaiters: [])
             for waiter in waiters { waiter.resume(returning: false) }
-        case .transitioning(let transition, _):
-            transition.cancel()
+        case .unbinding(let unbinding, _):
+            unbinding.cancel()
         }
     }
 
@@ -135,11 +133,11 @@ private struct ClipboardCloudUnwindingRun {
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
     public func deleteSyncedHistory(generation: String) async throws {
-        let transition = try await beginTransition()
-        defer { endTransition(transition) }
+        let unbinding = try await beginUnbinding()
+        defer { endUnbinding(unbinding) }
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         try bind(to: generation)
-        if let transport { try await performWithRetry(operationName: "clipboard delete", owner: transition) { try await transport.deleteAll() } }
+        if let transport { try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() } }
         if hadBinding {
             try quarantineHistory()
             try await store.save(ClipboardHistoryState())
@@ -151,8 +149,8 @@ private struct ClipboardCloudUnwindingRun {
     /// Keep the previous account's history on disk but never upload it to another account.
     public func resetAccountBinding() async throws {
         guard FileManager.default.fileExists(atPath: bindingURL.path) else { return }
-        let transition = try await beginTransition()
-        defer { endTransition(transition) }
+        let unbinding = try await beginUnbinding()
+        defer { endUnbinding(unbinding) }
         try quarantineHistory()
         try await store.save(ClipboardHistoryState())
         try removeBinding()
@@ -186,8 +184,8 @@ private struct ClipboardCloudUnwindingRun {
         case .stopping(let runID, let waiters) where runID == id:
             lifecycle = .idle
             for waiter in waiters { waiter.resume(returning: true) }
-        case .transitioning(let transition, let unwinding?) where unwinding.id == id:
-            lifecycle = .transitioning(transition, unwindingRun: nil)
+        case .unbinding(let unbinding, let unwinding?) where unwinding.id == id:
+            lifecycle = .unbinding(unbinding, unwindingRun: nil)
             unwinding.waiter.resume()
         default:
             break
@@ -202,26 +200,25 @@ private struct ClipboardCloudUnwindingRun {
         guard isCurrentRun(id) else { throw CancellationError() }
     }
 
-    /// Stops any run, waits for it to unwind, then owns the binding and history.
-    private func beginTransition() async throws -> UUID {
-        if case .transitioning = lifecycle { throw ClipboardCloudError.busy }
+    private func beginUnbinding() async throws -> UUID {
+        if case .unbinding = lifecycle { throw ClipboardCloudError.busy }
         stop()
-        let transition = ClipboardCloudOperation()
+        let unbinding = ClipboardCloudOperation()
         if case .stopping(let runID, _) = lifecycle {
             await withCheckedContinuation { waiter in
-                lifecycle = .transitioning(
-                    transition,
+                lifecycle = .unbinding(
+                    unbinding,
                     unwindingRun: ClipboardCloudUnwindingRun(id: runID, waiter: waiter)
                 )
             }
         } else {
-            lifecycle = .transitioning(transition, unwindingRun: nil)
+            lifecycle = .unbinding(unbinding, unwindingRun: nil)
         }
-        return transition.id
+        return unbinding.id
     }
 
-    private func endTransition(_ id: UUID) {
-        guard case .transitioning(let transition, _) = lifecycle, transition.id == id else { return }
+    private func endUnbinding(_ id: UUID) {
+        guard case .unbinding(let unbinding, _) = lifecycle, unbinding.id == id else { return }
         lifecycle = .idle
     }
     private func bind(to generation: String) throws {
@@ -254,9 +251,9 @@ private struct ClipboardCloudUnwindingRun {
         case .syncing(var run) where run.id == owner:
             run.cancelRetry = cancel
             lifecycle = .syncing(run)
-        case .transitioning(var transition, let unwinding) where transition.id == owner:
-            transition.cancelRetry = cancel
-            lifecycle = .transitioning(transition, unwindingRun: unwinding)
+        case .unbinding(var unbinding, let unwinding) where unbinding.id == owner:
+            unbinding.cancelRetry = cancel
+            lifecycle = .unbinding(unbinding, unwindingRun: unwinding)
         default:
             cancel?()
         }

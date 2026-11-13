@@ -282,15 +282,14 @@ private struct ClipboardCaptureAttempt {
     }
 }
 
-/// Clipboard history sync. Only the current run can change history or report an error.
+/// Only the current run can change history or report an error.
 private enum ClipboardSyncPhase: Equatable {
     case disabled
     case idle
     case syncing(id: UUID)
 }
 
-/// A debounced sync request. It stays scheduled through the run it starts, so requests made
-/// meanwhile are absorbed; the periodic request counts from `requestedAt`.
+/// Stays scheduled through the run it starts, so requests made meanwhile are absorbed.
 private enum ClipboardSyncRequest {
     case idle(lastRequestedAt: Date)
     case scheduled(id: UUID, requestedAt: Date, task: Task<Void, Never>)
@@ -474,8 +473,7 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func stopSync() {
-        cancelSyncWork()
-        if isSyncing { endSyncRun(next: .idle) }
+        stopSync(entering: clipboardSyncEnabled ? .idle : .disabled)
     }
 
     func status(for entry: ClipboardEntry) -> String? {
@@ -495,8 +493,7 @@ final class ClipboardHistory: ObservableObject {
             pendingUploadIDs.formUnion(entries.filter(\.isSyncEligible).map(\.id))
             requestSync()
         } else {
-            cancelSyncWork()
-            endSyncRun(next: .disabled)
+            stopSync(entering: .disabled)
             syncError = nil
         }
     }
@@ -522,7 +519,7 @@ final class ClipboardHistory: ObservableObject {
         guard clipboardSyncEnabled, mainSyncEnabled?() == true else { cloudService.stop(); return }
         let run = ClipboardSyncPhase.syncing(id: UUID())
         syncPhase = run
-        defer { if syncPhase == run { endSyncRun(next: .idle) } }
+        defer { if syncPhase == run { enterSyncPhase(.idle) } }
         do {
             await flushPersistence()
             guard syncPhase == run, let generation = try await syncGeneration?(),
@@ -546,16 +543,17 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
-    /// Stops cloud work and the scheduled request. The caller ends the run.
-    private func cancelSyncWork() {
+    private func stopSync(entering next: ClipboardSyncPhase) {
         cloudService?.stop()
         if case .scheduled(_, let requestedAt, let task) = syncRequest {
             task.cancel()
             syncRequest = .idle(lastRequestedAt: requestedAt)
         }
+        enterSyncPhase(next)
     }
 
-    private func endSyncRun(next: ClipboardSyncPhase) {
+    private func enterSyncPhase(_ next: ClipboardSyncPhase) {
+        guard syncPhase != next else { return }
         if case .syncing = syncPhase {
             // Downloads may restore bytes without changing entry metadata or URLs.
             filePreviewRevision &+= 1
