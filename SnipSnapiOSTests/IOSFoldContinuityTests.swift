@@ -340,6 +340,9 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         // A system-style resign under the presentation must not clear the user's focus.
         compact.resignFirstResponder()
         XCTAssertTrue(root.wait("compact composer yields the keyboard") { compact.isFirstResponder == false }, root.diagnostics)
+        // The resign reports focus loss from a queued block that skips a field no longer in a window,
+        // so let it run before the swap removes this one. The setter guard is what must discard it.
+        root.settle()
         root.swap(to: .regular)
         root.settle()
         let regular = try XCTUnwrap(root.composer)

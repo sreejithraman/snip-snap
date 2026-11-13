@@ -1932,9 +1932,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         app.buttons["dismiss-attachment-image"].tap()
         XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
-        let paste = app.buttons["paste-to-clipboard"]
+        let pasteButton = app.buttons["paste-to-clipboard"]
         let resumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            composer.value(forKey: "hasKeyboardFocus") as? Bool == true || (paste.exists && paste.isHittable)
+            composer.value(forKey: "hasKeyboardFocus") as? Bool == true || (pasteButton.exists && pasteButton.isHittable)
         }, object: nil)
         XCTAssertEqual(
             XCTWaiter.wait(for: [resumed], timeout: 5), .completed,
