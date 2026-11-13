@@ -130,20 +130,40 @@ struct CompactLibraryControls: View {
                 }
             }
 
-            if !showsListTabs && showsNavigation {
-                GlassEffectContainer {
-                    pasteButton
-                }
-            } else if showsNavigation {
+            if showsListTabs && showsNavigation {
                 navigationControls
             }
         }
-
         .frame(maxWidth: .infinity)
         .padding(.horizontal, SnipSnapSpacing.cardContentInset)
         .padding(.top, showsListEditor ? 0 : SnipSnapSpacing.relatedContent)
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+        .toolbar {
+            if !showsListTabs && !model.isSearchPresented {
+                // Paste draws its own glass circle because the system folds the Search item into
+                // the shared background of the item before it. Placing Search explicitly instead
+                // turns it into a full search field on iPad.
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItem(placement: .topBarTrailing) {
+                    CompactGlassCircleButton(length: Self.toolbarCircleLength, action: paste) {
+                        Image(systemName: "doc.on.clipboard")
+                            .font(.system(size: 18))
+                            .imageScale(.medium)
+                    }
+                    // Paste and Save disables the composer while it saves, which would end
+                    // editing mid-sentence. Compact hides Paste while typing instead.
+                    .disabled(isPasteDisabled || isComposerFocused)
+                    .accessibilityLabel(pasteLabel)
+                    .accessibilityShowsLargeContentViewer {
+                        Label(pasteLabel, systemImage: "doc.on.clipboard")
+                    }
+                    .accessibilityIdentifier("paste-to-clipboard")
+                }
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            }
+        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.data],
@@ -207,6 +227,9 @@ struct CompactLibraryControls: View {
         }
     }
 
+    // Matches the system's glass circles in the navigation bar.
+    private static let toolbarCircleLength: CGFloat = 44
+
     private var navigationWidth: CGFloat { max(0, toolbarWidth - 32) }
 
     private var navigationControlLength: CGFloat {
@@ -266,24 +289,32 @@ struct CompactLibraryControls: View {
     }
 
     private var pasteButton: some View {
-        CompactGlassCircleButton(length: showsListTabs ? navigationControlLength : max(48, controlLength)) {
-            if isClipboardSelected {
-                let providers = UIPasteboard.general.itemProviders
-                Task { await clipboard.capture(providers) }
-            } else {
-                pasteAndSave()
-            }
-        } label: {
+        CompactGlassCircleButton(length: navigationControlLength, action: paste) {
             Image(systemName: "doc.on.clipboard")
-                .font(showsListTabs ? .system(size: navigationControlLength * 20 / 48, weight: .medium) : .title3.weight(.medium))
+                .font(.system(size: navigationControlLength * 20 / 48, weight: .medium))
         }
-        .disabled(motion.isDragging || (isClipboardSelected
-            ? clipboard.isPasting
-            : !showsComposer || storage.isSaving || isStaging))
-        .accessibilityLabel(isClipboardSelected ? "Paste" : "Paste and Save")
+        .disabled(isPasteDisabled)
+        .accessibilityLabel(pasteLabel)
         .accessibilityIdentifier("paste-to-clipboard")
         .glassEffectID("paste", in: composerGlass)
         .glassEffectTransition(.materialize)
+    }
+
+    private var pasteLabel: String { isClipboardSelected ? "Paste" : "Paste and Save" }
+
+    private var isPasteDisabled: Bool {
+        motion.isDragging || (isClipboardSelected
+            ? clipboard.isPasting
+            : !showsComposer || storage.isSaving || isStaging)
+    }
+
+    private func paste() {
+        if isClipboardSelected {
+            let providers = UIPasteboard.general.itemProviders
+            Task { await clipboard.capture(providers) }
+        } else {
+            pasteAndSave()
+        }
     }
 
     private func pasteAndSave() {
