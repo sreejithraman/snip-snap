@@ -10,6 +10,38 @@ import XCTest
 @testable import SnipSnapiOS
 
 @MainActor
+private final class IOSClipboardGenerationGate {
+    private(set) var requestCount = 0
+    private let heldRequests: Set<Int>
+    private var held: [Int: CheckedContinuation<String?, any Error>] = [:]
+
+    init(holding requests: Set<Int>) {
+        heldRequests = requests
+    }
+
+    func generation() async throws -> String? {
+        requestCount += 1
+        let request = requestCount
+        guard heldRequests.contains(request) else { return nil }
+        return try await withCheckedThrowingContinuation { held[request] = $0 }
+    }
+
+    func isHolding(_ request: Int) -> Bool {
+        held[request] != nil
+    }
+
+    func release(_ request: Int) {
+        held.removeValue(forKey: request)?.resume(returning: nil)
+    }
+
+    /// The clipboard cloud service rejects an empty generation as unavailable before it uses
+    /// CloudKit. A released run that reaches the service while sync is on reports that error.
+    func releaseWithEmptyGeneration(_ request: Int) {
+        held.removeValue(forKey: request)?.resume(returning: "")
+    }
+}
+
+@MainActor
 final class IOSClipboardModelTests: IOSModelTestCase {
     func testClipboardSyncPreferenceDoesNotImplyMainSyncIsActive() {
         let preferences = UserDefaults(suiteName: UUID().uuidString)!
@@ -18,6 +50,63 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         let model = IOSClipboardModel(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), settings: settings, preferences: preferences)
         XCTAssertTrue(model.syncEnabled)
         XCTAssertFalse(model.syncIsActive)
+    }
+
+    func testDisablingClipboardSyncDuringAGenerationFetchEndsTheRunAtOnce() async throws {
+        let gate = IOSClipboardGenerationGate(holding: [1])
+        let model = makeSyncingClipboardModel(gate)
+        let stoppedSync = Task { await model.synchronize() }
+        try await waitUntil { gate.isHolding(1) }
+
+        await model.setSyncEnabled(false)
+        XCTAssertFalse(model.isSyncing)
+        XCTAssertFalse(model.syncEnabled)
+
+        await model.setSyncEnabled(true)
+        XCTAssertEqual(gate.requestCount, 2)
+        gate.releaseWithEmptyGeneration(1)
+        await stoppedSync.value
+        XCTAssertFalse(model.isSyncing)
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
+    func testStoppingClipboardSyncDuringAGenerationFetchEndsTheRunAtOnce() async throws {
+        let gate = IOSClipboardGenerationGate(holding: [1, 2])
+        let model = makeSyncingClipboardModel(gate)
+        let stoppedSync = Task { await model.synchronize() }
+        try await waitUntil { gate.isHolding(1) }
+
+        model.stop()
+        XCTAssertFalse(model.isSyncing)
+
+        let nextSync = Task { await model.synchronize() }
+        try await waitUntil { gate.isHolding(2) }
+        gate.releaseWithEmptyGeneration(1)
+        await stoppedSync.value
+        XCTAssertTrue(model.isSyncing)
+        XCTAssertNil(model.syncErrorMessage)
+
+        gate.release(2)
+        await nextSync.value
+        XCTAssertFalse(model.isSyncing)
+    }
+
+    func testOverlappingClipboardSyncsStartOneRun() async throws {
+        let gate = IOSClipboardGenerationGate(holding: [1])
+        let model = makeSyncingClipboardModel(gate)
+        // Immediate tasks run in call order up to their first suspension, so only the first
+        // sync can hold request 1.
+        let first = Task.immediate { await model.synchronize() }
+        let second = Task.immediate { await model.synchronize() }
+        await second.value
+        try await waitUntil { gate.isHolding(1) }
+
+        XCTAssertEqual(gate.requestCount, 1)
+        XCTAssertTrue(model.isSyncing)
+
+        gate.release(1)
+        await first.value
+        XCTAssertFalse(model.isSyncing)
     }
 
     func testClipboardImportFailureStaysVisibleUntilQueueRetrySucceeds() async throws {
@@ -243,6 +332,28 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertEqual(clipboard.errorMessage, "Couldn’t update the pin. Try again.")
         XCTAssertNil(clipboard.persistentErrorMessage)
         XCTAssertNil(clipboard.syncErrorMessage)
+    }
+
+    private func makeSyncingClipboardModel(_ gate: IOSClipboardGenerationGate) -> IOSClipboardModel {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        return IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.world.sree.snipsnap.tests",
+            preferences: preferences,
+            generation: { try await gate.generation() }
+        )
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(condition())
     }
 
     func testResolvedClipboardFailureClearsOnlyItsIncidentAndKeepsUndo() async throws {
