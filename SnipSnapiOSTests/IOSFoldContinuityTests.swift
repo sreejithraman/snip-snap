@@ -101,6 +101,39 @@ class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
     }
 
+    func testOverlappingSaveLeavesTheRunningSaveBusy() async throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("In flight", to: storage)
+        let root = try RootHarness(test: self, storage: storage)
+        let gate = SaveGate()
+        let saving = try await startSaveAndSwap(storage, root: root, gate: gate)
+
+        for listID in [SnipList.inboxID, UUID()] {
+            var created = false
+            let saved = await storage.save(listID: listID) { _ in
+                created = true
+                return true
+            }
+            XCTAssertFalse(saved, "\(listID)")
+            XCTAssertFalse(created, "An overlapping save must not create a snip. \(listID)")
+            XCTAssertTrue(storage.isSaving, "\(listID)")
+            XCTAssertEqual(storage.savingListID, SnipList.inboxID, "\(listID)")
+        }
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).text, "In flight")
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
+        // Suspends rather than spinning the run loop, so a wrong reload queued on the main actor would run.
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(root.composer?.text, "", "The in-flight draft must stay out of the composer. \(root.diagnostics)")
+        XCTAssertEqual(root.composer?.isEditable, false, "The composer must stay busy. \(root.diagnostics)")
+
+        gate.finish(saved: true)
+        let saved = await saving.value
+        XCTAssertTrue(saved)
+        XCTAssertFalse(storage.isSaving)
+        XCTAssertNil(storage.savingListID)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
+    }
+
     func testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps() async throws {
         let root = try RootHarness(test: self, storage: makeComposerStorage())
         let model = root.session.model
