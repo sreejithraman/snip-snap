@@ -272,7 +272,8 @@ final class IOSCopyShareTests: XCTestCase {
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         // Replace the request before the first request's scheduled presentation runs.
-        state.request = IOSShareRequest(items: [.text("replacement")])
+        let replacement = IOSShareRequest(items: [.text("replacement")])
+        state.request = replacement
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
 
@@ -280,6 +281,14 @@ final class IOSCopyShareTests: XCTestCase {
             guard let activity = presentedActivity(in: window) else { return false }
             return !activity.isBeingPresented
         }
+        let pendingBeforeCallback = state.request?.id
+        // Only the replacement's terminal can clear the replacement request.
+        let callback = presentedActivity(in: window)?.completionWithItemsHandler
+        if let callback {
+            callback(nil, false, nil, nil)
+            await drainMainQueue()
+        }
+        let pendingAfterCallback = state.request?.id
         if host.presentedViewController != nil {
             await withCheckedContinuation { continuation in
                 host.dismiss(animated: false) { continuation.resume() }
@@ -291,6 +300,9 @@ final class IOSCopyShareTests: XCTestCase {
             return XCTFail("The replaced request must settle as cancelled")
         }
         XCTAssertTrue(presentedReplacement, "The replacement request must be presented")
+        XCTAssertEqual(pendingBeforeCallback, replacement.id)
+        XCTAssertNotNil(callback, "The presented activity must report its completion")
+        XCTAssertNil(pendingAfterCallback, "The presented activity must belong to the replacement")
         XCTAssertTrue(probe.events.isEmpty)
     }
 
