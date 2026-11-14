@@ -3306,42 +3306,31 @@ final class AppModelTests: StoreBackedTestCase {
     func testSupersededCopyFinishingLateStillLetsNewerCopyMarkDone() async throws {
         let older = Snip(content: "Older copy", origin: .quickEntry)
         let newer = Snip(content: "Newer copy", origin: .quickEntry)
-        let blocker = Snip(content: "Hold the lock", origin: .quickEntry)
-        let library = InMemorySnipLibrary(
-            snips: [older, newer, blocker],
-            suspendsFirstCommand: true
+        let exportGate = SupersededCopyExportGate(
+            cancelledText: older.content,
+            heldText: newer.content
         )
-        let exportGate = PausingPasteboardExportPreparer()
         let model = AppModel(
-            library: library,
+            library: InMemorySnipLibrary(snips: [older, newer]),
             defaults: defaults(),
             preparePasteboardExport: exportGate.prepare
         )
         await model.reload()
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-late-superseded-copy-\(UUID())"))
-        let blockerTask = Task { @MainActor in
-            await model.update(id: blocker.id, content: "Lock held")
-        }
-        await library.waitUntilFirstCommandStarts()
         let olderCopy = Task { @MainActor in
             await model.placeOnClipboardNow(.snips([older]), feedback: .silent, to: pasteboard)
         }
-        await exportGate.waitUntilPreparationStarts()
+        await exportGate.waitUntilPreparationStarts(for: older.content)
         let newerCopy = Task { @MainActor in
             await model.copySnipsAndMarkDoneNow([newer], to: pasteboard)
         }
-        let newerDidWrite = await waitUntil {
-            pasteboard.string(forType: .string) == "Newer copy"
-        }
-        XCTAssertTrue(newerDidWrite)
-        let olderCopied = await olderCopy.value
+        await exportGate.waitUntilPreparationStarts(for: newer.content)
 
-        await library.resumeFirstCommand()
-        let blockerSaved = await blockerTask.value
+        let olderCopied = await olderCopy.value
+        await exportGate.releaseHeldText()
         let newerCopied = await newerCopy.value
 
         XCTAssertFalse(olderCopied)
-        XCTAssertTrue(blockerSaved)
         XCTAssertTrue(newerCopied)
         XCTAssertEqual(pasteboard.string(forType: .string), "Newer copy")
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == newer.id }).isDone)
@@ -4497,6 +4486,46 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
     func releasePreparation() {
         preparationContinuation?.resume(returning: url)
         preparationContinuation = nil
+    }
+}
+
+/// Holds one copy's export until it is cancelled and another until the test releases it.
+private actor SupersededCopyExportGate {
+    private let cancelledText: String
+    private let heldText: String
+    private var startedTexts: Set<String> = []
+    private var isHeldTextReleased = false
+
+    init(cancelledText: String, heldText: String) {
+        self.cancelledText = cancelledText
+        self.heldText = heldText
+    }
+
+    func prepare(text: String, attachmentURLs: [URL]) async throws -> SnipPasteboardExport {
+        startedTexts.insert(text)
+        if text == cancelledText {
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+        } else if text == heldText {
+            while !isHeldTextReleased {
+                await Task.yield()
+            }
+        }
+        return try await SnipPasteboardExport.preparingClipboardExport(
+            text: text,
+            attachmentURLs: attachmentURLs
+        )
+    }
+
+    func waitUntilPreparationStarts(for text: String) async {
+        while !startedTexts.contains(text) {
+            await Task.yield()
+        }
+    }
+
+    func releaseHeldText() {
+        isHeldTextReleased = true
     }
 }
 
