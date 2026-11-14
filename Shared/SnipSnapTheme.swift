@@ -230,6 +230,7 @@ struct AppPrimaryActionButton<Label: View>: View {
 
 private struct AppToastPresenter: ViewModifier {
     @Binding var toast: AppToast?
+    let close: (AppToast) -> Void
     let alignment: Alignment
     let edge: Edge
     let isHidden: Bool
@@ -304,7 +305,7 @@ private struct AppToastPresenter: ViewModifier {
                   self.toast?.lifetime === toast.lifetime,
                   !isHidden, !toast.lifetime.isPaused,
                   !usesFixedExpiry || toast.lifetime.canExpire() else { return }
-            self.toast = nil
+            close(toast)
             onDismiss(toast)
         }
     }
@@ -362,7 +363,7 @@ private struct AppToastPresenter: ViewModifier {
                 }
                 if toast.action != nil {
                     AppPrimaryActionButton(presentation: .floatingGlass) {
-                        self.toast = nil
+                        close(toast)
                         onAction(toast)
                     } label: {
                         Text(toast.actionTitle)
@@ -401,8 +402,11 @@ private struct AppToastPresenter: ViewModifier {
 }
 
 extension View {
+    /// The presenter calls `close` with the snackbar it is closing before `onAction`
+    /// or `onDismiss`. By default, `close` clears `toast`.
     func appToast(
         _ toast: Binding<AppToast?>,
+        close: ((AppToast) -> Void)? = nil,
         alignment: Alignment,
         edge: Edge,
         isHidden: Bool = false,
@@ -415,6 +419,7 @@ extension View {
         modifier(
             AppToastPresenter(
                 toast: toast,
+                close: close ?? { _ in toast.wrappedValue = nil },
                 alignment: alignment,
                 edge: edge,
                 isHidden: isHidden,
@@ -427,6 +432,26 @@ extension View {
         )
     }
 
+    /// Presents a snackbar whose owner changes it only through events.
+    func appToast(
+        showing toast: @autoclosure @escaping @MainActor () -> AppToast?,
+        close: @escaping (AppToast) -> Void,
+        alignment: Alignment,
+        edge: Edge,
+        isHidden: Bool = false,
+        reservesSpace: Bool = false,
+        usesFixedExpiry: Bool = false,
+        bottomInset: CGFloat = 0,
+        onAction: @escaping (AppToast) -> Void = { _ in },
+        onDismiss: @escaping (AppToast) -> Void = { _ in }
+    ) -> some View {
+        appToast(
+            Binding(get: { toast() }, set: { _ in }), close: close,
+            alignment: alignment, edge: edge, isHidden: isHidden, reservesSpace: reservesSpace,
+            usesFixedExpiry: usesFixedExpiry, bottomInset: bottomInset,
+            onAction: onAction, onDismiss: onDismiss
+        )
+    }
 }
 
 enum SnipSnapTheme {

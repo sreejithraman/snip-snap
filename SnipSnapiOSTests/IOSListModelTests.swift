@@ -672,7 +672,7 @@ final class IOSListModelTests: IOSModelTestCase {
         XCTAssertFalse(created)
         XCTAssertEqual(model.errorTitle, "Name Already Used")
         XCTAssertEqual(model.errorMessage, "A list with that name already exists. Choose another name.")
-        model.errorMessage = "A different error"
+        model.presentDialogFailure("A different error")
         XCTAssertEqual(model.errorTitle, "Something Went Wrong")
     }
 
