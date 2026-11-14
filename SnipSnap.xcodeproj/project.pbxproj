@@ -113,6 +113,7 @@
 		B1B000000000000000000001 /* CompactLibraryPageStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B000000000000000000101 /* CompactLibraryPageStack.swift */; };
 		E10000000000000000000005 /* SnipCollectionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* SnipCollectionViews.swift */; };
 		C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* LibrarySidebarViews.swift */; };
+		D9A100000000000000000002 /* LibraryRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000001 /* LibraryRailView.swift */; };
 		C10000000000000000000004 /* RecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* RecoveryViews.swift */; };
 		C10000000000000000000005 /* MoveSnipMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* MoveSnipMenu.swift */; };
 		E10000000000000000000006 /* EditorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000006 /* EditorViews.swift */; };
@@ -205,6 +206,7 @@
 		C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000009 /* IOSBackupModelTests.swift */; };
 		C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */; };
 		C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000B /* ListSelectorGeometryTests.swift */; };
+		D9A100000000000000000004 /* LibraryRailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000003 /* LibraryRailTests.swift */; };
 		C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000C /* ListSelectorExpansionTests.swift */; };
 		C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */; };
 		C2610B26000000000000000E /* AttachmentThumbnailCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */; };
@@ -218,6 +220,8 @@
 		AF7100000000000000000003 /* AppFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000001 /* AppFailure.swift */; };
 		AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000002 /* AppErrorDetailsView.swift */; };
 		AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000002 /* AppErrorDetailsView.swift */; };
+		AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */; };
+		AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */; };
 		AF7100000000000000000006 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
 		AF7100000000000000000007 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
 /* End PBXBuildFile section */
@@ -382,6 +386,7 @@
 		B0E000000000000000000002 /* ListPagePanObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListPagePanObserver.swift; sourceTree = "<group>"; };
 		E20000000000000000000005 /* SnipCollectionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCollectionViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000003 /* LibrarySidebarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarViews.swift; sourceTree = "<group>"; };
+		D9A100000000000000000001 /* LibraryRailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRailView.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* RecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000005 /* MoveSnipMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveSnipMenu.swift; sourceTree = "<group>"; };
 		E20000000000000000000006 /* EditorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViews.swift; sourceTree = "<group>"; };
@@ -448,6 +453,7 @@
 		C2610A260000000000000009 /* IOSBackupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSBackupModelTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSHapticFeedbackTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000B /* ListSelectorGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorGeometryTests.swift; sourceTree = "<group>"; };
+		D9A100000000000000000003 /* LibraryRailTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRailTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000C /* ListSelectorExpansionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListSelectorExpansionTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardRowPreviewTests.swift; sourceTree = "<group>"; };
 		C2610A26000000000000000E /* AttachmentThumbnailCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentThumbnailCacheTests.swift; sourceTree = "<group>"; };
@@ -458,6 +464,7 @@
 		C2610A260000000000000201 /* IOSAttachmentTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentTestSupport.swift; sourceTree = "<group>"; };
 		AF7200000000000000000001 /* AppFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFailure.swift; sourceTree = "<group>"; };
 		AF7200000000000000000002 /* AppErrorDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppErrorDetailsView.swift; sourceTree = "<group>"; };
+		AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnackbarAndErrorPresentation.swift; sourceTree = "<group>"; };
 		AF7200000000000000000003 /* AppFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeedbackTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -684,6 +691,7 @@
 				A20000000000000000000001 /* SnipSnapTheme.swift */,
 				AF7200000000000000000001 /* AppFailure.swift */,
 				AF7200000000000000000002 /* AppErrorDetailsView.swift */,
+				AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */,
 				AD5200000000000000000001 /* SendDestinationPicker.swift */,
                 AF6200000000000000000001 /* GlassMenus.swift */,
 				AC2000000000000000000001 /* SnipListAppearance.swift */,
@@ -706,6 +714,7 @@
 				B0E000000000000000000002 /* ListPagePanObserver.swift */,
 				B1B000000000000000000101 /* CompactLibraryPageStack.swift */,
 				C20000000000000000000003 /* LibrarySidebarViews.swift */,
+				D9A100000000000000000001 /* LibraryRailView.swift */,
 				E20000000000000000000005 /* SnipCollectionViews.swift */,
 				A940E1000000000000000004 /* CollectionScreenPresentation.swift */,
 				C20000000000000000000004 /* RecoveryViews.swift */,
@@ -747,6 +756,7 @@
 				C2610A26000000000000000D /* ClipboardRowPreviewTests.swift */,
 				C2610A26000000000000000C /* ListSelectorExpansionTests.swift */,
 				C2610A26000000000000000B /* ListSelectorGeometryTests.swift */,
+				D9A100000000000000000003 /* LibraryRailTests.swift */,
 				C2610A26000000000000000A /* IOSHapticFeedbackTests.swift */,
 				C2610A260000000000000009 /* IOSBackupModelTests.swift */,
 				C2610A260000000000000008 /* IOSComposerTests.swift */,
@@ -1119,6 +1129,7 @@
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AF7100000000000000000001 /* AppFailure.swift in Sources */,
 				AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */,
+				AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000001 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
@@ -1174,6 +1185,7 @@
 				B0E000000000000000000001 /* ListPagePanObserver.swift in Sources */,
 				B1B000000000000000000001 /* CompactLibraryPageStack.swift in Sources */,
 				C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */,
+				D9A100000000000000000002 /* LibraryRailView.swift in Sources */,
 				E10000000000000000000005 /* SnipCollectionViews.swift in Sources */,
 				A940E1000000000000000003 /* CollectionScreenPresentation.swift in Sources */,
 				C10000000000000000000004 /* RecoveryViews.swift in Sources */,
@@ -1207,6 +1219,7 @@
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AF7100000000000000000002 /* AppFailure.swift in Sources */,
 				AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */,
+				AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000002 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
@@ -1227,6 +1240,7 @@
 				C2610B26000000000000000D /* ClipboardRowPreviewTests.swift in Sources */,
 				C2610B26000000000000000C /* ListSelectorExpansionTests.swift in Sources */,
 				C2610B26000000000000000B /* ListSelectorGeometryTests.swift in Sources */,
+				D9A100000000000000000004 /* LibraryRailTests.swift in Sources */,
 				C2610B26000000000000000A /* IOSHapticFeedbackTests.swift in Sources */,
 				C2610B260000000000000009 /* IOSBackupModelTests.swift in Sources */,
 				C2610B260000000000000008 /* IOSComposerTests.swift in Sources */,
