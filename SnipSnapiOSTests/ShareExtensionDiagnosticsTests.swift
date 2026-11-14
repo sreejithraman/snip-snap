@@ -136,6 +136,84 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         XCTAssertTrue(events.values.isEmpty)
     }
 
+    func testHealthySavePublishesAndCompletes() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: ExtensionDiagnosticEvents().recorder)
+        await model.load()
+        model.content = "private snip"
+        await model.save()
+        XCTAssertEqual(model.phase, .published)
+        XCTAssertTrue(context.completed)
+    }
+
+    func testSaveFailureWhoseTaskIsCancelledReturnsToEditing() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let cancelsSaveTask = AppDiagnosticRecorder { _ in withUnsafeCurrentTask { $0?.cancel() } }
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: cancelsSaveTask, saveImport: { _ in throw CocoaError(.fileWriteNoPermission) })
+        await model.load()
+        model.content = "private snip"
+        await Task { await model.save() }.value
+        XCTAssertEqual(model.phase, .editing)
+        XCTAssertFalse(context.completed)
+    }
+
+    func testSaveTaskCancelledAfterDurableSaveStaysPublishedWithoutCompleting() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: ExtensionDiagnosticEvents().recorder,
+            saveImport: { _ in withUnsafeCurrentTask { $0?.cancel() } })
+        await model.load()
+        model.content = "private snip"
+        await Task { await model.save() }.value
+        XCTAssertEqual(model.phase, .published)
+        XCTAssertFalse(context.completed)
+    }
+
+    func testUserCancelAfterCancelledDurableSaveCancelsRequest() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: ExtensionDiagnosticEvents().recorder,
+            saveImport: { _ in withUnsafeCurrentTask { $0?.cancel() } })
+        await model.load()
+        model.content = "private snip"
+        await Task { await model.save() }.value
+        XCTAssertEqual(model.phase, .published)
+        XCTAssertFalse(context.completed)
+        model.cancel()
+        _ = await TestReadiness.wait { context.cancellation != nil }
+        XCTAssertEqual(model.phase, .cancelled)
+        XCTAssertFalse(context.completed)
+        XCTAssertEqual(context.cancellation?.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(context.cancellation?.code, NSUserCancelledError)
+    }
+
+    func testUserCancelDuringSaveCancelsRequest() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        var model: ShareExtensionModel?
+        model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
+            diagnostics: ExtensionDiagnosticEvents().recorder, saveImport: { _ in model?.cancel() })
+        let share = try XCTUnwrap(model)
+        await share.load()
+        share.content = "private snip"
+        await share.save()
+        _ = await TestReadiness.wait { context.cancellation != nil }
+        XCTAssertEqual(share.phase, .cancelled)
+        XCTAssertFalse(context.completed)
+        XCTAssertEqual(context.cancellation?.code, NSUserCancelledError)
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     }
