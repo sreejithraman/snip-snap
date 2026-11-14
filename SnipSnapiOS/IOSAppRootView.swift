@@ -916,10 +916,8 @@ extension View {
         usesFixedExpiry: Bool = false
     ) -> some View {
         appToast(
-            Binding(
-                get: { model.toast },
-                set: { model.toast = $0 }
-            ),
+            showing: model.toast,
+            close: model.closeSnackbar,
             alignment: .bottom,
             edge: .bottom,
             isHidden: isHidden,
@@ -961,7 +959,7 @@ private struct IOSFailurePresentation: ViewModifier {
                             AppUndoRecoveryView(
                                 failure: failure,
                                 onRetry: { model.retryPendingUndo(failure) },
-                                onDetails: { model.errorDetails = failure }
+                                onDetails: { model.showErrorDetails(failure) }
                             )
                         }
                     }
@@ -970,8 +968,8 @@ private struct IOSFailurePresentation: ViewModifier {
             .sheet(item: Binding<AppFailure?>(
                 get: { isActive ? model.errorDetails : nil },
                 set: { selected in
-                    if selected == nil { model.dismissErrorDetails() }
-                    else { model.errorDetails = selected }
+                    if let selected { model.showErrorDetails(selected) }
+                    else { model.dismissErrorDetails() }
                 }
             )) { failure in
                 AppErrorDetailsView(

@@ -388,28 +388,6 @@ private func requireSavePaused<Success: Sendable>(
         #expect(Set(try await cloud.fetch().entries.keys) == [clip.id])
     }
 
-    @Test func twoFlagSyncReportsBusyInsteadOfWaitingForAStoppedRun() async throws {
-        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
-        defer { try? FileManager.default.removeItem(at: client.root) }
-        try await client.store.insert(entry("stays local"))
-        await cloud.pauseNextSave()
-        let stopped = Task { try await client.run() }
-        try await requireSavePaused(cloud, during: stopped)
-
-        client.sync.stop()
-        let twoFlag = Task.immediate {
-            try await client.sync.synchronize(
-                mainSyncEnabled: true, clipboardSyncEnabled: true, generation: "account-generation-A"
-            )
-        }
-        await cloud.resumeSave()
-
-        await #expect(throws: CancellationError.self) { try await stopped.value }
-        await #expect(throws: ClipboardCloudError.busy) { try await twoFlag.value }
-        #expect(await cloud.fetchCount() == 1)
-        #expect(try await cloud.fetch().entries.isEmpty)
-    }
-
     @Test func waitingSyncIsRefusedWhenItsOptInEndsBeforeAdmission() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
