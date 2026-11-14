@@ -554,9 +554,9 @@ private final class RootHarness {
         await expect("\(sizeClass) tree mounted", file: file, line: line) { self.isRegular == (sizeClass == .regular) }
     }
 
-    // These tests run on the main actor's queue. Spinning the run loop there (`XCTWaiter.wait`,
+    // An async test runs as a job on the main queue. Spinning the run loop there (`XCTWaiter.wait`,
     // `RunLoop.run`) can't drain that queue, so SwiftUI and UIKit work queued on it never runs and the
-    // wait hangs. Waits here suspend instead.
+    // wait hangs. Harness waits suspend instead, so every test that uses the harness is async.
 
     /// Gives teardown callbacks, deferred focus, and presentation updates time to run.
     func settle() async {
@@ -569,7 +569,7 @@ private final class RootHarness {
         _ description: String, details: @autoclosure () -> String? = nil,
         file: StaticString = #filePath, line: UInt = #line, until condition: () -> Bool
     ) async {
-        guard await !TestReadiness.wait(until: condition) else { return }
+        guard await !TestReadiness.wait(until: { condition() }) else { return }
         XCTFail("Timed out: \(description). \(details() ?? diagnostics)", file: file, line: line)
     }
 
