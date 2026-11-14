@@ -75,8 +75,8 @@ extension SwiftDataSyncModePersistence {
     return false
   }
 
-  /// Callers check `writeAdmissionIsIdle()` first.
-  func beginStoreReplacement() {
+  func beginStoreReplacement() throws {
+    guard writeAdmissionIsIdle() else { throw SyncModePersistenceError.transitionInProgress }
     writeAdmission.phase = .admitted(.storeReplacement, queue: [])
   }
 

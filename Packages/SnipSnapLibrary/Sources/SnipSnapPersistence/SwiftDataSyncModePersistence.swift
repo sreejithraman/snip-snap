@@ -126,7 +126,7 @@ package actor SyncModeActiveMutationLease {
       try await persistence.finishActiveMutation(reservation)
       return value
     } catch {
-      // A failed clear leaves a durable reservation that reopen can clear conservatively.
+      // A failed clear leaves the store release-failed; this retry or the next admission clears it.
       try? await persistence.finishActiveMutation(reservation)
       throw error
     }
@@ -355,7 +355,7 @@ package actor SwiftDataSyncModePersistence {
       else { throw SyncModePersistenceError.transitionInProgress }
     }
 
-    beginStoreReplacement()
+    try beginStoreReplacement()
     defer { finishStoreReplacement() }
     let replacement = Self.newStore(
       kind: .localOnly,
@@ -718,7 +718,7 @@ package actor SwiftDataSyncModePersistence {
     {
       return
     }
-    beginStoreReplacement()
+    try beginStoreReplacement()
     defer { finishStoreReplacement() }
     let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
     var candidate = Self.newStore(
@@ -795,7 +795,7 @@ package actor SwiftDataSyncModePersistence {
       if store(id: manifest.activeStoreID)?.kind == .localOnly { return nil }
       throw SyncModePersistenceError.transitionInProgress
     }
-    beginStoreReplacement()
+    try beginStoreReplacement()
     defer { finishStoreReplacement() }
     let original = manifest
     var candidate = Self.newStore(
