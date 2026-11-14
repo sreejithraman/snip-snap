@@ -108,7 +108,7 @@ struct IOSAppRootView: View {
         }
         .onChange(of: model.selectedPage) { model.haptics.invalidatePendingFeedback() }
         .background {
-            IOSShareSheetPresenter(request: $copyShare.shareRequest)
+            IOSShareSheetPresenter(request: copyShare.shareSheetRequest)
                 .frame(width: 0, height: 0)
         }
 #if DEBUG
