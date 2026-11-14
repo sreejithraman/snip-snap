@@ -243,11 +243,6 @@ struct SnipCardRow: View {
         editAttachments.map(AttachmentPreviewItem.init(url:))
     }
 
-    private func addEditAttachments(_ urls: [URL]) {
-        guard !isSaving else { return }
-        onAddEditAttachments(urls)
-    }
-
     @MainActor
     private func pasteLargeTextIntoEdit(_ text: String) {
         guard !isSaving else { return }
@@ -263,7 +258,7 @@ struct SnipCardRow: View {
                     return
                 }
                 temporaryAttachmentURLs.insert(url)
-                addEditAttachments([url])
+                onAddEditAttachments([url])
             case .failure:
                 onEditError(
                     String(localized: "Couldn’t prepare pasted text. Try again.")
@@ -287,7 +282,7 @@ struct SnipCardRow: View {
                     return
                 }
                 temporaryAttachmentURLs.formUnion(urls)
-                addEditAttachments(urls)
+                onAddEditAttachments(urls)
             case .failure(let error):
                 onEditError(error.localizedDescription)
             }
@@ -304,7 +299,7 @@ struct SnipCardRow: View {
                 return
             }
             temporaryAttachmentURLs.insert(url)
-            addEditAttachments([url])
+            onAddEditAttachments([url])
         }
     }
 

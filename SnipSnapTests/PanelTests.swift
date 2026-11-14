@@ -116,6 +116,7 @@ private struct RefreshedEditorTestView: View {
             ForEach(snapshot.groups) { group in
                 VStack {
                     ForEach(group.snips) { snip in
+                        let session = model.editingID == snip.id ? model.inlineEditSessionID : nil
                         SnipCardRow(
                             snip: snip, appearance: SnipList.inbox.accent,
                             isRecovered: false, isSelected: false,
@@ -128,17 +129,21 @@ private struct RefreshedEditorTestView: View {
                             onPreviewLocalAttachments: { _, _ in },
                             onRemovePreviewURL: { _ in },
                             onAddEditAttachments: { urls in
-                                guard let session = model.inlineEditSessionID else { return }
+                                guard let session else { return }
                                 model.addInlineEditAttachments(urls, to: session)
                                 probe.attachments = model.inlineEditAttachments
                             },
-                            onRemoveEditAttachment: { model.removeInlineEditAttachment($0) },
+                            onRemoveEditAttachment: { url in
+                                guard let session else { return }
+                                model.removeInlineEditAttachment(url, from: session)
+                            },
                             onSelect: {},
                             onSelectForExpansion: { _ in false }, onOpen: {},
                             onToggleDone: {}, onCopy: { false }, onChooseFiles: {},
                             onCaptureScreenArea: { _ in },
                             onCancelEdit: { model.cancelEditing() },
                             onSaveEdit: { text in
+                                guard let session else { return false }
                                 let attachmentData: [Data]
                                 do {
                                     attachmentData = try model.inlineEditAttachments.map { try Data(contentsOf: $0) }
@@ -146,7 +151,7 @@ private struct RefreshedEditorTestView: View {
                                     probe.errorMessage = error.localizedDescription
                                     return false
                                 }
-                                let saved = await model.saveInlineEdit(content: text)
+                                let saved = await model.saveInlineEdit(content: text, in: session)
                                 if saved {
                                     probe.savedAttachmentData = attachmentData
                                     probe.savedText = text

@@ -514,7 +514,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.inlineEditAttachments, [])
         model.addInlineEditAttachments([file], to: secondSession)
         XCTAssertEqual(model.inlineEditAttachments, [file])
-        model.removeInlineEditAttachment(file)
+        model.removeInlineEditAttachment(file, from: secondSession)
         XCTAssertEqual(model.inlineEditAttachments, [])
     }
 
@@ -531,7 +531,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(opened)
         let session = try XCTUnwrap(model.inlineEditSessionID)
 
-        let save = Task { @MainActor in await model.saveInlineEdit(content: "Saved") }
+        let save = Task { @MainActor in await model.saveInlineEdit(content: "Saved", in: session) }
         await library.waitUntilFirstCommandStarts()
         XCTAssertTrue(model.isSavingInlineEdit)
         model.cancelEditing()
@@ -563,13 +563,35 @@ final class AppModelTests: StoreBackedTestCase {
         model.addInlineEditAttachments([file], to: session)
         await library.failBeforeNextWriteAndRecoveryRead()
 
-        let saved = await model.saveInlineEdit(content: "Not saved")
+        let saved = await model.saveInlineEdit(content: "Not saved", in: session)
 
         XCTAssertFalse(saved)
         XCTAssertEqual(model.editingID, snip.id)
         XCTAssertEqual(model.inlineEditSessionID, session)
         XCTAssertFalse(model.isSavingInlineEdit)
         XCTAssertEqual(model.inlineEditAttachments, [file])
+    }
+
+    @MainActor
+    func testSaveFromAnEndedEditSessionLeavesTheNewEditOpen() async throws {
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let oldSession = try XCTUnwrap(model.inlineEditSessionID)
+        model.cancelEditing()
+        let reopened = await model.beginEditing(snip.id)
+        XCTAssertTrue(reopened)
+        let newSession = try XCTUnwrap(model.inlineEditSessionID)
+
+        let saved = await model.saveInlineEdit(content: "Stale text", in: oldSession)
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.editingID, snip.id)
+        XCTAssertEqual(model.inlineEditSessionID, newSession)
+        XCTAssertFalse(model.isSavingInlineEdit)
+        XCTAssertEqual(model.snips.first?.content, "Draft")
     }
 
     @MainActor
@@ -2959,6 +2981,41 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRepeatedOpeningOfTheSameSnipOpensItOnce() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("repeated-edit.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Edit me",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let a = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(a.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = GatedMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [a]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let first = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts()
+        let second = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts(count: 2)
+        await handler.releasePreparation()
+
+        let openedFirst = await first.value
+        let openedSecond = await second.value
+        XCTAssertTrue(openedFirst)
+        XCTAssertTrue(openedSecond)
+        XCTAssertEqual(model.editingID, a.id)
+    }
+
+    @MainActor
     func testCopyingTextOnlyDoesNotCallCloudHandler() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await library.add(content: "Text only", origin: .quickEntry)
@@ -4506,8 +4563,8 @@ private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
 
 private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
     private let url: URL
-    private var preparationStarted = false
-    private var preparationContinuation: CheckedContinuation<URL, Error>?
+    private var preparationCount = 0
+    private var preparationContinuations: [CheckedContinuation<URL, Error>] = []
 
     init(url: URL) { self.url = url }
 
@@ -4522,20 +4579,20 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
         for use: SyncedAttachmentUse
     ) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            preparationContinuation = continuation
-            preparationStarted = true
+            preparationContinuations.append(continuation)
+            preparationCount += 1
         }
     }
 
     func clearDownloadedFiles() async throws {}
 
-    func waitUntilPreparationStarts() async {
-        while !preparationStarted { await Task.yield() }
+    func waitUntilPreparationStarts(count: Int = 1) async {
+        while preparationCount < count { await Task.yield() }
     }
 
     func releasePreparation() {
-        preparationContinuation?.resume(returning: url)
-        preparationContinuation = nil
+        preparationContinuations.forEach { $0.resume(returning: url) }
+        preparationContinuations.removeAll()
     }
 }
 

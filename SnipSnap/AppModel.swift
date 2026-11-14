@@ -95,9 +95,23 @@ final class AppModel: ObservableObject {
             case .editing(let edit), .saving(let edit): edit
             }
         }
+
+        mutating func updateEdit(_ update: (inout InlineEdit) -> Void) {
+            switch self {
+            case .closed:
+                return
+            case .editing(var edit):
+                update(&edit)
+                self = .editing(edit)
+            case .saving(var edit):
+                update(&edit)
+                self = .saving(edit)
+            }
+        }
     }
 
     @Published private var inlineEditor = InlineEditor.closed
+    private var pendingEditOpening: (snipID: UUID, request: UUID)?
     var editingID: UUID? { inlineEditor.edit?.snipID }
     var inlineEditSessionID: UUID? { inlineEditor.edit?.sessionID }
     var inlineEditAttachments: [URL] { inlineEditor.edit?.attachments ?? [] }
@@ -119,22 +133,14 @@ final class AppModel: ObservableObject {
         inlineEditor = .editing(edit)
     }
 
-    func removeInlineEditAttachment(_ url: URL) {
-        switch inlineEditor {
-        case .closed:
-            return
-        case .editing(var edit):
-            edit.attachments.removeAll { $0 == url }
-            inlineEditor = .editing(edit)
-        case .saving(var edit):
-            edit.attachments.removeAll { $0 == url }
-            inlineEditor = .saving(edit)
-        }
+    func removeInlineEditAttachment(_ url: URL, from sessionID: UUID) {
+        guard inlineEditSessionID == sessionID else { return }
+        inlineEditor.updateEdit { edit in edit.attachments.removeAll { $0 == url } }
     }
 
     /// Returns true only when this call saved and closed its own edit session.
-    func saveInlineEdit(content: String) async -> Bool {
-        guard case .editing(let edit) = inlineEditor else { return false }
+    func saveInlineEdit(content: String, in sessionID: UUID) async -> Bool {
+        guard case .editing(let edit) = inlineEditor, edit.sessionID == sessionID else { return false }
         inlineEditor = .saving(edit)
         let saved = await update(id: edit.snipID, content: content, attachmentURLs: edit.attachments)
         guard case .saving(let current) = inlineEditor, current.sessionID == edit.sessionID else {
@@ -149,6 +155,7 @@ final class AppModel: ObservableObject {
     }
 
     private func openInlineEdit(_ snip: Snip) {
+        pendingEditOpening = nil
         let originIndex = lists.firstIndex(where: { $0.id == snip.listID })
         inlineEditor = .editing(InlineEdit(
             sessionID: UUID(),
@@ -286,7 +293,6 @@ final class AppModel: ObservableObject {
 
     var displayedLists: [SnipList] {
         guard let origin = inlineEditor.edit?.origin,
-              snips.contains(where: { $0.id == editingID }),
               !lists.contains(where: { $0.id == origin.list.id }) else { return lists }
         var displayed = lists
         displayed.insert(origin.list, at: min(origin.index, displayed.count))
@@ -1520,20 +1526,10 @@ final class AppModel: ObservableObject {
         applySelection(.init(selection: Set(ids), anchor: ids.first, focus: ids.last))
     }
 
-    private struct InlineEditOpeningView: Equatable {
-        let isShowingClipboard: Bool
-        let isSearchExpanded: Bool
-        let query: String
-        let activeListID: UUID
-    }
-
-    private var inlineEditOpeningView: InlineEditOpeningView {
-        InlineEditOpeningView(
-            isShowingClipboard: isShowingClipboard,
-            isSearchExpanded: isSearchExpanded,
-            query: query,
-            activeListID: activeListID
-        )
+    private var inlineEditOpeningView: (
+        isShowingClipboard: Bool, isSearchExpanded: Bool, query: String, activeListID: UUID
+    ) {
+        (isShowingClipboard, isSearchExpanded, query, activeListID)
     }
 
     private var canOpenInlineEdit: Bool {
@@ -1547,25 +1543,42 @@ final class AppModel: ObservableObject {
         guard editingID == nil,
               canOpenInlineEdit,
               let snip = filteredSnips.first(where: { $0.id == id }) else { return false }
+        let request: UUID
+        if let pending = pendingEditOpening, pending.snipID == id {
+            request = pending.request
+        } else {
+            request = UUID()
+            pendingEditOpening = (snipID: id, request: request)
+        }
         let startingView = inlineEditOpeningView
         do {
             _ = try await prepareAttachments(snip.attachments, for: .open)
             return await withCommandLock {
                 if editingID == id { return true }
-                guard !isCLIInteractionReserved, editingID == nil,
+                guard pendingEditOpening?.request == request,
+                      !isCLIInteractionReserved, editingID == nil,
                       inlineEditOpeningView == startingView,
-                      canOpenInlineEdit,
                       let current = filteredSnips.first(where: { $0.id == id }),
-                      current.attachments == snip.attachments else { return false }
+                      current.attachments == snip.attachments else {
+                    endEditOpening(request)
+                    return false
+                }
                 openInlineEdit(current)
                 return true
             }
         } catch is CancellationError {
+            endEditOpening(request)
             return false
         } catch {
+            endEditOpening(request)
             presentError(error, operation: "attachment.prepare")
             return false
         }
+    }
+
+    private func endEditOpening(_ request: UUID) {
+        guard pendingEditOpening?.request == request else { return }
+        pendingEditOpening = nil
     }
 
     @discardableResult

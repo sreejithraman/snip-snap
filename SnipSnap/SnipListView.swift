@@ -538,6 +538,7 @@ struct SnipListView: View {
 
     private func snipCard(_ snip: Snip, snapshot: SnipListSnapshot) -> some View {
         let isEditing = model.editingID == snip.id
+        let session = isEditing ? model.inlineEditSessionID : nil
         return SnipCardRow(
             snip: snip,
             appearance: (model.lists.first { $0.id == snip.listID } ?? .inbox).accent,
@@ -553,11 +554,13 @@ struct SnipListView: View {
             onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
             onAddEditAttachments: { urls in
-                guard model.editingID == snip.id,
-                      let session = model.inlineEditSessionID else { return }
+                guard let session else { return }
                 model.addInlineEditAttachments(urls, to: session)
             },
-            onRemoveEditAttachment: { model.removeInlineEditAttachment($0) },
+            onRemoveEditAttachment: { url in
+                guard let session else { return }
+                model.removeInlineEditAttachment(url, from: session)
+            },
             onSelect: { select(snip.id) },
             onSelectForExpansion: { isPointerClick in
                 if isPointerClick {
@@ -578,8 +581,7 @@ struct SnipListView: View {
                 return await model.copySnipsAndMarkDoneNow([snip])
             },
             onChooseFiles: {
-                guard model.editingID == snip.id,
-                      let session = model.inlineEditSessionID else { return }
+                guard let session else { return }
                 requestFileImport(session)
             },
             onCaptureScreenArea: captureScreenAreaForEdit,
@@ -588,7 +590,8 @@ struct SnipListView: View {
                 focusedTarget = .list
             },
             onSaveEdit: { text in
-                guard await model.saveInlineEdit(content: text) else { return false }
+                guard let session,
+                      await model.saveInlineEdit(content: text, in: session) else { return false }
                 focusedTarget = model.isSearchExpanded
                     && model.filteredSnips.isEmpty
                     && model.clipboardSearchMatches.isEmpty
