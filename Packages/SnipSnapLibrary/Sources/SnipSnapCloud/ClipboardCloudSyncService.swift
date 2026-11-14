@@ -163,7 +163,8 @@ private struct ClipboardCloudUnwindingRun {
             }
             throw ClipboardCloudError.conflict
         } catch {
-            if isCurrentRun(run.id) { lastError = error.localizedDescription }
+            guard isCurrentRun(run.id) else { throw CancellationError() }
+            lastError = error.localizedDescription
             throw error
         }
     }
