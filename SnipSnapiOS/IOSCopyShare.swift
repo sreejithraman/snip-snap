@@ -87,15 +87,16 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
     private let pasteboard: UIPasteboard
     private let stagingRoot: URL
     private let fileManager: FileManager
-    private struct HeldLease {
-        let lease: IOSPasteboardFileLease
-        let changeCount: Int
+    private enum LeaseState {
+        case released
+        case held(IOSPasteboardFileLease, changeCount: Int)
     }
 
-    private var heldLease: HeldLease?
+    private var leaseState = LeaseState.released
 
     var activeLeaseDirectory: URL? {
-        heldLease?.lease.directory
+        guard case .held(let lease, _) = leaseState else { return nil }
+        return lease.directory
     }
 
     init(
@@ -161,7 +162,8 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
     }
 
     @objc private func pasteboardChanged() {
-        guard let heldLease, pasteboard.changeCount != heldLease.changeCount else { return }
+        guard case .held(_, let changeCount) = leaseState,
+              pasteboard.changeCount != changeCount else { return }
         releaseHeldLease()
     }
 
@@ -173,12 +175,12 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
     }
 
     private func hold(_ lease: IOSPasteboardFileLease, changeCount: Int) {
-        heldLease = HeldLease(lease: lease, changeCount: changeCount)
+        leaseState = .held(lease, changeCount: changeCount)
     }
 
     private func releaseHeldLease() {
-        heldLease?.lease.remove()
-        heldLease = nil
+        if case .held(let lease, _) = leaseState { lease.remove() }
+        leaseState = .released
     }
 
     private func restoreHeldLease() {
@@ -191,7 +193,7 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
                 continue
             }
             guard record.pasteboardName == pasteboard.name.rawValue else { continue }
-            if record.changeCount == pasteboard.changeCount, heldLease == nil {
+            if record.changeCount == pasteboard.changeCount, case .released = leaseState {
                 hold(
                     IOSPasteboardFileLease(directory: directory, fileManager: fileManager),
                     changeCount: record.changeCount
@@ -371,7 +373,7 @@ final class IOSCopyShareCoordinator {
     private(set) var unavailableFilesNotice: IOSUnavailableFilesNotice?
     private(set) var shareRequest: IOSShareRequest?
 
-    /// The share sheet can only clear the request it was given.
+    /// The share sheet can only clear the share request, never replace it.
     var shareSheetRequest: Binding<IOSShareRequest?> {
         Binding(
             get: { self.shareRequest },
