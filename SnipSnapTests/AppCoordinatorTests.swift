@@ -505,6 +505,46 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSnackbarDetailsActionClosesTheSnackbarBeforeOpeningDetails() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        let coordinator = AppCoordinator(
+            model: model, shortcutSettings: ShortcutSettings(defaults: defaults()),
+            isAccessibilityTrusted: { true }
+        )
+        let parent = SnipSnapPanel.make(
+            contentViewController: NSHostingController(rootView: Text("Panel")),
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(parent)
+        parent.makeKeyAndOrderFront(nil)
+        defer {
+            coordinator.dismissPanelDialog(id: .newList)
+            parent.orderOut(nil)
+        }
+        coordinator.presentPanelDialog(id: .newList, title: "New list", onDismiss: {}) {
+            Text("Dialog stays open")
+        }
+        model.presentError(SnipLibraryError.attachmentCopyFailed, operation: "clipboard.export")
+        let failure = try XCTUnwrap(model.latestFailure)
+        XCTAssertEqual(model.toast?.action, .showErrorDetails(failure.id))
+        let dialog = try XCTUnwrap(parent.childWindows?.first)
+        let accessibility = try MountedAccessibility(root: try XCTUnwrap(dialog.contentView))
+        let details = try await accessibility.button(identifier: "toast-action")
+
+        XCTAssertTrue(accessibility.press(details))
+
+        XCTAssertNil(model.toast, "The presenter must close the snackbar before its action runs.")
+        XCTAssertNil(model.errorDetails)
+        let detailsDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.errorDetails == nil, ContinuousClock.now < detailsDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.errorDetails?.id, failure.id)
+        XCTAssertEqual(model.dialogFailure?.id, failure.id)
+        XCTAssertNil(model.toast)
+    }
+
+    @MainActor
     func testMountedErrorDialogResetsCopyConfirmationForAReplacementIncident() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
         let coordinator = AppCoordinator(
@@ -583,7 +623,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         await model.reload()
         await model.setDoneAfterExternalDropNow(versions: [snip.id: snip.updatedAt])
         let undo = try XCTUnwrap(model.toast)
-        model.toast = nil
+        model.closeSnackbar(undo)
         let settings = ShortcutSettings(defaults: defaults)
         let coordinator = AppCoordinator(
             model: model,
