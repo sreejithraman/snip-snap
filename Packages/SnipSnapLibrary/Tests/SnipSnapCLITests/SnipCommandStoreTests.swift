@@ -480,8 +480,8 @@ final class SnipCommandStoreTests: XCTestCase {
     XCTAssertEqual(cancelled, .completed(receipt))
   }
 
-  func testCorruptMarkerWithoutReceiptSurfacesItsDecodeError() async throws {
-    for folder in ["Pending", "Processing"] {
+  func testCorruptMarkerFileSurfacesItsDecodeError() async throws {
+    for folder in ["Pending", "Processing", "Receipts"] {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: root) }
       let store = SnipCLIRequestStore(rootURL: root)
@@ -499,17 +499,38 @@ final class SnipCommandStoreTests: XCTestCase {
         _ = try await store.cancelPending(request.requestID)
         XCTFail("A corrupt \(folder) marker must not read as missing")
       } catch is DecodingError {}
-      if folder == "Processing" {
-        do {
-          _ = try await store.enqueue(request)
-          XCTFail("A corrupt processing marker must not admit the request again")
-        } catch is DecodingError {}
-      } else {
+      if folder == "Pending" {
         // Enqueue prunes unreadable pending files before it reads this request's markers.
         let queued = try await store.enqueue(request)
         XCTAssertEqual(queued, .pending)
+      } else {
+        // Pruning keeps undecodable receipts, so enqueue must read and reject this one.
+        do {
+          _ = try await store.enqueue(request)
+          XCTFail("A corrupt \(folder) marker must not admit the request again")
+        } catch is DecodingError {}
+        let pending = root.appendingPathComponent(
+          "Agent/Commands/Pending/\(request.requestID.uuidString).json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
       }
     }
+  }
+
+  func testProcessingMarkerHidesACorruptPendingRequestBesideIt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let request = SnipCLIRequest(action: .createList(name: "Groceries"))
+    _ = try await store.enqueue(request)
+    await store.processPending { _ in throw SnipCLIOutcomeUncertain() }
+    try Data("not json".utf8).write(to: root.appendingPathComponent(
+      "Agent/Commands/Pending/\(request.requestID.uuidString).json"))
+
+    // Enqueue would prune the corrupt pending file first, so only the plain readers run here.
+    let state = try await store.state(for: request.requestID)
+    let cancelled = try await store.cancelPending(request.requestID)
+    XCTAssertEqual(state, .uncertain)
+    XCTAssertEqual(cancelled, .uncertain)
   }
 
   func testHiddenReceiptFallsThroughToProcessingMarkerInCurrentScope() async throws {
