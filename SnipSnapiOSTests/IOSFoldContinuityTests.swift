@@ -7,9 +7,12 @@ import XCTest
 @testable import SnipSnapiOS
 
 /// Opening or closing an iPhone Duo, or resizing iPad Split View, swaps the compact and regular
-/// library trees. These tests host the real root view and swap its size class.
+/// library trees. These tests host the real root view and swap its size class. They run against
+/// the rail here and against the sidebar in `IOSFoldContinuitySidebarTests`.
 @MainActor
-final class IOSFoldContinuityTests: IOSModelTestCase {
+class IOSFoldContinuityTests: IOSModelTestCase {
+    class var regularLayout: RegularLibraryLayout { .rail }
+
     func testDraftTextAndAttachmentSurviveSizeClassSwaps() throws {
         let storage = makeComposerStorage()
         let attachment = try addInboxDraft("Fold draft", to: storage)
@@ -128,7 +131,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         model.searchText = "Gather"
         for sizeClass in [UIUserInterfaceSizeClass.regular, .compact, .regular] {
             root.swap(to: sizeClass)
-            // The regular layout's search field is not in this harness's view tree; the Duo UI test checks it.
+            // This harness checks only the compact search field; the Duo UI test checks the regular layouts'.
             if sizeClass == .compact {
                 let presented = root.wait("compact search field shows the query") { root.visibleSearchFieldTexts.contains("Gather") }
                 XCTAssertTrue(presented, root.searchFieldDiagnostics)
@@ -456,6 +459,10 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
     }
 }
 
+final class IOSFoldContinuitySidebarTests: IOSFoldContinuityTests {
+    override class var regularLayout: RegularLibraryLayout { .sidebar }
+}
+
 /// Stands in for creating the snip, and holds the save until the test finishes it.
 @MainActor
 private final class SaveGate {
@@ -496,10 +503,14 @@ private final class RootHarness {
     let session: IOSAppSession
     private let host: UIHostingController<IOSAppRootView>
     private let window: UIWindow
+    private let layout: RegularLibraryLayout
 
-    init(test: XCTestCase, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
+    init(test: IOSFoldContinuityTests, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
         session = IOSAppSession(library: library)
-        host = UIHostingController(rootView: IOSAppRootView(session: session, composerStorage: storage))
+        layout = type(of: test).regularLayout
+        host = UIHostingController(rootView: IOSAppRootView(
+            session: session, composerStorage: storage, regularLayout: layout
+        ))
         host.traitOverrides.horizontalSizeClass = .compact
         window = try makeWindow(host)
         test.addTeardownBlock { [window] in await MainActor.run { window.isHidden = true } }
@@ -532,7 +543,17 @@ private final class RootHarness {
         return "regular=\(isRegular) composers=\(composers) windowFrame=\(window.frame)"
     }
 
-    var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
+    var isRegular: Bool {
+        switch layout {
+        case .sidebar:
+            first(UISplitViewController.self, in: host) != nil
+        case .rail:
+            // The compact tree pages lists through `ListPagePanObserver`; the rail has none.
+            first(UISplitViewController.self, in: host) == nil
+                && first(UINavigationController.self, in: host) != nil
+                && allViews(ListPagePanObserver.AttachmentView.self).isEmpty
+        }
+    }
 
     /// A controller the root presents, such as a system picker, or one anywhere inside a presented container,
     /// as a full-screen cover nests its content.

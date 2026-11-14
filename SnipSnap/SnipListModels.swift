@@ -125,6 +125,192 @@ enum SnipListReorderPlan {
     }
 }
 
+/// The list's view of one snip drag, from its native session's start until
+/// the drop lands. Every event names its session, so a late callback from an
+/// earlier drag of the same snips cannot change a newer drag.
+@MainActor
+struct SnipListDrag {
+    struct Move: Equatable {
+        let ids: [UUID]
+        let listID: UUID
+        let beforeID: UUID?
+    }
+
+    enum Change: Equatable {
+        case none
+        case pendingOrderCleared
+        case pendingOrderChanged
+    }
+
+    enum Ending: Equatable {
+        case cleared
+        case clearedAfterExternalCopy(SnipDragPayload)
+        case committing(Move, pendingOrderChanged: Bool)
+        case settling
+    }
+
+    private struct Session {
+        let token: PanelDragSessionToken
+        let payload: SnipDragPayload
+        let listID: UUID
+    }
+
+    /// The list as it was when the drag began.
+    private struct Reorder {
+        let originalOrder: [UUID]
+        let rowFrames: [UUID: CGRect]
+        let scrollOffsetY: CGFloat
+    }
+
+    private enum Phase {
+        case idle
+        case dragging(Session, Reorder?, pendingOrder: [UUID]?)
+        /// The drop reordered the list; the move has not landed yet.
+        case committing(Session, pendingOrder: [UUID])
+        /// The snips left through a move; the row stays hidden briefly.
+        case settling(Session, pendingOrder: [UUID]?)
+
+        var session: Session? {
+            switch self {
+            case .idle: nil
+            case .dragging(let session, _, _),
+                 .committing(let session, _),
+                 .settling(let session, _):
+                session
+            }
+        }
+
+        var pendingOrder: [UUID]? {
+            switch self {
+            case .idle: nil
+            case .dragging(_, _, let order), .settling(_, let order): order
+            case .committing(_, let order): order
+            }
+        }
+    }
+
+    private var phase = Phase.idle
+
+    func isShowingGap(for snipID: UUID) -> Bool {
+        phase.session?.payload.ids.contains(snipID) == true
+    }
+
+    func pendingOrder(in listID: UUID) -> [UUID]? {
+        phase.session?.listID == listID ? phase.pendingOrder : nil
+    }
+
+    /// Pass `reorderingFrom` only when the list can be reordered.
+    mutating func begin(
+        _ token: PanelDragSessionToken,
+        payload: SnipDragPayload,
+        listID: UUID,
+        reorderingFrom orderedIDs: [UUID]?,
+        geometry: SnipListReorderGeometry
+    ) {
+        // A committed order stays on screen until its move lands.
+        let carriedOrder = phase.session?.listID == listID ? phase.pendingOrder : nil
+        phase = .dragging(
+            Session(token: token, payload: payload, listID: listID),
+            orderedIDs.map {
+                Reorder(
+                    originalOrder: $0,
+                    rowFrames: geometry.rowFrames,
+                    scrollOffsetY: geometry.scrollOffsetY
+                )
+            },
+            pendingOrder: carriedOrder
+        )
+    }
+
+    mutating func move(
+        _ token: PanelDragSessionToken,
+        to point: CGPoint,
+        geometry: SnipListReorderGeometry
+    ) -> Change {
+        guard case .dragging(let session, let reorder?, let pendingOrder) = phase,
+              session.token == token else { return .none }
+        guard geometry.listFrame.contains(point) else {
+            guard pendingOrder != nil else { return .none }
+            phase = .dragging(session, reorder, pendingOrder: nil)
+            return .pendingOrderCleared
+        }
+        let target = Self.target(at: point, session: session, reorder: reorder, geometry: geometry)
+        guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
+            from: reorder.originalOrder,
+            movingIDs: session.payload.ids,
+            target: target
+        ), reorderedIDs != pendingOrder else { return .none }
+        phase = .dragging(session, reorder, pendingOrder: reorderedIDs)
+        return .pendingOrderChanged
+    }
+
+    mutating func end(
+        _ token: PanelDragSessionToken,
+        outcome: PanelDragSessionOutcome,
+        at point: CGPoint,
+        geometry: SnipListReorderGeometry
+    ) -> Ending? {
+        guard case .dragging(let session, let reorder, let pendingOrder) = phase,
+              session.token == token else { return nil }
+        if let reorder, geometry.listFrame.contains(point) {
+            let target = Self.target(at: point, session: session, reorder: reorder, geometry: geometry)
+            guard let reorderedIDs = SnipListReorderPlan.orderedIDs(
+                from: reorder.originalOrder,
+                movingIDs: session.payload.ids,
+                target: target
+            ), reorderedIDs != reorder.originalOrder else {
+                phase = .idle
+                return .cleared
+            }
+            phase = .committing(session, pendingOrder: reorderedIDs)
+            return .committing(
+                Move(ids: session.payload.ids, listID: session.listID, beforeID: target.beforeID),
+                pendingOrderChanged: reorderedIDs != pendingOrder
+            )
+        }
+        switch outcome {
+        case .copy:
+            phase = .idle
+            return .clearedAfterExternalCopy(session.payload)
+        case .cancelled:
+            phase = .idle
+            return .cleared
+        case .move:
+            phase = .settling(session, pendingOrder: pendingOrder)
+            return .settling
+        }
+    }
+
+    /// Returns whether the drag cleared.
+    mutating func finishCommit(_ token: PanelDragSessionToken) -> Bool {
+        guard case .committing(let session, _) = phase, session.token == token else { return false }
+        phase = .idle
+        return true
+    }
+
+    /// Returns whether the drag cleared.
+    mutating func finishSettle(_ token: PanelDragSessionToken) -> Bool {
+        guard case .settling(let session, _) = phase, session.token == token else { return false }
+        phase = .idle
+        return true
+    }
+
+    private static func target(
+        at point: CGPoint,
+        session: Session,
+        reorder: Reorder,
+        geometry: SnipListReorderGeometry
+    ) -> SnipListReorderTarget {
+        SnipListReorderPlan.target(
+            atWindowY: point.y,
+            orderedIDs: reorder.originalOrder,
+            movingIDs: Set(session.payload.ids),
+            rowFrames: reorder.rowFrames.isEmpty ? geometry.rowFrames : reorder.rowFrames,
+            rowFrameOffsetY: geometry.scrollOffsetY - reorder.scrollOffsetY
+        )
+    }
+}
+
 enum AddedSnipRevealDestination: Equatable {
     case scrollViewTop
 }

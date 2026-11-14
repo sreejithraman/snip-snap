@@ -35,6 +35,7 @@ struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.prefersSideButtons) private var prefersSideButtons
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
@@ -150,7 +151,22 @@ struct CompactLibraryControls: View {
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
-            if !showsListTabs && !model.isSearchPresented {
+            if prefersSideButtons {
+                // Declaring Search right after Paste puts the two in one capsule, Paste on top,
+                // apart from the library actions.
+                ToolbarSpacer(.flexible, placement: .topBarTrailing)
+                    .sideButton()
+                if !model.isSearchPresented {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
+                            .disabled(isToolbarPasteDisabled)
+                            .accessibilityIdentifier("paste-to-clipboard")
+                    }
+                    .sideButton()
+                }
+                DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+                    .sideButton()
+            } else if !showsListTabs && !model.isSearchPresented {
                 // Paste draws its own glass circle because the system folds the Search item into
                 // the shared background of the item before it. Placing Search explicitly instead
                 // turns it into a full search field on iPad.
@@ -161,9 +177,7 @@ struct CompactLibraryControls: View {
                             .font(.system(size: 18))
                             .imageScale(.medium)
                     }
-                    // Paste and Save disables the composer while it saves, which would end
-                    // editing mid-sentence. Compact hides Paste while typing instead.
-                    .disabled(isPasteDisabled || isComposerFocused)
+                    .disabled(isToolbarPasteDisabled)
                     .accessibilityLabel(pasteLabel)
                     .accessibilityShowsLargeContentViewer {
                         Label(pasteLabel, systemImage: "doc.on.clipboard")
@@ -214,6 +228,10 @@ struct CompactLibraryControls: View {
 
     // Matches the system's glass circles in the navigation bar.
     private static let toolbarCircleLength: CGFloat = 44
+
+    // Paste and Save disables the composer while it saves, which would end
+    // editing mid-sentence. Compact hides Paste while typing instead.
+    private var isToolbarPasteDisabled: Bool { isPasteDisabled || isComposerFocused }
 
     private var navigationWidth: CGFloat { max(0, toolbarWidth - 32) }
 
