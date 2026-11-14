@@ -14,7 +14,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let transport = fixture.transport
         try await transport.start(state: nil)
         let ignored = fixture.recordID("ignored")
-        try await transport.start(
+        try await transport.startEngine(
             state: CloudEngineStateEnvelope(namespace: fixture.otherNamespace, serialization: Data()),
             initialOutbound: CloudOutboundBatch(operations: [.save(makeDraft(ignored, "ignored"))]),
             outboundAdmission: CloudRecordOutboundAdmission(blocksAll: true)
@@ -49,7 +49,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             .accountChange, .willFetchChanges, fixture.zoneFetched(0), .didFetchChanges,
             from: old
         )
-        let afterOldEvents = await transport.pendingEvent()
+        let afterOldEvents = await transport.headEvent()
         XCTAssertNil(afterOldEvents, "Events from the replaced engine must not queue work")
 
         await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: current)
@@ -103,7 +103,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
 
         let blocked = makeFixture()
         await blocked.transport.configureAutomaticSync(workAvailableHandler: {}, recordSendGate: {})
-        try await blocked.transport.start(
+        try await blocked.transport.startEngine(
             state: nil,
             initialOutbound: nil,
             outboundAdmission: CloudRecordOutboundAdmission(blocksAll: true)
@@ -136,11 +136,11 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             .stateUpdate(duringCycle),
             from: engine
         )
-        let beforeCycleEnds = await transport.pendingEvent()
+        let beforeCycleEnds = await transport.headEvent()
         XCTAssertNil(beforeCycleEnds, "A checkpoint during a cycle waits for that cycle's batch")
 
         await transport.emit(fixture.zoneFetched(0), .didFetchChanges, from: engine)
-        let head = await transport.pendingEvent()
+        let head = await transport.headEvent()
         let batch = try XCTUnwrap(head?.fetchedBatch)
         XCTAssertEqual(batch.items.map(\.id), [changedID, deletedID])
         guard case .record(let snapshot)? = batch.items.first else {
@@ -159,10 +159,10 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
 
         let afterCycle = Data("after-cycle".utf8)
         await transport.emit(.stateUpdate(afterCycle), from: engine)
-        let stillHead = await transport.pendingEvent()
+        let stillHead = await transport.headEvent()
         XCTAssertEqual(stillHead?.id, batch.id)
         try await transport.confirmApplied(batch.id)
-        let next = await transport.pendingEvent()
+        let next = await transport.headEvent()
         XCTAssertEqual(
             next?.checkpointState,
             CloudEngineStateEnvelope(
@@ -325,7 +325,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
 
         let scoped = try await transport.fetch(scope: .zones([zoneA, zoneC]))
         XCTAssertEqual(engine.fetchOptions.map(\.scope), [.zoneIDs([CloudKitRecordMapper.zoneID(for: zoneA)])])
-        let queued = await transport.pendingEvent()
+        let queued = await transport.headEvent()
         XCTAssertEqual(queued?.id, scoped.id)
         XCTAssertEqual(scoped.items.map(\.id), [fetchedID])
         XCTAssertEqual(scoped.zoneEvents, [.fetched(zoneA)])
@@ -343,7 +343,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let engine = try fixture.engine(0)
 
         let first = try await transport.fetch(scope: .all)
-        let queued = await transport.pendingEvent()
+        let queued = await transport.headEvent()
         XCTAssertEqual(queued?.fetchedBatch, first)
         XCTAssertTrue(first.isInitialFetch)
         XCTAssertTrue(first.items.isEmpty)
@@ -372,7 +372,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let fetched = try await transport.fetch(scope: .all)
         XCTAssertEqual(fetched.databaseEvents, [.failed(nil, .networkUnavailable)])
         XCTAssertTrue(fetched.isInitialFetch)
-        let queuedFetch = await transport.pendingEvent()
+        let queuedFetch = await transport.headEvent()
         XCTAssertEqual(queuedFetch?.id, fetched.id)
         try await transport.confirmApplied(fetched.id)
 
@@ -380,7 +380,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let sent = try await transport.send(CloudOutboundBatch(operations: [.save(makeDraft(id, "body"))]))
         XCTAssertEqual(sent.databaseEvents, [.failed(nil, .iCloudUnavailable)])
         XCTAssertTrue(sent.items.isEmpty)
-        let queuedSend = await transport.pendingEvent()
+        let queuedSend = await transport.headEvent()
         XCTAssertEqual(queuedSend?.id, sent.id)
     }
 
@@ -448,7 +448,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             return XCTFail("Expected the supplied record to be saved")
         }
         XCTAssertEqual(snapshotText(snapshot), "keep me")
-        let queued = await transport.pendingEvent()
+        let queued = await transport.headEvent()
         XCTAssertEqual(queued?.sentBatch, sent)
     }
 
@@ -461,7 +461,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let engine = try fixture.engine(0)
         let before = Data("before-first-fetch".utf8)
         await transport.emit(.stateUpdate(before), from: engine)
-        let early = await transport.pendingEvent()
+        let early = await transport.headEvent()
         XCTAssertEqual(
             early?.checkpointState,
             CloudEngineStateEnvelope(namespace: fixture.namespace, serialization: before, requiresInitialFetch: true)
@@ -478,7 +478,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertNil(beforeFetch, "The first fetch has not run")
 
         await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
-        let head = await transport.pendingEvent()
+        let head = await transport.headEvent()
         let initial = try XCTUnwrap(head?.fetchedBatch)
         XCTAssertTrue(initial.isInitialFetch)
         XCTAssertNil(initial.engineState, "The send cycle is still running")
@@ -490,7 +490,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(afterConfirm?.recordsToSave.map(\.recordID), [recordID])
 
         await transport.emit(sentRecords(afterConfirm?.recordsToSave ?? []), .didSendChanges, from: engine)
-        let sentHead = await transport.pendingEvent()
+        let sentHead = await transport.headEvent()
         let sent = try XCTUnwrap(sentHead?.sentBatch)
         XCTAssertEqual(sent.items.map(\.id), [id])
         XCTAssertEqual(
@@ -500,7 +500,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         try await transport.confirmApplied(sent.id)
         let after = Data("after-first-fetch".utf8)
         await transport.emit(.stateUpdate(after), from: engine)
-        let late = await transport.pendingEvent()
+        let late = await transport.headEvent()
         XCTAssertEqual(
             late?.checkpointState,
             CloudEngineStateEnvelope(namespace: fixture.namespace, serialization: after, requiresInitialFetch: false)
@@ -599,15 +599,15 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             .accountChange, .willFetchChanges, fixture.zoneFetched(0), .didFetchChanges,
             from: engine
         )
-        let queued = await transport.pendingEvent()
+        let queued = await transport.headEvent()
         XCTAssertEqual(queued?.isAccountChange, true)
 
         await transport.reset()
-        let afterReset = await transport.pendingEvent()
+        let afterReset = await transport.headEvent()
         XCTAssertNil(afterReset)
 
         try await transport.start(state: nil)
-        let afterRestart = await transport.pendingEvent()
+        let afterRestart = await transport.headEvent()
         XCTAssertNil(afterRestart)
         let fetched = try await transport.fetch(scope: .all)
         XCTAssertTrue(fetched.isInitialFetch)
@@ -837,6 +837,20 @@ private func makeFixture(
 }
 
 private extension CloudKitRecordTransport {
+    /// Reaches the transport's own method; async callers bind to CloudRecordTransport's nil default.
+    func headEvent() -> CloudRecordTransportEvent? {
+        pendingEvent()
+    }
+
+    /// Reaches the transport's own method; async callers bind to a default that drops the admission.
+    func startEngine(
+        state: CloudEngineStateEnvelope?,
+        initialOutbound: CloudOutboundBatch?,
+        outboundAdmission: CloudRecordOutboundAdmission
+    ) throws {
+        try start(state: state, initialOutbound: initialOutbound, outboundAdmission: outboundAdmission)
+    }
+
     func emit(_ events: CloudKitRecordEngineEvent..., from engine: any CloudKitRecordEngine) {
         for event in events {
             handle(event, from: engine)
@@ -847,7 +861,7 @@ private extension CloudKitRecordTransport {
     @discardableResult
     func confirmAllEvents() async throws -> [CloudRecordTransportEvent] {
         var confirmed: [CloudRecordTransportEvent] = []
-        while let event = pendingEvent(), confirmed.count < 32 {
+        while let event = headEvent(), confirmed.count < 32 {
             try await confirmApplied(event.id)
             confirmed.append(event)
         }
