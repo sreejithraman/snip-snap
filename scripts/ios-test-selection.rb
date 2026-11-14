@@ -41,6 +41,7 @@ module IOSTestSelection
         testCreatesListMovesSnipAndDeletesIt
         testRegularSidebarNewListMeetsTouchTargetMinimum
         testRailShowsListNamesAcrossRelaunchUntilToggledBack
+        testRailEdgeDragsResizeAndIgnoresVerticalDrags
       ]
     },
     'undo' => {
