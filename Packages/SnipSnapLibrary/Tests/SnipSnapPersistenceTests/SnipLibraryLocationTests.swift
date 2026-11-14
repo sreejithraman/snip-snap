@@ -38,7 +38,7 @@ final class SnipLibraryLocationTests: XCTestCase {
     XCTAssertEqual(adopted, appContainer)
     XCTAssertFalse(exists(appGroup.storeURL.deletingLastPathComponent()))
     XCTAssertFalse(exists(appGroup.syncModeRootURL))
-    XCTAssertEqual(try readMarker("activation", in: appContainer.syncModeRootURL), "activation")
+    XCTAssertEqual(try readMarker(in: appContainer.syncModeRootURL), "activation")
     let reopened = try SwiftDataSnipLibrary(storeURL: appContainer.storeURL)
     let snapshot = try await reopened.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Work"])
@@ -52,7 +52,7 @@ final class SnipLibraryLocationTests: XCTestCase {
     XCTAssertEqual(appContainer.adopt(from: appGroup, diagnostics: diagnostics), appContainer)
 
     XCTAssertFalse(exists(appGroup.syncModeRootURL))
-    XCTAssertEqual(try readMarker("activation", in: appContainer.syncModeRootURL), "activation")
+    XCTAssertEqual(try readMarker(in: appContainer.syncModeRootURL), "activation")
     let snapshot = try await SwiftDataSnipLibrary(storeURL: appContainer.storeURL)
       .checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Work"])
@@ -93,7 +93,7 @@ final class SnipLibraryLocationTests: XCTestCase {
     XCTAssertEqual(adopted.storeURL, appContainer.storeURL)
     XCTAssertEqual(adopted.syncModeRootURL, appGroup.syncModeRootURL)
     XCTAssertFalse(exists(appContainer.syncModeRootURL))
-    XCTAssertEqual(try readMarker("activation", in: adopted.syncModeRootURL), "activation")
+    XCTAssertEqual(try readMarker(in: adopted.syncModeRootURL), "activation")
     let snapshot = try await SwiftDataSnipLibrary(storeURL: adopted.storeURL)
       .checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Work"])
@@ -118,7 +118,7 @@ final class SnipLibraryLocationTests: XCTestCase {
     try Data(text.utf8).write(to: directory.appendingPathComponent("marker.txt"))
   }
 
-  private func readMarker(_ text: String, in directory: URL) throws -> String {
+  private func readMarker(in directory: URL) throws -> String {
     String(decoding: try Data(contentsOf: directory.appendingPathComponent("marker.txt")), as: UTF8.self)
   }
 }
