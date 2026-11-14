@@ -623,6 +623,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         // Mostly vertical, with enough sideways travel to expand the rail if it were taken as a resize.
         dragFromColumnEdge(by: CGVector(dx: 80, dy: 240))
+        XCTAssertLessThan(clipboard.frame.width, 80, "A vertical drag on the rail's edge must not resize it.")
         let resized = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in clipboard.frame.width >= 80 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 1), .timedOut,

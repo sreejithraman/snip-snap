@@ -208,7 +208,7 @@ struct LibraryRailView: View {
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
     @State private var stripDrag: StripDrag?
-    @GestureState private var isResizing = false
+    @GestureState private var isDraggingStrip = false
     private let newListStyle = NewListButtonStyle.current
 
     init(model: IOSAppModel, sheet: Binding<AppSheet?>, deleteList: @escaping (UUID) async -> Void) {
@@ -311,7 +311,7 @@ struct LibraryRailView: View {
             resizeHandle
                 .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.trailing] - Self.handleOverhang }
         }
-        .onChange(of: isResizing) { _, isActive in
+        .onChange(of: isDraggingStrip) { _, isActive in
             // A canceled drag never ends, so a resize settles where it stopped.
             guard !isActive else { return }
             if let dragTravel {
@@ -378,7 +378,7 @@ struct LibraryRailView: View {
     private var resizeGesture: some Gesture {
         // Global, because the strip moves with the edge it drags.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
-            .updating($isResizing) { _, isActive, _ in isActive = true }
+            .updating($isDraggingStrip) { _, isActive, _ in isActive = true }
             .onChanged { value in
                 guard stripDrag != .ignored else { return }
                 let translation = value.translation
