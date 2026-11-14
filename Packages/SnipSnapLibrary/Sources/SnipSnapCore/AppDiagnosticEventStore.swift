@@ -254,7 +254,7 @@ final class AppDiagnosticEventStore: @unchecked Sendable {
       throw AppDiagnosticAccessError.busy
     }
     defer { admission.release() }
-    // Extra execution time for the share extension; it cannot prevent suspension.
+    // Extra execution time on iOS; it cannot prevent suspension on its own.
     let activity: FileAccessBackgroundActivity?
     do {
       activity = try FileAccessBackgroundActivity.begin(runner: backgroundActivityRunner, trace: trace)

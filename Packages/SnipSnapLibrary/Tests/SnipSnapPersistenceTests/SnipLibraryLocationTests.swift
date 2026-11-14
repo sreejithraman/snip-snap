@@ -45,6 +45,31 @@ final class SnipLibraryLocationTests: XCTestCase {
     XCTAssertEqual(events, [])
   }
 
+  func testAdoptingKeepsAnActivatedICloudLibraryUsable() async throws {
+    let namespace = ICloudSyncNamespaceBinding(scope: "private", accountLineage: "test-account",
+      generation: UUID(), zones: [.init(name: "test-zone", ownerName: "test-owner")])
+    let activeStore: SyncModeStore
+    do {
+      let original = try SwiftDataSyncModePersistence(rootURL: appGroup.syncModeRootURL)
+      try await original.activateEmptyCollection(namespace: namespace)
+      _ = try await original.activeLibrary().perform(.add(content: "Synced", origin: .agent,
+        source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()),
+        sortedBy: .manual)
+      activeStore = try await original.snapshot().activeStore
+    }
+
+    XCTAssertEqual(appContainer.adopt(from: appGroup, diagnostics: diagnostics), appContainer)
+
+    XCTAssertFalse(exists(appGroup.syncModeRootURL))
+    let reopened = try SwiftDataSyncModePersistence(rootURL: appContainer.syncModeRootURL)
+    let reopenedStore = try await reopened.snapshot().activeStore
+    XCTAssertEqual(reopenedStore, activeStore)
+    XCTAssertEqual(reopenedStore.namespace, namespace)
+    let snips = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual).snips
+    XCTAssertEqual(snips.map(\.content), ["Synced"])
+    XCTAssertEqual(events, [])
+  }
+
   func testAdoptionResumesAfterAnInterruptedMove() async throws {
     try await createList("Work", at: appContainer)
     try writeMarker("activation", in: appGroup.syncModeRootURL)

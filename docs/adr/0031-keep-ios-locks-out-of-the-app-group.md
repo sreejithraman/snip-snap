@@ -23,7 +23,8 @@ An older build installed after the move does not see the moved library.
 
 The app and Share extension share one diagnostic history in the App Group and
 serialize it with `flock`. A process-wide gate admits that lock. The iOS app
-closes the gate at launch and opens it when UIKit reports the app active. On
+closes the gate at launch and opens it when UIKit reports that the app is
+entering the foreground or is active. On
 entering the background, it starts a UIKit background task inside that
 callback, closes the gate, and ends the task once current holders unlock.
 Events recorded while the gate is closed wait in the writer's bounded queue.
