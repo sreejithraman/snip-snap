@@ -10,7 +10,7 @@ public struct SavedSnipsSessionState: Sendable {
     }
 }
 
-public struct SavedSnipsImportPreview: Sendable {
+public struct SavedSnipsImportPreview: Equatable, Sendable {
     public let id: UUID
     public let value: SnipImportPreview
 
@@ -48,15 +48,25 @@ public actor SavedSnipsSession {
         let snips: [Snip]
     }
 
+    private enum ImportPreviewPhase {
+        case none
+        case previewing(UUID)
+        case pending(SavedSnipsImportPreview)
+    }
+
+    private enum ExclusiveAccess {
+        case available
+        case held(waiters: [CheckedContinuation<Void, Never>])
+    }
+
     private var library: any SnipLibrary
     private var userActions: any SnipLibraryUserActions
     private let userActionsFactory: SnipLibraryUserActionsFactory
     private var recoveryScope: SnipRecoveryScope?
-    private var pendingImportPreview: SavedSnipsImportPreview?
+    private var importPreview: ImportPreviewPhase = .none
     private var pendingDeletionToken: UUID?
     private var pendingDoneUndo: PendingDoneUndo?
-    private var isLocked = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var exclusiveAccess: ExclusiveAccess = .available
 
     public init(
         library: any SnipLibrary,
@@ -101,7 +111,7 @@ public actor SavedSnipsSession {
         self.library = library
         userActions = userActionsFactory(library)
         self.recoveryScope = recoveryScope
-        pendingImportPreview = nil
+        importPreview = .none
         return await state(sortedBy: sortMode)
     }
 
@@ -302,27 +312,40 @@ public actor SavedSnipsSession {
         return await state(sortedBy: sortMode)
     }
 
+    /// Throws `CancellationError` when the library is replaced or a newer preview starts first.
     public func previewImport(from url: URL) async throws -> SavedSnipsImportPreview {
-        pendingImportPreview = nil
-        let preview = SavedSnipsImportPreview(
-            id: UUID(),
-            value: try await userActions.previewImport(backupURL: url)
-        )
-        pendingImportPreview = preview
+        let id = UUID()
+        importPreview = .previewing(id)
+        let value: SnipImportPreview
+        do {
+            value = try await userActions.previewImport(backupURL: url)
+        } catch {
+            if isPreviewing(id) { importPreview = .none }
+            throw error
+        }
+        guard isPreviewing(id) else { throw CancellationError() }
+        let preview = SavedSnipsImportPreview(id: id, value: value)
+        importPreview = .pending(preview)
         return preview
     }
 
-    public func cancelImport(id: UUID) {
-        guard pendingImportPreview?.id == id else { return }
-        pendingImportPreview = nil
+    public func hasPendingImport(id: UUID) -> Bool {
+        pendingImport(id: id) != nil
+    }
+
+    @discardableResult
+    public func cancelImport(id: UUID) -> Bool {
+        guard hasPendingImport(id: id) else { return false }
+        importPreview = .none
+        return true
     }
 
     public func applyPendingImport(
         id: UUID,
         sortedBy sortMode: SnipSortMode
     ) async throws -> (SnipImportResult, SnipRecoverySnapshot)? {
-        guard let preview = pendingImportPreview, preview.id == id else { return nil }
-        pendingImportPreview = nil
+        guard let preview = pendingImport(id: id) else { return nil }
+        importPreview = .none
         let result = try await userActions.applyImport(preview.value, sortedBy: sortMode)
         pendingDeletionToken = nil
         pendingDoneUndo = nil
@@ -335,19 +358,31 @@ public actor SavedSnipsSession {
         await userActions.discardDeletion(token: token, sortedBy: sortMode)
     }
 
+    private func isPreviewing(_ id: UUID) -> Bool {
+        guard case .previewing(let current) = importPreview else { return false }
+        return current == id
+    }
+
+    private func pendingImport(id: UUID) -> SavedSnipsImportPreview? {
+        guard case .pending(let preview) = importPreview, preview.id == id else { return nil }
+        return preview
+    }
+
     private func acquire() async {
-        guard isLocked else {
-            isLocked = true
+        guard case .held(let waiters) = exclusiveAccess else {
+            exclusiveAccess = .held(waiters: [])
             return
         }
-        await withCheckedContinuation { waiters.append($0) }
+        await withCheckedContinuation { exclusiveAccess = .held(waiters: waiters + [$0]) }
     }
 
     private func release() {
-        guard !waiters.isEmpty else {
-            isLocked = false
+        guard case .held(var waiters) = exclusiveAccess, !waiters.isEmpty else {
+            exclusiveAccess = .available
             return
         }
-        waiters.removeFirst().resume()
+        let next = waiters.removeFirst()
+        exclusiveAccess = .held(waiters: waiters)
+        next.resume()
     }
 }

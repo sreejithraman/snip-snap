@@ -18,46 +18,32 @@ extension AppModel {
                 let url = URL(fileURLWithPath: path)
                 let didAccess = url.startAccessingSecurityScopedResource()
                 defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-                do {
-                    let preview = try await session.previewImport(from: url)
-                    cliImportPreviewID = preview.id
-                    return cliDataReceipt(request, result: .init(importPreview: .init(preview)))
-                } catch {
-                    cliImportPreviewID = nil
-                    throw error
-                }
+                let preview = try await session.previewImport(from: url)
+                return cliDataReceipt(request, result: .init(importPreview: .init(preview)))
             }
 
         case .cancelBackup(let previewID):
             return try await cliDataLocked(request) {
-                guard cliImportPreviewID == previewID else { throw SnipLibraryError.importChanged }
-                await session.cancelImport(id: previewID)
-                cliImportPreviewID = nil
+                guard await session.cancelImport(id: previewID) else { throw SnipLibraryError.importChanged }
                 return cliDataReceipt(request, result: .init(), message: "Cancelled backup preview.")
             }
 
         case .importBackup(let previewID):
             return try await performCLIMutation(scopeToken: request.scopeToken) {
                 guard editingID == nil else { throw SnipCLIRequestError.editingInProgress }
-                guard cliImportPreviewID == previewID else { throw SnipLibraryError.importChanged }
+                guard await session.hasPendingImport(id: previewID) else { throw SnipLibraryError.importChanged }
                 guard composerDrafts.draftListIDs().allSatisfy({
                     let draft = composerDrafts.draft(for: $0)
                     return draft.text.isEmpty && draft.attachments.isEmpty
                 }) else { throw SnipCLIRequestError.draftInProgress }
-                do {
-                    guard let (result, recovery) = try await session.applyPendingImport(
-                        id: previewID, sortedBy: sortMode
-                    ) else { throw SnipLibraryError.importChanged }
-                    cliImportPreviewID = nil
-                    recoverySnapshot = recovery
-                    let receipt = cliDataReceipt(request, result: .init(
-                        addedSnipCount: result.addedSnipCount,
-                        recoveredSnipCount: result.recoveredSnipCount), message: "Imported backup.")
-                    return (SnipLibraryUpdate(snapshot: result.snapshot, outcome: .none), receipt)
-                } catch {
-                    cliImportPreviewID = nil
-                    throw error
-                }
+                guard let (result, recovery) = try await session.applyPendingImport(
+                    id: previewID, sortedBy: sortMode
+                ) else { throw SnipLibraryError.importChanged }
+                recoverySnapshot = recovery
+                let receipt = cliDataReceipt(request, result: .init(
+                    addedSnipCount: result.addedSnipCount,
+                    recoveredSnipCount: result.recoveredSnipCount), message: "Imported backup.")
+                return (SnipLibraryUpdate(snapshot: result.snapshot, outcome: .none), receipt)
             }
 
         case .listRecovery:

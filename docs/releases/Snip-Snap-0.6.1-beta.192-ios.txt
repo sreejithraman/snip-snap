@@ -1,0 +1,7 @@
+Snip Snap 0.6.1 Beta 192 — iOS
+
+- Stop a leftover iCloud enable marker from silently re-running setup
+- Clear a pending iCloud enable when iCloud sync is turned off
+- Move the Share extension to a published state after saving
+- Show lists as an icon rail beside a page card on the open iPhone Duo
+- Clear a leftover iCloud enable marker without re-running setup

@@ -128,6 +128,19 @@ SIMCTL_CHILD_SNIP_SNAP_UI_TEST_LONG_LIST=1 \
   simlock simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID"
 ```
 
+Use `SIMCTL_CHILD_SNIP_SNAP_UI_TEST_RAIL_LISTS=1` instead to seed five lists
+that show the rail's letter marks, colors, and a custom icon.
+
+Debug builds also read these Try switches at launch, again with the
+`SIMCTL_CHILD_` prefix. Release builds ignore them.
+
+- `SNIP_SNAP_REGULAR_LAYOUT=rail|sidebar` picks the regular-width layout, for
+  example to preview the rail on iPad.
+- `SNIP_SNAP_NEW_LIST_BUTTON=roundPlus|roundCompose|inlinePlus|inlineStackBadgePlus`
+  picks the rail's New List button.
+- `SNIP_SNAP_RAIL_LIST_MARK=letters|icons` picks how the rail marks lists that
+  still have a default icon.
+
 `BUNDLE_ID` is the `Bundle:` line the runner prints. Keyboard input does not
 reach iOS 27 guests through SimLock, so `agent-device fill` cannot type.
 
@@ -374,9 +387,10 @@ global services.
 
 Existing conditional tests have these preconditions:
 
-- Compact-library and compact-selector tests require a compact window. Large
-  iPhones can use the sidebar layout in landscape. The sidebar test
-  `testClipboardHidesSavedListActionsOnIPad` requires regular-width iPad.
+- Compact-library and compact-selector tests require a compact window. In a
+  regular-width window, iPad uses the sidebar layout, and iPhones (the open
+  iPhone Duo, or a large iPhone in landscape) use the icon rail.
+  `testClipboardHidesSavedListActionsOnIPad` requires either one.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one
   image in the selected Simulator's Photos library. They declare a skip when

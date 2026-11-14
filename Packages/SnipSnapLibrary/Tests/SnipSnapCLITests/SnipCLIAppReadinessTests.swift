@@ -154,4 +154,68 @@ final class SnipCLIAppReadinessTests: XCTestCase {
     let admitted = try await secondApp.state(for: request.requestID)
     XCTAssertEqual(admitted, .pending)
   }
+
+  func testEndingBeforeAnyAppSessionBlocksSessionsButKeepsPlainScopePublication() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    try await store.endAppSession()
+    do {
+      try await store.beginAppSession(instance(launchedAt: 10))
+      XCTFail("An ended store must not begin an app session.")
+    } catch SnipCLIAppReadinessError.unavailable {}
+    try await store.publishActiveScopeToken("local")
+    let scope = try await store.activeScopeToken()
+    XCTAssertEqual(scope, "local")
+    let ready = try await store.appReadiness()
+    XCTAssertNil(ready)
+    let revision = try await store.beginReadinessCheck()
+    let published = try await store.publishActiveScopeToken("next", ifUnchangedSince: revision)
+    XCTAssertFalse(published)
+    let suspended = try await store.activeScopeToken()
+    XCTAssertNil(suspended)
+  }
+
+  func testEndedAppSessionCannotPublishOrSuspendItsLastScope() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let app = instance(launchedAt: 10)
+    try await store.beginAppSession(app)
+    try await store.publishActiveScopeToken("local")
+    try await store.endAppSession()
+    do {
+      try await store.publishActiveScopeToken("later")
+      XCTFail("An ended app session must not publish availability.")
+    } catch SnipCLIAppReadinessError.unavailable {}
+    try await store.suspendActiveScope()
+    let revision = try await store.beginReadinessCheck()
+    let published = try await store.publishActiveScopeToken("later", ifUnchangedSince: revision)
+    XCTAssertFalse(published)
+    let scope = try await store.activeScopeToken()
+    XCTAssertEqual(scope, "local", "Termination preserves receipt lookup in the last library.")
+    let ready = try await store.appReadiness()
+    XCTAssertNil(ready)
+    do {
+      try await store.beginAppSession(app)
+      XCTFail("An ended app session cannot begin again.")
+    } catch SnipCLIAppReadinessError.unavailable {}
+  }
+
+  func testRepeatedAppSessionStartAdoptsTheLatestInstance() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    try await store.beginAppSession(instance(launchedAt: 10))
+    let latest = instance(launchedAt: 20)
+    try await store.beginAppSession(latest)
+    try await store.publishActiveScopeToken("local")
+    let ready = try await store.appReadiness()
+    XCTAssertEqual(ready, SnipCLIAppReadiness(instance: latest, scopeToken: "local"))
+  }
+
+  private func instance(launchedAt seconds: TimeInterval) -> SnipCLIAppInstance {
+    SnipCLIAppInstance(pid: 123, launchDate: Date(timeIntervalSince1970: seconds),
+                       applicationURL: URL(fileURLWithPath: "/tmp/Example.app"))
+  }
 }
