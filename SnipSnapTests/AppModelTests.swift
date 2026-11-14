@@ -2924,6 +2924,41 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSupersededEditOpeningStaysClosedAfterTheLaterEditEnds() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("superseded-edit.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Edit me first",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let a = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(a.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let b = Snip(content: "Text only", origin: .quickEntry)
+        let handler = GatedMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [a, b]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let pendingA = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts()
+        let openedB = await model.beginEditing(b.id)
+        XCTAssertTrue(openedB)
+        model.cancelEditing()
+        await handler.releasePreparation()
+
+        let openedA = await pendingA.value
+        XCTAssertFalse(openedA)
+        XCTAssertNil(model.editingID)
+    }
+
+    @MainActor
     func testCopyingTextOnlyDoesNotCallCloudHandler() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await library.add(content: "Text only", origin: .quickEntry)
