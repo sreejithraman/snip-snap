@@ -102,7 +102,8 @@ struct ContentView: View {
             }
         }
         .appToast(
-            $model.toast,
+            showing: model.toast,
+            close: model.closeSnackbar,
             alignment: .bottom,
             edge: .bottom,
             isHidden: panelDialogs.isPresented,

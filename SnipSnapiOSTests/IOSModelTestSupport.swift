@@ -38,6 +38,13 @@ class IOSModelTestCase: XCTestCase {
     }
 }
 
+extension IOSAppModel {
+    /// Presents an unrelated dialog failure without recording diagnostics.
+    func presentDialogFailure(_ message: String) {
+        presentFailure(AppFailure(message: message, operation: "app.user_action", diagnosticCode: "presentation.message"))
+    }
+}
+
 /// Readiness waits for work a test started. Cold CI simulators can stall for tens of seconds, so the
 /// bound holds there; a met condition returns at once, and only broken behavior waits the full bound.
 enum TestReadiness {
