@@ -166,6 +166,228 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRepeatedMoveOutDragSurvivesTheEarlierDragsSettleDelay() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let first = PanelDragSessionToken()
+        let second = PanelDragSessionToken()
+
+        fixture.begin(first, on: &drag)
+        XCTAssertEqual(
+            drag.end(first, outcome: .move, at: fixture.outsideList, geometry: fixture.geometry),
+            .settling
+        )
+        fixture.begin(second, on: &drag)
+
+        XCTAssertFalse(drag.finishSettle(first))
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+        XCTAssertEqual(
+            drag.move(second, to: fixture.aboveFirstRow, geometry: fixture.geometry),
+            .pendingOrderChanged
+        )
+        XCTAssertEqual(drag.pendingOrder(in: fixture.listID), fixture.movedToTop)
+        XCTAssertEqual(
+            drag.end(second, outcome: .move, at: fixture.aboveFirstRow, geometry: fixture.geometry),
+            .committing(fixture.moveToTop, pendingOrderChanged: false)
+        )
+        XCTAssertTrue(drag.finishCommit(second))
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+    }
+
+    @MainActor
+    func testRepeatedReorderSurvivesTheEarlierDragsMoveLanding() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let first = PanelDragSessionToken()
+        let second = PanelDragSessionToken()
+
+        fixture.begin(first, on: &drag)
+        _ = drag.move(first, to: fixture.aboveFirstRow, geometry: fixture.geometry)
+        XCTAssertEqual(
+            drag.end(first, outcome: .move, at: fixture.aboveFirstRow, geometry: fixture.geometry),
+            .committing(fixture.moveToTop, pendingOrderChanged: false)
+        )
+        fixture.begin(second, from: fixture.movedToTop, on: &drag)
+        XCTAssertEqual(
+            drag.move(second, to: fixture.belowLastRow, geometry: fixture.geometry),
+            .pendingOrderChanged
+        )
+        let moveToEnd = SnipListDrag.Move(ids: [fixture.moving], listID: fixture.listID, beforeID: nil)
+        XCTAssertEqual(
+            drag.end(second, outcome: .move, at: fixture.belowLastRow, geometry: fixture.geometry),
+            .committing(moveToEnd, pendingOrderChanged: false)
+        )
+
+        XCTAssertFalse(drag.finishCommit(first))
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+        XCTAssertEqual(drag.pendingOrder(in: fixture.listID), fixture.ids)
+        XCTAssertTrue(drag.finishCommit(second))
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+    }
+
+    @MainActor
+    func testCommittedOrderStaysVisibleWhenTheNextDragBeginsBeforeTheMoveLands() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let first = PanelDragSessionToken()
+
+        fixture.begin(first, on: &drag)
+        _ = drag.end(first, outcome: .move, at: fixture.aboveFirstRow, geometry: fixture.geometry)
+        fixture.begin(PanelDragSessionToken(), from: fixture.movedToTop, on: &drag)
+
+        XCTAssertEqual(drag.pendingOrder(in: fixture.listID), fixture.movedToTop)
+        XCTAssertNil(drag.pendingOrder(in: UUID()))
+    }
+
+    @MainActor
+    func testExternalCopyDropAsksForDoneAndClipboardThenClears() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        fixture.begin(token, on: &drag)
+        _ = drag.move(token, to: fixture.aboveFirstRow, geometry: fixture.geometry)
+        _ = drag.move(token, to: fixture.outsideList, geometry: fixture.geometry)
+
+        XCTAssertEqual(
+            drag.end(token, outcome: .copy, at: fixture.outsideList, geometry: fixture.geometry),
+            .clearedAfterExternalCopy(fixture.payload)
+        )
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+    }
+
+    @MainActor
+    func testCancelledDropOutsideTheListClears() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        fixture.begin(token, on: &drag)
+
+        XCTAssertEqual(
+            drag.end(token, outcome: .cancelled, at: fixture.outsideList, geometry: fixture.geometry),
+            .cleared
+        )
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+        XCTAssertFalse(drag.finishSettle(token))
+    }
+
+    @MainActor
+    func testUnchangedDropInsideTheListClearsWithoutMoving() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        fixture.begin(token, on: &drag)
+        XCTAssertEqual(
+            drag.move(token, to: fixture.belowLastRow, geometry: fixture.geometry),
+            .pendingOrderChanged
+        )
+
+        XCTAssertEqual(
+            drag.end(token, outcome: .move, at: fixture.belowLastRow, geometry: fixture.geometry),
+            .cleared
+        )
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+    }
+
+    @MainActor
+    func testDragWithoutReorderIgnoresMovesAndLeavesThroughTheExternalDrop() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        drag.begin(
+            token,
+            payload: fixture.payload,
+            listID: fixture.listID,
+            reorderingFrom: nil,
+            geometry: fixture.geometry
+        )
+
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+        XCTAssertEqual(drag.move(token, to: fixture.aboveFirstRow, geometry: fixture.geometry), .none)
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+        XCTAssertEqual(
+            drag.end(token, outcome: .move, at: fixture.aboveFirstRow, geometry: fixture.geometry),
+            .settling
+        )
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+        XCTAssertFalse(drag.finishCommit(token))
+        XCTAssertTrue(drag.finishSettle(token))
+        XCTAssertFalse(drag.isShowingGap(for: fixture.moving))
+    }
+
+    @MainActor
+    func testLeavingTheListDropsThePendingOrder() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        fixture.begin(token, on: &drag)
+        XCTAssertEqual(drag.move(token, to: fixture.outsideList, geometry: fixture.geometry), .none)
+        XCTAssertEqual(
+            drag.move(token, to: fixture.aboveFirstRow, geometry: fixture.geometry),
+            .pendingOrderChanged
+        )
+        XCTAssertEqual(drag.move(token, to: fixture.aboveFirstRow, geometry: fixture.geometry), .none)
+        XCTAssertEqual(
+            drag.move(token, to: fixture.outsideList, geometry: fixture.geometry),
+            .pendingOrderCleared
+        )
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+    }
+
+    @MainActor
+    func testReorderUsesRowFramesFrozenAtDragStartShiftedByScrolling() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let token = PanelDragSessionToken()
+
+        fixture.begin(token, on: &drag)
+        fixture.geometry.rowFrames = [:]
+        fixture.geometry.scrollOffsetY = 60
+
+        XCTAssertEqual(
+            drag.move(token, to: CGPoint(x: 100, y: 245), geometry: fixture.geometry),
+            .pendingOrderChanged
+        )
+        XCTAssertEqual(
+            drag.pendingOrder(in: fixture.listID),
+            [fixture.ids[0], fixture.moving, fixture.ids[1]]
+        )
+    }
+
+    @MainActor
+    func testEventsFromAnEarlierDragSessionAreIgnored() {
+        let fixture = SnipListDragFixture()
+        var drag = SnipListDrag()
+        let stale = PanelDragSessionToken()
+        let current = PanelDragSessionToken()
+
+        fixture.begin(stale, on: &drag)
+        fixture.begin(current, on: &drag)
+
+        XCTAssertEqual(drag.move(stale, to: fixture.aboveFirstRow, geometry: fixture.geometry), .none)
+        XCTAssertNil(drag.pendingOrder(in: fixture.listID))
+        XCTAssertNil(
+            drag.end(stale, outcome: .copy, at: fixture.outsideList, geometry: fixture.geometry)
+        )
+        XCTAssertFalse(drag.finishCommit(stale))
+        XCTAssertFalse(drag.finishSettle(stale))
+        XCTAssertTrue(drag.isShowingGap(for: fixture.moving))
+        XCTAssertEqual(
+            drag.end(current, outcome: .cancelled, at: fixture.outsideList, geometry: fixture.geometry),
+            .cleared
+        )
+    }
+
     func testListSnapshotCanKeepTheActiveListHeaderWhenItIsEmpty() {
         let list = SnipList(
             id: UUID(),
@@ -1212,5 +1434,46 @@ final class SnipListModelsTests: XCTestCase {
         default: suffix = "000000000103"
         }
         return UUID(uuidString: "00000000-0000-0000-0000-\(suffix)")!
+    }
+}
+
+/// Three rows in one list; dragging the bottom row.
+@MainActor
+private struct SnipListDragFixture {
+    let ids = (0..<3).map { _ in UUID() }
+    let listID = UUID()
+    let geometry = SnipListReorderGeometry()
+    let outsideList = CGPoint(x: 100, y: 500)
+    let aboveFirstRow = CGPoint(x: 100, y: 250)
+    let belowLastRow = CGPoint(x: 100, y: 10)
+
+    var moving: UUID { ids[2] }
+    var payload: SnipDragPayload { SnipDragPayload(ids: [moving], text: "Moving") }
+    var movedToTop: [UUID] { [moving, ids[0], ids[1]] }
+    var moveToTop: SnipListDrag.Move {
+        SnipListDrag.Move(ids: [moving], listID: listID, beforeID: ids[0])
+    }
+
+    init() {
+        geometry.listFrame = CGRect(x: 0, y: 0, width: 200, height: 300)
+        geometry.rowFrames = [
+            ids[0]: CGRect(x: 0, y: 220, width: 200, height: 40),
+            ids[1]: CGRect(x: 0, y: 160, width: 200, height: 40),
+            ids[2]: CGRect(x: 0, y: 100, width: 200, height: 40)
+        ]
+    }
+
+    func begin(
+        _ token: PanelDragSessionToken,
+        from orderedIDs: [UUID]? = nil,
+        on drag: inout SnipListDrag
+    ) {
+        drag.begin(
+            token,
+            payload: payload,
+            listID: listID,
+            reorderingFrom: orderedIDs ?? ids,
+            geometry: geometry
+        )
     }
 }

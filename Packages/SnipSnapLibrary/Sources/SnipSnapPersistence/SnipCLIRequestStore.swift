@@ -8,11 +8,9 @@ public actor SnipCLIRequestStore {
 
   private let paths: Paths
   private let now: @Sendable () -> Date
-  private var isProcessing = false
-  private var needsRescan = false
+  private var processingPass = ProcessingPass.idle
   private var didExcludeRootFromBackup = false
-  private var appInstance: SnipCLIAppInstance?
-  private var appSessionEnded = false
+  private var appSession = AppSession.none
   private var readinessRevision = UUID()
 
   public init(rootURL: URL) {
@@ -27,15 +25,15 @@ public actor SnipCLIRequestStore {
 
   public func publishActiveScopeToken(_ token: String) throws {
     try withLock {
-      if let appInstance {
-        guard !appSessionEnded, try readAppInstance() == appInstance else {
+      if let appInstance = appSession.instance {
+        guard !appSession.isEnded, try readAppInstance() == appInstance else {
           throw SnipCLIAppReadinessError.unavailable
         }
       }
       // Termination may cancel the lifecycle while this task waits for the lock.
       try Task.checkCancellation()
       try DurableFile.write(Data(token.utf8), to: paths.activeScopeURL)
-      if let appInstance {
+      if let appInstance = appSession.instance {
         try DurableFile.write(try Self.encoder.encode(
           SnipCLIAppReadiness(instance: appInstance, scopeToken: token)
         ), to: paths.readinessURL)
@@ -47,19 +45,19 @@ public actor SnipCLIRequestStore {
 
   /// Called by the main app before initialization. Old launch markers cannot grant admission.
   public func beginAppSession(_ instance: SnipCLIAppInstance) throws {
-    guard !appSessionEnded else { throw SnipCLIAppReadinessError.unavailable }
+    guard !appSession.isEnded else { throw SnipCLIAppReadinessError.unavailable }
     try withLock {
       try removeIfPresent(paths.readinessURL)
       try removeIfPresent(paths.activeScopeURL)
       try DurableFile.write(try Self.encoder.encode(instance), to: paths.appInstanceURL)
     }
-    appInstance = instance
+    appSession = .active(instance)
   }
 
   public func endAppSession() throws {
-    appSessionEnded = true
+    appSession = .ended(appSession.instance)
     try withLock {
-      guard let appInstance, try readAppInstance() == appInstance else { return }
+      guard let appInstance = appSession.instance, try readAppInstance() == appInstance else { return }
       try removeIfPresent(paths.readinessURL)
       try removeIfPresent(paths.appInstanceURL)
       try DurableFile.syncDirectory(paths.root)
@@ -73,8 +71,8 @@ public actor SnipCLIRequestStore {
   /// A missing marker denies commands until the app publishes the active library.
   public func suspendActiveScope() throws {
     try withLock {
-      if let appInstance {
-        guard !appSessionEnded, try readAppInstance() == appInstance else { return }
+      if let appInstance = appSession.instance {
+        guard !appSession.isEnded, try readAppInstance() == appInstance else { return }
       }
       readinessRevision = UUID()
       try removeIfPresent(paths.readinessURL)
@@ -90,7 +88,7 @@ public actor SnipCLIRequestStore {
 
   /// A later suspension invalidates a check even when the library scope stays the same.
   public func publishActiveScopeToken(_ token: String, ifUnchangedSince revision: UUID) throws -> Bool {
-    guard revision == readinessRevision, !appSessionEnded else { return false }
+    guard revision == readinessRevision, !appSession.isEnded else { return false }
     try publishActiveScopeToken(token)
     return true
   }
@@ -223,47 +221,41 @@ public actor SnipCLIRequestStore {
     using receive: @MainActor @Sendable (SnipCLIRequest) async throws -> SnipCLIReceipt
   ) async {
     try? withLock { pruneExpiredFiles() }
-    guard !isProcessing else {
-      needsRescan = true
+    guard case .idle = processingPass else {
+      processingPass = .scanning(rescanRequested: true)
       return
     }
-    isProcessing = true
-    defer { isProcessing = false }
+    defer { processingPass = .idle }
     repeat {
-      needsRescan = false
+      processingPass = .scanning(rescanRequested: false)
       for requestID in pendingRequestIDs() {
-        let request: SnipCLIRequest
-        let lease: SnipStoreFileLock
-        do {
-          guard let claimed = try claim(requestID) else { continue }
-          (request, lease) = claimed
-        } catch {
-          continue
-        }
-        let receipt: SnipCLIReceipt
-        do {
-          receipt = try await receive(request)
-        } catch is SnipCLIOutcomeUncertain {
-          try? markUncertain(requestID)
-          withExtendedLifetime(lease) {}
-          continue
-        } catch {
-          receipt = SnipCLIReceipt(
-            request: request, status: .failed, message: error.localizedDescription
-          )
-        }
-        guard receipt.matches(request) else {
-          try? markUncertain(requestID)
-          continue
-        }
-        do {
-          try finish(receipt, requestID: requestID)
-        } catch {
-          try? markUncertain(requestID)
+        guard let claimed = try? claim(requestID) else { continue }
+        let (request, lease) = claimed
+        switch await deliver(request, requestID: requestID, using: receive) {
+        case .delivered: break
+        case .deliveredBesideProcessingMarker, .uncertain: try? markUncertain(requestID)
         }
         withExtendedLifetime(lease) {}
       }
-    } while needsRescan
+    } while processingPass == .scanning(rescanRequested: true)
+  }
+
+  private func deliver(
+    _ request: SnipCLIRequest, requestID: UUID,
+    using receive: @MainActor @Sendable (SnipCLIRequest) async throws -> SnipCLIReceipt
+  ) async -> Delivery {
+    let receipt: SnipCLIReceipt
+    do {
+      receipt = try await receive(request)
+    } catch is SnipCLIOutcomeUncertain {
+      return .uncertain
+    } catch {
+      receipt = SnipCLIReceipt(
+        request: request, status: .failed, message: error.localizedDescription
+      )
+    }
+    guard receipt.matches(request) else { return .uncertain }
+    return finish(receipt, requestID: requestID)
   }
 
   private func claim(_ id: UUID) throws -> (SnipCLIRequest, SnipStoreFileLock)? {
@@ -295,20 +287,33 @@ public actor SnipCLIRequestStore {
     }
   }
 
-  private func finish(_ receipt: SnipCLIReceipt, requestID: UUID) throws {
-    try withLock {
-      let stored: SnipCLIReceipt
-      if case .extended = receipt.action {
-        // Deliver actionable failures once. Release or retention cleanup removes
-        // their user content along with the rest of the extended result.
-        stored = receipt
-      } else {
-        stored = receipt.status == .success
-          && receipt.action.receiptPolicy != .compactWrite ? receipt : receipt.compacted()
+  private func finish(_ receipt: SnipCLIReceipt, requestID: UUID) -> Delivery {
+    do {
+      return try withLock {
+        let stored: SnipCLIReceipt
+        if case .extended = receipt.action {
+          // Deliver actionable failures once. Release or retention cleanup removes
+          // their user content along with the rest of the extended result.
+          stored = receipt
+        } else {
+          stored = receipt.status == .success
+            && receipt.action.receiptPolicy != .compactWrite ? receipt : receipt.compacted()
+        }
+        do {
+          try DurableFile.write(try Self.encoder.encode(stored), to: paths.receiptURL(requestID))
+        } catch {
+          return .uncertain
+        }
+        do {
+          try FileManager.default.removeItem(at: paths.processingURL(requestID))
+          try DurableFile.syncDirectory(paths.processingRootURL)
+        } catch {
+          return .deliveredBesideProcessingMarker
+        }
+        return .delivered
       }
-      try DurableFile.write(try Self.encoder.encode(stored), to: paths.receiptURL(requestID))
-      try FileManager.default.removeItem(at: paths.processingURL(requestID))
-      try DurableFile.syncDirectory(paths.processingRootURL)
+    } catch {
+      return .uncertain
     }
   }
 
@@ -370,6 +375,8 @@ public actor SnipCLIRequestStore {
       && marker.fingerprint == request.fingerprint && marker.scopeToken == request.scopeToken
   }
 
+  /// Readers check the receipt before the processing marker: the receipt wins over a
+  /// processing marker left beside it.
   private func readReceipt(_ id: UUID) throws -> SnipCLIReceipt? {
     let url = paths.receiptURL(id)
     guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -435,6 +442,42 @@ public actor SnipCLIRequestStore {
 
   private func clientIsAlive(_ pid: Int32) -> Bool {
     pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)
+  }
+
+  private enum AppSession {
+    /// A CLI process, or the app before it begins its session.
+    case none
+    case active(SnipCLIAppInstance)
+    /// Holds the instance whose session ended, or nil when no session began.
+    case ended(SnipCLIAppInstance?)
+
+    var instance: SnipCLIAppInstance? {
+      switch self {
+      case .none: nil
+      case .active(let instance): instance
+      case .ended(let instance): instance
+      }
+    }
+
+    var isEnded: Bool {
+      if case .ended = self { true } else { false }
+    }
+  }
+
+  private enum ProcessingPass: Equatable {
+    case idle
+    case scanning(rescanRequested: Bool)
+  }
+
+  /// How a claimed request's marker files end up after delivery.
+  private enum Delivery {
+    /// The receipt is written and the processing marker removed.
+    case delivered
+    /// The receipt is durable, but removing the processing marker or syncing its
+    /// directory failed, so the marker may remain.
+    case deliveredBesideProcessingMarker
+    /// No durable receipt, so the outcome is unknown.
+    case uncertain
   }
 
   private struct ProcessingMarker: Codable {
