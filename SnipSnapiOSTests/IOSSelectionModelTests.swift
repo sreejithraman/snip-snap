@@ -356,6 +356,109 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         XCTAssertNotEqual(gatheringSession, session)
     }
 
+    func testRegatheringAfterPutBackIgnoresTheStaleDeparture() {
+        let snip = Snip(content: "Gathered twice", origin: .quickEntry)
+        var transfers = GatheringTransfers()
+        let first = makeFlight(snip)
+        transfers.begin(first)
+        transfers.keep(only: [])
+        XCTAssertFalse(transfers.isDeparting(snip.id))
+        XCTAssertTrue(transfers.flights.isEmpty)
+
+        let second = makeFlight(snip)
+        transfers.begin(second)
+        XCTAssertEqual(transfers.departure(of: snip.id), second.id)
+        XCTAssertEqual(transfers.flights.map(\.id), [second.id])
+        XCTAssertEqual(transfers.arrivingSnipIDs, [snip.id])
+
+        transfers.finishDeparture(of: snip.id, departure: first.id)
+        XCTAssertEqual(transfers.departure(of: snip.id), second.id)
+        transfers.finishDeparture(of: snip.id, departure: second.id)
+        XCTAssertNil(transfers.departure(of: snip.id))
+        XCTAssertFalse(transfers.isDeparting(snip.id))
+        XCTAssertEqual(transfers.flights.map(\.id), [second.id])
+    }
+
+    func testKeepingOnlySelectedSnipsDropsDeselectedFlightsAndDepartures() {
+        let kept = Snip(content: "Still gathered", origin: .quickEntry)
+        let putBack = Snip(content: "Put back", origin: .quickEntry)
+        var transfers = GatheringTransfers()
+        let keptFlight = makeFlight(kept)
+        transfers.begin(keptFlight)
+        transfers.begin(makeFlight(putBack))
+
+        transfers.keep(only: [kept.id])
+
+        XCTAssertEqual(transfers.flights.map(\.id), [keptFlight.id])
+        XCTAssertEqual(transfers.arrivingSnipIDs, [kept.id])
+        XCTAssertEqual(transfers.departure(of: kept.id), keptFlight.id)
+        XCTAssertFalse(transfers.isDeparting(putBack.id))
+    }
+
+    func testLandingFlightsKeepsRowDeparturesUntilTheirFadesFinish() {
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        var transfers = GatheringTransfers()
+        let firstFlight = makeFlight(first)
+        let secondFlight = makeFlight(second)
+        transfers.begin(firstFlight)
+        transfers.begin(secondFlight)
+
+        transfers.land(firstFlight.id)
+        XCTAssertEqual(transfers.flights.map(\.id), [secondFlight.id])
+        XCTAssertEqual(transfers.arrivingSnipIDs, [second.id])
+        XCTAssertEqual(transfers.departure(of: first.id), firstFlight.id)
+
+        transfers.landAll()
+        XCTAssertTrue(transfers.flights.isEmpty)
+        XCTAssertTrue(transfers.arrivingSnipIDs.isEmpty)
+        XCTAssertEqual(transfers.departure(of: first.id), firstFlight.id)
+        XCTAssertEqual(transfers.departure(of: second.id), secondFlight.id)
+    }
+
+    func testAimingFlightsChangesOnlyFlightsWithANewDestination() throws {
+        let aimedSnip = Snip(content: "Has a card frame", origin: .quickEntry)
+        let waitingSnip = Snip(content: "Not measured yet", origin: .quickEntry)
+        var transfers = GatheringTransfers()
+        transfers.begin(makeFlight(aimedSnip))
+        transfers.begin(makeFlight(waitingSnip))
+        let card = CGRect(x: 20, y: 600, width: 300, height: 72)
+
+        XCTAssertNil(transfers.aimed(at: [:]))
+        XCTAssertNil(transfers.aimed(at: [UUID(): card]))
+        let aimed = try XCTUnwrap(transfers.aimed(at: [aimedSnip.id: card]))
+        XCTAssertEqual(aimed.flights.map(\.id), transfers.flights.map(\.id))
+        XCTAssertEqual(aimed.flights.first { $0.snip.id == aimedSnip.id }?.destination, card)
+        XCTAssertNil(aimed.flights.first { $0.snip.id == waitingSnip.id }?.destination)
+        XCTAssertNil(transfers.flights.first { $0.snip.id == aimedSnip.id }?.destination)
+        XCTAssertEqual(aimed.departure(of: aimedSnip.id), transfers.departure(of: aimedSnip.id))
+        XCTAssertNil(aimed.aimed(at: [aimedSnip.id: card]))
+        let retargeted = try XCTUnwrap(aimed.aimed(at: [aimedSnip.id: card.offsetBy(dx: 0, dy: -40)]))
+        XCTAssertEqual(
+            retargeted.flights.first { $0.snip.id == aimedSnip.id }?.destination,
+            card.offsetBy(dx: 0, dy: -40)
+        )
+    }
+
+    func testCancellingTransfersClearsFlightsAndDepartures() {
+        let snip = Snip(content: "Mid flight", origin: .quickEntry)
+        var transfers = GatheringTransfers()
+        transfers.begin(makeFlight(snip))
+
+        transfers.cancelAll()
+
+        XCTAssertTrue(transfers.flights.isEmpty)
+        XCTAssertTrue(transfers.arrivingSnipIDs.isEmpty)
+        XCTAssertFalse(transfers.isDeparting(snip.id))
+    }
+
+    private func makeFlight(_ snip: Snip) -> GatheringFlight {
+        GatheringFlight(
+            snip: snip, source: CGRect(x: 0, y: 200, width: 320, height: 64),
+            sourceIsSelecting: true, destination: nil
+        )
+    }
+
     func testReturningAndCancellingSelectedSnipsKeepsTheirSourceOrderAndStorage() async {
         let first = Snip(content: "First", origin: .quickEntry, manualPosition: 0)
         let second = Snip(content: "Second", origin: .quickEntry, manualPosition: 1)

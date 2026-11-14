@@ -132,14 +132,15 @@ final class IOSAppModel {
     }
     var selectedSnipID: UUID?
     /// A gathering session runs from Select or the first gathered snip until it ends.
-    private struct GatheringSession: Equatable {
+    /// A class, so readers of one field don't refresh when another changes.
+    @MainActor @Observable fileprivate final class GatheringSession {
         let id = UUID()
         private(set) var snipIDs: Set<UUID> = []
         /// Newest first. Snips gathered together keep their list order.
         private(set) var order: [UUID] = []
         var isExpanded = false
 
-        mutating func replaceSnips(with ids: Set<UUID>, orderingNew: (Set<UUID>) -> [UUID]) {
+        func replaceSnips(with ids: Set<UUID>, orderingNew: (Set<UUID>) -> [UUID]) {
             order = orderingNew(ids.subtracting(snipIDs)) + order.filter(ids.contains)
             snipIDs = ids
         }
@@ -298,7 +299,8 @@ final class IOSAppModel {
     }
 
     func setSelectionExpanded(_ isExpanded: Bool) {
-        gathering?.isExpanded = isExpanded
+        guard let gathering, gathering.isExpanded != isExpanded else { return }
+        gathering.isExpanded = isExpanded
     }
 
     func endSelectingSnips() {
@@ -310,7 +312,7 @@ final class IOSAppModel {
     private func replaceGatheredSnips(with ids: Set<UUID>) {
         guard let session = gathering, ids != session.snipIDs else { return }
         // Individual taps prepend the newest item. Bulk selection has a stable list order.
-        gathering?.replaceSnips(with: ids) { added in
+        session.replaceSnips(with: ids) { added in
             Snip.sorted(snips.filter { added.contains($0.id) }, by: sortMode).map(\.id)
         }
     }
