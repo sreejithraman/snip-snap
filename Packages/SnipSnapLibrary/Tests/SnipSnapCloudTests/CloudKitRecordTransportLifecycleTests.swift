@@ -456,6 +456,67 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(queued?.sentBatch, sent)
     }
 
+    // MARK: Fetch scope
+
+    func testNextFetchAsksForTheAutomaticZonesOrTheRunningScopedFetchAndNoneWhileStopped() async throws {
+        let fixture = makeFixture(zoneNames: ["a", "b", "c"], automaticZoneNames: ["a", "b"])
+        let transport = fixture.transport
+        let (zoneA, zoneB, zoneC) = (fixture.zones[0], fixture.zones[1], fixture.zones[2])
+        let automatic: Set<CloudZoneID> = [zoneA, zoneB]
+        let noZones: Set<CloudZoneID> = []
+        let beforeStart = await transport.nextFetchZones()
+        XCTAssertEqual(beforeStart, noZones)
+
+        try await transport.start(state: nil)
+        let engine = try fixture.engine(0)
+        let afterStart = await transport.nextFetchZones()
+        XCTAssertEqual(afterStart, automatic)
+
+        let duringFetch = Mutex<Set<CloudZoneID>?>(nil)
+        engine.onFetch { _, _ in
+            let zones = await transport.nextFetchZones()
+            duringFetch.withLock { $0 = zones }
+        }
+        _ = try await transport.fetch(scope: .zones([zoneA, zoneC]))
+        XCTAssertEqual(duringFetch.withLock { $0 }, Set([zoneA]))
+        let afterFetch = await transport.nextFetchZones()
+        XCTAssertEqual(afterFetch, automatic)
+
+        engine.onFetch { _, _ in throw ckError(.networkUnavailable) }
+        _ = try await transport.fetch(scope: .zones([zoneA]))
+        let afterFailedFetch = await transport.nextFetchZones()
+        XCTAssertEqual(afterFailedFetch, automatic)
+
+        let duringSend = Mutex<Set<CloudZoneID>?>(nil)
+        engine.onSend { _, _ in
+            let zones = await transport.nextFetchZones()
+            duringSend.withLock { $0 = zones }
+        }
+        _ = try await transport.send(CloudOutboundBatch(operations: []))
+        XCTAssertEqual(duringSend.withLock { $0 }, automatic)
+
+        let gate = AsyncOpenGate()
+        defer { gate.open() }
+        let entered = expectation(description: "A scoped fetch entered the old engine")
+        engine.onFetch { _, _ in
+            entered.fulfill()
+            await gate.wait()
+        }
+        let stale = Task { try await transport.fetch(scope: .zones([zoneA])) }
+        await fulfillment(of: [entered], timeout: 2)
+        await transport.reset()
+        let afterReset = await transport.nextFetchZones()
+        XCTAssertEqual(afterReset, noZones)
+
+        try await transport.start(state: nil)
+        let afterRestart = await transport.nextFetchZones()
+        XCTAssertEqual(afterRestart, automatic)
+        gate.open()
+        await assertTransportError(.notStarted) { try await value(of: stale) }
+        let afterStaleFetch = await transport.nextFetchZones()
+        XCTAssertEqual(afterStaleFetch, automatic)
+    }
+
     // MARK: First fetch
 
     func testProviderWithholdsRecordsUntilTheFirstFetchCommits() async throws {
@@ -748,28 +809,43 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         try await transport.start(state: nil)
         let old = try fixture.engine(0)
         let zone = fixture.zoneFetched(0)
-        let gate = AsyncOpenGate()
-        defer { gate.open() }
-        let entered = expectation(description: "Fetch entered the old engine")
+        let staleGate = AsyncOpenGate()
+        let freshGate = AsyncOpenGate()
+        defer {
+            staleGate.open()
+            freshGate.open()
+        }
+        let staleEntered = expectation(description: "Fetch entered the old engine")
         old.onFetch { engine, _ in
-            entered.fulfill()
-            await gate.wait()
+            staleEntered.fulfill()
+            await staleGate.wait()
             await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: engine)
         }
 
         let stale = Task { try await transport.fetch(scope: .all) }
-        await fulfillment(of: [entered], timeout: 2)
+        await fulfillment(of: [staleEntered], timeout: 2)
         await transport.reset()
         try await transport.start(state: nil)
         let current = try fixture.engine(1)
+        let freshEntered = expectation(description: "Fetch entered the restarted engine")
         current.onFetch { engine, _ in
+            freshEntered.fulfill()
+            await freshGate.wait()
             await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: engine)
         }
-        let fresh = try await value(of: Task { try await transport.fetch(scope: .all) })
-        XCTAssertTrue(fresh.isInitialFetch)
+        let freshFetch = Task { try await transport.fetch(scope: .all) }
+        await fulfillment(of: [freshEntered], timeout: 2)
 
-        gate.open()
+        // The stale fetch finishes while the restarted engine's fetch is still running.
+        staleGate.open()
         await assertTransportError(.notStarted) { try await value(of: stale) }
+        await assertTransportError(.syncAlreadyRunning) {
+            try await transport.send(CloudOutboundBatch(operations: []))
+        }
+
+        freshGate.open()
+        let fresh = try await value(of: freshFetch)
+        XCTAssertTrue(fresh.isInitialFetch)
         let events = try await transport.confirmAllEvents()
         XCTAssertEqual(events.map(\.id), [fresh.id])
     }
@@ -780,12 +856,16 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         try await transport.start(state: nil)
         let old = try fixture.engine(0)
         let zone = fixture.zoneFetched(0)
-        let gate = AsyncOpenGate()
-        defer { gate.open() }
-        let entered = expectation(description: "Send entered the old engine")
+        let staleGate = AsyncOpenGate()
+        let freshGate = AsyncOpenGate()
+        defer {
+            staleGate.open()
+            freshGate.open()
+        }
+        let staleEntered = expectation(description: "Send entered the old engine")
         old.onSend { engine, _ in
-            entered.fulfill()
-            await gate.wait()
+            staleEntered.fulfill()
+            await staleGate.wait()
             await transport.emit(.willSendChanges, .didSendChanges, from: engine)
         }
 
@@ -793,14 +873,17 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let stale = Task {
             try await transport.send(CloudOutboundBatch(operations: [.save(makeDraft(staleID, "old engine"))]))
         }
-        await fulfillment(of: [entered], timeout: 2)
+        await fulfillment(of: [staleEntered], timeout: 2)
         await transport.reset()
         try await transport.start(state: nil)
         let current = try fixture.engine(1)
         current.onFetch { engine, _ in
             await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: engine)
         }
+        let freshEntered = expectation(description: "Send entered the restarted engine")
         current.onSend { engine, options in
+            freshEntered.fulfill()
+            await freshGate.wait()
             await transport.emit(.willSendChanges, from: engine)
             let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
             await transport.emit(sentRecords(batch?.recordsToSave ?? []), .didSendChanges, from: engine)
@@ -808,13 +891,19 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let initial = try await value(of: Task { try await transport.fetch(scope: .all) })
         try await transport.confirmApplied(initial.id)
         let freshID = fixture.recordID("fresh")
-        let fresh = try await value(of: Task {
+        let freshSend = Task {
             try await transport.send(CloudOutboundBatch(operations: [.save(makeDraft(freshID, "new engine"))]))
-        })
-        XCTAssertEqual(fresh.items.map(\.id), [freshID])
+        }
+        await fulfillment(of: [freshEntered], timeout: 2)
 
-        gate.open()
+        // The stale send finishes while the restarted engine's send is still running.
+        staleGate.open()
         await assertTransportError(.notStarted) { try await value(of: stale) }
+        await assertTransportError(.syncAlreadyRunning) { try await transport.fetch(scope: .all) }
+
+        freshGate.open()
+        let fresh = try await value(of: freshSend)
+        XCTAssertEqual(fresh.items.map(\.id), [freshID])
         let events = try await transport.confirmAllEvents()
         XCTAssertEqual(events.map(\.id), [fresh.id], "The old engine's late cycle queues nothing")
         let later = try await transport.fetch(scope: .all)
@@ -1084,6 +1173,11 @@ private extension CloudKitRecordTransport {
         outboundAdmission: CloudRecordOutboundAdmission
     ) throws {
         try start(state: state, initialOutbound: initialOutbound, outboundAdmission: outboundAdmission)
+    }
+
+    /// The zones the delegate gives CloudKit's next automatic fetch.
+    func nextFetchZones() -> Set<CloudZoneID>? {
+        fetchedZones(in: nextFetchChangesOptions().scope)
     }
 
     func emit(_ events: CloudKitRecordEngineEvent..., from engine: any CloudKitRecordEngine) {

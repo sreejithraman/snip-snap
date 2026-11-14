@@ -551,6 +551,10 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         _ context: CKSyncEngine.FetchChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.FetchChangesOptions {
+        nextFetchChangesOptions()
+    }
+
+    func nextFetchChangesOptions() -> CKSyncEngine.FetchChangesOptions {
         CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(currentFetchZones))
     }
 
