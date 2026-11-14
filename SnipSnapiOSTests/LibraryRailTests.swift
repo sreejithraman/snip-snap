@@ -70,6 +70,19 @@ final class LibrarySidebarSizingTests: XCTestCase {
         XCTAssertLessThan(flatWidth, 320 + LibrarySidebarSizing.rubberBandReach)
     }
 
+    func testReleaseAtTheFlatMaximumKeepsAHingeChoice() {
+        XCTAssertEqual(flat.outcome(predictedWidth: 320, travel: 20, current: .expanded(.hinge)), .expanded(.hinge))
+        XCTAssertEqual(flat.outcome(predictedWidth: 500, travel: 60, current: .expanded(.hinge)), .expanded(.hinge))
+        XCTAssertEqual(flat.outcome(predictedWidth: 280, travel: -40, current: .expanded(.hinge)), .expanded(.points(280)))
+        XCTAssertEqual(flat.outcome(predictedWidth: 500, travel: 60, current: .expanded(.points(250))), .expanded(.points(320)))
+    }
+
+    func testATinyDragChangesNothing() {
+        XCTAssertEqual(flat.outcome(predictedWidth: 400, travel: 4, current: .rail), .rail)
+        XCTAssertEqual(flat.outcome(predictedWidth: 100, travel: -4, current: .expanded(.points(250))), .expanded(.points(250)))
+        XCTAssertEqual(flat.outcome(predictedWidth: 400, travel: 4.5, current: .rail), .expanded(.points(320)))
+    }
+
     func testStoredWidthShowsClampedToTheCurrentRange() {
         XCTAssertEqual(LibrarySidebarSizing(containerWidth: 600, hingeEdge: nil).width(isExpanded: true, expandedWidth: .points(300)), 240)
         XCTAssertEqual(flat.width(isExpanded: true, expandedWidth: .points(300)), 300)

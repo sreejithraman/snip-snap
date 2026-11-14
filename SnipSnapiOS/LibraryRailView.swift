@@ -207,8 +207,7 @@ struct LibraryRailView: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
-    /// How far the finger has widened the column since the drag began.
-    @State private var dragTravel: CGFloat?
+    @State private var stripDrag: StripDrag?
     @GestureState private var isResizing = false
     private let newListStyle = NewListButtonStyle.current
 
@@ -240,6 +239,11 @@ struct LibraryRailView: View {
     }
 
     private var nameOpacity: Double { LibrarySidebarSizing.nameOpacity(at: width) }
+
+    /// How far the finger has widened the column, while a resize is under way.
+    private var dragTravel: CGFloat? {
+        if case .resizing(let travel) = stripDrag { travel } else { nil }
+    }
 
     var body: some View {
         ScrollView {
@@ -305,12 +309,16 @@ struct LibraryRailView: View {
         .frame(width: width)
         .overlay(alignment: .trailing) {
             resizeHandle
-                .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.center] }
+                .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.trailing] - Self.handleOverhang }
         }
         .onChange(of: isResizing) { _, isActive in
-            // A canceled drag never ends, so it settles where it stopped.
-            guard !isActive, let dragTravel else { return }
-            settle(atPredictedWidth: settledWidth + dragTravel)
+            // A canceled drag never ends, so a resize settles where it stopped.
+            guard !isActive else { return }
+            if let dragTravel {
+                settle(travel: dragTravel, predictedTravel: dragTravel)
+            } else {
+                stripDrag = nil
+            }
         }
     }
 
@@ -337,31 +345,55 @@ struct LibraryRailView: View {
         }
     }
 
-    /// An invisible strip centered on the column's trailing edge. The toggle offers the same change
-    /// to assistive technologies, so the strip stays out of their way.
+    private static let handleWidth: CGFloat = 20
+    /// How far the strip reaches over the card. The rest sits on the column, clear of the card's rows.
+    private static let handleOverhang: CGFloat = 6
+    private static let grabberWidth: CGFloat = 5
+
+    /// An invisible strip along the column's trailing edge. The toggle offers the same change to
+    /// assistive technologies, so the strip stays out of their way.
     private var resizeHandle: some View {
         Color.clear
-            .frame(width: 20)
+            .frame(width: Self.handleWidth)
             .contentShape(Rectangle())
-            .overlay {
+            .overlay(alignment: .trailing) {
                 if dragTravel != nil {
+                    // Centered on the column's edge.
                     Capsule()
                         .fill(.tertiary)
-                        .frame(width: 5, height: 40)
+                        .frame(width: Self.grabberWidth, height: 40)
+                        .padding(.trailing, Self.handleOverhang - Self.grabberWidth / 2)
                 }
             }
             .gesture(resizeGesture)
             .accessibilityHidden(true)
     }
 
+    /// A drag on the resize strip. One that starts mostly vertical is ignored until it ends.
+    private enum StripDrag: Equatable {
+        case resizing(travel: CGFloat)
+        case ignored
+    }
+
     private var resizeGesture: some Gesture {
         // Global, because the strip moves with the edge it drags.
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .updating($isResizing) { _, isActive, _ in isActive = true }
-            .onChanged { value in dragTravel = widening(value.translation) }
+            .onChanged { value in
+                guard stripDrag != .ignored else { return }
+                let translation = value.translation
+                if stripDrag == nil, abs(translation.height) > abs(translation.width) {
+                    stripDrag = .ignored
+                } else {
+                    stripDrag = .resizing(travel: widening(translation))
+                }
+            }
             .onEnded { value in
-                guard dragTravel != nil else { return }
-                settle(atPredictedWidth: settledWidth + widening(value.predictedEndTranslation))
+                guard let dragTravel else {
+                    stripDrag = nil
+                    return
+                }
+                settle(travel: dragTravel, predictedTravel: widening(value.predictedEndTranslation))
             }
     }
 
@@ -370,17 +402,22 @@ struct LibraryRailView: View {
         layoutDirection == .rightToLeft ? -translation.width : translation.width
     }
 
-    private func settle(atPredictedWidth predictedWidth: CGFloat) {
-        let outcome = sizing.outcome(predictedWidth: predictedWidth)
+    private func settle(travel: CGFloat, predictedTravel: CGFloat) {
+        let current: LibrarySidebarSizing.Outcome = isExpanded ? .expanded(expandedWidth) : .rail
+        let outcome = sizing.outcome(
+            predictedWidth: settledWidth + predictedTravel, travel: travel, current: current
+        )
         withAnimation(settleAnimation) {
-            switch outcome {
-            case .rail:
-                isExpanded = false
-            case .expanded(let settled):
-                expandedWidth = settled
-                isExpanded = true
+            if outcome != current {
+                switch outcome {
+                case .rail:
+                    isExpanded = false
+                case .expanded(let settled):
+                    expandedWidth = settled
+                    isExpanded = true
+                }
             }
-            dragTravel = nil
+            stripDrag = nil
         }
     }
 
@@ -460,8 +497,8 @@ private struct RailButton<Mark: View>: View {
                                 .opacity(1 - nameOpacity)
                         }
                     }
-                // A zero-width minimum, a height cap while hidden, and the clip let the rail hide the
-                // name without growing the row or spilling onto the card.
+                // A zero-width minimum, a height cap until the name is fully shown, and the clip let
+                // the rail hide the name without growing the row or spilling onto the card.
                 HStack(spacing: 8) {
                     Text(title)
                         .lineLimit(1)
@@ -473,7 +510,7 @@ private struct RailButton<Mark: View>: View {
                 .padding(.trailing, 12)
                 .frame(
                     minWidth: 0, maxWidth: .infinity,
-                    maxHeight: nameOpacity == 0 ? Self.length : nil,
+                    maxHeight: nameOpacity < 1 ? Self.length : nil,
                     alignment: .leading
                 )
                 .clipped()

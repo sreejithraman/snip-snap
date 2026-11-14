@@ -37,13 +37,15 @@ struct LibrarySidebarSizing: Equatable {
     static let flatMaximumWidth: CGFloat = 320
     static let flatMaximumFraction: CGFloat = 0.4
     static let hingeDetentDistance: CGFloat = 32
+    /// A drag that travels no farther than this is a touch, not a resize.
+    static let noChangeTravel: CGFloat = 4
     /// The farthest a drag stretches the column past either end.
     static let rubberBandReach: CGFloat = 30
 
     /// An unmeasured container leaves the flat maximum at its fixed cap.
     static let unmeasured = LibrarySidebarSizing(containerWidth: .infinity, hingeEdge: nil)
 
-    /// What a released drag settles on.
+    /// What the column shows: the rail, or names at an expanded width.
     enum Outcome: Equatable {
         case rail
         case expanded(LibrarySidebarExpandedWidth)
@@ -89,6 +91,16 @@ struct LibrarySidebarSizing: Equatable {
         if proposed < lower { return lower - Self.rubberBand(lower - proposed) }
         if proposed > upper { return upper + Self.rubberBand(proposed - upper) }
         return proposed
+    }
+
+    /// Settles a released drag that started from `current`. A drag that barely traveled changes
+    /// nothing. A release at the maximum keeps a hinge choice, so the column returns to the hinge
+    /// after the next fold instead of staying at the flat maximum.
+    func outcome(predictedWidth: CGFloat, travel: CGFloat, current: Outcome) -> Outcome {
+        guard abs(travel) > Self.noChangeTravel else { return current }
+        let settled = outcome(predictedWidth: predictedWidth)
+        if current == .expanded(.hinge), settled == .expanded(.points(maximumExpandedWidth)) { return current }
+        return settled
     }
 
     /// Settles a released drag from the width its velocity predicts.
