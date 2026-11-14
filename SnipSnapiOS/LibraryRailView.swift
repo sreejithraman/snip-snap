@@ -460,8 +460,8 @@ private struct RailButton<Mark: View>: View {
                                 .opacity(1 - nameOpacity)
                         }
                     }
-                // A zero-width minimum and the clip let the rail hide the name without widening the
-                // row or spilling onto the card. The type cap keeps one name line within the row's height.
+                // A zero-width minimum, a height cap while hidden, and the clip let the rail hide the
+                // name without growing the row or spilling onto the card.
                 HStack(spacing: 8) {
                     Text(title)
                         .lineLimit(1)
@@ -469,10 +469,13 @@ private struct RailButton<Mark: View>: View {
                     Spacer(minLength: 0)
                     if let count { CountBadge(count: count) }
                 }
-                .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 .padding(.leading, 4)
                 .padding(.trailing, 12)
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .frame(
+                    minWidth: 0, maxWidth: .infinity,
+                    maxHeight: nameOpacity == 0 ? Self.length : nil,
+                    alignment: .leading
+                )
                 .clipped()
                 .opacity(nameOpacity)
             }
