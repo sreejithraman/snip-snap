@@ -604,27 +604,25 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = try launchAppShowingRail(storeName: "rail-drag-\(UUID().uuidString)")
         let clipboard = app.buttons["clipboard-sidebar"]
         waitForClipboardRowWidth(in: app, "Rail by default") { $0 < 80 }
-        // Rows keep a 12-pt inset inside the column, so the Clipboard row locates its edges.
-        let columnLeading = clipboard.frame.minX - 12
-        let dragY = app.frame.midY
-        func point(x: CGFloat, y: CGFloat) -> XCUICoordinate {
-            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y))
-        }
-        func dragFromColumnEdge(toX x: CGFloat, y: CGFloat) {
-            // 4 pt inside the column, within the resize strip.
-            let start = point(x: clipboard.frame.maxX + 12 - 4, y: dragY)
-            start.press(forDuration: 0.1, thenDragTo: point(x: x, y: y),
+        // Points come from the row itself: on the open Duo, the app's XCTest origin can be offset
+        // from element frames. Rows keep a 12-pt inset, so the column is the row plus 24 pt wide.
+        func dragFromColumnEdge(by offset: CGVector) {
+            // 4 pt inside the column, within the resize strip. Re-read after each width change.
+            let start = clipboard.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: 12 - 4, dy: 0))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset),
                         withVelocity: .slow, thenHoldForDuration: 0.3)
         }
 
-        dragFromColumnEdge(toX: columnLeading + 280, y: dragY)
+        dragFromColumnEdge(by: CGVector(dx: 200, dy: 0))
         waitForClipboardRowWidth(in: app, "Dragged wider") { $0 > 150 }
 
-        dragFromColumnEdge(toX: columnLeading + 110, y: dragY)
+        let startInColumn = clipboard.frame.width + 24 - 4
+        dragFromColumnEdge(by: CGVector(dx: 110 - startInColumn, dy: 0))
         waitForClipboardRowWidth(in: app, "Dragged back to the rail") { $0 < 80 }
 
         // Mostly vertical, with enough sideways travel to expand the rail if it were taken as a resize.
-        dragFromColumnEdge(toX: clipboard.frame.maxX + 12 + 80, y: dragY + 240)
+        dragFromColumnEdge(by: CGVector(dx: 80, dy: 240))
         let resized = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in clipboard.frame.width >= 80 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 1), .timedOut,
