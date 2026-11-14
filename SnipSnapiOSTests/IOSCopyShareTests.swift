@@ -224,6 +224,30 @@ final class IOSCopyShareTests: XCTestCase {
         XCTAssertEqual(delivery.request?.id, nextRequest.id)
     }
 
+    func testTeardownAfterSettledCallbackSettlesNextPendingDelivery() async throws {
+        let delivery = IOSDiagnosticShareDelivery()
+        let presenter = IOSShareSheetPresenter(
+            request: Binding(get: { delivery.request }, set: { delivery.request = $0 })
+        )
+        let coordinator = presenter.makeCoordinator()
+        let firstTask = Task { try await delivery.deliver(URL(fileURLWithPath: "/unused/first.txt")) }
+        let firstRequest = try await pendingRequest(in: delivery)
+        let activity = presenter.makeActivityController(for: firstRequest, coordinator: coordinator)
+        let callback = try XCTUnwrap(activity.completionWithItemsHandler)
+        callback(nil, true, nil, nil)
+        guard case .shared = try await firstTask.value else { return XCTFail("Callback must settle sharing") }
+        await drainMainQueue()
+        XCTAssertNil(delivery.request)
+
+        let nextTask = Task { try await delivery.deliver(URL(fileURLWithPath: "/unused/next.txt")) }
+        let nextRequest = try await pendingRequest(in: delivery)
+        XCTAssertNotEqual(nextRequest.id, firstRequest.id)
+        IOSShareSheetPresenter.dismantleUIViewController(UIViewController(), coordinator: coordinator)
+
+        guard case .cancelled = try await nextTask.value else { return XCTFail("Teardown must settle the next delivery") }
+        XCTAssertNil(delivery.request)
+    }
+
     private func pendingRequest(in delivery: IOSDiagnosticShareDelivery) async throws -> IOSShareRequest {
         _ = await TestReadiness.wait { delivery.request != nil }
         return try XCTUnwrap(delivery.request)
