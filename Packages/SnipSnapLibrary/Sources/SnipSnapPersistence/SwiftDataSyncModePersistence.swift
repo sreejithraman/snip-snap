@@ -343,8 +343,7 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.namespaceMismatch
     }
     if let isolation = manifest.accountIsolation { return isolation }
-    guard writeAdmissionIsIdle(),
-      let active = store(id: manifest.activeStoreID),
+    guard let active = store(id: manifest.activeStoreID),
       active.kind == .iCloudSync,
       let namespace = active.namespace
     else { throw SyncModePersistenceError.transitionInProgress }
@@ -788,7 +787,6 @@ package actor SwiftDataSyncModePersistence {
       else { return nil }
     }
     guard manifest.transition == nil,
-      writeAdmissionIsIdle(),
       let current = store(id: manifest.activeStoreID),
       current.kind == .iCloudSync
     else {

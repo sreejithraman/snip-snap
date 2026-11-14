@@ -30,8 +30,9 @@ struct ActiveStoreWriteAdmission {
     /// The writer finished, but its reservation clear did not reach disk. The next request
     /// that needs an idle store retries the clear.
     case releaseFailed(SyncModeWriteReservation)
-    /// The writer was lost mid-write. Only a library read or reopen clears its reservation.
-    case abandoned(SyncModeWriteReservation)
+    /// The writer was lost mid-write. Only a library read or reopen clears the reservation it
+    /// left in the manifest.
+    case abandoned
   }
 
   fileprivate var phase = Phase.idle
@@ -192,7 +193,7 @@ extension SwiftDataSyncModePersistence {
     guard case .admitted(.reserved(_, reservation), let queue) = writeAdmission.phase else {
       return
     }
-    writeAdmission.phase = .abandoned(reservation)
+    writeAdmission.phase = .abandoned
     handOff(queue)
   }
 
