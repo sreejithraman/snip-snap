@@ -220,6 +220,8 @@
 		AF7100000000000000000003 /* AppFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000001 /* AppFailure.swift */; };
 		AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000002 /* AppErrorDetailsView.swift */; };
 		AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000002 /* AppErrorDetailsView.swift */; };
+		AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */; };
+		AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */; };
 		AF7100000000000000000006 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
 		AF7100000000000000000007 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
 /* End PBXBuildFile section */
@@ -462,6 +464,7 @@
 		C2610A260000000000000201 /* IOSAttachmentTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentTestSupport.swift; sourceTree = "<group>"; };
 		AF7200000000000000000001 /* AppFailure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFailure.swift; sourceTree = "<group>"; };
 		AF7200000000000000000002 /* AppErrorDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppErrorDetailsView.swift; sourceTree = "<group>"; };
+		AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnackbarAndErrorPresentation.swift; sourceTree = "<group>"; };
 		AF7200000000000000000003 /* AppFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeedbackTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -688,6 +691,7 @@
 				A20000000000000000000001 /* SnipSnapTheme.swift */,
 				AF7200000000000000000001 /* AppFailure.swift */,
 				AF7200000000000000000002 /* AppErrorDetailsView.swift */,
+				AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */,
 				AD5200000000000000000001 /* SendDestinationPicker.swift */,
                 AF6200000000000000000001 /* GlassMenus.swift */,
 				AC2000000000000000000001 /* SnipListAppearance.swift */,
@@ -1125,6 +1129,7 @@
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
 				AF7100000000000000000001 /* AppFailure.swift in Sources */,
 				AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */,
+				AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000001 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
@@ -1214,6 +1219,7 @@
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
 				AF7100000000000000000002 /* AppFailure.swift in Sources */,
 				AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */,
+				AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000002 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
