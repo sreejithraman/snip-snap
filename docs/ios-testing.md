@@ -391,6 +391,9 @@ Existing conditional tests have these preconditions:
   regular-width window, iPad uses the sidebar layout, and iPhones (the open
   iPhone Duo, or a large iPhone in landscape) use the icon rail.
   `testClipboardHidesSavedListActionsOnIPad` requires either one.
+  `testRailShowsListNamesAcrossRelaunchUntilToggledBack` requires the rail. The
+  rail's width choice is saved per `SNIP_SNAP_UI_TEST_STORE`, so each run
+  starts on the thin rail.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one
   image in the selected Simulator's Photos library. They declare a skip when

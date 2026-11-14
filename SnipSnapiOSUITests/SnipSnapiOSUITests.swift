@@ -558,6 +558,34 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings"].exists)
     }
 
+    func testRailShowsListNamesAcrossRelaunchUntilToggledBack() throws {
+        continueAfterFailure = false
+        let storeName = "rail-width-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName)
+        guard app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3) else {
+            throw XCTSkip("This check needs the regular-width rail.")
+        }
+        func waitForClipboardRow(in app: XCUIApplication, _ description: String, _ matches: @escaping (CGFloat) -> Bool) {
+            let clipboard = app.buttons["clipboard-sidebar"]
+            XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in matches(clipboard.frame.width) }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed,
+                           "\(description): the Clipboard row is \(clipboard.frame.width) pt wide.")
+        }
+        waitForClipboardRow(in: app, "Rail by default") { $0 < 80 }
+
+        app.buttons["sidebar-width-toggle"].tap()
+        waitForClipboardRow(in: app, "Names shown") { $0 > 150 }
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        waitForClipboardRow(in: app, "Names shown after relaunch") { $0 > 150 }
+
+        app.buttons["sidebar-width-toggle"].tap()
+        waitForClipboardRow(in: app, "Rail again") { $0 < 80 }
+    }
+
     func testLastSnipCanScrollAboveCompactControls() throws {
         continueAfterFailure = false
         let app = launchApp(withLongList: true)

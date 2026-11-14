@@ -165,20 +165,83 @@ enum RailListMark: Equatable {
     }
 }
 
-/// The open iPhone Duo's narrow list column: icons only, beside the page card.
+extension EnvironmentValues {
+    /// Sizing for a library sidebar, set by the container that holds it and its detail.
+    @Entry var librarySidebarSizing = LibrarySidebarSizing.unmeasured
+}
+
+extension View {
+    /// Measures this view as the container of a library sidebar and its detail, so the sidebar
+    /// can size itself to the container's width and to a vertical hinge that divides it.
+    func librarySidebarContainer() -> some View { modifier(LibrarySidebarContainer()) }
+}
+
+private struct LibrarySidebarContainer: ViewModifier {
+    @State private var sizing = LibrarySidebarSizing.unmeasured
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.librarySidebarSizing, sizing)
+            .onGeometryChange(for: LibrarySidebarSizing.self) { proxy in
+                guard #available(iOS 27.1, *) else {
+                    return LibrarySidebarSizing(containerWidth: proxy.size.width, hingeEdge: nil)
+                }
+                return LibrarySidebarSizing(
+                    containerWidth: proxy.size.width,
+                    divisions: proxy.reservedRegions(kind: .division).map(\.frame)
+                )
+            } action: { sizing = $0 }
+    }
+}
+
+/// The library's list column beside the page card. It is a thin rail of marks, or a wider sidebar
+/// that also shows names. Dragging its trailing edge resizes it; the toggle at its top switches looks.
 struct LibraryRailView: View {
-    static let width: CGFloat = 80
+    /// Rows keep this inset on both sides, so a mark stays put as the column widens.
+    private static let inset: CGFloat = 12
     let model: IOSAppModel
     @Binding var sheet: AppSheet?
     let deleteList: (UUID) async -> Void
+    @Environment(\.librarySidebarSizing) private var sizing
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    @AppStorage private var isExpanded: Bool
+    @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
+    @State private var resize: Resize?
+    @GestureState private var isResizing = false
     private let newListStyle = NewListButtonStyle.current
 
+    init(model: IOSAppModel, sheet: Binding<AppSheet?>, deleteList: @escaping (UUID) async -> Void) {
+        self.model = model
+        _sheet = sheet
+        self.deleteList = deleteList
+        _isExpanded = AppStorage(wrappedValue: false, Self.storageKey("library-sidebar-expanded"))
+        _expandedWidth = AppStorage(wrappedValue: .default, Self.storageKey("library-sidebar-expanded-width"))
+    }
+
+    /// UI-test runs each keep their own store, so one run's width choice can't leak into another.
+    private static func storageKey(_ key: String) -> String {
+#if DEBUG
+        if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
+            return "\(key)-\(store)"
+        }
+#endif
+        return key
+    }
+
+    private var settledWidth: CGFloat {
+        sizing.width(isExpanded: isExpanded, expandedWidth: expandedWidth)
+    }
+
     var body: some View {
+        let width = resize?.width ?? settledWidth
+        let nameOpacity = LibrarySidebarSizing.nameOpacity(at: width)
         ScrollView {
-            VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
                 RailButton(
                     title: String(localized: "Clipboard"),
                     isSelected: model.selectedPage == .clipboard,
+                    nameOpacity: nameOpacity,
                     action: { model.selectPage(.clipboard) }
                 ) {
                     RailIcon(systemImage: "clipboard", color: .primary)
@@ -186,17 +249,18 @@ struct LibraryRailView: View {
                 .accessibilityIdentifier("clipboard-sidebar")
 
                 if model.recoverySnapshot.needsAttentionCount > 0 {
-                    needsAttention
+                    needsAttention(nameOpacity: nameOpacity)
                 }
 
                 Divider()
-                    .frame(width: 36)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 4)
 
                 ForEach(model.lists) { list in
                     RailButton(
                         title: list.displayName,
                         isSelected: model.selectedPage == .list(list.id),
+                        nameOpacity: nameOpacity,
                         action: { model.selectPage(.list(list.id)) }
                     ) {
                         RailListMarkView(list: list)
@@ -211,44 +275,134 @@ struct LibraryRailView: View {
                 }
 
                 if !newListStyle.isPinned {
-                    newListButton
+                    newListButton(nameOpacity: nameOpacity)
                 }
             }
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Self.inset)
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            widthToggle
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, Self.inset + 6)
+                .padding(.top, 4)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if newListStyle.isPinned {
-                newListButton
+                newListButton(nameOpacity: nameOpacity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, Self.inset + 2)
                     .padding(.vertical, 12)
             }
         }
-        .frame(width: Self.width)
+        .frame(width: width)
+        .overlay(alignment: .trailing) {
+            resizeHandle
+                .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.center] }
+        }
+        .onChange(of: isResizing) { _, isActive in
+            // A canceled drag never ends, so it settles where it stopped.
+            guard !isActive, let resize else { return }
+            settle(atPredictedWidth: resize.width)
+        }
     }
 
-    private var needsAttention: some View {
+    private var widthToggleTitle: Text {
+        isExpanded ? Text("Hide List Names") : Text("Show List Names")
+    }
+
+    private var widthToggle: some View {
+        Button {
+            withAnimation(settleAnimation) { isExpanded.toggle() }
+        } label: {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("s", modifiers: [.command, .control])
+        .accessibilityLabel(widthToggleTitle)
+        .accessibilityIdentifier("sidebar-width-toggle")
+        .accessibilityShowsLargeContentViewer {
+            Label { widthToggleTitle } icon: { Image(systemName: "sidebar.left") }
+        }
+    }
+
+    /// An invisible strip centered on the column's trailing edge. The toggle offers the same change
+    /// to assistive technologies, so the strip stays out of their way.
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(width: 20)
+            .contentShape(Rectangle())
+            .overlay {
+                if resize != nil {
+                    Capsule()
+                        .fill(.tertiary)
+                        .frame(width: 5, height: 40)
+                }
+            }
+            .gesture(resizeGesture)
+            .accessibilityHidden(true)
+    }
+
+    private var resizeGesture: some Gesture {
+        // Global, because the strip moves with the edge it drags.
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            .updating($isResizing) { _, isActive, _ in isActive = true }
+            .onChanged { value in
+                let startWidth = resize?.startWidth ?? settledWidth
+                resize = Resize(
+                    startWidth: startWidth,
+                    width: sizing.dragWidth(startWidth + widening(value.translation))
+                )
+            }
+            .onEnded { value in
+                guard let resize else { return }
+                settle(atPredictedWidth: resize.startWidth + widening(value.predictedEndTranslation))
+            }
+    }
+
+    /// Global coordinates don't mirror, so a right-to-left column widens as the finger moves left.
+    private func widening(_ translation: CGSize) -> CGFloat {
+        layoutDirection == .rightToLeft ? -translation.width : translation.width
+    }
+
+    private func settle(atPredictedWidth predictedWidth: CGFloat) {
+        let outcome = sizing.outcome(predictedWidth: predictedWidth)
+        withAnimation(settleAnimation) {
+            switch outcome {
+            case .rail:
+                isExpanded = false
+            case .expanded(let width):
+                expandedWidth = width
+                isExpanded = true
+            }
+            resize = nil
+        }
+    }
+
+    private var settleAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.15)
+    }
+
+    private func needsAttention(nameOpacity: Double) -> some View {
         RailButton(
             title: String(localized: "Needs attention"),
             isSelected: false,
+            nameOpacity: nameOpacity,
+            count: model.recoverySnapshot.needsAttentionCount,
             action: { sheet = .recoveryCenter }
         ) {
             RailIcon(systemImage: "exclamationmark.bubble", color: .primary)
-                .overlay(alignment: .topTrailing) {
-                    Text(model.recoverySnapshot.needsAttentionCount, format: .number)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .frame(minWidth: 18, minHeight: 18)
-                        .background(.red, in: Capsule())
-                        .offset(x: 10, y: -10)
-                }
         }
         .accessibilityValue(Text(model.recoverySnapshot.needsAttentionCount, format: .number))
         .accessibilityIdentifier("needs-attention")
     }
 
-    private var newListButton: some View {
+    private func newListButton(nameOpacity: Double) -> some View {
         Group {
             if newListStyle.isPinned {
                 Button {
@@ -269,6 +423,7 @@ struct LibraryRailView: View {
                 RailButton(
                     title: String(localized: "New List"),
                     isSelected: false,
+                    nameOpacity: nameOpacity,
                     action: { Task { await model.openNewList() } }
                 ) {
                     RailIcon(systemImage: newListStyle.systemImage, color: .secondary)
@@ -280,25 +435,55 @@ struct LibraryRailView: View {
         .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
 #endif
     }
+
+    private struct Resize {
+        let startWidth: CGFloat
+        let width: CGFloat
+    }
 }
 
+/// A row of the list column: the mark, then the name once the column is wide enough to show it.
 private struct RailButton<Mark: View>: View {
     private static var length: CGFloat { 56 }
     private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     let title: String
     let isSelected: Bool
+    let nameOpacity: Double
+    var count: Int?
     let action: () -> Void
     @ViewBuilder let mark: () -> Mark
 
     var body: some View {
         Button(action: action) {
-            mark()
-                .frame(width: Self.length, height: Self.length)
-                .background {
-                    // The card's color ties the selected list to the page beside it.
-                    if isSelected { Self.shape.fill(Color(.systemBackground)) }
+            HStack(spacing: 0) {
+                mark()
+                    .frame(width: Self.length, height: Self.length)
+                    .overlay(alignment: .topTrailing) {
+                        if let count {
+                            CountBadge(count: count)
+                                .offset(x: -7, y: 7)
+                                .opacity(1 - nameOpacity)
+                        }
+                    }
+                // A zero-width minimum lets the rail hide the name without widening the row.
+                HStack(spacing: 8) {
+                    Text(title)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    if let count { CountBadge(count: count) }
                 }
-                .contentShape([.interaction, .contextMenuPreview], Self.shape)
+                .padding(.leading, 4)
+                .padding(.trailing, 12)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .opacity(nameOpacity)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                // The card's color ties the selected list to the page beside it.
+                if isSelected { Self.shape.fill(Color(.systemBackground)) }
+            }
+            .contentShape([.interaction, .contextMenuPreview], Self.shape)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -306,6 +491,19 @@ private struct RailButton<Mark: View>: View {
         .accessibilityShowsLargeContentViewer {
             Label { Text(title) } icon: { mark() }
         }
+    }
+}
+
+private struct CountBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text(count, format: .number)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .frame(minWidth: 18, minHeight: 18)
+            .background(.red, in: Capsule())
     }
 }
 
