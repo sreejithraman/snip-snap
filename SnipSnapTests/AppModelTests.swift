@@ -467,6 +467,24 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testSyncedDeletionOfTheEditedSnipClosesTheEditor() async {
+        let snip = Snip(content: "Deleted on another device", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.waitForInitialLoad()
+        let beganEditing = await model.beginEditing(snip.id)
+        XCTAssertTrue(beganEditing)
+
+        await library.deleteRemotely(snip.id)
+        await model.reload()
+
+        XCTAssertNil(model.editingID)
+        XCTAssertTrue(model.snips.isEmpty)
+        model.enterSearch()
+        XCTAssertTrue(model.isSearchExpanded)
+    }
+
+    @MainActor
     func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
         let oldLibrary = InMemorySnipLibrary(
             snips: [Snip(content: "Local before enable", origin: .quickEntry)]
