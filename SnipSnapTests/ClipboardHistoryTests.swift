@@ -907,7 +907,7 @@ final class ClipboardHistoryTests: XCTestCase {
     private func makeSyncedHistory(_ gate: ClipboardSyncGenerationGate) throws -> ClipboardHistory {
         let context = try makeContext()
         context.history.configureSync(
-            containerIdentifier: "iCloud.world.sree.snipsnap.tests",
+            containerIdentifier: "iCloud.org.example.snipsnap",
             rootURL: context.storeURL.deletingLastPathComponent()
                 .appendingPathComponent("SyncMode", isDirectory: true),
             mainEnabled: { true },
