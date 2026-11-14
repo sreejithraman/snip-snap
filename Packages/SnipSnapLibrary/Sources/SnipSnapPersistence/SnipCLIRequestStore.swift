@@ -110,15 +110,16 @@ public actor SnipCLIRequestStore {
           throw SnipCLIAppReadinessError.unavailable
         }
       }
-      if let receipt = try readReceipt(request.requestID) {
+      switch try storedRequest(
+        request.requestID, readingReceipt: { try readReceipt($0) }, shows: { _ in true }
+      ) {
+      case .completed(let receipt):
         guard receipt.visibleScopeToken == request.scopeToken else {
           throw SnipCLIRequestError.scopeChanged
         }
         guard receipt.matches(request) else { throw SnipCLIRequestError.conflictingRequestID }
         return .completed(receipt)
-      }
-      let processingURL = paths.processingURL(request.requestID)
-      if let existing = try readProcessing(at: processingURL) {
+      case .processing(let existing, let processingURL):
         guard existing.scopeToken == request.scopeToken else {
           throw SnipCLIRequestError.scopeChanged
         }
@@ -126,9 +127,7 @@ public actor SnipCLIRequestStore {
           throw SnipCLIRequestError.conflictingRequestID
         }
         return processingState(existing, at: processingURL)
-      }
-      let pendingURL = paths.pendingURL(request.requestID)
-      if let existing = try readRequest(at: pendingURL) {
+      case .pending(let existing, let pendingURL):
         guard existing.scopeToken == request.scopeToken else {
           throw SnipCLIRequestError.scopeChanged
         }
@@ -137,8 +136,10 @@ public actor SnipCLIRequestStore {
         }
         if existing.expiresAt > now(), clientIsAlive(existing.clientPID) { return .pending }
         try FileManager.default.removeItem(at: pendingURL)
+      case .missing:
+        break
       }
-      try DurableFile.write(try Self.encoder.encode(request), to: pendingURL)
+      try DurableFile.write(try Self.encoder.encode(request), to: paths.pendingURL(request.requestID))
       return .pending
     }
   }
@@ -152,22 +153,25 @@ public actor SnipCLIRequestStore {
   ) throws -> SnipCLIRequestState {
     try withLock {
       let scopeToken = try readScopeToken()
-      if let receipt = try currentReceipt(requestID),
-         receipt.visibleScopeToken == scopeToken { return .completed(receipt) }
-      let processingURL = paths.processingURL(requestID)
-      if let processing = try readProcessing(at: processingURL) {
+      switch try storedRequest(
+        requestID, readingReceipt: { try currentReceipt($0) },
+        shows: { $0.visibleScopeToken == scopeToken }
+      ) {
+      case .completed(let receipt):
+        return .completed(receipt)
+      case .processing(let processing, let processingURL):
         guard processing.scopeToken == scopeToken
           || isAwaitedTransition(processing, request: request) else { return .missing }
         return processingState(processing, at: processingURL)
-      }
-      let pendingURL = paths.pendingURL(requestID)
-      if let pending = try readRequest(at: pendingURL) {
+      case .pending(let pending, let pendingURL):
         guard pending.scopeToken == scopeToken else { return .missing }
         if pending.expiresAt > now(), clientIsAlive(pending.clientPID) { return .pending }
         try FileManager.default.removeItem(at: pendingURL)
         try DurableFile.syncDirectory(paths.pendingRootURL)
+        return .missing
+      case .missing:
+        return .missing
       }
-      return .missing
     }
   }
 
@@ -177,24 +181,27 @@ public actor SnipCLIRequestStore {
   ) throws -> SnipCLIRequestState {
     try withLock {
       let scopeToken = try readScopeToken()
-      if let receipt = try readReceipt(requestID),
-         receipt.visibleScopeToken == scopeToken { return .completed(receipt) }
-      let processingURL = paths.processingURL(requestID)
-      if let processing = try readProcessing(at: processingURL) {
+      switch try storedRequest(
+        requestID, readingReceipt: { try readReceipt($0) },
+        shows: { $0.visibleScopeToken == scopeToken }
+      ) {
+      case .completed(let receipt):
+        return .completed(receipt)
+      case .processing(let processing, let processingURL):
         guard processing.scopeToken == scopeToken
           || isAwaitedTransition(processing, request: request) else { return .missing }
         return processingState(processing, at: processingURL)
-      }
-      let pending = paths.pendingURL(requestID)
-      guard FileManager.default.fileExists(atPath: pending.path) else { return .missing }
-      guard let queued = try readRequest(at: pending),
-        queued.scopeToken == scopeToken
+      case .pending(let queued, let pendingURL):
+        guard queued.scopeToken == scopeToken
           || (request?.action.allowsScopeTransition == true
             && queued.requestID == request?.requestID
             && queued.fingerprint == request?.fingerprint) else { return .missing }
-      try FileManager.default.removeItem(at: pending)
-      try DurableFile.syncDirectory(paths.pendingRootURL)
-      return .missing
+        try FileManager.default.removeItem(at: pendingURL)
+        try DurableFile.syncDirectory(paths.pendingRootURL)
+        return .missing
+      case .missing:
+        return .missing
+      }
     }
   }
 
@@ -375,8 +382,21 @@ public actor SnipCLIRequestStore {
       && marker.fingerprint == request.fingerprint && marker.scopeToken == request.scopeToken
   }
 
-  /// Readers check the receipt before the processing marker: the receipt wins over a
-  /// processing marker left beside it.
+  private func storedRequest(
+    _ id: UUID,
+    readingReceipt readReceipt: (UUID) throws -> SnipCLIReceipt?,
+    shows: (SnipCLIReceipt) -> Bool
+  ) throws -> StoredRequest {
+    if let receipt = try readReceipt(id), shows(receipt) { return .completed(receipt) }
+    let processingURL = paths.processingURL(id)
+    if let processing = try readProcessing(at: processingURL) {
+      return .processing(processing, processingURL)
+    }
+    let pendingURL = paths.pendingURL(id)
+    if let pending = try readRequest(at: pendingURL) { return .pending(pending, pendingURL) }
+    return .missing
+  }
+
   private func readReceipt(_ id: UUID) throws -> SnipCLIReceipt? {
     let url = paths.receiptURL(id)
     guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -478,6 +498,15 @@ public actor SnipCLIRequestStore {
     case deliveredBesideProcessingMarker
     /// No durable receipt, so the outcome is unknown.
     case uncertain
+  }
+
+  /// A request's marker files in reader precedence: a shown receipt wins over a processing
+  /// marker left beside it, and a processing marker wins over a pending request.
+  private enum StoredRequest {
+    case completed(SnipCLIReceipt)
+    case processing(ProcessingMarker, URL)
+    case pending(SnipCLIRequest, URL)
+    case missing
   }
 
   private struct ProcessingMarker: Codable {
