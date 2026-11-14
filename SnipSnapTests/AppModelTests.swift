@@ -4489,7 +4489,7 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
     }
 }
 
-/// Holds one copy's export until it is cancelled and another until the test releases it.
+/// Holds one copy's export until it is cancelled and the held export has started; holds that one until released.
 private actor SupersededCopyExportGate {
     private let cancelledText: String
     private let heldText: String
@@ -4504,7 +4504,7 @@ private actor SupersededCopyExportGate {
     func prepare(text: String, attachmentURLs: [URL]) async throws -> SnipPasteboardExport {
         startedTexts.insert(text)
         if text == cancelledText {
-            while !Task.isCancelled {
+            while !Task.isCancelled || !startedTexts.contains(heldText) {
                 await Task.yield()
             }
         } else if text == heldText {
