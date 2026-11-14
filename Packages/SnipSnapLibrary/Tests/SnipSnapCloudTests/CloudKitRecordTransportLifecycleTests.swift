@@ -2,6 +2,7 @@ import CloudKit
 import Foundation
 @testable import SnipSnapCloud
 import SnipSnapCore
+import Synchronization
 import XCTest
 
 /// Pins the real transport's engine start, cycles, explicit transfers, first-fetch
@@ -219,14 +220,14 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         try await transport.start(state: nil)
         let engine = try fixture.engine(0)
         let zone = fixture.zoneFetched(0)
-        let phase = LockedBox(0)
+        let phase = Mutex(0)
         let startedWhileBothRan = expectation(description: "Explicit fetch started while both cycles ran")
         startedWhileBothRan.isInverted = true
         let startedWhileSendRan = expectation(description: "Explicit fetch started while the send cycle ran")
         startedWhileSendRan.isInverted = true
         let started = expectation(description: "Explicit fetch started after every cycle ended")
         engine.onFetch { engine, _ in
-            switch phase.value {
+            switch phase.withLock({ $0 }) {
             case 0: startedWhileBothRan.fulfill()
             case 1: startedWhileSendRan.fulfill()
             default: started.fulfill()
@@ -237,10 +238,10 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
 
         let explicitFetch = Task { try await transport.fetch(scope: .all) }
         await fulfillment(of: [startedWhileBothRan], timeout: 0.2)
-        phase.set(1)
+        phase.withLock { $0 = 1 }
         await transport.emit(zone, .didFetchChanges, from: engine)
         await fulfillment(of: [startedWhileSendRan], timeout: 0.2)
-        phase.set(2)
+        phase.withLock { $0 = 2 }
         await transport.emit(.didSendChanges, from: engine)
         await fulfillment(of: [started], timeout: 2)
         let batch = try await value(of: explicitFetch)
@@ -258,14 +259,14 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         try await transport.start(state: nil)
         let engine = try fixture.engine(0)
         let zone = fixture.zoneFetched(0)
-        let phase = LockedBox(0)
+        let phase = Mutex(0)
         let startedDuringCycle = expectation(description: "A transfer started during the cycle")
         startedDuringCycle.isInverted = true
         let startedAfterCancel = expectation(description: "Cancelling a waiter ended the cycle")
         startedAfterCancel.isInverted = true
         let started = expectation(description: "The remaining transfer started after the cycle")
         engine.onFetch { engine, _ in
-            switch phase.value {
+            switch phase.withLock({ $0 }) {
             case 0: startedDuringCycle.fulfill()
             case 1: startedAfterCancel.fulfill()
             default: started.fulfill()
@@ -289,9 +290,9 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         await fulfillment(of: [startedDuringCycle], timeout: 0.2)
         cancelledFetch.cancel()
         await fulfillment(of: [cancelled], timeout: 2)
-        phase.set(1)
+        phase.withLock { $0 = 1 }
         await fulfillment(of: [startedAfterCancel], timeout: 0.2)
-        phase.set(2)
+        phase.withLock { $0 = 2 }
         await transport.emit(.didFetchChanges, from: engine)
         await fulfillment(of: [started], timeout: 2)
         _ = try await value(of: waitingFetch)
@@ -424,7 +425,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         let dropped = fixture.recordID("dropped")
         let keptDraft = makeDraft(kept, "keep me")
         let droppedDraft = makeDraft(dropped, "dropped by CloudKit")
-        let provided = LockedBox<CKSyncEngine.RecordZoneChangeBatch?>(nil)
+        let provided = Mutex<CKSyncEngine.RecordZoneChangeBatch?>(nil)
         engine.onSend { engine, options in
             await transport.emit(.willSendChanges, from: engine)
             // A newer snapshot withdraws one record; CloudKit no longer holds another.
@@ -433,7 +434,7 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             )
             engine.remove(pendingRecordZoneChanges: [.saveRecord(CloudKitRecordMapper.recordID(for: dropped))])
             let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
-            provided.set(batch)
+            provided.withLock { $0 = batch }
             await transport.emit(sentRecords(batch?.recordsToSave ?? []), .didSendChanges, from: engine)
         }
 
@@ -442,7 +443,10 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         ]))
 
         XCTAssertEqual(engine.sendOptions.map(\.scope), [.all])
-        XCTAssertEqual(provided.value?.recordsToSave.map(\.recordID), [CloudKitRecordMapper.recordID(for: kept)])
+        XCTAssertEqual(
+            provided.withLock { $0?.recordsToSave.map(\.recordID) },
+            [CloudKitRecordMapper.recordID(for: kept)]
+        )
         XCTAssertEqual(sent.items.map(\.id), [kept])
         guard case .saved(let snapshot)? = sent.items.first else {
             return XCTFail("Expected the supplied record to be saved")
@@ -566,6 +570,131 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(recovered.engineState?.requiresInitialFetch, false)
     }
 
+    // MARK: Failure mapping
+
+    func testProviderLeavesOutARecordThatFailsToMapAndReportsItInvalid() async throws {
+        let fixture = makeFixture()
+        let transport = fixture.transport
+        try await transport.start(state: nil)
+        let engine = try fixture.engine(0)
+        await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
+        try await transport.confirmAllEvents()
+        let mapped = fixture.recordID("mapped")
+        let unmappable = fixture.recordID("unmappable")
+        try await transport.scheduleAutomaticSync(CloudOutboundBatch(operations: [
+            .save(makeDraft(mapped, "maps")), .save(makeUnmappableDraft(unmappable)),
+        ]))
+
+        await transport.emit(.willSendChanges, from: engine)
+        let provided = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
+        XCTAssertEqual(provided?.recordsToSave.map(\.recordID), [CloudKitRecordMapper.recordID(for: mapped)])
+        await transport.emit(sentRecords(provided?.recordsToSave ?? []), .didSendChanges, from: engine)
+
+        let head = await transport.headEvent()
+        let sent = try XCTUnwrap(head?.sentBatch)
+        XCTAssertEqual(sent.items.map(\.id), [mapped, unmappable])
+        guard case .saved(let snapshot)? = sent.items.first else {
+            return XCTFail("Expected the mapped record to be saved")
+        }
+        XCTAssertEqual(snapshotText(snapshot), "maps")
+        XCTAssertEqual(sent.items.last, .failed(unmappable, .invalidRecord))
+    }
+
+    func testFetchedEncryptedDataResetDeletesTheZoneAndBlocksOutboundAtOnce() async throws {
+        let fixture = makeFixture(zoneNames: ["reset", "missing"])
+        let transport = fixture.transport
+        try await transport.start(state: nil)
+        let engine = try fixture.engine(0)
+        let (resetZone, missingZone) = (fixture.zones[0], fixture.zones[1])
+        let queued = fixture.recordID("queued")
+        try await transport.scheduleAutomaticSync(
+            CloudOutboundBatch(operations: [.save(makeDraft(queued, "queued"))])
+        )
+
+        await transport.emit(
+            .willFetchChanges,
+            .didFetchRecordZoneChanges(
+                zoneID: CloudKitRecordMapper.zoneID(for: missingZone), error: ckError(.zoneNotFound)
+            ),
+            from: engine
+        )
+        XCTAssertEqual(
+            engine.pendingRecordZoneChanges,
+            [.saveRecord(CloudKitRecordMapper.recordID(for: queued))],
+            "A missing zone leaves outbound work queued"
+        )
+        await transport.emit(
+            .didFetchRecordZoneChanges(
+                zoneID: CloudKitRecordMapper.zoneID(for: resetZone), error: encryptedDataResetError()
+            ),
+            from: engine
+        )
+        XCTAssertTrue(engine.pendingRecordZoneChanges.isEmpty, "A reset withdraws outbound work before the cycle ends")
+
+        await transport.emit(.didFetchChanges, from: engine)
+        let head = await transport.headEvent()
+        let batch = try XCTUnwrap(head?.fetchedBatch)
+        XCTAssertEqual(batch.databaseEvents, [.zoneDeleted(resetZone, reason: .encryptedDataReset)])
+        XCTAssertEqual(batch.zoneEvents, [.failed(missingZone, .zoneMissing)])
+        XCTAssertTrue(batch.items.isEmpty)
+        XCTAssertTrue(batch.isInitialFetch)
+    }
+
+    func testSentEncryptedDataResetAddsAZoneDeletionWhereOtherFailuresStayFailures() async throws {
+        let fixture = makeFixture(zoneNames: ["reset", "missing"])
+        let transport = fixture.transport
+        try await transport.start(state: nil)
+        let engine = try fixture.engine(0)
+        await transport.emit(
+            .willFetchChanges, fixture.zoneFetched(0), fixture.zoneFetched(1), .didFetchChanges,
+            from: engine
+        )
+        try await transport.confirmAllEvents()
+        let (resetZone, missingZone) = (fixture.zones[0], fixture.zones[1])
+        let inReset = CloudRecordID(zone: resetZone, name: "in-reset-zone")
+        let inMissing = CloudRecordID(zone: missingZone, name: "in-missing-zone")
+        try await transport.scheduleAutomaticSync(CloudOutboundBatch(operations: [
+            .save(makeDraft(inReset, "reset")), .save(makeDraft(inMissing, "missing")),
+        ]))
+        await transport.emit(.willSendChanges, from: engine)
+        let provided = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
+        XCTAssertEqual(provided?.recordsToSave.count, 2)
+
+        await transport.emit(
+            .sentDatabaseChanges(
+                savedZones: [],
+                failedZoneSaves: [
+                    (zoneID: CloudKitRecordMapper.zoneID(for: resetZone), error: encryptedDataResetError()),
+                    (zoneID: CloudKitRecordMapper.zoneID(for: missingZone), error: ckError(.zoneNotFound)),
+                ],
+                failedZoneDeletes: [],
+                deletedZoneIDs: []
+            ),
+            .sentRecordZoneChanges(
+                savedRecords: [],
+                deletedRecordIDs: [],
+                failedRecordSaves: [
+                    (recordID: CloudKitRecordMapper.recordID(for: inReset), error: encryptedDataResetError()),
+                    (recordID: CloudKitRecordMapper.recordID(for: inMissing), error: ckError(.zoneNotFound)),
+                ],
+                failedRecordDeletes: []
+            ),
+            .didSendChanges,
+            from: engine
+        )
+
+        let head = await transport.headEvent()
+        let sent = try XCTUnwrap(head?.sentBatch)
+        // The failed zone save and the failed record save each report the reset.
+        XCTAssertEqual(sent.databaseEvents, [
+            .zoneDeleted(resetZone, reason: .encryptedDataReset),
+            .failed(missingZone, .zoneMissing),
+            .zoneDeleted(resetZone, reason: .encryptedDataReset),
+        ])
+        XCTAssertTrue(sent.zoneEvents.isEmpty)
+        XCTAssertEqual(sent.items, [.failed(inReset, .zoneMissing), .failed(inMissing, .zoneMissing)])
+    }
+
     // MARK: Reset
 
     func testResetReleasesTransfersWaitingForACycle() async throws {
@@ -645,17 +774,123 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(events.map(\.id), [fresh.id])
     }
 
+    func testResetDuringAnExplicitSendFailsItWithoutBlockingTheRestartedEngine() async throws {
+        let fixture = makeFixture()
+        let transport = fixture.transport
+        try await transport.start(state: nil)
+        let old = try fixture.engine(0)
+        let zone = fixture.zoneFetched(0)
+        let gate = AsyncOpenGate()
+        defer { gate.open() }
+        let entered = expectation(description: "Send entered the old engine")
+        old.onSend { engine, _ in
+            entered.fulfill()
+            await gate.wait()
+            await transport.emit(.willSendChanges, .didSendChanges, from: engine)
+        }
+
+        let staleID = fixture.recordID("stale")
+        let stale = Task {
+            try await transport.send(CloudOutboundBatch(operations: [.save(makeDraft(staleID, "old engine"))]))
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        await transport.reset()
+        try await transport.start(state: nil)
+        let current = try fixture.engine(1)
+        current.onFetch { engine, _ in
+            await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: engine)
+        }
+        current.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
+            await transport.emit(sentRecords(batch?.recordsToSave ?? []), .didSendChanges, from: engine)
+        }
+        let initial = try await value(of: Task { try await transport.fetch(scope: .all) })
+        try await transport.confirmApplied(initial.id)
+        let freshID = fixture.recordID("fresh")
+        let fresh = try await value(of: Task {
+            try await transport.send(CloudOutboundBatch(operations: [.save(makeDraft(freshID, "new engine"))]))
+        })
+        XCTAssertEqual(fresh.items.map(\.id), [freshID])
+
+        gate.open()
+        await assertTransportError(.notStarted) { try await value(of: stale) }
+        let events = try await transport.confirmAllEvents()
+        XCTAssertEqual(events.map(\.id), [fresh.id], "The old engine's late cycle queues nothing")
+        let later = try await transport.fetch(scope: .all)
+        XCTAssertFalse(later.isInitialFetch)
+    }
+
+    func testResetWhileTheProviderWaitsOnItsSendGateSuppliesNothingToTheNewEngine() async throws {
+        let fixture = makeFixture()
+        let transport = fixture.transport
+        let gate = AsyncOpenGate()
+        defer { gate.open() }
+        let reachedGate = expectation(description: "The old engine's provider reached the send gate")
+        // The gate belongs to the transport, so the new engine's provider passes it too.
+        reachedGate.assertForOverFulfill = false
+        await transport.configureAutomaticSync(workAvailableHandler: {}, recordSendGate: {
+            reachedGate.fulfill()
+            await gate.wait()
+        })
+        try await transport.start(state: nil)
+        let old = try fixture.engine(0)
+        let zone = fixture.zoneFetched(0)
+        // Both engines queue the same record, so a stale supply would count in the new cycle.
+        let id = fixture.recordID("shared")
+        await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: old)
+        try await transport.confirmAllEvents()
+        try await transport.scheduleAutomaticSync(
+            CloudOutboundBatch(operations: [.save(makeDraft(id, "old body"))])
+        )
+        await transport.emit(.willSendChanges, from: old)
+        let stale = Task { () async throws -> CKSyncEngine.RecordZoneChangeBatch? in
+            await transport.nextRecordZoneChangeBatch(scope: .all, from: old)
+        }
+        await fulfillment(of: [reachedGate], timeout: 2)
+
+        await transport.reset()
+        try await transport.start(state: nil)
+        let current = try fixture.engine(1)
+        await transport.emit(.willFetchChanges, zone, .didFetchChanges, from: current)
+        try await transport.confirmAllEvents()
+        try await transport.scheduleAutomaticSync(
+            CloudOutboundBatch(operations: [.save(makeDraft(id, "new body"))])
+        )
+        await transport.emit(.willSendChanges, from: current)
+        gate.open()
+        let fromOld = try await value(of: stale)
+        XCTAssertNil(fromOld)
+
+        await transport.emit(.didSendChanges, from: current)
+        let unsupplied = await transport.headEvent()
+        XCTAssertTrue(try XCTUnwrap(unsupplied?.sentBatch).items.isEmpty, "The stale provider supplied nothing")
+        try await transport.confirmAllEvents()
+
+        await transport.emit(.willSendChanges, from: current)
+        let fromCurrent = await transport.nextRecordZoneChangeBatch(scope: .all, from: current)
+        XCTAssertEqual(fromCurrent?.recordsToSave.map(\.recordID), [CloudKitRecordMapper.recordID(for: id)])
+        await transport.emit(sentRecords(fromCurrent?.recordsToSave ?? []), .didSendChanges, from: current)
+        let head = await transport.headEvent()
+        let sent = try XCTUnwrap(head?.sentBatch)
+        guard sent.items.count == 1, case .saved(let snapshot)? = sent.items.first else {
+            return XCTFail("Expected the new engine to save only its own record")
+        }
+        XCTAssertEqual(snapshotText(snapshot), "new body")
+    }
+
     // MARK: Helpers
 
     private func value<T: Sendable>(of task: Task<T, any Error>) async throws -> T {
         let finished = expectation(description: "Transfer finished")
-        let outcome = LockedBox<Result<T, any Error>?>(nil)
+        let outcome = Mutex<Result<T, any Error>?>(nil)
         Task {
-            outcome.set(await task.result)
+            let result = await task.result
+            outcome.withLock { $0 = result }
             finished.fulfill()
         }
         await fulfillment(of: [finished], timeout: 2)
-        guard let result = outcome.value else { throw TransferTimeout() }
+        guard let result = outcome.withLock({ $0 }) else { throw TransferTimeout() }
         return try result.get()
     }
 
@@ -891,21 +1126,6 @@ private extension CloudRecordTransportEvent {
     }
 }
 
-private final class LockedBox<Value: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Value
-
-    init(_ value: Value) {
-        stored = value
-    }
-
-    var value: Value { lock.withLock { stored } }
-
-    func set(_ value: Value) {
-        lock.withLock { stored = value }
-    }
-}
-
 /// Holds a scripted CloudKit call open until the test opens the gate.
 private final class AsyncOpenGate: @unchecked Sendable {
     private let lock = NSLock()
@@ -940,6 +1160,19 @@ private func makeDraft(_ id: CloudRecordID, _ text: String) -> CloudRecordDraft 
     .text(id: id, snipID: UUID(), text: text)
 }
 
+/// The mapper rejects a draft that removes routing fields.
+private func makeUnmappableDraft(_ id: CloudRecordID) -> CloudRecordDraft {
+    let draft = makeDraft(id, "unmappable")
+    return CloudRecordDraft(
+        id: draft.id,
+        recordType: draft.recordType,
+        schemaVersion: draft.schemaVersion,
+        routingFields: draft.routingFields,
+        encryptedFields: draft.encryptedFields,
+        removedRoutingFields: ["snipID"]
+    )
+}
+
 private func makeCKRecord(_ id: CloudRecordID, _ text: String) throws -> CKRecord {
     try CloudKitRecordMapper.record(for: makeDraft(id, text))
 }
@@ -955,8 +1188,12 @@ private func sentRecords(_ records: [CKRecord]) -> CloudKitRecordEngineEvent {
     )
 }
 
-private func ckError(_ code: CKError.Code) -> CKError {
-    CKError(_nsError: NSError(domain: CKErrorDomain, code: code.rawValue))
+private func ckError(_ code: CKError.Code, userInfo: [String: Any] = [:]) -> CKError {
+    CKError(_nsError: NSError(domain: CKErrorDomain, code: code.rawValue, userInfo: userInfo))
+}
+
+private func encryptedDataResetError() -> CKError {
+    ckError(.zoneNotFound, userInfo: [CKErrorUserDidResetEncryptedDataKey: true])
 }
 
 private func fetchedZones(in scope: CKSyncEngine.FetchChangesOptions.Scope) -> Set<CloudZoneID>? {
