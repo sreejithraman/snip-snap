@@ -87,11 +87,16 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
     private let pasteboard: UIPasteboard
     private let stagingRoot: URL
     private let fileManager: FileManager
-    private var currentLease: IOSPasteboardFileLease?
-    private var leasedChangeCount: Int?
+    private enum LeaseState {
+        case released
+        case held(IOSPasteboardFileLease, changeCount: Int)
+    }
+
+    private var leaseState = LeaseState.released
 
     var activeLeaseDirectory: URL? {
-        currentLease?.directory
+        guard case .held(let lease, _) = leaseState else { return nil }
+        return lease.directory
     }
 
     init(
@@ -104,7 +109,7 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
         self.stagingRoot = stagingRoot
         self.fileManager = fileManager
         super.init()
-        restoreCurrentLease()
+        restoreHeldLease()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(pasteboardChanged),
@@ -146,38 +151,39 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
             localOnly: false,
             expirationDate: nil
         )
-        currentLease?.remove()
-        currentLease = staged.lease
-        leasedChangeCount = staged.lease == nil ? nil : pasteboard.changeCount
-        if let lease = staged.lease, let leasedChangeCount {
-            lease.record(
-                pasteboardName: pasteboard.name.rawValue,
-                changeCount: leasedChangeCount
-            )
+        releaseHeldLease()
+        if let lease = staged.lease {
+            let changeCount = pasteboard.changeCount
+            hold(lease, changeCount: changeCount)
+            lease.record(pasteboardName: pasteboard.name.rawValue, changeCount: changeCount)
         }
         removeStaleLeases(keeping: staged.lease?.directory)
         return true
     }
 
     @objc private func pasteboardChanged() {
-        guard let leasedChangeCount, pasteboard.changeCount != leasedChangeCount else { return }
-        releaseCurrentLease()
+        guard case .held(_, let changeCount) = leaseState,
+              pasteboard.changeCount != changeCount else { return }
+        releaseHeldLease()
     }
 
     @objc private func pasteboardRemoved(_ notification: Notification) {
         let removedName = (notification.object as? UIPasteboard.Name)
             ?? (notification.object as? UIPasteboard)?.name
         guard removedName == pasteboard.name else { return }
-        releaseCurrentLease()
+        releaseHeldLease()
     }
 
-    private func releaseCurrentLease() {
-        currentLease?.remove()
-        currentLease = nil
-        leasedChangeCount = nil
+    private func hold(_ lease: IOSPasteboardFileLease, changeCount: Int) {
+        leaseState = .held(lease, changeCount: changeCount)
     }
 
-    private func restoreCurrentLease() {
+    private func releaseHeldLease() {
+        if case .held(let lease, _) = leaseState { lease.remove() }
+        leaseState = .released
+    }
+
+    private func restoreHeldLease() {
         guard let directories = try? fileManager.contentsOfDirectory(
             at: stagingRoot,
             includingPropertiesForKeys: nil
@@ -187,12 +193,11 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
                 continue
             }
             guard record.pasteboardName == pasteboard.name.rawValue else { continue }
-            if record.changeCount == pasteboard.changeCount, currentLease == nil {
-                currentLease = IOSPasteboardFileLease(
-                    directory: directory,
-                    fileManager: fileManager
+            if record.changeCount == pasteboard.changeCount, case .released = leaseState {
+                hold(
+                    IOSPasteboardFileLease(directory: directory, fileManager: fileManager),
+                    changeCount: record.changeCount
                 )
-                leasedChangeCount = record.changeCount
             } else {
                 try? fileManager.removeItem(at: directory)
             }
@@ -350,11 +355,31 @@ final class IOSCopyShareCoordinator {
     private let pasteboard: any IOSPasteboardWriting
     private let payloadBuilder: IOSCopySharePayloadBuilder
     private let diagnostics: AppDiagnosticRecorder
-    private var copyGeneration = 0
-    @ObservationIgnored private var clipboardCopyTask: Task<Bool, Never>?
 
-    var unavailableFilesNotice: IOSUnavailableFilesNotice?
-    var shareRequest: IOSShareRequest?
+    /// The latest copy request. A newer request makes every earlier one stale.
+    private enum CopyRequest {
+        case snips(token: UUID)
+        case clipboardEntry(token: UUID, task: Task<Bool, Never>)
+
+        var token: UUID {
+            switch self {
+            case .snips(let token), .clipboardEntry(let token, _): token
+            }
+        }
+    }
+
+    @ObservationIgnored private var copyRequest: CopyRequest?
+
+    private(set) var unavailableFilesNotice: IOSUnavailableFilesNotice?
+    private(set) var shareRequest: IOSShareRequest?
+
+    /// The share sheet can only clear the share request, never replace it.
+    var shareSheetRequest: Binding<IOSShareRequest?> {
+        Binding(
+            get: { self.shareRequest },
+            set: { if $0 == nil { self.shareRequest = nil } }
+        )
+    }
 
     init(
         pasteboard: any IOSPasteboardWriting = IOSSystemPasteboard(),
@@ -367,19 +392,19 @@ final class IOSCopyShareCoordinator {
     }
 
     deinit {
-        clipboardCopyTask?.cancel()
+        if case .clipboardEntry(_, let task) = copyRequest { task.cancel() }
     }
 
     @discardableResult
     func copy(snips: [Snip], model: IOSAppModel) async -> Bool {
-        let generation = beginCopyRequest()
+        let token = beginCopyRequest()
         let interaction = model.haptics.beginInteraction()
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return false }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
         let preparation = await makePreparedPayload(snips: current, model: model, use: .copy)
         guard let payload = preparation.payload, !Task.isCancelled else { return false }
-        guard generation == copyGeneration else { return false }
+        guard isCurrentCopyRequest(token) else { return false }
         guard requireAllFiles(
             in: payload,
             preparationErrorCode: preparation.failureCode,
@@ -390,7 +415,7 @@ final class IOSCopyShareCoordinator {
         return await writeAndMarkDone(
             payload.copyItems,
             versions: versions,
-            generation: generation,
+            token: token,
             model: model,
             interaction: interaction,
             makeToast: { .copied(count: current.count) }
@@ -399,7 +424,7 @@ final class IOSCopyShareCoordinator {
 
     @discardableResult
     func copyText(snips: [Snip], model: IOSAppModel) async -> Bool {
-        let generation = beginCopyRequest()
+        let token = beginCopyRequest()
         let interaction = model.haptics.beginInteraction()
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return false }
@@ -407,7 +432,7 @@ final class IOSCopyShareCoordinator {
         return await writeAndMarkDone(
             makePayload(snips: current, model: model).textItems,
             versions: versions,
-            generation: generation,
+            token: token,
             model: model,
             interaction: interaction,
             makeToast: { .copiedText() }
@@ -416,14 +441,14 @@ final class IOSCopyShareCoordinator {
 
     @discardableResult
     func copyAttachments(snips: [Snip], model: IOSAppModel) async -> Bool {
-        let generation = beginCopyRequest()
+        let token = beginCopyRequest()
         let interaction = model.haptics.beginInteraction()
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return false }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
         let preparation = await makePreparedPayload(snips: current, model: model, use: .copy)
         guard let payload = preparation.payload, !Task.isCancelled else { return false }
-        guard generation == copyGeneration else { return false }
+        guard isCurrentCopyRequest(token) else { return false }
         guard requireAllFiles(
             in: payload,
             preparationErrorCode: preparation.failureCode,
@@ -435,7 +460,7 @@ final class IOSCopyShareCoordinator {
         return await writeAndMarkDone(
             payload.attachmentItems,
             versions: versions,
-            generation: generation,
+            token: token,
             model: model,
             interaction: interaction,
             makeToast: { .copiedAttachments() }
@@ -461,13 +486,13 @@ final class IOSCopyShareCoordinator {
 
     @discardableResult
     func copyTextFromNotice(_ notice: IOSUnavailableFilesNotice, model: IOSAppModel) async -> Bool {
-        let generation = beginCopyRequest()
+        let token = beginCopyRequest()
         let interaction = model.haptics.beginInteraction()
         unavailableFilesNotice = nil
         return await writeAndMarkDone(
             notice.payload.textItems,
             versions: notice.versions,
-            generation: generation,
+            token: token,
             model: model,
             interaction: interaction,
             makeToast: { .copiedText() }
@@ -501,15 +526,15 @@ final class IOSCopyShareCoordinator {
     func copyClipboardEntry(
         _ entry: ClipboardEntry, clipboard: IOSClipboardModel, model: IOSAppModel? = nil
     ) -> Task<Bool, Never> {
-        let generation = beginCopyRequest()
+        let token = beginCopyRequest()
         let task = Task {
             let copied = await clipboard.copy(entry)
-            if copied, !Task.isCancelled, generation == self.copyGeneration {
+            if copied, !Task.isCancelled, self.isCurrentCopyRequest(token) {
                 model?.presentToast(.copied(count: 1))
             }
             return copied
         }
-        clipboardCopyTask = task
+        copyRequest = .clipboardEntry(token: token, task: task)
         return task
     }
 
@@ -522,11 +547,15 @@ final class IOSCopyShareCoordinator {
         return requested.compactMap { currentByID[$0.id] }
     }
 
-    private func beginCopyRequest() -> Int {
-        clipboardCopyTask?.cancel()
-        clipboardCopyTask = nil
-        copyGeneration += 1
-        return copyGeneration
+    private func beginCopyRequest() -> UUID {
+        if case .clipboardEntry(_, let task) = copyRequest { task.cancel() }
+        let token = UUID()
+        copyRequest = .snips(token: token)
+        return token
+    }
+
+    private func isCurrentCopyRequest(_ token: UUID) -> Bool {
+        copyRequest?.token == token
     }
 
     private func makePreparedPayload(
@@ -578,12 +607,12 @@ final class IOSCopyShareCoordinator {
     private func writeAndMarkDone(
         _ items: [IOSCopyItem],
         versions: IOSCopiedSnipVersions,
-        generation: Int,
+        token: UUID,
         model: IOSAppModel,
         interaction: UUID?,
         makeToast: () -> AppToast
     ) async -> Bool {
-        guard generation == copyGeneration else { return false }
+        guard isCurrentCopyRequest(token) else { return false }
         guard pasteboard.write(items) else {
             diagnostics.record(.failure(
                 operation: "clipboard.write",
@@ -602,10 +631,10 @@ final class IOSCopyShareCoordinator {
         switch await model.markCopiedSnipsDone(
             versions: versions,
             copyToast: toast,
-            ifStillCurrent: { generation == self.copyGeneration }
+            ifStillCurrent: { self.isCurrentCopyRequest(token) }
         ) {
         case .unchanged:
-            if generation == copyGeneration { model.presentToast(makeToast()) }
+            if isCurrentCopyRequest(token) { model.presentToast(makeToast()) }
             model.haptics.emit(.copied, for: interaction)
             return true
         case .markedDone:
@@ -668,23 +697,51 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
 
     @MainActor
     final class Coordinator {
-        var activity: UIActivityViewController?
-        var completion: IOSShareCompletion?
-        var requestID: UUID?
-        var isDismantled = false
+        private enum Phase {
+            case idle
+            case active(id: UUID, activity: UIActivityViewController, completion: IOSShareCompletion)
+            case dismantled
+        }
+
+        private var phase = Phase.idle
         private let request: Binding<IOSShareRequest?>
 
         init(request: Binding<IOSShareRequest?>) { self.request = request }
 
+        fileprivate var isIdle: Bool {
+            if case .idle = phase { true } else { false }
+        }
+
+        fileprivate func isActive(for id: UUID) -> Bool {
+            if case .active(let activeID, _, _) = phase { activeID == id } else { false }
+        }
+
+        fileprivate func begin(_ id: UUID, activity: UIActivityViewController, completion: IOSShareCompletion) {
+            if case .dismantled = phase { return }
+            phase = .active(id: id, activity: activity, completion: completion)
+        }
+
+        fileprivate func finish(_ id: UUID) {
+            guard isActive(for: id) else { return }
+            phase = .idle
+        }
+
+        fileprivate func cancel(_ id: UUID) {
+            guard case .active(let activeID, _, let completion) = phase, activeID == id else { return }
+            completion.finish(.success(.cancelled))
+        }
+
         func tearDown(_ controller: UIViewController) {
-            guard !isDismantled else { return }
-            isDismantled = true
+            let active: (activity: UIActivityViewController, completion: IOSShareCompletion)?
+            switch phase {
+            case .dismantled: return
+            case .idle: active = nil
+            case .active(_, let activity, let completion): active = (activity, completion)
+            }
+            phase = .dismantled
             // A host can disappear before SwiftUI schedules presentation of a new request.
-            let terminal = completion ?? request.wrappedValue?.completion
-            let presented = activity
-            activity = nil
-            completion = nil
-            requestID = nil
+            let terminal = active?.completion ?? request.wrappedValue?.completion
+            let presented = active?.activity
             presented?.completionWithItemsHandler = nil
             // Wait for dismissal before releasing bytes a presented activity may read.
             if controller.presentedViewController != nil {
@@ -709,8 +766,7 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
         let coordinator = context.coordinator
-        guard let request, controller.presentedViewController == nil,
-              coordinator.requestID == nil, !coordinator.isDismantled else { return }
+        guard let request, controller.presentedViewController == nil, coordinator.isIdle else { return }
         let activity = makeActivityController(for: request, coordinator: coordinator)
         if let popover = activity.popoverPresentationController {
             popover.sourceView = controller.view
@@ -723,9 +779,9 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
             popover.permittedArrowDirections = []
         }
         DispatchQueue.main.async {
-            guard !coordinator.isDismantled, coordinator.requestID == request.id else { return }
+            guard coordinator.isActive(for: request.id) else { return }
             guard self.request?.id == request.id, controller.presentedViewController == nil else {
-                coordinator.completion?.finish(.success(.cancelled))
+                coordinator.cancel(request.id)
                 return
             }
             controller.present(activity, animated: true)
@@ -748,17 +804,11 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
                 ))
             }
             request.completion?.finish(result)
-            if coordinator?.requestID == request.id {
-                coordinator?.activity = nil
-                coordinator?.completion = nil
-                coordinator?.requestID = nil
-            }
+            coordinator?.finish(request.id)
             guard self.request?.id == request.id else { return }
             self.request = nil
         }
-        coordinator?.activity = activity
-        coordinator?.completion = terminal
-        coordinator?.requestID = request.id
+        coordinator?.begin(request.id, activity: activity, completion: terminal)
         activity.completionWithItemsHandler = { _, completed, _, error in
             DispatchQueue.main.async {
                 if let error, !isDiagnosticCancellation(error) {

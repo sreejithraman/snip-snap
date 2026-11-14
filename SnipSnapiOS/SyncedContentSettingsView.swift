@@ -22,11 +22,6 @@ struct SyncedContentSettingsView: View {
     @State private var isRetryingClipboardSync = false
     @Bindable var diagnostics: AppDiagnosticSettingsModel
     @State private var diagnosticDelivery = IOSDiagnosticShareDelivery()
-    @State private var isImportingBackup = false
-    @State private var isPreparingBackup = false
-    @State private var isProcessingImport = false
-    @State private var isConfirmingImport = false
-    @State private var backupExport: IOSBackupExport?
     private var backupError: String? { backupFailure?.message }
     @State private var backupFailure: AppFailure?
     @State private var settingsErrorDetails: AppFailure?
@@ -109,7 +104,7 @@ struct SyncedContentSettingsView: View {
                         Button(action: createBackup) {
                             HStack {
                                 settingsLabel("Create Backup…", systemImage: "square.and.arrow.up")
-                                if isPreparingBackup {
+                                if backupLifetime.isPreparingBackup {
                                     Spacer()
                                     ProgressView()
                                         .accessibilityLabel("Preparing backup")
@@ -122,7 +117,7 @@ struct SyncedContentSettingsView: View {
                             guard !isBackupBusy else { return }
                             library.haptics.invalidatePendingFeedback()
                                                 backupFailure = nil
-                            isImportingBackup = true
+                            backupLifetime.chooseBackup()
                         } label: {
                             settingsLabel("Import Backup…", systemImage: "square.and.arrow.down")
                         }
@@ -174,11 +169,14 @@ struct SyncedContentSettingsView: View {
                 }
             }
         }
-        .sheet(item: $backupExport, onDismiss: clearExportedBackup) { export in
+        .sheet(item: sharedBackup, onDismiss: { backupLifetime.finishSharingBackup() }) { export in
             IOSBackupExportPicker(url: export.url)
         }
         .fileImporter(
-            isPresented: $isImportingBackup,
+            isPresented: Binding(
+                get: { backupLifetime.isChoosingBackup },
+                set: { if !$0 { backupLifetime.finishChoosingBackup() } }
+            ),
             allowedContentTypes: [.folder, .json],
             allowsMultipleSelection: false
         ) { result in
@@ -198,7 +196,7 @@ struct SyncedContentSettingsView: View {
             "Import this backup?",
             isPresented: Binding(
                 get: { library?.pendingImportPreview != nil },
-                set: { if !$0, !isConfirmingImport { library?.cancelBackupImport() } }
+                set: { if !$0, !backupLifetime.isConfirmingImport { library?.cancelBackupImport() } }
             ),
             titleVisibility: .visible
         ) {
@@ -429,19 +427,17 @@ struct SyncedContentSettingsView: View {
     private func createBackup() {
         guard let library, !isBackupBusy, backupLifetime.isActive else { return }
         backupFailure = nil
-        isPreparingBackup = true
-        let operationID = backupLifetime.beginOperation()
-        backupLifetime.task = Task {
-            let root = FileManager.default.temporaryDirectory
-                .appendingPathComponent("SnipSnapBackup-\(UUID().uuidString)", isDirectory: true)
-            backupLifetime.exportRoot = root
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapBackup-\(UUID().uuidString)", isDirectory: true)
+        backupLifetime.startPreparingBackup(root: root) { operation in
             do {
                 let url = root.appendingPathComponent(String(localized: "Snip Snap Backup"), isDirectory: true)
                 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
                 try await library.createBackup(at: url)
                 try Task.checkCancellation()
-                guard backupLifetime.isActive else { throw CancellationError() }
-                backupExport = IOSBackupExport(url: url)
+                guard backupLifetime.shareBackup(IOSBackupExport(url: url), operation: operation) else {
+                    throw CancellationError()
+                }
             } catch is CancellationError {
                 try? FileManager.default.removeItem(at: root)
             } catch {
@@ -453,30 +449,23 @@ struct SyncedContentSettingsView: View {
                     backupFailure = AppFailure(error: error, operation: "backup.export")
                 }
             }
-            isPreparingBackup = false
-            backupLifetime.finishOperation(operationID)
         }
     }
 
     private var isBackupBusy: Bool {
-        isPreparingBackup || isProcessingImport || isConfirmingImport || isImportingBackup
-            || library?.pendingImportPreview != nil || backupExport != nil
+        backupLifetime.isBusy || library?.pendingImportPreview != nil
     }
 
-    private func clearExportedBackup() {
-        backupLifetime.clearExportedBackup()
-        backupExport = nil
+    private var sharedBackup: Binding<IOSBackupExport?> {
+        Binding(
+            get: { backupLifetime.sharedBackup },
+            set: { if $0 == nil { backupLifetime.finishSharingBackup() } }
+        )
     }
 
     private func previewBackupImport(from url: URL) {
-        guard let library, backupLifetime.isActive, !isProcessingImport, !isPreparingBackup else { return }
-        isProcessingImport = true
-        let operationID = backupLifetime.beginOperation()
-        backupLifetime.task = Task {
-            defer {
-                isProcessingImport = false
-                backupLifetime.finishOperation(operationID)
-            }
+        guard let library else { return }
+        backupLifetime.startPreviewingImport { _ in
             do {
                 try await library.previewBackupImport(from: url)
                 guard backupLifetime.isActive, !Task.isCancelled else {
@@ -494,14 +483,8 @@ struct SyncedContentSettingsView: View {
     }
 
     private func confirmBackupImport() {
-        guard let library, backupLifetime.isActive, !isProcessingImport, !isConfirmingImport else { return }
-        isConfirmingImport = true
-        let operationID = backupLifetime.beginOperation()
-        backupLifetime.task = Task {
-            defer {
-                isConfirmingImport = false
-                backupLifetime.finishOperation(operationID)
-            }
+        guard let library else { return }
+        backupLifetime.startConfirmingImport { _ in
             do {
                 try await library.confirmBackupImport()
             } catch is CancellationError {
@@ -560,7 +543,7 @@ struct SyncedContentSettingsView: View {
     }
 }
 
-private struct IOSBackupExport: Identifiable {
+struct IOSBackupExport: Identifiable {
     let id = UUID()
     let url: URL
 }
@@ -597,37 +580,145 @@ private struct IOSBackupExportPicker: UIViewControllerRepresentable {
 @MainActor
 @Observable
 final class IOSSettingsBackupLifetime {
-    private(set) var isActive = false
-    var task: Task<Void, Never>?
-    var exportRoot: URL?
-    private var operationID: UUID?
+    private struct Operation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
 
-    func begin() { isActive = true }
+    private enum Phase {
+        case inactive
+        case idle
+        case choosingBackup
+        case preparingBackup(Operation, root: URL)
+        case sharingBackup(IOSBackupExport, root: URL)
+        case previewingImport(Operation)
+        case confirmingImport(Operation)
+    }
+
+    typealias OperationBody = @MainActor @Sendable (_ operation: UUID) async -> Void
+
+    private var phase = Phase.inactive
+
+    var isActive: Bool {
+        if case .inactive = phase { return false }
+        return true
+    }
+
+    var isBusy: Bool {
+        switch phase {
+        case .inactive, .idle: false
+        case .choosingBackup, .preparingBackup, .sharingBackup, .previewingImport, .confirmingImport: true
+        }
+    }
+
+    var isChoosingBackup: Bool {
+        if case .choosingBackup = phase { return true }
+        return false
+    }
+
+    var isPreparingBackup: Bool {
+        if case .preparingBackup = phase { return true }
+        return false
+    }
+
+    var isConfirmingImport: Bool {
+        if case .confirmingImport = phase { return true }
+        return false
+    }
+
+    var sharedBackup: IOSBackupExport? {
+        guard case .sharingBackup(let export, _) = phase else { return nil }
+        return export
+    }
+
+    func begin() {
+        guard case .inactive = phase else { return }
+        phase = .idle
+    }
 
     func end(library: IOSAppModel) {
-        isActive = false
-        task?.cancel()
-        task = nil
-        operationID = nil
+        let ended = phase
+        phase = .inactive
+        switch ended {
+        case .preparingBackup(let operation, let root):
+            operation.task.cancel()
+            try? FileManager.default.removeItem(at: root)
+        case .sharingBackup(_, let root):
+            try? FileManager.default.removeItem(at: root)
+        case .previewingImport(let operation), .confirmingImport(let operation):
+            operation.task.cancel()
+        case .inactive, .idle, .choosingBackup:
+            break
+        }
         library.cancelBackupImport()
-        clearExportedBackup()
     }
 
-    func beginOperation() -> UUID {
-        let id = UUID()
-        operationID = id
-        return id
+    @discardableResult
+    func chooseBackup() -> Bool {
+        guard case .idle = phase else { return false }
+        phase = .choosingBackup
+        return true
     }
 
-    func finishOperation(_ id: UUID) {
-        guard operationID == id else { return }
-        operationID = nil
-        task = nil
+    func finishChoosingBackup() {
+        guard case .choosingBackup = phase else { return }
+        phase = .idle
     }
 
-    func clearExportedBackup() {
-        guard let root = exportRoot else { return }
+    @discardableResult
+    func startPreparingBackup(root: URL, _ body: @escaping OperationBody) -> Bool {
+        guard case .idle = phase else { return false }
+        phase = .preparingBackup(start(body), root: root)
+        return true
+    }
+
+    /// Returns false when the operation was ended or replaced, so the export must not be shown.
+    func shareBackup(_ export: IOSBackupExport, operation: UUID) -> Bool {
+        guard case .preparingBackup(let current, let root) = phase, current.id == operation else { return false }
+        phase = .sharingBackup(export, root: root)
+        return true
+    }
+
+    func finishSharingBackup() {
+        guard case .sharingBackup(_, let root) = phase else { return }
         try? FileManager.default.removeItem(at: root)
-        exportRoot = nil
+        phase = .idle
+    }
+
+    @discardableResult
+    func startPreviewingImport(_ body: @escaping OperationBody) -> Bool {
+        switch phase {
+        case .idle, .choosingBackup:
+            phase = .previewingImport(start(body))
+            return true
+        case .inactive, .preparingBackup, .sharingBackup, .previewingImport, .confirmingImport:
+            return false
+        }
+    }
+
+    @discardableResult
+    func startConfirmingImport(_ body: @escaping OperationBody) -> Bool {
+        guard case .idle = phase else { return false }
+        phase = .confirmingImport(start(body))
+        return true
+    }
+
+    private func start(_ body: @escaping OperationBody) -> Operation {
+        let id = UUID()
+        let task = Task { @MainActor in
+            await body(id)
+            self.finishOperation(id)
+        }
+        return Operation(id: id, task: task)
+    }
+
+    private func finishOperation(_ id: UUID) {
+        switch phase {
+        case .preparingBackup(let operation, _), .previewingImport(let operation), .confirmingImport(let operation):
+            guard operation.id == id else { return }
+            phase = .idle
+        case .inactive, .idle, .choosingBackup, .sharingBackup:
+            return
+        }
     }
 }
