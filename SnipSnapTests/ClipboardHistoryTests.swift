@@ -19,6 +19,70 @@ private final class ClipboardDiagnosticProbe: @unchecked Sendable {
     }
 }
 
+private final class ClipboardConversionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var holdsNextConversion = true
+    private var heldConversion: CheckedContinuation<Void, Never>?
+
+    var isHolding: Bool {
+        lock.withLock { heldConversion != nil }
+    }
+
+    func convert(_ build: @escaping @Sendable () -> ClipboardEntry) async -> ClipboardEntry {
+        await withCheckedContinuation { continuation in
+            let holds = lock.withLock {
+                guard holdsNextConversion else { return false }
+                holdsNextConversion = false
+                heldConversion = continuation
+                return true
+            }
+            if !holds { continuation.resume() }
+        }
+        return build()
+    }
+
+    func release() {
+        let continuation = lock.withLock {
+            defer { heldConversion = nil }
+            return heldConversion
+        }
+        continuation?.resume()
+    }
+}
+
+@MainActor
+private final class ClipboardSyncGenerationGate {
+    private(set) var requestCount = 0
+    private let heldRequests: Set<Int>
+    private var held: [Int: CheckedContinuation<String?, any Error>] = [:]
+
+    init(holding requests: Set<Int>) {
+        heldRequests = requests
+    }
+
+    func generation() async throws -> String? {
+        requestCount += 1
+        let request = requestCount
+        guard heldRequests.contains(request) else { return nil }
+        return try await withCheckedThrowingContinuation { held[request] = $0 }
+    }
+
+    func isHolding(_ request: Int) -> Bool {
+        held[request] != nil
+    }
+
+    func release(_ request: Int, throwing error: (any Error)? = nil) {
+        guard let continuation = held.removeValue(forKey: request) else { return }
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume(returning: nil)
+        }
+    }
+}
+
+private struct ClipboardSyncTestFailure: Error {}
+
 @MainActor
 final class ClipboardHistoryTests: XCTestCase {
     func testCapturesAndRestoresEveryPasteboardItem() throws {
@@ -388,6 +452,143 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(context.history.entries.map(\.text), ["User copy", "Initial"])
     }
 
+    func testPausingDuringGeneralBoardConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: gate.convert))
+        writeText("Copied before pause", to: context.pasteboard)
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        context.history.setPaused(true)
+        gate.release()
+        await context.history.flushPersistence()
+
+        context.history.setPaused(false)
+        writeText("Copied after resume", to: context.pasteboard)
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied after resume"])
+    }
+
+    func testSuppressingDuringGeneralBoardConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: gate.convert))
+        writeText("Copied before suppression", to: context.pasteboard)
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        let token = context.history.beginSuppression()
+        gate.release()
+        await context.history.flushPersistence()
+
+        context.history.endSuppression(token)
+        writeText("Copied after suppression", to: context.pasteboard)
+        context.history.poll()
+        await context.history.waitForPendingCapture()
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied after suppression"])
+    }
+
+    func testPausingOrSuppressingBeforeTheGeneralBoardReadAdmitsNothing() async throws {
+        let context = try makeContext(capture: (generalPasteboard: true, conversion: { build in build() }))
+        writeText("Copied before pause", to: context.pasteboard)
+        context.history.poll()
+        context.history.setPaused(true)
+        await context.history.flushPersistence()
+        context.history.setPaused(false)
+
+        writeText("Copied before suppression", to: context.pasteboard)
+        context.history.poll()
+        let token = context.history.beginSuppression()
+        await context.history.flushPersistence()
+        context.history.endSuppression(token)
+
+        XCTAssertTrue(context.history.entries.isEmpty)
+    }
+
+    func testClearingBeforeTheGeneralBoardReadKeepsTheCopyForTheNextPoll() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(
+            persistedEntries: [clipboardEntry("Earlier")],
+            capture: (generalPasteboard: true, conversion: gate.convert)
+        )
+        await context.history.flushPersistence()
+        writeText("Copied during clear", to: context.pasteboard)
+
+        context.history.poll()
+        context.history.clear()
+        context.history.poll()
+        try await waitUntil { gate.isHolding && context.history.entries.isEmpty }
+        gate.release()
+        await context.history.flushPersistence()
+
+        XCTAssertEqual(context.history.entries.map(\.text), ["Copied during clear"])
+    }
+
+    func testPausingDuringLargeCaptureConversionAdmitsNothing() async throws {
+        let gate = ClipboardConversionGate()
+        let context = try makeContext(capture: (generalPasteboard: false, conversion: gate.convert))
+        let item = NSPasteboardItem()
+        item.setString("Large private image", forType: .string)
+        item.setData(
+            Data(repeating: 7, count: ClipboardHistory.backgroundProcessingThreshold),
+            forType: .png
+        )
+        context.pasteboard.clearContents()
+        XCTAssertTrue(context.pasteboard.writeObjects([item]))
+
+        context.history.poll()
+        try await waitUntil { gate.isHolding }
+        context.history.setPaused(true)
+        gate.release()
+        await context.history.flushPersistence()
+
+        XCTAssertTrue(context.history.entries.isEmpty)
+    }
+
+    func testDisablingSyncDuringASuspendedRunEndsItAtOnce() async throws {
+        let gate = ClipboardSyncGenerationGate(holding: [1, 2])
+        let history = try makeSyncedHistory(gate)
+        history.setSyncEnabled(true)
+        let stoppedRun = Task { await history.syncNow() }
+        try await waitUntil { gate.isHolding(1) }
+        XCTAssertTrue(history.isSyncing)
+
+        history.setSyncEnabled(false)
+        XCTAssertFalse(history.isSyncing)
+
+        history.setSyncEnabled(true)
+        let nextRun = Task { await history.syncNow() }
+        try await waitUntil { gate.isHolding(2) }
+        let previewRevision = history.filePreviewRevision
+        gate.release(1, throwing: ClipboardSyncTestFailure())
+        await stoppedRun.value
+        XCTAssertTrue(history.isSyncing)
+        XCTAssertNil(history.syncError)
+        XCTAssertEqual(history.filePreviewRevision, previewRevision)
+
+        gate.release(2)
+        await nextRun.value
+        XCTAssertFalse(history.isSyncing)
+    }
+
+    func testStoppedSyncRequestDoesNotReleaseTheNewerRequest() async throws {
+        let gate = ClipboardSyncGenerationGate(holding: [1, 2])
+        let history = try makeSyncedHistory(gate)
+        history.setSyncEnabled(true)
+        try await waitUntil { gate.isHolding(1) }
+
+        history.stopSync()
+        history.requestSync()
+        gate.release(1)
+        try await waitUntil { gate.isHolding(2) }
+        history.requestSync()
+        gate.release(2)
+        // A third run could start only after the 300 ms debounce; the wait ends early if one does.
+        try await waitUntil(timeout: .seconds(3), reportingTimeout: false) { gate.requestCount > 2 }
+
+        XCTAssertEqual(gate.requestCount, 2)
+    }
+
     func testPauseSurvivesRelaunch() throws {
         let context = try makeContext()
         context.history.setPaused(true)
@@ -615,7 +816,8 @@ final class ClipboardHistoryTests: XCTestCase {
 
     private func makeContext(
         persistedEntries: [ClipboardEntry] = [],
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        capture: (generalPasteboard: Bool, conversion: ClipboardEntryConversion)? = nil
     ) throws -> (
         history: ClipboardHistory,
         pasteboard: NSPasteboard,
@@ -642,13 +844,23 @@ final class ClipboardHistoryTests: XCTestCase {
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
         }
-        return (
+        let history = capture.map { capture in
             ClipboardHistory(
                 pasteboard: pasteboard,
                 defaults: defaults,
                 storeURL: storeURL,
-                diagnostics: diagnostics
-            ),
+                diagnostics: diagnostics,
+                generalPasteboardName: capture.generalPasteboard ? pasteboard.name : .general,
+                convertEntry: capture.conversion
+            )
+        } ?? ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: storeURL,
+            diagnostics: diagnostics
+        )
+        return (
+            history,
             pasteboard,
             storeURL,
             defaults
@@ -690,6 +902,30 @@ final class ClipboardHistoryTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    private func makeSyncedHistory(_ gate: ClipboardSyncGenerationGate) throws -> ClipboardHistory {
+        let context = try makeContext()
+        context.history.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: context.storeURL.deletingLastPathComponent()
+                .appendingPathComponent("SyncMode", isDirectory: true),
+            mainEnabled: { true },
+            generation: { try await gate.generation() }
+        )
+        return context.history
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        reportingTimeout: Bool = true,
+        _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if reportingTimeout { XCTAssertTrue(condition()) }
     }
 
     private func writeText(_ text: String, to pasteboard: NSPasteboard) {
