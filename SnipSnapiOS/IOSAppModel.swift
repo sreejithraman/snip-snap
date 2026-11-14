@@ -285,6 +285,10 @@ final class IOSAppModel {
         if case .list = selectedPage { setSelectedPage(.list(listID)) }
     }
 
+    func beginSelectingSnips() { isSelectingSnips = true }
+
+    func setSelectionExpanded(_ isExpanded: Bool) { isSelectionExpanded = isExpanded }
+
     func endSelectingSnips() {
         haptics.invalidatePendingFeedback()
         selectedSnipIDs = []
@@ -359,6 +363,8 @@ final class IOSAppModel {
             selectionSessionID: fromSelection ? gatheringSessionID : nil
         )
     }
+
+    func dismissNewListMove() { newListMoveRequest = nil }
 
     @discardableResult
     func createListAndMove(_ request: NewListMoveRequest, name: String) async -> Bool {

@@ -196,7 +196,7 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertFalse(reordered)
         let changed = await model.toggleDone(id: pinned.id)
         XCTAssertFalse(changed)
-        model.selectedSnipIDs = [ordinary.id, pinned.id]
+        model.selectSnips([ordinary.id, pinned.id])
         _ = await model.setSelectionDone(true)
         XCTAssertFalse(model.snips.first { $0.id == pinned.id }!.isDone)
         XCTAssertTrue(model.snips.first { $0.id == ordinary.id }!.isDone)

@@ -25,7 +25,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         XCTAssertTrue(firstCreated)
         XCTAssertTrue(secondCreated)
         let attachments = model.snips.flatMap(\.attachments).map(\.id)
-        model.selectedSnipIDs = Set(model.snips.map(\.id))
+        model.selectSnips(Set(model.snips.map(\.id)))
         let markedDone = await model.setSelectionDone(true)
         XCTAssertTrue(markedDone)
         model.completionFilter = .done
@@ -55,31 +55,36 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         let model = makeModel(library: library)
         await model.load()
         let originalSnips = model.snips
-        let initialSession = model.gatheringSessionID
 
         model.selectSnips([first.id])
+        let firstSession = model.gatheringSessionID
         model.selectSnips([first.id, second.id])
         model.selectSnips([second.id])
-        XCTAssertEqual(model.gatheringSessionID, initialSession)
+        XCTAssertEqual(model.gatheringSessionID, firstSession)
         await model.load()
-        XCTAssertEqual(model.gatheringSessionID, initialSession)
+        XCTAssertEqual(model.gatheringSessionID, firstSession)
+        model.selectList(SnipList.inboxID)
+        XCTAssertEqual(model.gatheringSessionID, firstSession)
+        XCTAssertEqual(model.selectedSnipIDs, [second.id])
+        XCTAssertTrue(model.isSelectingSnips)
 
         model.endSelectingSnips()
-        let afterCancellation = model.gatheringSessionID
-        XCTAssertNotEqual(afterCancellation, initialSession)
         XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+        XCTAssertFalse(model.isSelectingSnips)
         model.selectSnips([first.id])
+        let afterCancellation = model.gatheringSessionID
+        XCTAssertNotEqual(afterCancellation, firstSession)
+        model.selectSnips([first.id, second.id])
         XCTAssertEqual(model.gatheringSessionID, afterCancellation)
 
         model.selectPage(.clipboard)
-        let afterLeaving = model.gatheringSessionID
-        XCTAssertNotEqual(afterLeaving, afterCancellation)
         XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+        XCTAssertFalse(model.isSelectingSnips)
         model.selectList(SnipList.inboxID)
-        let afterReturning = model.gatheringSessionID
-        XCTAssertEqual(afterReturning, afterLeaving)
         model.selectSnips([second.id])
-        XCTAssertEqual(model.gatheringSessionID, afterReturning)
+        let afterReturning = model.gatheringSessionID
+        XCTAssertNotEqual(afterReturning, afterCancellation)
+        XCTAssertNotEqual(afterReturning, firstSession)
         model.selectList(SnipList.inboxID)
         XCTAssertEqual(model.gatheringSessionID, afterReturning)
         XCTAssertEqual(model.selectedSnipIDs, [second.id])
@@ -87,6 +92,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         XCTAssertEqual(model.snips, originalSnips)
         let reopened = makeModel(library: library)
         await reopened.load()
+        reopened.selectSnips([second.id])
         XCTAssertNotEqual(reopened.gatheringSessionID, model.gatheringSessionID)
         XCTAssertEqual(reopened.snips, originalSnips)
     }
@@ -105,7 +111,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         model.selectList(SnipList.inboxID)
         model.selectSnips([inbox.id])
         let sessionID = model.gatheringSessionID
-        model.isSelectionExpanded = true
+        model.setSelectionExpanded(true)
         model.selectList(workID)
         model.selectSnips([inbox.id, work.id])
         XCTAssertEqual(model.selectedSnips.map(\.id), [work.id, inbox.id])
@@ -132,12 +138,12 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         model.selectSnips([snip.id])
         let originalLists = model.lists
         model.requestNewListMove(snips: model.selectedSnips, fromSelection: true)
-        model.newListMoveRequest = nil
+        model.dismissNewListMove()
         XCTAssertEqual(model.lists, originalLists)
         XCTAssertEqual(model.selectedSnipIDs, [snip.id])
         model.requestNewListMove(snips: model.selectedSnips, fromSelection: true)
         let request = try XCTUnwrap(model.newListMoveRequest)
-        model.newListMoveRequest = nil
+        model.dismissNewListMove()
         let moved = await model.createListAndMove(request, name: "New destination")
         XCTAssertTrue(moved)
         let list = try XCTUnwrap(model.lists.first { $0.name == "New destination" })
@@ -155,7 +161,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         let selectedIDs = model.selectedSnipIDs
         model.requestNewListMove(snips: model.selectedSnips, fromSelection: true)
         let request = try XCTUnwrap(model.newListMoveRequest)
-        model.newListMoveRequest = nil
+        model.dismissNewListMove()
         let moved = await model.createListAndMove(request, name: "Work")
         XCTAssertFalse(moved)
         XCTAssertEqual(model.selectedSnipIDs, selectedIDs)
@@ -612,7 +618,7 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         let library = ModelTestLibrary(snips: [older, newer])
         let model = IOSAppModel(library: library)
         await model.load()
-        model.selectedSnipIDs = [newer.id]
+        model.selectSnips([newer.id])
         XCTAssertEqual(model.visibleSnips.map(\.id), [newer.id, older.id])
         XCTAssertTrue(model.canReorderVisibleSnips)
 
