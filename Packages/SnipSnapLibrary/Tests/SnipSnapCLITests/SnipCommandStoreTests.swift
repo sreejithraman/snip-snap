@@ -455,6 +455,119 @@ final class SnipCommandStoreTests: XCTestCase {
     let result = try await store.state(for: request.requestID)
     XCTAssertEqual(result, .uncertain)
   }
+
+  func testDurableReceiptHidesACorruptProcessingMarkerBesideIt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let request = SnipCLIRequest(action: .createList(name: "Groceries"))
+    _ = try await store.enqueue(request)
+    await store.processPending { received in
+      SnipCLIReceipt(request: received, status: .success)
+    }
+    guard case .completed(let receipt) = try await store.state(for: request.requestID) else {
+      return XCTFail("Expected a delivered receipt")
+    }
+    let marker = root.appendingPathComponent(
+      "Agent/Commands/Processing/\(request.requestID.uuidString).json")
+    try Data("not json".utf8).write(to: marker)
+
+    let retried = try await store.enqueue(request)
+    let state = try await store.state(for: request.requestID)
+    let cancelled = try await store.cancelPending(request.requestID)
+    XCTAssertEqual(retried, .completed(receipt))
+    XCTAssertEqual(state, .completed(receipt))
+    XCTAssertEqual(cancelled, .completed(receipt))
+  }
+
+  func testCorruptMarkerFileSurfacesItsDecodeError() async throws {
+    for folder in ["Pending", "Processing", "Receipts"] {
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      defer { try? FileManager.default.removeItem(at: root) }
+      let store = SnipCLIRequestStore(rootURL: root)
+      let request = SnipCLIRequest(action: .createList(name: "Groceries"))
+      let markers = root.appendingPathComponent("Agent/Commands/\(folder)")
+      try FileManager.default.createDirectory(at: markers, withIntermediateDirectories: true)
+      try Data("not json".utf8).write(
+        to: markers.appendingPathComponent("\(request.requestID.uuidString).json"))
+
+      do {
+        _ = try await store.state(for: request.requestID)
+        XCTFail("A corrupt \(folder) marker must not read as missing")
+      } catch is DecodingError {}
+      do {
+        _ = try await store.cancelPending(request.requestID)
+        XCTFail("A corrupt \(folder) marker must not read as missing")
+      } catch is DecodingError {}
+      if folder == "Pending" {
+        // Enqueue prunes unreadable pending files before it reads this request's markers.
+        let queued = try await store.enqueue(request)
+        XCTAssertEqual(queued, .pending)
+      } else {
+        // Pruning keeps undecodable receipts, so enqueue must read and reject this one.
+        do {
+          _ = try await store.enqueue(request)
+          XCTFail("A corrupt \(folder) marker must not admit the request again")
+        } catch is DecodingError {}
+        let pending = root.appendingPathComponent(
+          "Agent/Commands/Pending/\(request.requestID.uuidString).json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
+      }
+    }
+  }
+
+  func testProcessingMarkerHidesACorruptPendingRequestBesideIt() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    let request = SnipCLIRequest(action: .createList(name: "Groceries"))
+    _ = try await store.enqueue(request)
+    await store.processPending { _ in throw SnipCLIOutcomeUncertain() }
+    try Data("not json".utf8).write(to: root.appendingPathComponent(
+      "Agent/Commands/Pending/\(request.requestID.uuidString).json"))
+
+    // Enqueue would prune the corrupt pending file first, so only the plain readers run here.
+    let state = try await store.state(for: request.requestID)
+    let cancelled = try await store.cancelPending(request.requestID)
+    XCTAssertEqual(state, .uncertain)
+    XCTAssertEqual(cancelled, .uncertain)
+  }
+
+  func testHiddenReceiptFallsThroughToProcessingMarkerInCurrentScope() async throws {
+    let requestID = UUID()
+    // Another library's receipt for the same request ID.
+    let otherRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: otherRoot) }
+    let other = SnipCLIRequestStore(rootURL: otherRoot)
+    try await other.publishActiveScopeToken("other")
+    let otherRequest = SnipCLIRequest(action: .createList(name: "Groceries"),
+                                      requestID: requestID, scopeToken: "other")
+    _ = try await other.enqueue(otherRequest)
+    await other.processPending { received in SnipCLIReceipt(request: received, status: .success) }
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SnipCLIRequestStore(rootURL: root)
+    try await store.publishActiveScopeToken("current")
+    let request = SnipCLIRequest(action: .createList(name: "Groceries"),
+                                 requestID: requestID, scopeToken: "current")
+    _ = try await store.enqueue(request)
+    await store.processPending { _ in throw SnipCLIOutcomeUncertain() }
+    let receipts = root.appendingPathComponent("Agent/Commands/Receipts")
+    try FileManager.default.createDirectory(at: receipts, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(
+      at: otherRoot.appendingPathComponent("Agent/Commands/Receipts/\(requestID.uuidString).json"),
+      to: receipts.appendingPathComponent("\(requestID.uuidString).json"))
+
+    let state = try await store.state(for: requestID)
+    let cancelled = try await store.cancelPending(requestID)
+    XCTAssertEqual(state, .uncertain)
+    XCTAssertEqual(cancelled, .uncertain)
+    do {
+      _ = try await store.enqueue(request)
+      XCTFail("A receipt from another scope must block reusing its request ID")
+    } catch SnipCLIRequestError.scopeChanged {}
+  }
 }
 
 final class SnipCLIStoreTestClock: Sendable {

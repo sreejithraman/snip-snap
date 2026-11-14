@@ -460,6 +460,150 @@ final class SavedSnipsSessionTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(restored).snapshot.snips.allSatisfy { !$0.isDone })
   }
 
+  func testImportPreviewSuspendedAcrossLibraryReplacementIsNotKept() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let backupURL = try await makeBackup(at: root.appendingPathComponent("Backup.json"), content: "From backup")
+    let original = try JSONSnipLibrary(fileURL: root.appendingPathComponent("original.json"))
+    let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+    let gate = ImportPreviewGate()
+    let session = makeImportSession(library: original, gate: gate)
+    let latePreview = Task { try await session.previewImport(from: backupURL) }
+    await gate.waitUntilPaused()
+
+    _ = await session.replaceLibrary(replacement, recoveryScope: nil, sortedBy: .manual)
+    await gate.resume()
+
+    let retained: SavedSnipsImportPreview?
+    do {
+      retained = try await latePreview.value
+      XCTFail("A preview made for the replaced library must not be kept.")
+    } catch {
+      retained = nil
+      XCTAssertTrue(error is CancellationError)
+    }
+    if let retained {
+      let applied = try await session.applyPendingImport(id: retained.id, sortedBy: .manual)
+      XCTAssertNil(applied)
+    }
+    let snapshot = try await replacement.checkedSnapshot(sortedBy: .manual)
+    XCTAssertTrue(snapshot.snips.isEmpty)
+  }
+
+  func testOlderImportPreviewFinishingLateLeavesTheNewerPreviewPending() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let olderURL = try await makeBackup(at: root.appendingPathComponent("Older.json"), content: "Older backup")
+    let newerURL = try await makeBackup(at: root.appendingPathComponent("Newer.json"), content: "Newer backup")
+    let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target.json"))
+    let gate = ImportPreviewGate()
+    let session = makeImportSession(library: target, gate: gate)
+    let olderPreview = Task { try await session.previewImport(from: olderURL) }
+    await gate.waitUntilPaused()
+
+    let newer = try await session.previewImport(from: newerURL)
+    await gate.resume()
+
+    do {
+      _ = try await olderPreview.value
+      XCTFail("An older preview must not replace a newer one.")
+    } catch {
+      XCTAssertTrue(error is CancellationError)
+    }
+    let applied = try await session.applyPendingImport(id: newer.id, sortedBy: .manual)
+    XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["Newer backup"])
+  }
+
+  func testCancellingAnImportPreviewOnlyClearsTheMatchingPendingPreview() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let backupURL = try await makeBackup(at: root.appendingPathComponent("Backup.json"), content: "From backup")
+    let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target.json"))
+    let session = makeImportSession(library: target)
+    let preview = try await session.previewImport(from: backupURL)
+
+    let cancelledStale = await session.cancelImport(id: UUID())
+    XCTAssertFalse(cancelledStale)
+    let keptAfterStaleCancel = await session.hasPendingImport(id: preview.id)
+    XCTAssertTrue(keptAfterStaleCancel)
+    let cancelled = await session.cancelImport(id: preview.id)
+    XCTAssertTrue(cancelled)
+    let keptAfterCancel = await session.hasPendingImport(id: preview.id)
+    XCTAssertFalse(keptAfterCancel)
+    let applied = try await session.applyPendingImport(id: preview.id, sortedBy: .manual)
+    XCTAssertNil(applied)
+    let snapshot = try await target.checkedSnapshot(sortedBy: .manual)
+    XCTAssertTrue(snapshot.snips.isEmpty)
+  }
+
+  func testCheckingForAPendingImportDoesNotConsumeIt() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let backupURL = try await makeBackup(at: root.appendingPathComponent("Backup.json"), content: "From backup")
+    let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target.json"))
+    let session = makeImportSession(library: target)
+    let preview = try await session.previewImport(from: backupURL)
+
+    let hasUnknown = await session.hasPendingImport(id: UUID())
+    XCTAssertFalse(hasUnknown)
+    let hasPreview = await session.hasPendingImport(id: preview.id)
+    XCTAssertTrue(hasPreview)
+    let applied = try await session.applyPendingImport(id: preview.id, sortedBy: .manual)
+    XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["From backup"])
+    let hasAppliedPreview = await session.hasPendingImport(id: preview.id)
+    XCTAssertFalse(hasAppliedPreview)
+  }
+
+  @MainActor
+  func testExclusiveAccessRunsOverlappingOperationsOneAtATimeInCallOrder() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = SavedSnipsSession(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("snips.json")))
+    let probe = ExclusiveAccessProbe()
+    let first = Task { @MainActor in
+      await session.withExclusiveAccess { _ in
+        probe.record("start 1")
+        await probe.holdFirst()
+        probe.record("end 1")
+      }
+    }
+    while !probe.isHoldingFirst { await Task.yield() }
+    let later = [2, 3].map { number in
+      Task { @MainActor in
+        probe.markQueued(number)
+        await session.withExclusiveAccess { _ in
+          probe.record("start \(number)")
+          await Task.yield()
+          probe.record("end \(number)")
+        }
+      }
+    }
+    while probe.queued.count < 2 { await Task.yield() }
+
+    probe.releaseFirst()
+    await first.value
+    for task in later { await task.value }
+
+    let callOrder = probe.queued.flatMap { ["start \($0)", "end \($0)"] }
+    XCTAssertEqual(probe.events, ["start 1", "end 1"] + callOrder)
+  }
+
+  private func makeBackup(at url: URL, content: String) async throws -> URL {
+    let backup = try JSONSnipLibrary(fileURL: url)
+    _ = try await backup.add(content: content, origin: .quickEntry)
+    return url
+  }
+
+  private func makeImportSession(library: any SnipLibrary, gate: ImportPreviewGate? = nil) -> SavedSnipsSession {
+    SavedSnipsSession(library: library, userActionsFactory: { current in
+      DirectSnipLibraryUserActions(library: current, previewBackupImport: { url, target in
+        let preview = try await SnipLibraryImport.preview(backupURL: url, target: target)
+        await gate?.pauseFirstPreview()
+        return preview
+      })
+    })
+  }
+
   private func backendNoOps(for snip: Snip) -> [SnipLibraryCommand] {
     [
       .moveChronologically(ids: [snip.id], to: snip.listID),
@@ -528,5 +672,53 @@ private actor ControlledDoneUndoLibrary: SnipLibrary {
       _ = try await base.perform(precedingCommand, sortedBy: sortMode)
     }
     return try await base.perform(command, sortedBy: sortMode)
+  }
+}
+
+private actor ImportPreviewGate {
+  private var pausesNextPreview = true
+  private var isPaused = false
+  private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+  private var pausedPreview: CheckedContinuation<Void, Never>?
+
+  func pauseFirstPreview() async {
+    guard pausesNextPreview else { return }
+    pausesNextPreview = false
+    isPaused = true
+    pauseWaiters.forEach { $0.resume() }
+    pauseWaiters.removeAll()
+    await withCheckedContinuation { pausedPreview = $0 }
+  }
+
+  func waitUntilPaused() async {
+    if isPaused { return }
+    await withCheckedContinuation { pauseWaiters.append($0) }
+  }
+
+  func resume() {
+    pausedPreview?.resume()
+    pausedPreview = nil
+  }
+}
+
+@MainActor
+private final class ExclusiveAccessProbe {
+  private(set) var events: [String] = []
+  private(set) var queued: [Int] = []
+  private var heldFirst: CheckedContinuation<Void, Never>?
+
+  var isHoldingFirst: Bool { heldFirst != nil }
+
+  func record(_ event: String) { events.append(event) }
+
+  func markQueued(_ number: Int) { queued.append(number) }
+
+  func holdFirst() async {
+    await withCheckedContinuation { heldFirst = $0 }
+  }
+
+  func releaseFirst() {
+    heldFirst?.resume()
+    heldFirst = nil
   }
 }

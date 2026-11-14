@@ -700,7 +700,7 @@ struct IOSInlineFailureView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button("Details") { model.errorDetails = failure }
+                    Button("Details") { model.showErrorDetails(failure) }
                     Button("Dismiss") { model.dismissError() }
                 }
                 .font(.subheadline)
