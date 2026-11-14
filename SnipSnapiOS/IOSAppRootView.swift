@@ -65,7 +65,7 @@ struct IOSAppRootView: View {
     private var collectionEditMode: EditMode {
         get { model.isSelectingSnips ? .active : .inactive }
         nonmutating set {
-            if newValue.isEditing { model.isSelectingSnips = true }
+            if newValue.isEditing { model.beginSelectingSnips() }
             else if model.isSelectingSnips { model.endSelectingSnips() }
         }
     }
@@ -223,7 +223,7 @@ struct IOSAppRootView: View {
         .sheet(
             isPresented: Binding(
                 get: { model.newListMoveRequest != nil },
-                set: { if !$0 { model.newListMoveRequest = nil } }
+                set: { if !$0 { model.dismissNewListMove() } }
             ),
             onDismiss: { model.clearFailure(for: "list.create") }
         ) {
@@ -241,22 +241,14 @@ struct IOSAppRootView: View {
                     .navigationTitle("Add List")
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { model.newListMoveRequest = nil }
+                            Button("Cancel") { model.dismissNewListMove() }
                                 .disabled(model.isPerformingGatheredAction)
                                 .accessibilityIdentifier("cancel-create-move")
                         }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Create and Move") {
                                 let name = newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines)
-                                Task { @MainActor in
-                                    guard await model.createListAndMove(request, name: name) else { return }
-                                    model.newListMoveRequest = nil
-                                    if request.selectionSessionID == model.gatheringSessionID,
-                                       model.selectedSnipIDs.isEmpty {
-                                        model.endSelectingSnips()
-                                        collectionEditMode = .inactive
-                                    }
-                                }
+                                Task { @MainActor in await model.createListAndMove(request, name: name) }
                             }
                             .disabled(newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       || model.isPerformingGatheredAction)

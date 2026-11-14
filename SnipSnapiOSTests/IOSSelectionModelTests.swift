@@ -209,6 +209,153 @@ final class IOSSelectionModelTests: IOSModelTestCase {
         XCTAssertEqual(model.snips.first?.listID, SnipList.inboxID)
     }
 
+    func testGatheredActionsRunOneAtATimeAndEndTheSessionOnceTheSelectionEmpties() async throws {
+        let gathered = Snip(content: "Delete when access frees", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [gathered])
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectSnips([gathered.id])
+        await library.suspendNextCommand()
+        let holding = Task { await model.createSnip(content: "Holding access", in: SnipList.inboxID, selectCreatedSnip: false) }
+        await library.waitUntilFirstCommandStarts()
+
+        let deletion = Task.immediate {
+            await model.performGatheredAction(requiresEmptySelection: true) { await model.deleteSelection() }
+        }
+        XCTAssertTrue(model.isPerformingGatheredAction)
+        var ranSecondAction = false
+        let second = await model.performGatheredAction {
+            ranSecondAction = true
+            return true
+        }
+        XCTAssertFalse(second)
+        XCTAssertFalse(ranSecondAction)
+        XCTAssertTrue(model.isPerformingGatheredAction)
+
+        await library.resumeFirstCommand()
+        let saved = await holding.value
+        let endsSession = await deletion.value
+        XCTAssertTrue(saved)
+        XCTAssertTrue(endsSession)
+        XCTAssertFalse(model.isPerformingGatheredAction)
+        XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+        XCTAssertFalse(model.snips.contains { $0.id == gathered.id })
+    }
+
+    func testGatheredActionFromAnEndedSessionKeepsTheNewGathering() async throws {
+        let first = Snip(content: "First gathering", origin: .quickEntry)
+        let second = Snip(content: "Second gathering", origin: .quickEntry)
+        let library = ModelTestLibrary(snips: [first, second])
+        let model = makeModel(library: library)
+        await model.load()
+        model.selectSnips([first.id])
+        await library.suspendNextCommand()
+        let holding = Task { await model.createSnip(content: "Holding access", in: SnipList.inboxID, selectCreatedSnip: false) }
+        await library.waitUntilFirstCommandStarts()
+
+        let action = Task.immediate {
+            await model.performGatheredAction { await model.setSelectionDone(true) }
+        }
+        model.endSelectingSnips()
+        model.selectSnips([second.id])
+        let newSession = model.gatheringSessionID
+        await library.resumeFirstCommand()
+        let saved = await holding.value
+        let endsSession = await action.value
+
+        XCTAssertTrue(saved)
+        XCTAssertFalse(endsSession)
+        XCTAssertFalse(model.isPerformingGatheredAction)
+        XCTAssertTrue(model.isSelectingSnips)
+        XCTAssertEqual(model.gatheringSessionID, newSession)
+        XCTAssertEqual(model.selectedSnipIDs, [second.id])
+    }
+
+    func testGatheredActionsThatMustEmptyTheSelectionKeepItOtherwise() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json")))
+        await model.load()
+        let created = await model.createSnip(content: "Gathered", in: SnipList.inboxID)
+        XCTAssertTrue(created)
+        let gathered = try XCTUnwrap(model.snips.first)
+        model.selectSnips([gathered.id])
+        let session = model.gatheringSessionID
+
+        let failedMove = await model.performGatheredAction(requiresEmptySelection: true) {
+            await model.moveSelection(to: UUID())
+        }
+        XCTAssertFalse(failedMove)
+        XCTAssertNotNil(model.errorMessage)
+        let markedDone = await model.performGatheredAction(requiresEmptySelection: true) {
+            await model.setSelectionDone(true)
+        }
+        XCTAssertFalse(markedDone)
+        XCTAssertEqual(model.selectedSnipIDs, [gathered.id])
+        XCTAssertEqual(model.gatheringSessionID, session)
+        XCTAssertFalse(model.isPerformingGatheredAction)
+
+        let reopened = await model.performGatheredAction { await model.setSelectionDone(false) }
+        XCTAssertTrue(reopened)
+    }
+
+    func testAddListMoveEndsOnlyTheSessionItCameFrom() async throws {
+        let gathered = Snip(content: "Gathered", origin: .quickEntry)
+        let single = Snip(content: "Moved alone", origin: .quickEntry)
+        let model = makeModel(library: ModelTestLibrary(snips: [gathered, single]))
+        await model.load()
+        model.selectSnips([gathered.id])
+        model.requestNewListMove(snips: model.selectedSnips, fromSelection: true)
+        let selectionRequest = try XCTUnwrap(model.newListMoveRequest)
+        let movedSelection = await model.createListAndMove(selectionRequest, name: "Gathered list")
+        XCTAssertTrue(movedSelection)
+        XCTAssertNil(model.newListMoveRequest)
+        XCTAssertFalse(model.isSelectingSnips)
+        XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+
+        model.beginSelectingSnips()
+        let session = model.gatheringSessionID
+        model.requestNewListMove(snips: [single])
+        let singleRequest = try XCTUnwrap(model.newListMoveRequest)
+        XCTAssertNil(singleRequest.selectionSessionID)
+        let movedSingle = await model.createListAndMove(singleRequest, name: "Single list")
+        XCTAssertTrue(movedSingle)
+        XCTAssertNil(model.newListMoveRequest)
+        XCTAssertTrue(model.isSelectingSnips)
+        XCTAssertEqual(model.gatheringSessionID, session)
+        let singleList = try XCTUnwrap(model.lists.first { $0.name == "Single list" })
+        XCTAssertEqual(model.snips.first { $0.id == single.id }?.listID, singleList.id)
+    }
+
+    func testSelectStartsOneEmptyGatheringSessionAndGatheringStartsOneWhenIdle() async throws {
+        let snip = Snip(content: "Gather me", origin: .quickEntry)
+        let model = makeModel(library: ModelTestLibrary(snips: [snip]))
+        await model.load()
+        XCTAssertFalse(model.isSelectingSnips)
+        XCTAssertNil(model.gatheringSessionID)
+
+        model.beginSelectingSnips()
+        let session = try XCTUnwrap(model.gatheringSessionID)
+        XCTAssertTrue(model.isSelectingSnips)
+        XCTAssertTrue(model.selectedSnipIDs.isEmpty)
+        model.beginSelectingSnips()
+        XCTAssertEqual(model.gatheringSessionID, session)
+        model.selectSnips([snip.id])
+        XCTAssertEqual(model.gatheringSessionID, session)
+
+        model.endSelectingSnips()
+        XCTAssertNil(model.gatheringSessionID)
+        model.setSelectionExpanded(true)
+        XCTAssertFalse(model.isSelectionExpanded)
+        model.requestNewListMove(snips: model.snips, fromSelection: true)
+        XCTAssertNil(model.newListMoveRequest)
+        model.selectSnips([snip.id])
+        XCTAssertTrue(model.isSelectingSnips)
+        XCTAssertEqual(model.selectedSnipIDs, [snip.id])
+        let gatheringSession = try XCTUnwrap(model.gatheringSessionID)
+        XCTAssertNotEqual(gatheringSession, session)
+    }
+
     func testReturningAndCancellingSelectedSnipsKeepsTheirSourceOrderAndStorage() async {
         let first = Snip(content: "First", origin: .quickEntry, manualPosition: 0)
         let second = Snip(content: "Second", origin: .quickEntry, manualPosition: 1)
