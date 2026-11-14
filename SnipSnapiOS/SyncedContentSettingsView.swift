@@ -334,7 +334,7 @@ struct SyncedContentSettingsView: View {
     }
 
     private func showSettingsErrorDetails(_ failure: AppFailure) {
-        if let library { library.errorDetails = failure }
+        if let library { library.showErrorDetails(failure) }
         else { settingsErrorDetails = failure }
     }
 
