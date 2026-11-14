@@ -83,9 +83,16 @@ final class IOSAppModel {
     private(set) var isCloudSyncActive = false
     private var hasKnownCloudSyncActivity: Bool
     private var hasKnownCloudAttachmentStates = false
-    private(set) var pendingImportPreview: SnipImportPreview?
-    private var pendingImportPreviewID: UUID?
-    private var backupImportOperationID: UUID?
+    private enum BackupImportPhase {
+        case idle
+        case previewing(operation: UUID)
+        case awaitingConfirmation(SavedSnipsImportPreview)
+    }
+    private var backupImport: BackupImportPhase = .idle
+    var pendingImportPreview: SnipImportPreview? {
+        guard case .awaitingConfirmation(let preview) = backupImport else { return nil }
+        return preview.value
+    }
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
     private(set) var lastSelectedListID: UUID
@@ -1430,7 +1437,7 @@ final class IOSAppModel {
         haptics.invalidatePendingFeedback()
         cancelBackupImport()
         let operationID = UUID()
-        backupImportOperationID = operationID
+        backupImport = .previewing(operation: operationID)
         do {
             let preview = try await session.withExclusiveAccess { session in
                 try Task.checkCancellation()
@@ -1438,19 +1445,16 @@ final class IOSAppModel {
                 defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
                 return try await session.previewImport(from: url)
             }
-            guard backupImportOperationID == operationID, !Task.isCancelled else {
+            guard isPreviewingBackupImport(operationID), !Task.isCancelled else {
                 await session.withExclusiveAccess { session in
                     _ = await session.cancelImport(id: preview.id)
                 }
                 throw CancellationError()
             }
-            pendingImportPreviewID = preview.id
-            pendingImportPreview = preview.value
+            backupImport = .awaitingConfirmation(preview)
         } catch {
-            if backupImportOperationID == operationID {
-                backupImportOperationID = nil
-                pendingImportPreviewID = nil
-                pendingImportPreview = nil
+            if isPreviewingBackupImport(operationID) {
+                backupImport = .idle
             }
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_preview", error: error, visibility: .user))
@@ -1460,29 +1464,26 @@ final class IOSAppModel {
     }
 
     func cancelBackupImport() {
-        backupImportOperationID = nil
-        let id = pendingImportPreviewID
-        pendingImportPreviewID = nil
-        pendingImportPreview = nil
-        guard let id else { return }
+        let previous = backupImport
+        backupImport = .idle
+        guard case .awaitingConfirmation(let preview) = previous else { return }
         Task {
             await session.withExclusiveAccess { session in
-                await session.cancelImport(id: id)
+                _ = await session.cancelImport(id: preview.id)
             }
         }
     }
 
     func confirmBackupImport() async throws {
         haptics.invalidatePendingFeedback()
-        guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
-        pendingImportPreviewID = nil
-        pendingImportPreview = nil
-        backupImportOperationID = nil
+        guard case .awaitingConfirmation(let preview) = backupImport else { return }
+        backupImport = .idle
+        let id = preview.id
         do {
             guard let (result, recovery) = try await session.withExclusiveAccess({ session in
                 try Task.checkCancellation()
                 return try await session.applyPendingImport(id: id, sortedBy: .chronological)
-            }) else { return }
+            }) else { throw SnipLibraryError.importChanged }
             clearPendingUndoToast()
             apply(result.snapshot)
             recoverySnapshot = recovery
@@ -1496,6 +1497,11 @@ final class IOSAppModel {
             }
             throw error
         }
+    }
+
+    private func isPreviewingBackupImport(_ operation: UUID) -> Bool {
+        guard case .previewing(let current) = backupImport else { return false }
+        return current == operation
     }
 
     private func apply(_ state: SavedSnipsSessionState) {
