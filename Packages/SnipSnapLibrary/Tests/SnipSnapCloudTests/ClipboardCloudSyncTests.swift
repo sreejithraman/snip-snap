@@ -17,7 +17,10 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     var fetchRequests = 0
     var pauseSave = false
     var paused: CheckedContinuation<Void, Never>?
+    var pausedSaveError: (any Error)?
     func pauseNextSave() { pauseSave = true }
+    /// Pauses the next save, which throws `error` once resumed.
+    func pauseNextSave(thenThrow error: any Error) { pauseSave = true; pausedSaveError = error }
     func hasPaused() -> Bool { paused != nil }
     func resumeSave() { paused?.resume(); paused = nil }
     /// Waits for a save to pause. On timeout it disarms the pause, so no later save hangs.
@@ -26,7 +29,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         while paused == nil, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(5))
         }
-        if paused == nil { pauseSave = false }
+        if paused == nil { pauseSave = false; pausedSaveError = nil }
         return paused != nil
     }
     func setUnavailable(_ value: Bool) { unavailable = value }
@@ -49,7 +52,11 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         return snapshot
     }
     func save(_ incoming: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws {
-        if pauseSave { pauseSave = false; await withCheckedContinuation { paused = $0 } }
+        if pauseSave {
+            pauseSave = false
+            await withCheckedContinuation { paused = $0 }
+            if let error = pausedSaveError { pausedSaveError = nil; throw error }
+        }
         try cancellation.check()
         if unavailable { throw ClipboardCloudError.unavailable }
         if conflictOnce { conflictOnce = false; throw ClipboardCloudError.conflict }
@@ -466,6 +473,46 @@ private func requireSavePaused<Success: Sendable>(
         await #expect(throws: CancellationError.self) { try await running.value }
         #expect(await cloud.fetchCount() == 1)
         #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func stoppedRunReportsCancellationWhenItsTransportFails() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays local"))
+        await cloud.pauseNextSave(thenThrow: CKError(.operationCancelled))
+        let optIn = ClipboardOptIn()
+        let running = client.startRun(isEnabled: { optIn.isOn })
+        try await requireSavePaused(cloud, during: running)
+
+        optIn.isOn = false
+        let stopped = await eventually { !client.sync.isSyncing }
+        await cloud.resumeSave()
+
+        #expect(stopped, "The run kept syncing after its opt-in ended")
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(client.sync.lastError == nil)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func runRechecksAnUnobservedOptInAfterItsSave() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays unacknowledged"))
+        await cloud.pauseNextSave()
+        let optIn = ClipboardUnobservedOptIn()
+        let running = client.startRun(isEnabled: { optIn.isOn })
+        try await requireSavePaused(cloud, during: running)
+
+        optIn.isOn = false
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(!client.sync.isSyncing)
+        #expect(client.sync.lastError == nil)
+        #expect(await cloud.fetchCount() == 1)
+        let stored = try await client.store.load().entries
+        #expect(stored.count == 1)
+        #expect(stored.allSatisfy { !$0.hasBeenShared })
     }
 
     @Test func finishedRunStopsWatchingItsOptIn() async throws {
