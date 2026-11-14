@@ -126,13 +126,15 @@ private struct ClipboardCloudUnwindingRun {
     private func performRun(
         _ run: ClipboardCloudOperation,
         using transport: any ClipboardCloudTransport,
-        isEnabled: @MainActor () -> Bool
+        isEnabled: @escaping @MainActor @Sendable () -> Bool
     ) async throws -> ClipboardHistoryState {
         defer { finishRun(run.id) }
         do {
             for _ in 0..<4 {
-                try checkCurrentRun(run.id, isEnabled: isEnabled)
-                let remote = try await performWithRetry(operationName: "clipboard fetch", owner: run.id) { try await transport.fetch() }
+                let remote = try await performWithRetry(operationName: "clipboard fetch", owner: run.id) { @MainActor [runID = run.id] in
+                    try self.checkCurrentRun(runID, isEnabled: isEnabled)
+                    return try await transport.fetch()
+                }
                 try checkCurrentRun(run.id, isEnabled: isEnabled)
                 let (local, shared, outgoing, pending) = try await worker.prepare(remote, cancellation: run.cancellation)
                 try checkCurrentRun(run.id, isEnabled: isEnabled)
@@ -140,7 +142,8 @@ private struct ClipboardCloudUnwindingRun {
                 do {
                     if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
                         let snapshot = ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version)
-                        try await performWithRetry(operationName: "clipboard save", owner: run.id) { [cancellation = run.cancellation] in
+                        try await performWithRetry(operationName: "clipboard save", owner: run.id) { @MainActor [runID = run.id, cancellation = run.cancellation] in
+                            try self.checkCurrentRun(runID, isEnabled: isEnabled)
                             try await transport.save(snapshot, cancellation: cancellation)
                         }
                     }
