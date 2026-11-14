@@ -425,11 +425,10 @@ struct SyncedContentSettingsView: View {
     }
 
     private func createBackup() {
-        guard let library, !isBackupBusy, backupLifetime.isActive else { return }
-        backupFailure = nil
+        guard let library, !isBackupBusy else { return }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapBackup-\(UUID().uuidString)", isDirectory: true)
-        backupLifetime.startPreparingBackup(root: root) { operation in
+        let started = backupLifetime.startPreparingBackup(root: root) { operation in
             do {
                 let url = root.appendingPathComponent(String(localized: "Snip Snap Backup"), isDirectory: true)
                 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -450,6 +449,7 @@ struct SyncedContentSettingsView: View {
                 }
             }
         }
+        if started { backupFailure = nil }
     }
 
     private var isBackupBusy: Bool {
