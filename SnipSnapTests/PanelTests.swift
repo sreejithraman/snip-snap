@@ -97,7 +97,6 @@ private final class PanelTextValue {
 private final class RefreshedEditorProbe: ObservableObject {
     let listID: UUID
     @Published var attachments: [URL] = []
-    @Published var isSaving = false
     @Published var savedText: String?
     var savedAttachmentData: [Data] = []
     var errorMessage: String?
@@ -122,25 +121,37 @@ private struct RefreshedEditorTestView: View {
                             isRecovered: false, isSelected: false,
                             isEditing: model.editingID == snip.id,
                             commandNumber: nil, onPickCommandNumber: {},
-                            editAttachments: $probe.attachments, isSaving: $probe.isSaving,
+                            editAttachments: model.inlineEditAttachments,
+                            isSaving: model.isSavingInlineEdit,
                             attachmentURL: model.attachmentURL,
                             onPreviewSavedAttachments: { _, _ in },
                             onPreviewLocalAttachments: { _, _ in },
-                            onRemovePreviewURL: { _ in }, onSelect: {},
+                            onRemovePreviewURL: { _ in },
+                            onAddEditAttachments: { urls in
+                                guard let session = model.inlineEditSessionID else { return }
+                                model.addInlineEditAttachments(urls, to: session)
+                                probe.attachments = model.inlineEditAttachments
+                            },
+                            onRemoveEditAttachment: { model.removeInlineEditAttachment($0) },
+                            onSelect: {},
                             onSelectForExpansion: { _ in false }, onOpen: {},
                             onToggleDone: {}, onCopy: { false }, onChooseFiles: {},
                             onCaptureScreenArea: { _ in },
-                            onCancelEdit: { model.editingID = nil },
-                            onSaveEdit: { text, attachments in
+                            onCancelEdit: { model.cancelEditing() },
+                            onSaveEdit: { text in
+                                let attachmentData: [Data]
                                 do {
-                                    probe.savedAttachmentData = try attachments.map { try Data(contentsOf: $0) }
-                                    probe.savedText = text
-                                    model.editingID = nil
-                                    return true
+                                    attachmentData = try model.inlineEditAttachments.map { try Data(contentsOf: $0) }
                                 } catch {
                                     probe.errorMessage = error.localizedDescription
                                     return false
                                 }
+                                let saved = await model.saveInlineEdit(content: text)
+                                if saved {
+                                    probe.savedAttachmentData = attachmentData
+                                    probe.savedText = text
+                                }
+                                return saved
                             },
                             onEditError: { probe.errorMessage = $0 }
                         )
@@ -254,7 +265,7 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertTrue(PanelTabPage.ordered(lists: model.displayedLists).contains(.list(list.id)))
         XCTAssertTrue(findTextField(in: host, placeholder: "Snip text") === editor)
         XCTAssertEqual(editor.stringValue, draft)
-        XCTAssertEqual(probe.attachments, [temporaryAttachment])
+        XCTAssertEqual(model.inlineEditAttachments, [temporaryAttachment])
         XCTAssertEqual(try Data(contentsOf: temporaryAttachment), Data(pasted.utf8))
         let save = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,

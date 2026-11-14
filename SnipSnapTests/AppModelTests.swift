@@ -400,7 +400,7 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testRefreshingTheSameCloudScopeKeepsTheInlineEditorMounted() async {
+    func testRefreshingTheSameCloudScopeKeepsTheInlineEditorMounted() async throws {
         let snip = Snip(content: "Saved text", origin: .quickEntry)
         let scope = SnipRecoveryScope("account-a-generation-a")
         let model = AppModel(
@@ -410,15 +410,16 @@ final class AppModelTests: StoreBackedTestCase {
         await model.waitForInitialLoad()
         let beganEditing = await model.beginEditing(snip.id)
         XCTAssertTrue(beganEditing)
-        var editorChanges: [UUID?] = []
-        let observation = model.$editingID.dropFirst().sink { editorChanges.append($0) }
-        defer { observation.cancel() }
+        let sessionID = try XCTUnwrap(model.inlineEditSessionID)
         let refreshedLibrary = InMemorySnipLibrary(snips: [snip])
 
         await model.replaceLibrary(refreshedLibrary, recoveryScope: scope)
 
         XCTAssertEqual(model.editingID, snip.id)
-        XCTAssertTrue(editorChanges.isEmpty, "Remounting the editor discards its unsaved text and attachments.")
+        XCTAssertEqual(
+            model.inlineEditSessionID, sessionID,
+            "Remounting the editor discards its unsaved text and attachments."
+        )
         let saved = await model.update(id: snip.id, content: "Unsaved text kept by the editor")
         XCTAssertTrue(saved)
         let refreshed = await refreshedLibrary.snapshot(sortedBy: .chronological)
@@ -482,6 +483,93 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.snips.isEmpty)
         model.enterSearch()
         XCTAssertTrue(model.isSearchExpanded)
+    }
+
+    @MainActor
+    func testInlineEditAttachmentsJoinOnlyTheirOwnSession() async throws {
+        let file = try storeURL().deletingLastPathComponent().appendingPathComponent("dropped.txt")
+        try Data("Dropped".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let firstSession = try XCTUnwrap(model.inlineEditSessionID)
+
+        model.addInlineEditAttachments([file], to: firstSession)
+        model.addInlineEditAttachments([file], to: firstSession)
+        XCTAssertEqual(model.inlineEditAttachments, [file])
+
+        model.cancelEditing()
+        XCTAssertNil(model.inlineEditSessionID)
+        XCTAssertEqual(model.inlineEditAttachments, [])
+        let reopened = await model.beginEditing(snip.id)
+        XCTAssertTrue(reopened)
+        let secondSession = try XCTUnwrap(model.inlineEditSessionID)
+        XCTAssertNotEqual(secondSession, firstSession)
+        XCTAssertEqual(model.inlineEditAttachments, [], "A new edit starts from the snip's saved attachments.")
+
+        model.addInlineEditAttachments([file], to: firstSession)
+        XCTAssertEqual(model.inlineEditAttachments, [])
+        model.addInlineEditAttachments([file], to: secondSession)
+        XCTAssertEqual(model.inlineEditAttachments, [file])
+        model.removeInlineEditAttachment(file)
+        XCTAssertEqual(model.inlineEditAttachments, [])
+    }
+
+    @MainActor
+    func testSavingInlineEditIgnoresCancelAndNewAttachments() async throws {
+        let file = try storeURL().deletingLastPathComponent().appendingPathComponent("late.txt")
+        try Data("Late".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip], suspendsFirstCommand: true)
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let session = try XCTUnwrap(model.inlineEditSessionID)
+
+        let save = Task { @MainActor in await model.saveInlineEdit(content: "Saved") }
+        await library.waitUntilFirstCommandStarts()
+        XCTAssertTrue(model.isSavingInlineEdit)
+        model.cancelEditing()
+        model.addInlineEditAttachments([file], to: session)
+        XCTAssertEqual(model.editingID, snip.id)
+        XCTAssertEqual(model.inlineEditSessionID, session)
+        XCTAssertEqual(model.inlineEditAttachments, [])
+
+        await library.resumeFirstCommand()
+        let saved = await save.value
+        XCTAssertTrue(saved)
+        XCTAssertNil(model.editingID)
+        XCTAssertFalse(model.isSavingInlineEdit)
+        XCTAssertEqual(model.snips.first?.content, "Saved")
+    }
+
+    @MainActor
+    func testFailedInlineSaveKeepsTheEditOpen() async throws {
+        let file = try storeURL().deletingLastPathComponent().appendingPathComponent("kept.txt")
+        try Data("Kept".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let library = InMemorySnipLibrary(snips: [snip])
+        let model = AppModel(library: library, defaults: defaults())
+        await model.reload()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let session = try XCTUnwrap(model.inlineEditSessionID)
+        model.addInlineEditAttachments([file], to: session)
+        await library.failBeforeNextWriteAndRecoveryRead()
+
+        let saved = await model.saveInlineEdit(content: "Not saved")
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.editingID, snip.id)
+        XCTAssertEqual(model.inlineEditSessionID, session)
+        XCTAssertFalse(model.isSavingInlineEdit)
+        XCTAssertEqual(model.inlineEditAttachments, [file])
     }
 
     @MainActor
@@ -615,7 +703,7 @@ final class AppModelTests: StoreBackedTestCase {
         let choicesBeforeEditingEnds = await library.recordedRecoveryChoices()
         XCTAssertTrue(choicesBeforeEditingEnds.isEmpty)
         XCTAssertEqual(model.editingID, current.id)
-        model.editingID = nil
+        model.cancelEditing()
 
         let resolved = await model.resolveRecovery(recovered.id, choice: .keepCurrent)
         XCTAssertTrue(resolved)
@@ -684,7 +772,7 @@ final class AppModelTests: StoreBackedTestCase {
         await commands.performNow(.edit, on: [ids[3]], to: pasteboard)
         XCTAssertEqual(model.editingID, ids[3])
         XCTAssertEqual(model.selectionState, selectedState)
-        model.editingID = nil
+        model.cancelEditing()
         await commands.performNow(.toggleDone, on: [ids[3]], to: pasteboard)
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == ids[3] }).isDone)
         XCTAssertEqual(pasteboard.string(forType: .string), expectedCopy)
@@ -851,7 +939,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.editingID, edited.id)
         XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
 
-        model.editingID = nil
+        model.cancelEditing()
         model.selectList(otherList)
         XCTAssertEqual(model.activeListID, otherList.id)
     }
@@ -897,7 +985,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.lists.first { $0.id == other.id }?.name, "Other")
         XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
 
-        model.editingID = nil
+        model.cancelEditing()
         let visible = await model.updateList(source, name: "Project Archive", systemImage: "folder")
         XCTAssertTrue(visible)
         XCTAssertNil(model.editingID)
@@ -1144,7 +1232,8 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         model.enterSearch()
         model.query = "Draft"
-        model.editingID = added.id
+        let opened = await model.beginEditing(added.id)
+        XCTAssertTrue(opened)
 
         model.completionFilter = .done
 
@@ -1160,7 +1249,8 @@ final class AppModelTests: StoreBackedTestCase {
         let review = try await repository.createList(name: "Review", systemImage: "star")
         let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
-        model.editingID = snip.id
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
 
         model.selectList(review)
         model.showClipboard()
@@ -1169,7 +1259,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertFalse(model.isShowingClipboard)
         XCTAssertEqual(model.editingID, snip.id)
 
-        model.editingID = nil
+        model.cancelEditing()
         model.selectList(review)
         XCTAssertEqual(model.activeListID, review.id)
         model.showClipboard()
@@ -1187,7 +1277,8 @@ final class AppModelTests: StoreBackedTestCase {
         let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         model.selectList(review)
-        model.editingID = snip.id
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
 
         let movedByTabDrop = await model.moveToList(ids: [snip.id], listID: SnipList.inboxID)
         let movedManually = await model.move(
@@ -4054,7 +4145,7 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.lists.count, 2)
         XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
 
-        model.editingID = nil
+        model.cancelEditing()
         await model.confirmBackupImport()
         XCTAssertNil(model.pendingImportPreview)
         XCTAssertEqual(model.lists.count, 3)

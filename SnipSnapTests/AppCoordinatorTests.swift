@@ -1884,8 +1884,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testClipboardShortcutReopensHiddenPanelWithoutLosingAnEdit() throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+    func testClipboardShortcutReopensHiddenPanelWithoutLosingAnEdit() async throws {
+        let snip = Snip(content: "Editing", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.waitForInitialLoad()
         let coordinator = AppCoordinator(
             model: model,
             shortcutSettings: ShortcutSettings(),
@@ -1894,12 +1896,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         let panel = NSWindow()
         coordinator.attachPanelWindow(panel)
         defer { panel.orderOut(nil) }
-        model.editingID = UUID()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
 
         coordinator.toggleClipboard()
 
         XCTAssertTrue(panel.isVisible)
-        XCTAssertNotNil(model.editingID)
+        XCTAssertEqual(model.editingID, snip.id)
         XCTAssertFalse(model.isShowingClipboard)
     }
 
