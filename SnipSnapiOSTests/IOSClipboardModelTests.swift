@@ -367,7 +367,7 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         return IOSClipboardModel(
             rootURL: root,
             settings: settings,
-            containerIdentifier: "iCloud.world.sree.snipsnap.tests",
+            containerIdentifier: "iCloud.org.example.snipsnap",
             preferences: preferences,
             generation: { try await gate.generation() }
         )
