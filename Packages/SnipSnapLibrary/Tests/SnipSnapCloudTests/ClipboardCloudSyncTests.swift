@@ -95,6 +95,11 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     var isOn = true
 }
 
+/// An opt-in the service's Observations watch can't see change.
+@MainActor private final class ClipboardUnobservedOptIn {
+    var isOn = true
+}
+
 /// Checks `condition` until it holds or `timeout` passes, and returns whether it holds.
 @MainActor private func eventually(within timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
@@ -229,6 +234,31 @@ private func requireSavePaused<Success: Sendable>(
 
         await #expect(throws: CancellationError.self) { try await running.value }
         #expect(await cloud.fetchCount() == 1)
+    }
+    @Test func retryRechecksAnUnobservedOptInBeforeAnotherRequest() async throws {
+        let clock = ClipboardRetryClock()
+        let sleep = ClipboardRetrySleepGate()
+        let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { duration in
+            try await sleep.wait()
+            clock.advance(duration)
+        })
+        let cloud = ClipboardTestCloud()
+        await cloud.rateLimitFetches(1)
+        let client = ClipboardClient(cloud, retry: retry)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("stays local"))
+        let optIn = ClipboardUnobservedOptIn()
+        let running = client.startRun(isEnabled: { optIn.isOn })
+
+        let waiting = await eventually { sleep.isWaiting }
+        if !waiting { running.cancel() }
+        try #require(waiting, "The fetch retry never waited")
+        optIn.isOn = false
+        sleep.release()
+
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(await cloud.fetchCount() == 1)
+        #expect(try await cloud.fetch().entries.isEmpty)
     }
     @Test func retrySleepRejectsAnAlreadyCancelledTask() async throws {
         let sleep = ClipboardRetrySleepGate()
@@ -592,11 +622,18 @@ private final class ClipboardRetrySleepGate: @unchecked Sendable {
         })
     }
 
+    func release() {
+        takeContinuation()?.resume()
+    }
+
     func cancelWaiter() {
-        lock.lock()
-        let continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(throwing: CancellationError())
+        takeContinuation()?.resume(throwing: CancellationError())
+    }
+
+    private func takeContinuation() -> CheckedContinuation<Void, Error>? {
+        lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
     }
 }
