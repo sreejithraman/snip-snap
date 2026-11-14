@@ -83,16 +83,15 @@ final class IOSAppModel {
     private(set) var isCloudSyncActive = false
     private var hasKnownCloudSyncActivity: Bool
     private var hasKnownCloudAttachmentStates = false
-    private(set) var pendingImportPreview: SnipImportPreview?
-    private var pendingImportPreviewID: UUID?
-    private var backupImportOperationID: UUID?
-    var toast: AppToast? {
-        didSet {
-            guard toast?.action == .undoDone || toast?.action == .undoDelete,
-                  case .showErrorDetails(let id) = oldValue?.action,
-                  failure?.id == id else { return }
-            failureUsesInlineSurface = true
-        }
+    private enum BackupImportPhase {
+        case idle
+        case previewing(operation: UUID)
+        case awaitingConfirmation(SavedSnipsImportPreview)
+    }
+    private var backupImport: BackupImportPhase = .idle
+    var pendingImportPreview: SnipImportPreview? {
+        guard case .awaitingConfirmation(let preview) = backupImport else { return nil }
+        return preview.value
     }
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
@@ -159,47 +158,34 @@ final class IOSAppModel {
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
     var sortMode: SnipSortMode = .chronological
-    private(set) var failure: AppFailure?
-    private(set) var latestFailure: AppFailure? {
-        didSet {
-            guard case .showErrorDetails(let id) = toast?.action,
-                  latestFailure?.id != id else { return }
-            toast = nil
-        }
-    }
-    var errorDetails: AppFailure?
-    private var failureUsesInlineSurface = false
-    var inlineFailure: AppFailure? { failureUsesInlineSurface ? failure : nil }
-    var hasGlobalInlineFailure: Bool { failureUsesInlineSurface && failure?.surface == .snackbar }
-    private var failedUndo: (failure: AppFailure, toast: AppToast)?
-    var errorMessage: String? {
-        get { failure?.message }
-        set {
-            if let newValue {
-                failure = AppFailure(message: newValue, operation: "app.user_action", diagnosticCode: "presentation.message")
-                latestFailure = failure
-            } else {
-                failure = nil
-            }
-        }
-    }
+    private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    var toast: AppToast? { snackbarAndErrors.snackbar }
+    var failure: AppFailure? { snackbarAndErrors.presentedFailure }
+    var latestFailure: AppFailure? { snackbarAndErrors.latestFailure }
+    var errorDetails: AppFailure? { snackbarAndErrors.errorDetails }
+    var inlineFailure: AppFailure? { snackbarAndErrors.inlineFailure }
+    var hasGlobalInlineFailure: Bool { inlineFailure?.surface == .snackbar }
+    var errorMessage: String? { failure?.message }
     var errorTitle: String { failure?.title ?? String(localized: "Something Went Wrong") }
 
     func showLatestErrorDetails() {
-        errorDetails = latestFailure
+        snackbarAndErrors.showLatestErrorDetails()
+    }
+
+    func showErrorDetails(_ failure: AppFailure) {
+        snackbarAndErrors.showErrorDetails(failure)
     }
 
     func dismissErrorDetails() {
-        if failure?.id == errorDetails?.id, failure?.surface == .dialog { failure = nil }
-        errorDetails = nil
+        snackbarAndErrors.closeErrorDetails()
     }
 
     func dismissError() {
-        failure = nil
+        snackbarAndErrors.hidePresentedFailure()
     }
 
     func canRetryFailure(_ failure: AppFailure) -> Bool {
-        failedUndo?.failure.id == failure.id
+        snackbarAndErrors.undoToRetry(for: failure) != nil
     }
 
     func retryFailure(_ failure: AppFailure) {
@@ -207,21 +193,16 @@ final class IOSAppModel {
         retryPendingUndo(failure)
     }
 
-    var pendingUndoFailure: AppFailure? {
-        guard let failedUndo,
-              latestFailure?.id != failedUndo.failure.id,
-              errorDetails?.id != failedUndo.failure.id else { return nil }
-        return failedUndo.failure
-    }
+    var pendingUndoFailure: AppFailure? { snackbarAndErrors.pendingUndoFailure }
 
     func retryPendingUndo(_ failure: AppFailure) {
-        guard let failedUndo, failedUndo.failure.id == failure.id else { return }
-        Task { await performToastActionNow(failedUndo.toast) }
+        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
+        Task { await performToastActionNow(undo) }
     }
 
     func retryPendingUndoNow(_ failure: AppFailure) async {
-        guard let failedUndo, failedUndo.failure.id == failure.id else { return }
-        await performToastActionNow(failedUndo.toast)
+        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
+        await performToastActionNow(undo)
     }
 
     func clearFailure(for operation: String) {
@@ -230,9 +211,7 @@ final class IOSAppModel {
     }
 
     func clearFailure(id: UUID) {
-        guard let failure, failure.id == id else { return }
-        if toast?.action == .showErrorDetails(failure.id) { toast = nil }
-        self.failure = nil
+        snackbarAndErrors.resolvePresentedFailure(id: id)
     }
 
     init(
@@ -390,7 +369,7 @@ final class IOSAppModel {
             guard request.selectionSessionID.map({ $0 == gatheringSessionID }) ?? true else { return false }
             let ids = request.ids.filter { id in snips.contains { $0.id == id } }
             guard !ids.isEmpty, let listID = await createListUnlocked(
-                name: name, systemImage: "list.bullet", color: nil, selectCreatedList: false
+                name: name, systemImage: ListIconSymbol.defaultName, color: nil, selectCreatedList: false
             ) else { return false }
             let moved = await moveSelectionUnlocked(
                 ids: ids, to: listID, sortedBy: request.sortMode, feedbackInteraction: interaction,
@@ -648,7 +627,7 @@ final class IOSAppModel {
                   expectedPage.map({ selectedPage == $0 }) ?? true else { return }
             var shouldRollBack = false
             guard let createdID = await createListUnlocked(
-                name: String(localized: "New List"), systemImage: "list.bullet", color: nil,
+                name: String(localized: "New List"), systemImage: ListIconSymbol.defaultName, color: nil,
                 namePolicy: .available, selectCreatedList: false,
                 onCreated: { createdID in
                     if Task.isCancelled || self.isSearchPresented
@@ -775,7 +754,7 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String, systemImage: String = "list.bullet", color: SnipListColorPreset? = nil) async -> Bool {
+    func createList(name: String, systemImage: String = ListIconSymbol.defaultName, color: SnipListColorPreset? = nil) async -> Bool {
         await withUserMutation { _ in
             await createListUnlocked(name: name, systemImage: systemImage, color: color) != nil
         }
@@ -804,9 +783,11 @@ final class IOSAppModel {
     }
 
     func presentToast(_ presentedToast: AppToast) {
-        let preservesUndo = toast?.action == .undoDelete || toast?.action == .undoDone
-        guard !preservesUndo || presentedToast.action != nil else { return }
-        toast = presentedToast
+        snackbarAndErrors.showKeepingUndo(presentedToast)
+    }
+
+    func closeSnackbar(_ snackbar: AppToast) {
+        snackbarAndErrors.closeSnackbar(id: snackbar.id)
     }
 
     func performToastAction(_ presentedToast: AppToast) {
@@ -821,18 +802,16 @@ final class IOSAppModel {
             }
         case .undoDone:
             await withUserMutation { interaction in
-                let priorUndoFailureID = failedUndo?.failure.id
+                let priorUndoFailureID = snackbarAndErrors.retryUndoFailure?.id
                 do {
                     guard let update = try await session.restoreDone(token: presentedToast.id, sortedBy: sortMode) else {
                         expireUnavailableUndoRetry(token: presentedToast.id, operation: "snip.undo_done")
                         return
                     }
-                    if errorDetails?.id == failedUndo?.failure.id { errorDetails = nil }
-                    failedUndo = nil
+                    snackbarAndErrors.undoSucceeded(presentedToast)
                     clearFailure(for: "snip.undo_done")
                     apply(update.snapshot)
                     haptics.emit(.reopened, for: interaction)
-                    if toast?.id == presentedToast.id { toast = nil }
                     scheduleCloudSync()
                 } catch {
                     retainUndoFailure(error, operation: "snip.undo_done", toast: presentedToast,
@@ -841,8 +820,7 @@ final class IOSAppModel {
                 }
             }
         case .showErrorDetails(let id):
-            guard latestFailure?.id == id else { return }
-            showLatestErrorDetails()
+            snackbarAndErrors.showLatestErrorDetails(ifLatestIs: id)
         case nil:
             break
         }
@@ -860,7 +838,7 @@ final class IOSAppModel {
                     break
                 }
             }
-            if toast?.id == presentedToast.id { toast = nil }
+            snackbarAndErrors.closeSnackbar(id: presentedToast.id)
         }
     }
 
@@ -1231,7 +1209,7 @@ final class IOSAppModel {
             clearFailure(for: "snip.completion_after_copy")
             apply(change.update.snapshot)
             if let undo = change.undo {
-                toast = copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id)
+                snackbarAndErrors.show(copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id))
             }
             haptics.emit(done ? .markedDone : .reopened, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
@@ -1288,7 +1266,7 @@ final class IOSAppModel {
 
     private func restoreDeletion(_ presentedToast: AppToast, feedbackInteraction: UUID?) async {
         let token = presentedToast.id
-        let priorUndoFailureID = failedUndo?.failure.id
+        let priorUndoFailureID = snackbarAndErrors.retryUndoFailure?.id
         do {
             guard let update = try await session.restoreDeletion(
                 token: token,
@@ -1297,12 +1275,10 @@ final class IOSAppModel {
                 expireUnavailableUndoRetry(token: token, operation: "snip.undo_delete")
                 return
             }
-            if errorDetails?.id == failedUndo?.failure.id { errorDetails = nil }
-            failedUndo = nil
+            snackbarAndErrors.undoSucceeded(presentedToast)
             clearFailure(for: "snip.undo_delete")
             apply(update.snapshot)
             haptics.emit(.restored, for: feedbackInteraction)
-            if toast?.id == token { toast = nil }
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
             scheduleCloudSync()
@@ -1318,9 +1294,7 @@ final class IOSAppModel {
         replacingDetailsFor priorFailureID: UUID?
     ) {
         presentError(error, operation: operation)
-        guard let failure else { return }
-        if let priorFailureID, errorDetails?.id == priorFailureID { errorDetails = failure }
-        failedUndo = (failure, toast)
+        snackbarAndErrors.retainUndoFailure(of: toast, movingDetailsFrom: priorFailureID)
     }
 
     private func deleteSnips(ids: Set<UUID>, feedbackInteraction: UUID?) async -> Bool {
@@ -1336,11 +1310,11 @@ final class IOSAppModel {
             )
             apply(result.update.snapshot)
             guard result.didChange else { return true }
-            failedUndo = nil
+            clearPendingUndoToast()
             clearFailure(for: "snip.delete")
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             selectedSnipIDs.subtract(ids)
-            toast = .deleted(count: count, id: token)
+            snackbarAndErrors.show(.deleted(count: count, id: token))
             haptics.emit(.deleted, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
             await refreshAttachmentTransferStates()
@@ -1415,26 +1389,21 @@ final class IOSAppModel {
     }
 
     func presentFailure(_ failure: AppFailure) {
-        let preservesUndo = toast?.action == .undoDone || toast?.action == .undoDelete
-        self.failure = failure
-        latestFailure = failure
-        failureUsesInlineSurface = failure.surface == .inline || (failure.surface == .snackbar && preservesUndo)
-        if failure.surface == .snackbar && !preservesUndo { toast = .failed(failure) }
+        snackbarAndErrors.present(failure)
     }
 
     private func expireUnavailableUndoRetry(token: UUID, operation: StaticString) {
-        guard failedUndo?.toast.id == token else { return }
-        let updatesDetails = errorDetails?.id == failedUndo?.failure.id
-        failedUndo = nil
-        presentError(String(localized: "Undo is no longer available because the snips changed."),
-                     operation: operation, diagnosticCode: "undo.unavailable")
-        if updatesDetails { errorDetails = failure }
+        guard snackbarAndErrors.retainsUndo(token) else { return }
+        let failure = AppFailure(
+            message: String(localized: "Undo is no longer available because the snips changed."),
+            operation: operation, diagnosticCode: "undo.unavailable"
+        )
+        diagnostics.record(.failure(operation: operation, errorCode: failure.code, visibility: .user))
+        snackbarAndErrors.replaceRetryUndo(with: failure)
     }
 
     private func clearPendingUndoToast() {
-        failedUndo = nil
-        guard toast?.action == .undoDelete || toast?.action == .undoDone else { return }
-        toast = nil
+        snackbarAndErrors.endUndoWindow()
     }
 
     func backupImportSelectionFailed(_ error: any Error) -> String? {
@@ -1468,7 +1437,7 @@ final class IOSAppModel {
         haptics.invalidatePendingFeedback()
         cancelBackupImport()
         let operationID = UUID()
-        backupImportOperationID = operationID
+        backupImport = .previewing(operation: operationID)
         do {
             let preview = try await session.withExclusiveAccess { session in
                 try Task.checkCancellation()
@@ -1476,19 +1445,16 @@ final class IOSAppModel {
                 defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
                 return try await session.previewImport(from: url)
             }
-            guard backupImportOperationID == operationID, !Task.isCancelled else {
+            guard isPreviewingBackupImport(operationID), !Task.isCancelled else {
                 await session.withExclusiveAccess { session in
-                    await session.cancelImport(id: preview.id)
+                    _ = await session.cancelImport(id: preview.id)
                 }
                 throw CancellationError()
             }
-            pendingImportPreviewID = preview.id
-            pendingImportPreview = preview.value
+            backupImport = .awaitingConfirmation(preview)
         } catch {
-            if backupImportOperationID == operationID {
-                backupImportOperationID = nil
-                pendingImportPreviewID = nil
-                pendingImportPreview = nil
+            if isPreviewingBackupImport(operationID) {
+                backupImport = .idle
             }
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_preview", error: error, visibility: .user))
@@ -1498,35 +1464,32 @@ final class IOSAppModel {
     }
 
     func cancelBackupImport() {
-        backupImportOperationID = nil
-        let id = pendingImportPreviewID
-        pendingImportPreviewID = nil
-        pendingImportPreview = nil
-        guard let id else { return }
+        let previous = backupImport
+        backupImport = .idle
+        guard case .awaitingConfirmation(let preview) = previous else { return }
         Task {
             await session.withExclusiveAccess { session in
-                await session.cancelImport(id: id)
+                _ = await session.cancelImport(id: preview.id)
             }
         }
     }
 
     func confirmBackupImport() async throws {
         haptics.invalidatePendingFeedback()
-        guard pendingImportPreview != nil, let id = pendingImportPreviewID else { return }
-        pendingImportPreviewID = nil
-        pendingImportPreview = nil
-        backupImportOperationID = nil
+        guard case .awaitingConfirmation(let preview) = backupImport else { return }
+        backupImport = .idle
+        let id = preview.id
         do {
             guard let (result, recovery) = try await session.withExclusiveAccess({ session in
                 try Task.checkCancellation()
                 return try await session.applyPendingImport(id: id, sortedBy: .chronological)
-            }) else { return }
+            }) else { throw SnipLibraryError.importChanged }
             clearPendingUndoToast()
             apply(result.snapshot)
             recoverySnapshot = recovery
         } catch {
             await session.withExclusiveAccess { session in
-                await session.cancelImport(id: id)
+                _ = await session.cancelImport(id: id)
             }
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_apply", error: error, visibility: .user))
@@ -1534,6 +1497,11 @@ final class IOSAppModel {
             }
             throw error
         }
+    }
+
+    private func isPreviewingBackupImport(_ operation: UUID) -> Bool {
+        guard case .previewing(let current) = backupImport else { return false }
+        return current == operation
     }
 
     private func apply(_ state: SavedSnipsSessionState) {

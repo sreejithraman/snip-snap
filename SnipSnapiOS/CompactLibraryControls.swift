@@ -31,10 +31,17 @@ private struct SendDestinationRequest {
     let libraryRevision: UUID
 }
 
+/// The draft the mounted composer shows, and the list it belongs to.
+private struct ShownDraft {
+    var listID: UUID?
+    var draft = ComposerDraft()
+}
+
 struct CompactLibraryControls: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.prefersSideButtons) private var prefersSideButtons
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let storage: CompactComposerStorage
@@ -49,8 +56,7 @@ struct CompactLibraryControls: View {
     @Binding var sheet: AppSheet?
 
     @State private var sendDestination: SendDestinationRequest?
-    @State private var draft = ComposerDraft()
-    @State private var draftListID: UUID?
+    @State private var shownDraft = ShownDraft()
     @State private var toolbarWidth: CGFloat = 320
     @State private var composerHeights: [LibraryPage: CGFloat] = [:]
     @State private var composerFieldID = UUID()
@@ -96,18 +102,16 @@ struct CompactLibraryControls: View {
         _sheet = sheet
     }
 
-    private var isStaging: Bool { storage.stagingTask != nil }
     private var previewURL: URL? { storage.attachmentPreview?.url }
-    private var isPresentingAttachment: Bool { storage.attachmentPicker != nil || storage.attachmentPreview != nil }
 
     /// The keyboard yields to a presented picker or preview, and focus returns when it closes. Layout
     /// keeps following `isComposerFocused`, so nothing under the presentation changes or flickers.
     /// A resign caused by the presentation must not clear the user's focus.
     private var composerKeyboardFocus: Binding<Bool> {
         Binding(
-            get: { isComposerFocused && !isPresentingAttachment },
+            get: { isComposerFocused && !storage.isPresentingAttachment },
             set: { focused in
-                guard !isPresentingAttachment else { return }
+                guard !storage.isPresentingAttachment else { return }
                 isComposerFocused = focused
             }
         )
@@ -150,7 +154,22 @@ struct CompactLibraryControls: View {
         .padding(.bottom, showsListEditor ? 0 : 6)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
-            if !showsListTabs && !model.isSearchPresented {
+            if prefersSideButtons {
+                // Declaring Search right after Paste puts the two in one capsule, Paste on top,
+                // apart from the library actions.
+                ToolbarSpacer(.flexible, placement: .topBarTrailing)
+                    .sideButton()
+                if !model.isSearchPresented {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
+                            .disabled(isToolbarPasteDisabled)
+                            .accessibilityIdentifier("paste-to-clipboard")
+                    }
+                    .sideButton()
+                }
+                DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+                    .sideButton()
+            } else if !showsListTabs && !model.isSearchPresented {
                 // Paste draws its own glass circle because the system folds the Search item into
                 // the shared background of the item before it. Placing Search explicitly instead
                 // turns it into a full search field on iPad.
@@ -161,9 +180,7 @@ struct CompactLibraryControls: View {
                             .font(.system(size: 18))
                             .imageScale(.medium)
                     }
-                    // Paste and Save disables the composer while it saves, which would end
-                    // editing mid-sentence. Compact hides Paste while typing instead.
-                    .disabled(isPasteDisabled || isComposerFocused)
+                    .disabled(isToolbarPasteDisabled)
                     .accessibilityLabel(pasteLabel)
                     .accessibilityShowsLargeContentViewer {
                         Label(pasteLabel, systemImage: "doc.on.clipboard")
@@ -175,18 +192,18 @@ struct CompactLibraryControls: View {
             }
         }
         .onAppear {
-            draftListID = model.lastSelectedListID
+            shownDraft.listID = model.lastSelectedListID
             if storage.savingListID != model.lastSelectedListID {
-                draft = storage.draftStore.draft(for: model.lastSelectedListID)
+                shownDraft.draft = storage.draftStore.draft(for: model.lastSelectedListID)
             }
         }
         .onChange(of: model.lastSelectedListID) { _, listID in
             sendDestination = nil
             replaceComposerField()
-            draftListID = listID
-            draft = storage.savingListID == listID
-                ? ComposerDraft()
-                : storage.draftStore.draft(for: listID)
+            shownDraft = ShownDraft(
+                listID: listID,
+                draft: storage.savingListID == listID ? ComposerDraft() : storage.draftStore.draft(for: listID)
+            )
         }
         .onChange(of: model.libraryRevision) { _, _ in sendDestination = nil }
         .onChange(of: showsComposer) { _, visible in
@@ -203,8 +220,8 @@ struct CompactLibraryControls: View {
         }
         .onChange(of: storage.draftRevision) { _, _ in
             let listID = model.lastSelectedListID
-            guard draftListID == listID, storage.savingListID != listID else { return }
-            draft = storage.draftStore.draft(for: listID)
+            guard shownDraft.listID == listID, storage.savingListID != listID else { return }
+            shownDraft.draft = storage.draftStore.draft(for: listID)
         }
         .onDisappear {
             sendDestination = nil
@@ -214,6 +231,10 @@ struct CompactLibraryControls: View {
 
     // Matches the system's glass circles in the navigation bar.
     private static let toolbarCircleLength: CGFloat = 44
+
+    // Paste and Save disables the composer while it saves, which would end
+    // editing mid-sentence. Compact hides Paste while typing instead.
+    private var isToolbarPasteDisabled: Bool { isPasteDisabled || isComposerFocused }
 
     private var navigationWidth: CGFloat { max(0, toolbarWidth - 32) }
 
@@ -290,7 +311,7 @@ struct CompactLibraryControls: View {
     private var isPasteDisabled: Bool {
         motion.isDragging || (isClipboardSelected
             ? clipboard.isPasting
-            : !showsComposer || storage.isSaving || isStaging)
+            : !showsComposer || storage.isSaving || storage.isStaging)
     }
 
     private func paste() {
@@ -303,16 +324,12 @@ struct CompactLibraryControls: View {
     }
 
     private func pasteAndSave() {
-        guard showsComposer, !storage.isSaving, !isStaging else { return }
+        guard showsComposer, !storage.isSaving, !storage.isStaging else { return }
         model.haptics.invalidatePendingFeedback()
         let listID = model.lastSelectedListID
-        storage.isSaving = true
-        Task {
+        storage.pasteAndSave {
             var stagedFiles: [StagedAttachment] = []
-            defer {
-                AttachmentDraftStager.clean(stagedFiles)
-                storage.isSaving = false
-            }
+            defer { AttachmentDraftStager.clean(stagedFiles) }
             do {
                 let pasted = try await ComposerPasteboard.stageForSaving(from: .general, in: storage.stagingDirectory)
                 stagedFiles = pasted.files
@@ -392,18 +409,18 @@ struct CompactLibraryControls: View {
             AttachmentSourceMenu(choose: { source in
                 guard !isPreview else { return }
                 model.haptics.invalidatePendingFeedback()
-                storage.attachmentPicker = ComposerAttachmentPickerRequest(
+                storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(
                     source: source, listID: model.lastSelectedListID
-                )
+                ))
             }) {
-                Image(systemName: isPreview ? "plus" : (isStaging ? "hourglass" : "plus"))
+                Image(systemName: isPreview ? "plus" : (storage.isStaging ? "hourglass" : "plus"))
                     .font(.title3.weight(.medium))
                     .frame(width: controlLength, height: controlLength)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: Circle())
-            .disabled(storage.isSaving || isStaging)
+            .disabled(storage.isSaving || storage.isStaging)
             .accessibilityLabel("Add Attachments")
             .modifier(ComposerAccessibility(isPreview: isPreview, identifier: "composer-add-attachments"))
             .modifier(ComposerGlassID(isPreview: isPreview, id: "attachments", namespace: composerGlass))
@@ -422,7 +439,7 @@ struct CompactLibraryControls: View {
                             text: isPreview ? .constant(draft.text) : composerText(for: list.id),
                             isFocused: isPreview ? .constant(false) : composerKeyboardFocus,
                             isEnabled: !isPreview && !storage.isSaving,
-                            isPasteEnabled: !isStaging,
+                            isPasteEnabled: !storage.isStaging,
                             isTextInputEnabled: !storage.isStagingPaste,
                             onPasteAttachments: { providers, selection in
                                 if !isPreview { stagePastedAttachments(providers, at: selection, to: list.id) }
@@ -504,9 +521,9 @@ struct CompactLibraryControls: View {
                         preview: {
                             guard !isPreview else { return }
                             model.haptics.invalidatePendingFeedback()
-                            storage.attachmentPreview = ComposerAttachmentPreviewRequest(
+                            storage.presentAttachmentPreview(ComposerAttachmentPreviewRequest(
                                 url: url, listID: model.lastSelectedListID
-                            )
+                            ))
                         },
                         remove: {
                             guard !isPreview else { return }
@@ -520,7 +537,7 @@ struct CompactLibraryControls: View {
     }
 
     private func draft(for listID: UUID) -> ComposerDraft {
-        if draftListID == listID { return draft }
+        if shownDraft.listID == listID { return shownDraft.draft }
         return storage.savingListID == listID ? ComposerDraft() : storage.draftStore.draft(for: listID)
     }
 
@@ -530,17 +547,17 @@ struct CompactLibraryControls: View {
             get: { draft(for: listID).text },
             set: { value in
                 guard fieldID == composerFieldID, listID == model.lastSelectedListID,
-                      draftListID == listID else { return }
+                      shownDraft.listID == listID else { return }
                 model.haptics.invalidatePendingFeedback()
                 guard storage.savingListID != listID else {
-                    draft.text = ""
+                    shownDraft.draft.text = ""
                     return
                 }
-                if let pasted = LargePastedText.largeInsertion(from: draft.text, to: value) {
+                if let pasted = LargePastedText.largeInsertion(from: shownDraft.draft.text, to: value) {
                     stagePastedText(pasted)
                     return
                 }
-                draft.text = value
+                shownDraft.draft.text = value
                 storage.draftStore.setText(value, for: listID)
             }
         )
@@ -555,7 +572,7 @@ struct CompactLibraryControls: View {
     private func canSend(draft: ComposerDraft) -> Bool {
         AttachmentDraftLifecycle.allowsSaving(
             isSaving: storage.isSaving,
-            isStaging: isStaging,
+            isStaging: storage.isStaging,
             isImporting: storage.attachmentPicker?.source == .files,
             isPickingMedia: storage.attachmentPicker.map { $0.source != .files } ?? false,
             isPreviewing: previewURL != nil
@@ -572,7 +589,7 @@ struct CompactLibraryControls: View {
               model.lists.contains(where: { $0.id == destinationID }),
               canSend(draft: draft(for: sourceID)) else { return }
         replaceComposerField()
-        draft = ComposerDraft()
+        shownDraft.draft = ComposerDraft()
         let saved = await storage.save(listID: sourceID) { saving in
             await model.createSnip(
                 content: saving.text,
@@ -588,15 +605,10 @@ struct CompactLibraryControls: View {
     }
 
     private func stagePastedAttachments(_ providers: [NSItemProvider], at selection: NSRange, to listID: UUID) {
-        guard !isStaging, !storage.isSaving else { return }
+        guard !storage.isStaging, !storage.isSaving else { return }
         let body = storage.draftStore.draft(for: listID).text
         let scope = storage.draftStore.scope
-        storage.isStagingPaste = true
-        storage.stagingTask = Task {
-            defer {
-                storage.stagingTask = nil
-                storage.isStagingPaste = false
-            }
+        storage.stage(blocksTyping: true) {
             do {
                 let pasted = try await ComposerPasteboard.stage(providers, in: storage.stagingDirectory)
                 guard storage.draftStore.scope == scope,
@@ -613,14 +625,11 @@ struct CompactLibraryControls: View {
     }
 
     private func stagePastedText(_ text: String) {
-        guard storage.stagingTask == nil else { return }
+        guard !storage.isStaging else { return }
         let listID = model.lastSelectedListID
-        storage.stagingTask = Task {
+        storage.stage {
             var unclaimedURL: URL?
-            defer {
-                if let unclaimedURL { try? FileManager.default.removeItem(at: unclaimedURL) }
-                storage.stagingTask = nil
-            }
+            defer { if let unclaimedURL { try? FileManager.default.removeItem(at: unclaimedURL) } }
             do {
                 let url = try LargePastedText.write(text, to: storage.stagingDirectory)
                 unclaimedURL = url
@@ -640,7 +649,7 @@ struct CompactLibraryControls: View {
     private func removeAttachment(_ url: URL) {
         model.haptics.invalidatePendingFeedback()
         storage.draftStore.remove(url, from: model.lastSelectedListID)
-        draft = storage.draftStore.draft(for: model.lastSelectedListID)
+        shownDraft.draft = storage.draftStore.draft(for: model.lastSelectedListID)
     }
 
 }
@@ -671,19 +680,62 @@ private struct ComposerGlassID: ViewModifier {
 @MainActor
 @Observable
 final class CompactComposerStorage {
+    /// A draft save and Paste and Save each hold the composer busy; only one runs at a time.
+    private enum Save: Equatable {
+        case idle
+        case draft(listID: UUID, session: UUID)
+        case pasteboard(session: UUID)
+    }
+
+    private enum Staging {
+        case idle
+        case active(session: UUID, task: Task<Void, Never>, blocksTyping: Bool)
+    }
+
+    /// The picker and preview share one modal slot.
+    private enum AttachmentPresentation: Equatable {
+        case idle
+        case picker(ComposerAttachmentPickerRequest)
+        case preview(ComposerAttachmentPreviewRequest)
+    }
+
     let draftStore: ComposerDraftStore
     let stagingDirectory: URL
-    var isSaving = false
-    var savingListID: UUID?
+    private var saving = Save.idle
     /// Staging outlives a composer that a size-class change replaces, such as opening an iPhone Duo.
-    var stagingTask: Task<Void, Never>?
-    var isStagingPaste = false
-    /// The root presents this picker, so a fold that replaces the composer leaves Files and Photos open.
-    var attachmentPicker: ComposerAttachmentPickerRequest?
-    /// The root presents this preview, so a fold that replaces the composer leaves it open.
-    var attachmentPreview: ComposerAttachmentPreviewRequest?
+    private var staging = Staging.idle
+    /// The root presents the picker and preview, so a fold that replaces the composer leaves Files,
+    /// Photos, or a preview open.
+    private var attachmentPresentation = AttachmentPresentation.idle
     /// Changes when storage changes a draft outside the mounted composer, so the composer reloads it.
     private(set) var draftRevision = 0
+
+    var isSaving: Bool { saving != .idle }
+
+    var savingListID: UUID? {
+        if case .draft(let listID, _) = saving { listID } else { nil }
+    }
+
+    var stagingTask: Task<Void, Never>? {
+        if case .active(_, let task, _) = staging { task } else { nil }
+    }
+
+    var isStaging: Bool { stagingTask != nil }
+
+    /// Pasted attachments rewrite the draft's text when they finish, so typing waits for them.
+    var isStagingPaste: Bool {
+        if case .active(_, _, let blocksTyping) = staging { blocksTyping } else { false }
+    }
+
+    var attachmentPicker: ComposerAttachmentPickerRequest? {
+        if case .picker(let request) = attachmentPresentation { request } else { nil }
+    }
+
+    var attachmentPreview: ComposerAttachmentPreviewRequest? {
+        if case .preview(let request) = attachmentPresentation { request } else { nil }
+    }
+
+    var isPresentingAttachment: Bool { attachmentPresentation != .idle }
 
     init(defaults: UserDefaults = .standard) {
         let stagingDirectory = FileManager.default.temporaryDirectory
@@ -717,11 +769,23 @@ final class CompactComposerStorage {
         draftRevision += 1
     }
 
+    /// Runs `work` unless another staging is running.
+    func stage(blocksTyping: Bool = false, _ work: @escaping @MainActor () async -> Void) {
+        guard case .idle = staging else { return }
+        let session = UUID()
+        // The task runs on the main actor, so it starts only after `staging` is set.
+        let task = Task { [self] in
+            await work()
+            finishStaging(session)
+        }
+        staging = .active(session: session, task: task, blocksTyping: blocksTyping)
+    }
+
     /// Stages into the list that opened the picker, which may no longer be the selected one.
     func stagePickedMedia(
         _ result: Result<AttachmentMediaInput, any Error>, to listID: UUID, model: IOSAppModel
     ) {
-        attachmentPicker = nil
+        dismissAttachmentPicker()
         let input: AttachmentMediaInput
         switch result {
         case .success(let picked):
@@ -733,9 +797,7 @@ final class CompactComposerStorage {
             }
             return
         }
-        guard stagingTask == nil else { return }
-        stagingTask = Task {
-            defer { stagingTask = nil }
+        stage { [self] in
             do {
                 let stagedFiles = try await AttachmentMediaStager.stage(input, in: stagingDirectory)
                 guard model.lists.contains(where: { $0.id == listID }) else {
@@ -749,31 +811,73 @@ final class CompactComposerStorage {
         }
     }
 
-    /// Saves the list's draft through `create`, which returns whether it saved.
+    /// Saves the list's draft through `create`, which returns whether it saved. Returns `false` without
+    /// calling `create` while another save runs.
     func save(listID: UUID, create: @MainActor (ComposerDraft) async -> Bool) async -> Bool {
+        guard saving == .idle else { return false }
+        let admitted = Save.draft(listID: listID, session: UUID())
         let snapshot = draftStore.beginSave(listID: listID)
-        savingListID = listID
-        isSaving = true
+        saving = admitted
         let saved = await create(snapshot.draft)
         draftStore.finishSave(snapshot, saved: saved)
         if saved {
             draftStore.flushText()
         }
-        finishSaving()
+        finishSaving(admitted)
         return saved
+    }
+
+    /// Holds the composer busy from the tap while `work` reads the pasteboard and saves it.
+    func pasteAndSave(_ work: @escaping @MainActor () async -> Void) {
+        guard saving == .idle else { return }
+        let admitted = Save.pasteboard(session: UUID())
+        saving = admitted
+        Task { [self] in
+            await work()
+            if saving == admitted { saving = .idle }
+        }
+    }
+
+    func presentAttachmentPicker(_ request: ComposerAttachmentPickerRequest) {
+        attachmentPresentation = .picker(request)
+    }
+
+    /// With a `source`, closes the picker only if it shows that source, as a presenter's own dismissal does.
+    func dismissAttachmentPicker(_ source: AttachmentSource? = nil) {
+        guard let picker = attachmentPicker, source == nil || picker.source == source else { return }
+        attachmentPresentation = .idle
+    }
+
+    func presentAttachmentPreview(_ request: ComposerAttachmentPreviewRequest) {
+        attachmentPresentation = .preview(request)
+    }
+
+    func pageAttachmentPreview(to url: URL) {
+        guard let preview = attachmentPreview else { return }
+        attachmentPresentation = .preview(ComposerAttachmentPreviewRequest(url: url, listID: preview.listID))
+    }
+
+    func dismissAttachmentPreview() {
+        guard attachmentPreview != nil else { return }
+        attachmentPresentation = .idle
     }
 
     /// The root calls this when it swaps its compact and regular trees. The camera can't redraw for the
     /// new size, and on a closed iPhone Duo it can't be cancelled, so it closes. An unconfirmed photo is
     /// discarded; the draft stays.
     func layoutDidSwap() {
-        if attachmentPicker?.source == .camera { attachmentPicker = nil }
+        if attachmentPicker?.source == .camera { attachmentPresentation = .idle }
+    }
+
+    private func finishStaging(_ session: UUID) {
+        guard case .active(let current, _, _) = staging, current == session else { return }
+        staging = .idle
     }
 
     /// A composer mounted mid-save, as when an iPhone Duo folds, skipped loading the draft; the revision reloads it.
-    private func finishSaving() {
-        savingListID = nil
-        isSaving = false
+    private func finishSaving(_ admitted: Save) {
+        guard saving == admitted else { return }
+        saving = .idle
         draftRevision += 1
     }
 }
@@ -837,9 +941,7 @@ struct ComposerAttachmentPresentations: ViewModifier {
         Binding(
             get: { storage.attachmentPreview?.url },
             set: { url in
-                storage.attachmentPreview = url.flatMap { url in
-                    storage.attachmentPreview.map { ComposerAttachmentPreviewRequest(url: url, listID: $0.listID) }
-                }
+                if let url { storage.pageAttachmentPreview(to: url) } else { storage.dismissAttachmentPreview() }
             }
         )
     }
@@ -852,14 +954,14 @@ struct ComposerAttachmentPresentations: ViewModifier {
         Binding(
             get: { storage.attachmentPicker?.source == source },
             set: { presented in
-                if !presented, storage.attachmentPicker?.source == source { storage.attachmentPicker = nil }
+                if !presented { storage.dismissAttachmentPicker(source) }
             }
         )
     }
 
     private func stage(_ result: Result<AttachmentMediaInput, any Error>) {
         guard let listID else {
-            storage.attachmentPicker = nil
+            storage.dismissAttachmentPicker()
             return
         }
         storage.stagePickedMedia(result, to: listID, model: model)

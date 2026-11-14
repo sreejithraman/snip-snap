@@ -7,9 +7,12 @@ import XCTest
 @testable import SnipSnapiOS
 
 /// Opening or closing an iPhone Duo, or resizing iPad Split View, swaps the compact and regular
-/// library trees. These tests host the real root view and swap its size class.
+/// library trees. These tests host the real root view and swap its size class. They run against
+/// the rail here and against the sidebar in `IOSFoldContinuitySidebarTests`.
 @MainActor
-final class IOSFoldContinuityTests: IOSModelTestCase {
+class IOSFoldContinuityTests: IOSModelTestCase {
+    class var regularLayout: RegularLibraryLayout { .rail }
+
     func testDraftTextAndAttachmentSurviveSizeClassSwaps() throws {
         let storage = makeComposerStorage()
         let attachment = try addInboxDraft("Fold draft", to: storage)
@@ -98,6 +101,39 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
     }
 
+    func testOverlappingSaveLeavesTheRunningSaveBusy() async throws {
+        let storage = makeComposerStorage()
+        let attachment = try addInboxDraft("In flight", to: storage)
+        let root = try RootHarness(test: self, storage: storage)
+        let gate = SaveGate()
+        let saving = try await startSaveAndSwap(storage, root: root, gate: gate)
+
+        for listID in [SnipList.inboxID, UUID()] {
+            var created = false
+            let saved = await storage.save(listID: listID) { _ in
+                created = true
+                return true
+            }
+            XCTAssertFalse(saved, "\(listID)")
+            XCTAssertFalse(created, "An overlapping save must not create a snip. \(listID)")
+            XCTAssertTrue(storage.isSaving, "\(listID)")
+            XCTAssertEqual(storage.savingListID, SnipList.inboxID, "\(listID)")
+        }
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).text, "In flight")
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID).attachments, [attachment])
+        // Suspends rather than spinning the run loop, so a wrong reload queued on the main actor would run.
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(root.composer?.text, "", "The in-flight draft must stay out of the composer. \(root.diagnostics)")
+        XCTAssertEqual(root.composer?.isEditable, false, "The composer must stay busy. \(root.diagnostics)")
+
+        gate.finish(saved: true)
+        let saved = await saving.value
+        XCTAssertTrue(saved)
+        XCTAssertFalse(storage.isSaving)
+        XCTAssertNil(storage.savingListID)
+        XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), ComposerDraft())
+    }
+
     func testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps() async throws {
         let root = try RootHarness(test: self, storage: makeComposerStorage())
         let model = root.session.model
@@ -128,7 +164,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         model.searchText = "Gather"
         for sizeClass in [UIUserInterfaceSizeClass.regular, .compact, .regular] {
             root.swap(to: sizeClass)
-            // The regular layout's search field is not in this harness's view tree; the Duo UI test checks it.
+            // This harness checks only the compact search field; the Duo UI test checks the regular layouts'.
             if sizeClass == .compact {
                 let presented = root.wait("compact search field shows the query") { root.visibleSearchFieldTexts.contains("Gather") }
                 XCTAssertTrue(presented, root.searchFieldDiagnostics)
@@ -170,7 +206,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let root = try RootHarness(test: self, storage: storage)
         XCTAssertTrue(root.wait("compact composer") { root.composer != nil }, root.diagnostics)
         let request = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID)
-        storage.attachmentPicker = request
+        storage.presentAttachmentPicker(request)
         XCTAssertTrue(root.wait("Files picker presented") { root.presented(UIDocumentPickerViewController.self) != nil })
         let picker = try XCTUnwrap(root.presented(UIDocumentPickerViewController.self))
 
@@ -180,7 +216,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
             XCTAssertEqual(storage.attachmentPicker, request, "\(sizeClass)")
             XCTAssertTrue(root.presented(UIDocumentPickerViewController.self) === picker, "\(sizeClass)")
         }
-        storage.attachmentPicker = nil
+        storage.dismissAttachmentPicker()
         XCTAssertTrue(root.wait("Files picker dismissed") { root.presented(UIDocumentPickerViewController.self) == nil })
     }
 
@@ -191,7 +227,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Preview draft" }, root.diagnostics)
         // A text file opens in Quick Look; images open the full-screen viewer from the same modifier.
         let request = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID)
-        storage.attachmentPreview = request
+        storage.presentAttachmentPreview(request)
         XCTAssertTrue(root.wait("Quick Look presented") { root.presented(QLPreviewController.self) != nil })
         let preview = try XCTUnwrap(root.presented(QLPreviewController.self))
 
@@ -201,7 +237,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
             XCTAssertEqual(storage.attachmentPreview, request, "\(sizeClass)")
             XCTAssertTrue(root.presented(QLPreviewController.self) === preview, "\(sizeClass)")
         }
-        storage.attachmentPreview = nil
+        storage.dismissAttachmentPreview()
         XCTAssertTrue(root.wait("Quick Look dismissed") { root.presented(QLPreviewController.self) == nil })
     }
 
@@ -215,7 +251,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertTrue(created)
         let other = try XCTUnwrap(model.lists.first { $0.name == "Other" })
         model.selectList(SnipList.inboxID)
-        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID)
+        storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID))
 
         let picked = try makePickedFile()
         root.swap(to: .regular)
@@ -263,8 +299,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let attachment = try addInboxDraft("Preview draft", to: storage)
         try assertKeyboardYields(
             storage: storage,
-            present: { storage.attachmentPreview = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID) },
-            dismiss: { storage.attachmentPreview = nil }
+            present: { storage.presentAttachmentPreview(ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID)) },
+            dismiss: { storage.dismissAttachmentPreview() }
         )
     }
 
@@ -273,8 +309,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         storage.draftStore.setText("Picker draft", for: SnipList.inboxID)
         try assertKeyboardYields(
             storage: storage,
-            present: { storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID) },
-            dismiss: { storage.attachmentPicker = nil }
+            present: { storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(source: .files, listID: SnipList.inboxID)) },
+            dismiss: { storage.dismissAttachmentPicker() }
         )
     }
 
@@ -286,7 +322,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let attachment = try addInboxDraft("Camera draft", to: storage)
         let draft = storage.draftStore.draft(for: SnipList.inboxID)
 
-        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .camera, listID: SnipList.inboxID)
+        storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(source: .camera, listID: SnipList.inboxID))
         storage.layoutDidSwap()
         XCTAssertNil(storage.attachmentPicker, "A layout swap must close the camera")
         XCTAssertNil(storage.stagingTask)
@@ -294,13 +330,13 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
 
         for source in [AttachmentSource.files, .photos] {
             let request = ComposerAttachmentPickerRequest(source: source, listID: SnipList.inboxID)
-            storage.attachmentPicker = request
+            storage.presentAttachmentPicker(request)
             storage.layoutDidSwap()
             XCTAssertEqual(storage.attachmentPicker, request, "\(source)")
         }
-        storage.attachmentPicker = nil
+        storage.dismissAttachmentPicker()
         let preview = ComposerAttachmentPreviewRequest(url: attachment, listID: SnipList.inboxID)
-        storage.attachmentPreview = preview
+        storage.presentAttachmentPreview(preview)
         storage.layoutDidSwap()
         XCTAssertEqual(storage.attachmentPreview, preview)
         XCTAssertNil(storage.stagingTask)
@@ -318,7 +354,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         let root = try RootHarness(test: self, storage: storage)
         XCTAssertTrue(root.wait("compact composer") { root.composer?.text == "Camera draft" }, root.diagnostics)
         let request = ComposerAttachmentPickerRequest(source: .camera, listID: SnipList.inboxID)
-        storage.attachmentPicker = request
+        storage.presentAttachmentPicker(request)
         XCTAssertTrue(root.wait("camera presented") { root.presented(UIImagePickerController.self) != nil })
 
         root.swap(to: .regular)
@@ -329,16 +365,16 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         XCTAssertEqual(storage.draftStore.draft(for: SnipList.inboxID), draft)
 
         // Presentation state must still follow the request after the swap's dismissal.
-        storage.attachmentPicker = request
+        storage.presentAttachmentPicker(request)
         XCTAssertTrue(root.wait("camera presented again") { root.presented(UIImagePickerController.self) != nil })
-        storage.attachmentPicker = nil
+        storage.dismissAttachmentPicker()
         XCTAssertTrue(root.wait("camera dismissed again") { root.presented(UIImagePickerController.self) == nil })
     }
 
     func testCancelledPickerClearsItsRequestAndStagesNothing() {
         let storage = makeComposerStorage()
         let model = makeModel(library: ModelTestLibrary())
-        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .photos, listID: SnipList.inboxID)
+        storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(source: .photos, listID: SnipList.inboxID))
 
         storage.stagePickedMedia(.failure(CocoaError(.userCancelled)), to: SnipList.inboxID, model: model)
 
@@ -416,7 +452,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         _ fileName: String, openedFor listID: UUID, storage: CompactComposerStorage, root: RootHarness,
         meanwhile: () -> Void = {}
     ) async throws {
-        storage.attachmentPicker = ComposerAttachmentPickerRequest(source: .files, listID: listID)
+        storage.presentAttachmentPicker(ComposerAttachmentPickerRequest(source: .files, listID: listID))
         let opened = await TestReadiness.wait { root.presented(UIDocumentPickerViewController.self) != nil }
         XCTAssertTrue(opened, "The Files picker must open")
         let picker = try XCTUnwrap(root.presented(UIDocumentPickerViewController.self))
@@ -454,6 +490,10 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return CompactComposerStorage(defaults: defaults)
     }
+}
+
+final class IOSFoldContinuitySidebarTests: IOSFoldContinuityTests {
+    override class var regularLayout: RegularLibraryLayout { .sidebar }
 }
 
 /// Stands in for creating the snip, and holds the save until the test finishes it.
@@ -496,10 +536,14 @@ private final class RootHarness {
     let session: IOSAppSession
     private let host: UIHostingController<IOSAppRootView>
     private let window: UIWindow
+    private let layout: RegularLibraryLayout
 
-    init(test: XCTestCase, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
+    init(test: IOSFoldContinuityTests, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
         session = IOSAppSession(library: library)
-        host = UIHostingController(rootView: IOSAppRootView(session: session, composerStorage: storage))
+        layout = type(of: test).regularLayout
+        host = UIHostingController(rootView: IOSAppRootView(
+            session: session, composerStorage: storage, regularLayout: layout
+        ))
         host.traitOverrides.horizontalSizeClass = .compact
         window = try makeWindow(host)
         test.addTeardownBlock { [window] in await MainActor.run { window.isHidden = true } }
@@ -532,7 +576,17 @@ private final class RootHarness {
         return "regular=\(isRegular) composers=\(composers) windowFrame=\(window.frame)"
     }
 
-    var isRegular: Bool { first(UISplitViewController.self, in: host) != nil }
+    var isRegular: Bool {
+        switch layout {
+        case .sidebar:
+            first(UISplitViewController.self, in: host) != nil
+        case .rail:
+            // The compact tree pages lists through `ListPagePanObserver`; the rail has none.
+            first(UISplitViewController.self, in: host) == nil
+                && first(UINavigationController.self, in: host) != nil
+                && allViews(ListPagePanObserver.AttachmentView.self).isEmpty
+        }
+    }
 
     /// A controller the root presents, such as a system picker, or one anywhere inside a presented container,
     /// as a full-screen cover nests its content.

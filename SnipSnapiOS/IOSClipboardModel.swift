@@ -6,6 +6,13 @@ import SnipSnapPersistence
 import UIKit
 import UniformTypeIdentifiers
 
+/// Only the current run can change history or report an error.
+private enum ClipboardSyncPhase: Equatable {
+    case disabled
+    case idle
+    case syncing(id: UUID)
+}
+
 @MainActor @Observable
 final class IOSClipboardModel {
     private let store: ClipboardHistoryStore
@@ -21,8 +28,11 @@ final class IOSClipboardModel {
     private(set) var entries: [ClipboardEntry] = []
     private(set) var filePreviewRevision = 0
     private(set) var pendingUploadIDs: Set<UUID> = []
-    private(set) var isSyncing = false
-    private(set) var syncEnabled: Bool
+    private var syncPhase: ClipboardSyncPhase
+    var isSyncing: Bool {
+        if case .syncing = syncPhase { true } else { false }
+    }
+    var syncEnabled: Bool { syncPhase != .disabled }
     private var operationErrorMessage: String?
     private var loadErrorMessage: String?
     private(set) var syncErrorMessage: String?
@@ -66,7 +76,7 @@ final class IOSClipboardModel {
         self.preferences = preferences
         self.diagnostics = diagnostics
         self.readCopyFile = readCopyFile
-        syncEnabled = preferences.bool(forKey: "syncClipboardHistory")
+        syncPhase = preferences.bool(forKey: "syncClipboardHistory") ? .idle : .disabled
         pendingUploadIDs = Set((preferences.stringArray(forKey: "clipboardPendingUploads") ?? []).compactMap(UUID.init(uuidString:)))
         cloud = containerIdentifier.flatMap {
             let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -77,8 +87,11 @@ final class IOSClipboardModel {
     }
 
     func setSyncEnabled(_ enabled: Bool) async {
-        if !enabled { cloud?.stop() }
-        syncEnabled = enabled
+        if !enabled {
+            stop(entering: .disabled)
+        } else if syncPhase == .disabled {
+            syncPhase = .idle
+        }
         preferences.set(enabled, forKey: "syncClipboardHistory")
         if enabled {
             await load()
@@ -157,21 +170,28 @@ final class IOSClipboardModel {
         case .disabling, .deleting: cloud?.stop(); return
         default: break
         }
-        await load()
-        guard let cloud, syncEnabled, settings.mode == .iCloudSync else { cloud?.stop(); return }
-        isSyncing = true
-        defer {
-            isSyncing = false
-            filePreviewRevision &+= 1
+        guard let cloud, syncEnabled, settings.mode == .iCloudSync else {
+            cloud?.stop()
+            await load()
+            return
         }
+        let run = ClipboardSyncPhase.syncing(id: UUID())
+        syncPhase = run
+        defer { if syncPhase == run { enterSyncPhase(.idle) } }
+        await load()
+        guard syncPhase == run else { return }
+        guard syncIsActive else { cloud.stop(); return }
         do {
-            guard let generation = try await generation() else { return }
-            entries = try await cloud.synchronize(mainSyncEnabled: true, clipboardSyncEnabled: true, generation: generation).entries
+            guard let generation = try await generation(), syncPhase == run else { return }
+            // The service checks this on entry and again when it admits the run.
+            let synced = try await cloud.synchronize(generation: generation, isEnabled: { syncIsActive })
+            guard syncPhase == run, syncIsActive else { return }
+            entries = synced.entries
             syncErrorMessage = nil
             pendingUploadIDs = []
             savePendingUploads()
         } catch {
-            if error is CancellationError { return }
+            guard syncPhase == run, syncIsActive, !(error is CancellationError) else { return }
             diagnostics.record(.failure(
                 operation: "clipboard.sync",
                 error: error,
@@ -183,7 +203,20 @@ final class IOSClipboardModel {
         }
     }
 
-    func stop() { cloud?.stop() }
+    func stop() {
+        stop(entering: syncEnabled ? .idle : .disabled)
+    }
+
+    private func stop(entering next: ClipboardSyncPhase) {
+        cloud?.stop()
+        enterSyncPhase(next)
+    }
+
+    private func enterSyncPhase(_ next: ClipboardSyncPhase) {
+        guard syncPhase != next else { return }
+        if case .syncing = syncPhase { filePreviewRevision &+= 1 }
+        syncPhase = next
+    }
 
     func deleteSyncedHistory() async throws {
         guard let cloud, let generation = try await generation() else { return }
