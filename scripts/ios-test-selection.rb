@@ -30,7 +30,7 @@ module IOSTestSelection
       ]
     },
     'lists' => {
-      description: 'Create, rename, appearance, rotation, delete, and move between lists.',
+      description: 'Create, rename, appearance, rotation, delete, move between lists, and sidebar width.',
       tests: %w[
         testCompactListTabsCreateAndSwitchLists
         testNewListNameCollisionStillOpensEditorAndExplainsRenameConflict
@@ -40,6 +40,7 @@ module IOSTestSelection
         testSelectorDeleteListKeepsItsSnips
         testCreatesListMovesSnipAndDeletesIt
         testRegularSidebarNewListMeetsTouchTargetMinimum
+        testRailShowsListNamesAcrossRelaunchUntilToggledBack
       ]
     },
     'undo' => {

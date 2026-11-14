@@ -55,11 +55,19 @@ final class LibrarySidebarSizingTests: XCTestCase {
         XCTAssertEqual(flat.outcome(predictedWidth: 318), .expanded(.points(318)))
     }
 
-    func testHingeWidthFollowsTheHingeThroughFlatAndBack() {
+    func testHingeWidthShowsAtTheHingeInBookPoseAndAtTheFlatMaximumWhenFlat() {
         XCTAssertEqual(book.width(isExpanded: true, expandedWidth: .hinge), 380)
         XCTAssertEqual(flat.width(isExpanded: true, expandedWidth: .hinge), 320)
-        XCTAssertEqual(book.width(isExpanded: true, expandedWidth: .hinge), 380)
         XCTAssertEqual(book.width(isExpanded: false, expandedWidth: .hinge), 80)
+    }
+
+    func testTheSameDragTravelFollowsTheCurrentMaximum() {
+        // The view resolves a drag's travel against whichever sizing is current, as after a fold mid-drag.
+        let proposed = LibrarySidebarSizing.railWidth + 270
+        XCTAssertEqual(book.dragWidth(proposed), 350)
+        let flatWidth = flat.dragWidth(proposed)
+        XCTAssertGreaterThan(flatWidth, 320)
+        XCTAssertLessThan(flatWidth, 320 + LibrarySidebarSizing.rubberBandReach)
     }
 
     func testStoredWidthShowsClampedToTheCurrentRange() {

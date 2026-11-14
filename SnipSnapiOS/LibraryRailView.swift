@@ -207,7 +207,8 @@ struct LibraryRailView: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
-    @State private var resize: Resize?
+    /// How far the finger has widened the column since the drag began.
+    @State private var dragTravel: CGFloat?
     @GestureState private var isResizing = false
     private let newListStyle = NewListButtonStyle.current
 
@@ -233,9 +234,14 @@ struct LibraryRailView: View {
         sizing.width(isExpanded: isExpanded, expandedWidth: expandedWidth)
     }
 
+    /// Resolved from the current sizing on every render, so a fold during a drag applies its new maximum.
+    private var width: CGFloat {
+        dragTravel.map { sizing.dragWidth(settledWidth + $0) } ?? settledWidth
+    }
+
+    private var nameOpacity: Double { LibrarySidebarSizing.nameOpacity(at: width) }
+
     var body: some View {
-        let width = resize?.width ?? settledWidth
-        let nameOpacity = LibrarySidebarSizing.nameOpacity(at: width)
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 RailButton(
@@ -249,7 +255,7 @@ struct LibraryRailView: View {
                 .accessibilityIdentifier("clipboard-sidebar")
 
                 if model.recoverySnapshot.needsAttentionCount > 0 {
-                    needsAttention(nameOpacity: nameOpacity)
+                    needsAttention
                 }
 
                 Divider()
@@ -275,7 +281,7 @@ struct LibraryRailView: View {
                 }
 
                 if !newListStyle.isPinned {
-                    newListButton(nameOpacity: nameOpacity)
+                    newListButton
                 }
             }
             .padding(.horizontal, Self.inset)
@@ -290,7 +296,7 @@ struct LibraryRailView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if newListStyle.isPinned {
-                newListButton(nameOpacity: nameOpacity)
+                newListButton
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, Self.inset + 2)
                     .padding(.vertical, 12)
@@ -303,8 +309,8 @@ struct LibraryRailView: View {
         }
         .onChange(of: isResizing) { _, isActive in
             // A canceled drag never ends, so it settles where it stopped.
-            guard !isActive, let resize else { return }
-            settle(atPredictedWidth: resize.width)
+            guard !isActive, let dragTravel else { return }
+            settle(atPredictedWidth: settledWidth + dragTravel)
         }
     }
 
@@ -338,7 +344,7 @@ struct LibraryRailView: View {
             .frame(width: 20)
             .contentShape(Rectangle())
             .overlay {
-                if resize != nil {
+                if dragTravel != nil {
                     Capsule()
                         .fill(.tertiary)
                         .frame(width: 5, height: 40)
@@ -352,16 +358,10 @@ struct LibraryRailView: View {
         // Global, because the strip moves with the edge it drags.
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .updating($isResizing) { _, isActive, _ in isActive = true }
-            .onChanged { value in
-                let startWidth = resize?.startWidth ?? settledWidth
-                resize = Resize(
-                    startWidth: startWidth,
-                    width: sizing.dragWidth(startWidth + widening(value.translation))
-                )
-            }
+            .onChanged { value in dragTravel = widening(value.translation) }
             .onEnded { value in
-                guard let resize else { return }
-                settle(atPredictedWidth: resize.startWidth + widening(value.predictedEndTranslation))
+                guard dragTravel != nil else { return }
+                settle(atPredictedWidth: settledWidth + widening(value.predictedEndTranslation))
             }
     }
 
@@ -376,11 +376,11 @@ struct LibraryRailView: View {
             switch outcome {
             case .rail:
                 isExpanded = false
-            case .expanded(let width):
-                expandedWidth = width
+            case .expanded(let settled):
+                expandedWidth = settled
                 isExpanded = true
             }
-            resize = nil
+            dragTravel = nil
         }
     }
 
@@ -388,7 +388,7 @@ struct LibraryRailView: View {
         reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.15)
     }
 
-    private func needsAttention(nameOpacity: Double) -> some View {
+    private var needsAttention: some View {
         RailButton(
             title: String(localized: "Needs attention"),
             isSelected: false,
@@ -402,7 +402,7 @@ struct LibraryRailView: View {
         .accessibilityIdentifier("needs-attention")
     }
 
-    private func newListButton(nameOpacity: Double) -> some View {
+    private var newListButton: some View {
         Group {
             if newListStyle.isPinned {
                 Button {
@@ -435,11 +435,6 @@ struct LibraryRailView: View {
         .anchorPreference(key: DevelopmentMenuBoundsKey.self, value: .bounds) { $0 }
 #endif
     }
-
-    private struct Resize {
-        let startWidth: CGFloat
-        let width: CGFloat
-    }
 }
 
 /// A row of the list column: the mark, then the name once the column is wide enough to show it.
@@ -465,7 +460,8 @@ private struct RailButton<Mark: View>: View {
                                 .opacity(1 - nameOpacity)
                         }
                     }
-                // A zero-width minimum lets the rail hide the name without widening the row.
+                // A zero-width minimum and the clip let the rail hide the name without widening the
+                // row or spilling onto the card. The type cap keeps one name line within the row's height.
                 HStack(spacing: 8) {
                     Text(title)
                         .lineLimit(1)
@@ -473,9 +469,11 @@ private struct RailButton<Mark: View>: View {
                     Spacer(minLength: 0)
                     if let count { CountBadge(count: count) }
                 }
+                .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 .padding(.leading, 4)
                 .padding(.trailing, 12)
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .clipped()
                 .opacity(nameOpacity)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -499,6 +497,8 @@ private struct CountBadge: View {
 
     var body: some View {
         Text(count, format: .number)
+            .lineLimit(1)
+            .fixedSize()
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 5)

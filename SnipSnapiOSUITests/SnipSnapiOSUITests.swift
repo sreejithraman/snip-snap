@@ -562,9 +562,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let storeName = "rail-width-\(UUID().uuidString)"
         var app = launchApp(storeName: storeName)
-        guard app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3) else {
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("This check needs the regular-width rail.")
         }
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            throw XCTSkip("iPad keeps the sidebar.")
+        }
+        XCTAssertTrue(app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3))
         func waitForClipboardRow(in app: XCUIApplication, _ description: String, _ matches: @escaping (CGFloat) -> Bool) {
             let clipboard = app.buttons["clipboard-sidebar"]
             XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
