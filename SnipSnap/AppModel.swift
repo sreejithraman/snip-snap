@@ -142,16 +142,36 @@ final class AppModel: ObservableObject {
     func saveInlineEdit(content: String, in sessionID: UUID) async -> Bool {
         guard case .editing(let edit) = inlineEditor, edit.sessionID == sessionID else { return false }
         inlineEditor = .saving(edit)
-        let saved = await update(id: edit.snipID, content: content, attachmentURLs: edit.attachments)
-        guard case .saving(let current) = inlineEditor, current.sessionID == edit.sessionID else {
-            return false
+        let snipID = edit.snipID
+        let attachmentURLs = edit.attachments
+        let result: Result<Void, Error>? = await withCommandLock {
+            guard savingEdit(sessionID) != nil else { return nil }
+            return await performMutationUnlocked {
+                try await performUpdate(
+                    id: snipID, content: content,
+                    attachmentURLs: attachmentURLs, expectedUpdatedAt: nil
+                )
+            }
         }
-        if saved {
+        guard let result else { return false }
+        switch result {
+        case .failure(let error):
+            presentError(error, operation: "snip.update")
+            if let current = savingEdit(sessionID) {
+                inlineEditor = .editing(current)
+            }
+            return false
+        case .success:
+            dismissFailure(for: "snip.update")
+            guard savingEdit(sessionID) != nil else { return false }
             closeInlineEditor()
             return true
         }
-        inlineEditor = .editing(current)
-        return false
+    }
+
+    private func savingEdit(_ sessionID: UUID) -> InlineEdit? {
+        guard case .saving(let edit) = inlineEditor, edit.sessionID == sessionID else { return nil }
+        return edit
     }
 
     private func openInlineEdit(_ snip: Snip) {
@@ -825,18 +845,30 @@ final class AppModel: ObservableObject {
         expectedUpdatedAt: Date? = nil
     ) async -> Result<Void, Error> {
         await performMutation {
-            let update = try await session.performLibraryCommand(
-                .update(
-                    id: id,
-                    content: content,
-                    attachmentURLs: attachmentURLs,
-                    expectedUpdatedAt: expectedUpdatedAt,
-                    now: Date()
-                ),
-                sortedBy: sortMode
+            try await performUpdate(
+                id: id, content: content,
+                attachmentURLs: attachmentURLs, expectedUpdatedAt: expectedUpdatedAt
             )
-            return (update, ())
         }
+    }
+
+    private func performUpdate(
+        id: UUID,
+        content: String,
+        attachmentURLs: [URL]?,
+        expectedUpdatedAt: Date?
+    ) async throws -> (SnipLibraryUpdate, Void) {
+        let update = try await session.performLibraryCommand(
+            .update(
+                id: id,
+                content: content,
+                attachmentURLs: attachmentURLs,
+                expectedUpdatedAt: expectedUpdatedAt,
+                now: Date()
+            ),
+            sortedBy: sortMode
+        )
+        return (update, ())
     }
 
     func selectList(_ list: SnipList, preservingSelection: Bool = false) {
@@ -1543,19 +1575,14 @@ final class AppModel: ObservableObject {
         guard editingID == nil,
               canOpenInlineEdit,
               let snip = filteredSnips.first(where: { $0.id == id }) else { return false }
-        let request: UUID
-        if let pending = pendingEditOpening, pending.snipID == id {
-            request = pending.request
-        } else {
-            request = UUID()
-            pendingEditOpening = (snipID: id, request: request)
-        }
+        let request = UUID()
+        pendingEditOpening = (snipID: id, request: request)
         let startingView = inlineEditOpeningView
         do {
             _ = try await prepareAttachments(snip.attachments, for: .open)
             return await withCommandLock {
                 if editingID == id { return true }
-                guard pendingEditOpening?.request == request,
+                guard pendingEditOpening?.snipID == id,
                       !isCLIInteractionReserved, editingID == nil,
                       inlineEditOpeningView == startingView,
                       let current = filteredSnips.first(where: { $0.id == id }),
@@ -1570,8 +1597,9 @@ final class AppModel: ObservableObject {
             endEditOpening(request)
             return false
         } catch {
+            let isLatest = pendingEditOpening?.request == request
             endEditOpening(request)
-            presentError(error, operation: "attachment.prepare")
+            if isLatest { presentError(error, operation: "attachment.prepare") }
             return false
         }
     }
