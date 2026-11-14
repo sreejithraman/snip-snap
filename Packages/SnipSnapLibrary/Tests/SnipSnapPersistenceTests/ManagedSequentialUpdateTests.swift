@@ -156,6 +156,71 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     let saved = try await active.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(Set(saved.snips.map(\.content)), ["Saved before the failed clear", "After reopen"])
   }
+
+  func testAccountIsolationRecoversAfterAReservationClearFailsTwice() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let faults = ManifestWriteFaults()
+    let persistence = try await makeICloudPersistence(root: root, faults: faults)
+    let library = try await persistence.activeLibrary()
+    faults.failNextReservationClear(writes: 2)
+    do {
+      _ = try await library.perform(addCommand("Saved before the failed clear"), sortedBy: .manual)
+      XCTFail("The edit must report the failed reservation clear")
+    } catch SyncModePersistenceError.storageFailure {}
+
+    do { _ = try await persistence.isolateActiveCloudStore(reason: .signedOut) }
+    catch { return XCTFail("Account isolation must not stay refused by the failed clear: \(error)") }
+    let state = try await persistence.snapshot()
+    XCTAssertFalse(state.hasActiveMutationReservation)
+    XCTAssertNotNil(state.accountIsolation)
+  }
+
+  func testOptOutStartsAfterAReservationClearFailsTwice() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let faults = ManifestWriteFaults()
+    let persistence = try await makeICloudPersistence(root: root, faults: faults)
+    let library = try await persistence.activeLibrary()
+    faults.failNextReservationClear(writes: 2)
+    do {
+      _ = try await library.perform(addCommand("Saved before the failed clear"), sortedBy: .manual)
+      XCTFail("The edit must report the failed reservation clear")
+    } catch SyncModePersistenceError.storageFailure {}
+
+    let transition: SyncModeTransition
+    do { transition = try await persistence.beginTransition(to: .localOnly, namespace: nil) }
+    catch { return XCTFail("Opt-out must not stay refused by the failed clear: \(error)") }
+    XCTAssertEqual(transition.targetKind, .localOnly)
+  }
+
+  func testStoreReplacementRefusesAStoreHeldBySync() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try await makeICloudPersistence(root: root, faults: ManifestWriteFaults())
+    let lease = try await persistence.activeCloudMutationLease(
+      storeID: try await persistence.snapshot().activeStore.id)
+    let held = expectation(description: "Normal sync owns write admission")
+    let release = SequentialUpdateLatch()
+    let syncing = Task {
+      try await lease.run {
+        held.fulfill()
+        await release.wait()
+      }
+    }
+    await fulfillment(of: [held], timeout: 2)
+
+    do {
+      _ = try await persistence.isolateActiveCloudStore(reason: .signedOut)
+      XCTFail("Account isolation must wait for sync to release the store")
+    } catch SyncModePersistenceError.transitionInProgress {}
+    do {
+      try await persistence.discardActiveCloudCollection()
+      XCTFail("Discarding the synced collection must wait for sync to release the store")
+    } catch SyncModePersistenceError.transitionInProgress {}
+    await release.open()
+    try await syncing.value
+  }
 }
 
 private func makeICloudPersistence(
