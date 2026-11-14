@@ -238,12 +238,61 @@ private final class ClipboardCaptureReader {
     }
 }
 
+/// A pause or suppression hold ends any attempt, and only the current attempt can insert an entry.
+private enum ClipboardCapture {
+    /// Leaving the hold accepts the pasteboard as it is then, so changes made while held stay out.
+    case held(ClipboardCaptureHolds)
+    case watching(handledChangeCount: Int)
+    case capturing(ClipboardCaptureAttempt)
+
+    var isPaused: Bool {
+        guard case .held(let holds) = self else { return false }
+        return holds.isPaused
+    }
+
+    var attemptID: UUID? {
+        guard case .capturing(let attempt) = self else { return nil }
+        return attempt.id
+    }
+}
+
+private struct ClipboardCaptureHolds {
+    var isPaused: Bool
+    var suppressions: Set<UUID> = []
+
+    var isReleased: Bool { !isPaused && suppressions.isEmpty }
+}
+
+private struct ClipboardCaptureAttempt {
+    enum Stage {
+        case awaitingRead(handledChangeCount: Int)
+        case converting
+    }
+
+    let id: UUID
+    let changeCount: Int
+    var stage: Stage
+    let task: Task<Void, Never>
+
+    var handledChangeCount: Int {
+        switch stage {
+        case .awaitingRead(let handledChangeCount): handledChangeCount
+        case .converting: changeCount
+        }
+    }
+}
+
+/// Builds a clipboard entry off the main actor.
+typealias ClipboardEntryConversion = @Sendable (
+    _ build: @escaping @Sendable () -> ClipboardEntry
+) async -> ClipboardEntry
+
 @MainActor
 final class ClipboardHistory: ObservableObject {
     nonisolated static let backgroundProcessingThreshold = 256 * 1_024
 
     @Published private(set) var entries: [ClipboardEntry] = []
-    @Published private(set) var isPaused: Bool
+    var isPaused: Bool { capture.isPaused }
     @Published private(set) var persistenceError: String?
     @Published private(set) var clipboardSyncEnabled: Bool = false
     @Published private(set) var isSyncing = false
@@ -259,30 +308,42 @@ final class ClipboardHistory: ObservableObject {
     private var lastSyncRequest = Date.distantPast
 
     private let pasteboard: NSPasteboard
+    private let generalPasteboardName: NSPasteboard.Name
+    private let convertEntry: ClipboardEntryConversion
     let sharedStore: ClipboardHistoryStore
     let ownedFileStore: ClipboardFileStore
     private var state = ClipboardHistoryState()
     var onChange: (() -> Void)?
     private let captureReader: ClipboardCaptureReader
-    private var lastChangeCount: Int
+    private var capture: ClipboardCapture {
+        willSet {
+            if case .capturing(let attempt) = capture, newValue.attemptID != attempt.id {
+                attempt.task.cancel()
+            }
+            if newValue.isPaused != capture.isPaused { objectWillChange.send() }
+        }
+    }
     private let pollingTimer = ClipboardPollingTimer()
     private let defaults: UserDefaults
     private let diagnostics: AppDiagnosticRecorder
-    private var suppressionTokens: Set<UUID> = []
     private var initialLoadTask: Task<Void, Never>?
     private var clearTask: Task<Void, Never>?
     private var persistenceScheduleTask: Task<Void, Never>?
-    private var captureTask: Task<Void, Never>?
-    private var inFlightChangeCount: Int?
     private static let pausedDefaultsKey = "clipboardHistoryPaused"
 
     init(
         pasteboard: NSPasteboard = .general,
         defaults: UserDefaults = .standard,
         storeURL: URL = ClipboardHistory.defaultStoreURL(),
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        generalPasteboardName: NSPasteboard.Name = .general,
+        convertEntry: @escaping ClipboardEntryConversion = { build in
+            await Task.detached(priority: .utility, operation: build).value
+        }
     ) {
         self.pasteboard = pasteboard
+        self.generalPasteboardName = generalPasteboardName
+        self.convertEntry = convertEntry
         self.defaults = defaults
         self.diagnostics = diagnostics
         pendingUploadIDs = Set((defaults.stringArray(forKey: "clipboardPendingUploadIDs") ?? []).compactMap(UUID.init(uuidString:)))
@@ -290,8 +351,9 @@ final class ClipboardHistory: ObservableObject {
         ownedFileStore = ClipboardFileStore(rootURL: storeURL.deletingLastPathComponent().appendingPathComponent("ClipboardFiles", isDirectory: true))
         captureReader = ClipboardCaptureReader(pasteboardName: pasteboard.name)
         clipboardSyncEnabled = defaults.bool(forKey: "clipboardSyncEnabled")
-        isPaused = defaults.bool(forKey: Self.pausedDefaultsKey)
-        lastChangeCount = pasteboard.changeCount
+        capture = defaults.bool(forKey: Self.pausedDefaultsKey)
+            ? .held(ClipboardCaptureHolds(isPaused: true))
+            : .watching(handledChangeCount: pasteboard.changeCount)
         entries = []
         initialLoadTask = Task { [weak self, sharedStore] in
             do {
@@ -333,23 +395,36 @@ final class ClipboardHistory: ObservableObject {
     deinit {
         initialLoadTask?.cancel()
         persistenceScheduleTask?.cancel()
-        captureTask?.cancel()
+        if case .capturing(let attempt) = capture { attempt.task.cancel() }
     }
 
     func poll() {
         if cloudService != nil, clipboardSyncEnabled, Date().timeIntervalSince(lastSyncRequest) > 15 {
             requestSync()
         }
-        guard !isPaused, suppressionTokens.isEmpty else {
-            lastChangeCount = pasteboard.changeCount
+        let changeCount = pasteboard.changeCount
+        let handledChangeCount: Int
+        switch capture {
+        case .held:
             return
+        case .watching(let handled):
+            handledChangeCount = handled
+        case .capturing(let attempt):
+            guard attempt.changeCount != changeCount else { return }
+            handledChangeCount = attempt.handledChangeCount
         }
-        guard pasteboard.changeCount != lastChangeCount else { return }
-        captureCurrent()
+        guard changeCount != handledChangeCount else { return }
+        if pasteboard.name == generalPasteboardName {
+            beginDeferredCapture(of: changeCount, handledChangeCount: handledChangeCount)
+        } else {
+            captureImmediately()
+        }
     }
 
     func clear() {
-        captureTask?.cancel()
+        if case .capturing(let attempt) = capture {
+            capture = .watching(handledChangeCount: attempt.handledChangeCount)
+        }
         let previousClear = clearTask
         clearTask = Task { [weak self] in
             await previousClear?.value
@@ -469,21 +544,35 @@ final class ClipboardHistory: ObservableObject {
 
     func setPaused(_ paused: Bool) {
         guard isPaused != paused else { return }
-        isPaused = paused
         defaults.set(paused, forKey: Self.pausedDefaultsKey)
-        lastChangeCount = pasteboard.changeCount
+        var holds = captureHolds
+        holds.isPaused = paused
+        setCaptureHolds(holds)
     }
 
     func beginSuppression() -> UUID {
         let token = UUID()
-        suppressionTokens.insert(token)
-        lastChangeCount = pasteboard.changeCount
+        var holds = captureHolds
+        holds.suppressions.insert(token)
+        setCaptureHolds(holds)
         return token
     }
 
     func endSuppression(_ token: UUID) {
-        suppressionTokens.remove(token)
-        lastChangeCount = pasteboard.changeCount
+        guard case .held(var holds) = capture else { return }
+        holds.suppressions.remove(token)
+        setCaptureHolds(holds)
+    }
+
+    private var captureHolds: ClipboardCaptureHolds {
+        guard case .held(let holds) = capture else { return ClipboardCaptureHolds(isPaused: false) }
+        return holds
+    }
+
+    private func setCaptureHolds(_ holds: ClipboardCaptureHolds) {
+        capture = holds.isReleased
+            ? .watching(handledChangeCount: pasteboard.changeCount)
+            : .held(holds)
     }
 
     func restore(_ entry: ClipboardEntry) -> Bool {
@@ -499,7 +588,9 @@ final class ClipboardHistory: ObservableObject {
             return false
         }
         guard resolved.write(to: pasteboard) else { return false }
-        lastChangeCount = pasteboard.changeCount
+        if !isCaptureHeld {
+            capture = .watching(handledChangeCount: pasteboard.changeCount)
+        }
         var copied = entry
         copied.capturedAt = Date()
         copied.modifiedAt = copied.capturedAt
@@ -519,7 +610,7 @@ final class ClipboardHistory: ObservableObject {
     func flushPersistence() async {
         await clearTask?.value
         await initialLoadTask?.value
-        await captureTask?.value
+        await captureAttemptTask?.value
         await persistenceScheduleTask?.value
 
     }
@@ -529,87 +620,91 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func waitForPendingCapture() async {
-        await captureTask?.value
+        await captureAttemptTask?.value
     }
 
-    private func captureCurrent() {
-        let capturedChangeCount = pasteboard.changeCount
-        guard !isPaused, suppressionTokens.isEmpty else {
-            lastChangeCount = capturedChangeCount
+    private var captureAttemptTask: Task<Void, Never>? {
+        guard case .capturing(let attempt) = capture else { return nil }
+        return attempt.task
+    }
+
+    private var isCaptureHeld: Bool {
+        if case .held = capture { true } else { false }
+    }
+
+    private func beginDeferredCapture(of changeCount: Int, handledChangeCount: Int) {
+        let id = UUID()
+        let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await readDeferredCapture(id, sourceApplication: sourceApplication)
+        }
+        capture = .capturing(ClipboardCaptureAttempt(
+            id: id,
+            changeCount: changeCount,
+            stage: .awaitingRead(handledChangeCount: handledChangeCount),
+            task: task
+        ))
+    }
+
+    private func readDeferredCapture(_ id: UUID, sourceApplication: String?) async {
+        guard case .capturing(var attempt) = capture, attempt.id == id else { return }
+        let snapshot = captureReader.capture(changeCount: attempt.changeCount)
+        guard let snapshot, pasteboard.changeCount == attempt.changeCount else {
+            capture = .watching(handledChangeCount: attempt.changeCount)
             return
         }
-        if pasteboard.name == .general {
-            guard inFlightChangeCount != capturedChangeCount else { return }
-            captureTask?.cancel()
-            inFlightChangeCount = capturedChangeCount
-            let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
-            captureTask = Task { [weak self, captureReader] in
-                let snapshot = captureReader.capture(changeCount: capturedChangeCount)
-                guard let self,
-                      self.inFlightChangeCount == capturedChangeCount else { return }
-                self.inFlightChangeCount = nil
-                guard !Task.isCancelled,
-                      !self.isPaused,
-                      self.suppressionTokens.isEmpty,
-                      self.pasteboard.changeCount == capturedChangeCount else { return }
-                self.lastChangeCount = capturedChangeCount
-                guard let snapshot else { return }
-                let entry = await Task.detached(priority: .utility) {
-                    ClipboardEntry(
-                        sourceApplication: sourceApplication,
-                        items: snapshot.items,
-                        plainText: snapshot.plainText
-                    )
-                }.value
-                guard !Task.isCancelled,
-                      self.pasteboard.changeCount == capturedChangeCount else { return }
-                self.insert(entry)
-            }
-            return
-        }
-        captureImmediately()
+        attempt.stage = .converting
+        capture = .capturing(attempt)
+        await finishCapture(id, snapshot: snapshot, sourceApplication: sourceApplication)
     }
 
     private func captureImmediately() {
-        let capturedChangeCount = pasteboard.changeCount
-        guard !isPaused, suppressionTokens.isEmpty else {
-            lastChangeCount = capturedChangeCount
-            return
-        }
+        guard !isCaptureHeld else { return }
+        let changeCount = pasteboard.changeCount
         let sourceApplication = NSWorkspace.shared.frontmostApplication?.localizedName
-        captureTask?.cancel()
-        guard let snapshot = captureReader.capture(changeCount: capturedChangeCount) else {
-            lastChangeCount = capturedChangeCount
-            captureTask = nil
+        guard let snapshot = captureReader.capture(changeCount: changeCount) else {
+            capture = .watching(handledChangeCount: changeCount)
             return
         }
-        lastChangeCount = capturedChangeCount
-        if snapshot.byteCount < Self.backgroundProcessingThreshold {
-            captureTask = nil
-            insert(
-                ClipboardEntry(
-                    sourceApplication: sourceApplication,
-                    items: snapshot.items,
-                    plainText: snapshot.plainText
-                )
+        guard snapshot.byteCount >= Self.backgroundProcessingThreshold else {
+            capture = .watching(handledChangeCount: changeCount)
+            insert(ClipboardEntry(
+                sourceApplication: sourceApplication,
+                items: snapshot.items,
+                plainText: snapshot.plainText
+            ))
+            return
+        }
+        let id = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await finishCapture(id, snapshot: snapshot, sourceApplication: sourceApplication)
+        }
+        capture = .capturing(ClipboardCaptureAttempt(
+            id: id,
+            changeCount: changeCount,
+            stage: .converting,
+            task: task
+        ))
+    }
+
+    private func finishCapture(
+        _ id: UUID,
+        snapshot: ClipboardCaptureSnapshot,
+        sourceApplication: String?
+    ) async {
+        let entry = await convertEntry {
+            ClipboardEntry(
+                sourceApplication: sourceApplication,
+                items: snapshot.items,
+                plainText: snapshot.plainText
             )
-            return
         }
-        captureTask = Task { [weak self] in
-            let entry = await Task.detached(priority: .utility) {
-                ClipboardEntry(
-                    sourceApplication: sourceApplication,
-                    items: snapshot.items,
-                    plainText: snapshot.plainText
-                )
-            }.value
-            guard !Task.isCancelled,
-                  let self,
-                  !self.isPaused,
-                  self.suppressionTokens.isEmpty,
-                  self.pasteboard.changeCount == capturedChangeCount else { return }
-            self.insert(entry)
-        }
+        guard case .capturing(let attempt) = capture, attempt.id == id else { return }
+        capture = .watching(handledChangeCount: attempt.changeCount)
+        guard pasteboard.changeCount == attempt.changeCount else { return }
+        insert(entry)
     }
 
     private func insert(_ entry: ClipboardEntry) {
