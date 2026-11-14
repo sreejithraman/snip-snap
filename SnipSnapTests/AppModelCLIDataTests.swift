@@ -81,12 +81,7 @@ final class AppModelCLIDataTests: StoreBackedTestCase {
         let backup = sourceURL.deletingLastPathComponent().appendingPathComponent("Backup")
         _ = try await source.handleCLIRequest(request(.exportBackup(path: backup.path), source))
 
-        let targetLibrary = try JSONSnipLibrary(fileURL: storeURL())
-        let target = AppModel(library: targetLibrary, defaults: defaults(), userActionsFactory: { library in
-            DirectSnipLibraryUserActions(library: library, previewBackupImport: { url, target in
-                try await SnipLibraryImport.preview(backupURL: url, target: target)
-            })
-        })
+        let (target, targetLibrary) = try makeImportTarget()
         let preview = try await target.handleCLIRequest(request(.previewBackup(path: backup.path), target))
         let summary = try XCTUnwrap(data(preview).importPreview)
         XCTAssertNil(target.pendingImportPreview, "CLI preview must not open an app confirmation dialog")
