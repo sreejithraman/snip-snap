@@ -212,7 +212,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   }
 
   /// A previous run that ended abnormally, as the platform reported it.
-  public static func termination(_ termination: AppDiagnosticTermination) -> Self {
+  static func termination(_ termination: AppDiagnosticTermination) -> Self {
     Self(operation: "app.termination", outcome: .failed, visibility: .background,
       errorCode: termination.kind.errorCode, termination: termination)
   }
@@ -332,7 +332,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     if let pendingDownloads { fields.append("pending_downloads=\(pendingDownloads)") }
     if let pendingEvents { fields.append("pending_events=\(pendingEvents)") }
     if let blockedRecords { fields.append("blocked_records=\(blockedRecords)") }
-    for field in termination?.fields ?? [] { fields.append("\(field.key)=\(field.value)") }
+    fields += termination?.fields ?? []
     return fields.joined(separator: " ")
   }
 

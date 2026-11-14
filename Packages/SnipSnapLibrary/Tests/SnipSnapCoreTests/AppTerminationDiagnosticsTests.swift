@@ -89,11 +89,22 @@ final class AppTerminationDiagnosticsTests: XCTestCase {
   func testTerminationReasonKeepsOnlyNamespaceAndNormalizedCode() {
     let crashReportForm = AppDiagnosticTermination(
       exceptionType: 10, signal: 9,
-      terminationReason: "FRONTBOARD 2343432205 <RBSTerminateContext| domain:10 code:0x8BADF00D>",
+      terminationReason: "FRONTBOARD 2343432205 <RBSTerminateContext| domain:10>",
       appVersion: "0.6.1", appBuild: "185")
     XCTAssertEqual(crashReportForm.kind, .watchdog)
     XCTAssertEqual(crashReportForm.namespace, "FRONTBOARD")
     XCTAssertEqual(crashReportForm.code, "0x8badf00d")
+
+    for (reason, code) in [
+      ("Namespace FRONTBOARD, Code 0x18badf00d", "0x18badf00d"),
+      ("Namespace SIGNAL, Code 0xb after 0x8badf00d", "0xb"),
+      ("killed after 0x8badf00d", nil),
+    ] {
+      let termination = AppDiagnosticTermination(
+        exceptionType: 10, signal: 9, terminationReason: reason, appVersion: nil, appBuild: nil)
+      XCTAssertEqual(termination.kind, .crash, reason)
+      XCTAssertEqual(termination.code, code, reason)
+    }
 
     let unparsed = AppDiagnosticTermination(
       exceptionType: 99, signal: 31, terminationReason: "killed /private/var/Snip secret.txt",
@@ -106,6 +117,12 @@ final class AppTerminationDiagnosticsTests: XCTestCase {
     XCTAssertNil(unparsed.version)
     XCTAssertNil(unparsed.build)
     XCTAssertFalse(AppDiagnosticEvent.termination(unparsed).line.contains("secret"))
+
+    let largeNumbers = AppDiagnosticTermination(
+      exceptionType: 99_999_999_999, signal: 4_294_967_296, terminationReason: nil,
+      appVersion: nil, appBuild: nil)
+    let line = "2026-11-13T13:21:11Z " + AppDiagnosticEvent.termination(largeNumbers).line
+    XCTAssertEqual(AppDiagnosticLine.sanitize(line), line)
   }
 
   func testRecordedTerminationExportsWithCrashTimeAndBuilds() throws {
@@ -183,7 +200,6 @@ private final class FakePayload: MXDiagnosticPayload {
 
   required init?(coder: NSCoder) { nil }
 
-  override var timeStampBegin: Date { end.addingTimeInterval(-86_400) }
   override var timeStampEnd: Date { end }
   override var crashDiagnostics: [MXCrashDiagnostic]? { crashes }
 }

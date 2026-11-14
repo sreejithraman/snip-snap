@@ -9,6 +9,15 @@ public struct AppDiagnosticTermination: Equatable, Sendable {
     case fileLock
     case crash
 
+    init(code: UInt64?) {
+      self =
+        switch code {
+        case 0x8bad_f00d: .watchdog
+        case 0xdead_10cc: .fileLock
+        default: .crash
+        }
+    }
+
     var errorCode: String { "termination.\(rawValue)" }
   }
 
@@ -20,23 +29,18 @@ public struct AppDiagnosticTermination: Equatable, Sendable {
   public let version: String?
   public let build: String?
 
-  public init(
+  init(
     exceptionType: Int?, signal: Int?, terminationReason: String?,
     appVersion: String?, appBuild: String?
   ) {
     exception = exceptionType.flatMap { Self.name($0, in: Self.exceptionNames) }
     self.signal = signal.flatMap { Self.name($0, in: Self.signalNames) }
     let reason = terminationReason.flatMap(Self.parseReason)
+    kind = Kind(code: reason?.code)
     namespace = reason?.namespace
-    code = reason?.code
+    code = reason.map { "0x" + String($0.code, radix: 16) }
     version = appVersion.flatMap(Self.validVersion)
     build = appBuild.flatMap(Self.validVersion)
-    // The parsed code covers decimal forms; the raw reason covers codes in other positions.
-    let evidence = [code, terminationReason?.lowercased()].compactMap { $0 }.joined(separator: " ")
-    kind =
-      if evidence.contains("8badf00d") { .watchdog }
-      else if evidence.contains("dead10cc") { .fileLock }
-      else { .crash }
   }
 
   static let fieldKeys = [
@@ -44,9 +48,9 @@ public struct AppDiagnosticTermination: Equatable, Sendable {
     "exit_build",
   ]
 
-  var fields: [(key: String, value: String)] {
+  var fields: [String] {
     zip(Self.fieldKeys, [exception, signal, namespace, code, version, build])
-      .compactMap { key, value in value.map { (key, $0) } }
+      .compactMap { key, value in value.map { "\(key)=\($0)" } }
   }
 
   static func isValid(key: String, value: String) -> Bool {
@@ -83,7 +87,7 @@ public struct AppDiagnosticTermination: Equatable, Sendable {
 
   private static func isName(_ value: String, in names: [Int: String]) -> Bool {
     names.values.contains(value)
-      || (value.count <= 10 && Int(value).map { $0 >= 0 && String($0) == value } == true)
+      || UInt(value).map(String.init) == value
   }
 
   private static func validVersion(_ value: String) -> String? {
@@ -93,14 +97,14 @@ public struct AppDiagnosticTermination: Equatable, Sendable {
 
   /// Accepts MetricKit's "Namespace FRONTBOARD, Code 0x8badf00d" and crash-report
   /// "FRONTBOARD 2343432205" forms. Only the namespace token and the code survive.
-  private static func parseReason(_ reason: String) -> (namespace: String, code: String)? {
+  private static func parseReason(_ reason: String) -> (namespace: String, code: UInt64)? {
     let pattern = #/^\s*(?:Namespace\s+)?([A-Z][A-Z0-9_]{1,31}),?\s+(?:Code\s+)?(0x[0-9A-Fa-f]{1,16}|[0-9]{1,20})\b/#
     guard let match = reason.firstMatch(of: pattern) else { return nil }
     let raw = String(match.2)
     let value =
       raw.hasPrefix("0x") ? UInt64(raw.dropFirst(2), radix: 16) : UInt64(raw, radix: 10)
     guard let value else { return nil }
-    return (String(match.1), "0x" + String(value, radix: 16))
+    return (String(match.1), value)
   }
 }
 
