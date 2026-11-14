@@ -248,6 +248,61 @@ final class IOSCopyShareTests: XCTestCase {
         XCTAssertNil(delivery.request)
     }
 
+    func testReplacementShareRequestPresentsAfterPendingPresentationIsCancelled() async throws {
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let state = HostedShareRequestState()
+        let probe = ShareDiagnosticRecorderProbe()
+        let host = UIHostingController(
+            rootView: HostedSharePresenter(state: state, diagnostics: probe.recorder)
+        )
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        await drainMainQueue()
+
+        var firstResult: Result<AppDiagnosticSettingsModel.DeliveryOutcome, any Error>?
+        let first = IOSShareRequest(
+            items: [.text("first")],
+            completion: IOSShareCompletion { firstResult = $0 }
+        )
+        state.request = first
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        // Replace the request before the first request's scheduled presentation runs.
+        state.request = IOSShareRequest(items: [.text("replacement")])
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+
+        let presentedReplacement = await TestReadiness.wait {
+            guard let activity = presentedActivity(in: window) else { return false }
+            return !activity.isBeingPresented
+        }
+        if host.presentedViewController != nil {
+            await withCheckedContinuation { continuation in
+                host.dismiss(animated: false) { continuation.resume() }
+            }
+        }
+        window.isHidden = true
+
+        guard case .success(.cancelled)? = firstResult else {
+            return XCTFail("The replaced request must settle as cancelled")
+        }
+        XCTAssertTrue(presentedReplacement, "The replacement request must be presented")
+        XCTAssertTrue(probe.events.isEmpty)
+    }
+
+    private func presentedActivity(in window: UIWindow) -> UIActivityViewController? {
+        var presented = window.rootViewController?.presentedViewController
+        while let controller = presented {
+            if let activity = controller as? UIActivityViewController { return activity }
+            presented = controller.presentedViewController
+        }
+        return nil
+    }
+
     private func pendingRequest(in delivery: IOSDiagnosticShareDelivery) async throws -> IOSShareRequest {
         _ = await TestReadiness.wait { delivery.request != nil }
         return try XCTUnwrap(delivery.request)
@@ -270,6 +325,21 @@ private final class ShareRequestState {
 
     var binding: Binding<IOSShareRequest?> {
         Binding(get: { self.request }, set: { self.request = $0 })
+    }
+}
+
+@MainActor
+private final class HostedShareRequestState: ObservableObject {
+    @Published var request: IOSShareRequest?
+}
+
+private struct HostedSharePresenter: View {
+    @ObservedObject var state: HostedShareRequestState
+    let diagnostics: AppDiagnosticRecorder
+
+    var body: some View {
+        IOSShareSheetPresenter(request: $state.request, diagnostics: diagnostics)
+            .frame(width: 0, height: 0)
     }
 }
 
