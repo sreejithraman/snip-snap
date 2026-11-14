@@ -16,8 +16,10 @@ On launch, before any store opens, the app moves each directory out of the App
 Group with one atomic rename. The two directories do not refer to each other,
 so each moves on its own. A directory that cannot move stays in use where it is
 and is recorded as a `library.relocate` failure. If the destination already
-exists, the app uses it and leaves the App Group copy untouched for recovery.
-An older build installed after the move does not see the moved library.
+exists, the app uses it, leaves the App Group copy untouched, and records
+`library.relocationConflict`. The app does not read that copy again; only a
+forward fix or a manual move can bring it back. An older build installed after
+the move does not see the moved library.
 
 ## Diagnostic history
 
