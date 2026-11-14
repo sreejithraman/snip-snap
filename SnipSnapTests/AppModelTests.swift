@@ -3016,6 +3016,123 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRetryingAnEditAfterTheViewChangedOpensIt() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("retried-edit.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Edit me",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let a = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(a.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let handler = GatedMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [a]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+        model.enterSearch()
+        model.query = "Edit"
+
+        let first = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts()
+        model.query = "Edit me"
+        let second = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts(count: 2)
+        await handler.releasePreparation()
+
+        let openedFirst = await first.value
+        let openedSecond = await second.value
+        XCTAssertFalse(openedFirst)
+        XCTAssertTrue(openedSecond)
+        XCTAssertEqual(model.editingID, a.id)
+    }
+
+    @MainActor
+    func testSupersededOpeningFailureLeavesTheNewerEditAlone() async throws {
+        let store = try storeURL()
+        let source = store.deletingLastPathComponent().appendingPathComponent("failed-edit.md")
+        try Data("Attachment".utf8).write(to: source)
+        let repository = try JSONSnipLibrary(fileURL: store)
+        let addedResult = try await repository.add(
+            content: "Edit me first",
+            origin: .quickEntry,
+            attachmentURLs: [source]
+        )
+        let a = try XCTUnwrap(addedResult)
+        let attachment = try XCTUnwrap(a.attachments.first)
+        try FileManager.default.removeItem(at: repository.attachmentURL(for: attachment))
+        let b = Snip(content: "Text only", origin: .quickEntry)
+        let handler = GatedMacAttachmentHandler(url: source)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [a, b]),
+            defaults: defaults(),
+            cloudSyncHandler: handler
+        )
+        await model.reload()
+
+        let pendingA = Task { @MainActor in await model.beginEditing(a.id) }
+        await handler.waitUntilPreparationStarts()
+        let openedB = await model.beginEditing(b.id)
+        XCTAssertTrue(openedB)
+        await handler.failPreparation(CocoaError(.fileReadUnknown))
+
+        let openedA = await pendingA.value
+        XCTAssertFalse(openedA)
+        XCTAssertEqual(model.editingID, b.id)
+        XCTAssertNil(model.presentedError)
+        XCTAssertNil(model.latestFailure)
+        XCTAssertNil(model.dialogFailure)
+    }
+
+    @MainActor
+    func testSaveWhoseEditEndedWhileWaitingWritesNothing() async throws {
+        let edited = Snip(content: "Draft", origin: .quickEntry)
+        var finished = Snip(content: "Finished", origin: .quickEntry)
+        finished.isDone = true
+        let library = InMemorySnipLibrary(snips: [edited, finished], suspendsFirstCommand: true)
+        let model = AppModel(
+            library: library, defaults: defaults(),
+            recoveryScope: SnipRecoveryScope("account-a-generation-a")
+        )
+        await model.reload()
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+        let session = try XCTUnwrap(model.inlineEditSessionID)
+        let newLibrary = InMemorySnipLibrary(snips: [edited])
+
+        let holdsLock = Task { @MainActor in await model.setDoneNow(false, ids: [finished.id]) }
+        await library.waitUntilFirstCommandStarts()
+        // The command lock admits waiters in order, so the scope change runs before the save.
+        let scopeChange = Task { @MainActor in
+            await model.replaceLibrary(
+                newLibrary,
+                recoveryScope: SnipRecoveryScope("account-b-generation-a")
+            )
+        }
+        await Task.yield()
+        let save = Task { @MainActor in await model.saveInlineEdit(content: "Late", in: session) }
+        await Task.yield()
+        await library.resumeFirstCommand()
+
+        await holdsLock.value
+        await scopeChange.value
+        let saved = await save.value
+        XCTAssertFalse(saved)
+        XCTAssertNil(model.editingID)
+        let newContent = await newLibrary.snapshot(sortedBy: .chronological).snips.first?.content
+        XCTAssertEqual(newContent, "Draft")
+        let oldContent = await library.snapshot(sortedBy: .chronological).snips
+            .first { $0.id == edited.id }?.content
+        XCTAssertEqual(oldContent, "Draft")
+    }
+
+    @MainActor
     func testCopyingTextOnlyDoesNotCallCloudHandler() async throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await library.add(content: "Text only", origin: .quickEntry)
@@ -4592,6 +4709,11 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
 
     func releasePreparation() {
         preparationContinuations.forEach { $0.resume(returning: url) }
+        preparationContinuations.removeAll()
+    }
+
+    func failPreparation(_ error: any Error) {
+        preparationContinuations.forEach { $0.resume(throwing: error) }
         preparationContinuations.removeAll()
     }
 }
