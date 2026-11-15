@@ -5,7 +5,7 @@ import SnipSnapCore
 import XCTest
 
 /// A failed rollback can leave a transition stage that only reopen clears (SM23-L1, SM23-L2).
-/// Mode operations run one at a time, so Try Again finds such a stage only as a leftover.
+/// Try Again finishes only a rollback this process couldn't commit, not work in flight (SM23-F1).
 extension ICloudSyncModeCoordinatorTests {
     func testEnableTryAgainUnfreezesASourceLeftFrozenByAFailedRestore() async throws {
         let root = temporaryDirectory()
@@ -127,6 +127,123 @@ extension ICloudSyncModeCoordinatorTests {
                 on: change == .enable ? .iCloudSync : .localOnly
             )
         }
+    }
+
+    func testEnableTryAgainDoesNotUnfreezeAnEnableInFlight() async throws {
+        try await assertTryAgainLeavesTheFreezeInFlight(for: .enable)
+    }
+
+    func testOptOutTryAgainDoesNotUnfreezeAnOptOutInFlight() async throws {
+        try await assertTryAgainLeavesTheFreezeInFlight(for: .optOut)
+    }
+
+    func testFailedCancelSetupKeepsTheLibraryForTheNextEnable() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let disk = DiskFullInjector()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            crashHook: disk.hit,
+            manifestWriter: disk.writer.write
+        )
+        try await add("kept", to: persistence.activeLibrary())
+        try await add("also kept", to: persistence.activeLibrary())
+        let coordinator = modeCoordinator(on: persistence, server: FakeCloudServer())
+        disk.arm(at: .beforePointerSwap)
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("The injected failure must end the enable.")
+        } catch DiskFullInjector.Failure.injected {}
+        let stuck = try await persistence.snapshot()
+        XCTAssertEqual(stuck.transition?.phase, .firstSendComplete)
+
+        do {
+            try await persistence.cancelPendingICloudEnable()
+            XCTFail("Cancel setup can't commit while the disk is full.")
+        } catch {
+            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+        }
+        disk.writer.failWrites = false
+
+        let enabled = try await coordinator.enableOrRetry()
+
+        // Before the SM23-F1 A1 fix, these fail: the failed cancel deleted the candidate's files,
+        // so this enable reopens the candidate empty and swaps it in.
+        XCTAssertEqual(enabled.state, .on)
+        try await assertModeChangeFinished(
+            persistence,
+            on: .iCloudSync,
+            holding: ["kept", "also kept"]
+        )
+    }
+
+    /// Holds `change` at its final snapshot read, with the source frozen, while a second
+    /// coordinator on the same persistence tries the same change. No gate is shared.
+    private func assertTryAgainLeavesTheFreezeInFlight(
+        for change: StrandedChange,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pause = FrozenSourceReadPause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            readHook: { await pause.read(sourceFrozen: storedSourceIsFrozen(under: root)) }
+        )
+        try await add("kept", to: persistence.activeLibrary())
+        let server = FakeCloudServer()
+        let inFlight = modeCoordinator(on: persistence, server: server)
+        let tryAgain = modeCoordinator(on: persistence, server: server)
+        if change == .optOut {
+            let enabled = try await inFlight.enableOrRetry()
+            XCTAssertEqual(enabled.state, .on, file: file, line: line)
+        }
+        await pause.arm()
+        let first = Task {
+            do {
+                let status = try await requestModeChange(change, on: inFlight)
+                await pause.heldWorkFinished()
+                return status
+            } catch {
+                await pause.heldWorkFinished()
+                throw error
+            }
+        }
+        await pause.waitUntilPaused()
+        guard await pause.hasPaused else {
+            _ = try await first.value
+            XCTFail(
+                "\(change) finished without reaching its final snapshot read.",
+                file: file,
+                line: line
+            )
+            return
+        }
+        let held = try? await persistence.snapshot()
+
+        let retried = await Task { try await requestModeChange(change, on: tryAgain) }.result
+        let afterRetry = try? await persistence.snapshot()
+        await pause.resume()
+
+        XCTAssertEqual(held?.transition?.phase, .sourceFrozen, file: file, line: line)
+        XCTAssertNotNil(held?.transition?.freezeToken, file: file, line: line)
+        // Before the SM23-F1 fix, these fail: Try Again unfreezes the change in flight and
+        // starts its own merge.
+        let waiting: ICloudSyncModeState = change == .enable ? .settingUp : .syncing
+        XCTAssertEqual(try retried.get().state, waiting, file: file, line: line)
+        XCTAssertEqual(afterRetry?.transition, held?.transition, file: file, line: line)
+        let finished = try await first.value
+        let done: ICloudSyncModeState = change == .enable ? .on : .off
+        XCTAssertEqual(finished.state, done, file: file, line: line)
+        try await assertModeChangeFinished(
+            persistence,
+            on: change == .enable ? .iCloudSync : .localOnly,
+            file: file,
+            line: line
+        )
     }
 
     /// Runs `change` until `failure` strands its transition, then frees the disk. The failure
@@ -251,6 +368,69 @@ private struct StrandedTransition {
     let persistence: SwiftDataSyncModePersistence
     let coordinator: ICloudSyncModeCoordinator
     let server: FakeCloudServer
+}
+
+private func requestModeChange(
+    _ change: StrandedChange,
+    on coordinator: ICloudSyncModeCoordinator
+) async throws -> ICloudSyncModeStatus {
+    switch change {
+    case .enable:
+        return try await coordinator.enableOrRetry()
+    case .optOut:
+        return try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+    }
+}
+
+/// Once armed, holds the first library read made while the source is frozen, which is the
+/// final snapshot read, until `resume()`.
+private actor FrozenSourceReadPause {
+    private(set) var hasPaused = false
+    private var isArmed = false
+    private var heldWorkIsDone = false
+    private var isResumed = false
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var release: CheckedContinuation<Void, Never>?
+
+    func arm() {
+        isArmed = true
+    }
+
+    func read(sourceFrozen: Bool) async {
+        guard isArmed, sourceFrozen, !hasPaused else { return }
+        hasPaused = true
+        pauseWaiters.forEach { $0.resume() }
+        pauseWaiters = []
+        guard !isResumed else { return }
+        await withCheckedContinuation { release = $0 }
+    }
+
+    func waitUntilPaused() async {
+        if hasPaused || heldWorkIsDone { return }
+        await withCheckedContinuation { pauseWaiters.append($0) }
+    }
+
+    /// Ends `waitUntilPaused()` for work that finished without reaching the read.
+    func heldWorkFinished() {
+        heldWorkIsDone = true
+        pauseWaiters.forEach { $0.resume() }
+        pauseWaiters = []
+    }
+
+    func resume() {
+        isResumed = true
+        release?.resume()
+        release = nil
+    }
+}
+
+private func storedSourceIsFrozen(under root: URL) -> Bool {
+    let manifestURL = root.appendingPathComponent("activation.json", isDirectory: false)
+    let manifest = try? JSONDecoder().decode(
+        SwiftDataSyncModePersistence.Manifest.self,
+        from: Data(contentsOf: manifestURL)
+    )
+    return manifest?.transition?.phase == .sourceFrozen
 }
 
 /// Fails one step of a mode change and, from then on, every manifest write, like a disk that

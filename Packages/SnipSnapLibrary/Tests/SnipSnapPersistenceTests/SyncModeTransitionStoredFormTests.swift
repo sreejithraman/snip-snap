@@ -92,6 +92,29 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     )
   }
 
+  // MARK: Derived reads
+
+  func testOnlyStagesFromTheFreezeToThePointerSwapFreezeTheSource() throws {
+    let freezesSource: [SyncModeTransitionPhase: Bool] = [
+      .candidateDeclared: false,
+      .candidateReady: false,
+      .remoteFetched: false,
+      .sourceFrozen: true,
+      .recordsMerged: true,
+      .enrollmentApproved: true,
+      .firstSendStarted: true,
+      .firstSendComplete: true,
+      .pointerSwapped: false,
+    ]
+    var checkedPhases: Set<SyncModeTransitionPhase> = []
+    for (shape, stored) in Self.storedShapes {
+      let decoded = try JSONDecoder().decode(SyncModeTransition.self, from: Data(stored.utf8))
+      XCTAssertEqual(decoded.freezesSource, freezesSource[decoded.phase], shape)
+      checkedPhases.insert(decoded.phase)
+    }
+    XCTAssertEqual(checkedPhases, Set(freezesSource.keys))
+  }
+
   // MARK: Writer deltas
 
   func testEnableWritersChangeOnlyTheirStoredFields() async throws {
