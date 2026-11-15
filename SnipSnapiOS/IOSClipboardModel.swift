@@ -60,11 +60,15 @@ final class IOSClipboardModel {
         UIDevice.current.model == "iPad" ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
 
-    init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
+    init(rootURL: URL, syncRootURL: URL? = nil, settings: SyncedContentSettingsModel,
+         containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
          diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
-         readCopyFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+         readCopyFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+         makeCloudService: @MainActor (_ store: ClipboardHistoryStore, _ containerIdentifier: String,
+                                       _ syncRootURL: URL) -> ClipboardCloudSyncService
+             = ClipboardCloudSyncService.init(store:containerIdentifier:syncRootURL:)) {
         let store = ClipboardHistoryStore(url: rootURL.appendingPathComponent("clipboard.json"))
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store
@@ -80,8 +84,8 @@ final class IOSClipboardModel {
         cloud = containerIdentifier.flatMap {
             let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !identifier.isEmpty else { return nil }
-            return ClipboardCloudSyncService(store: store, containerIdentifier: identifier,
-                syncRootURL: rootURL.appendingPathComponent("SyncMode", isDirectory: true))
+            return makeCloudService(store, identifier,
+                syncRootURL ?? rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
 
@@ -182,8 +186,8 @@ final class IOSClipboardModel {
         guard syncIsActive else { cloud.stop(); return }
         do {
             guard let generation = try await generation(), syncPhase == run else { return }
-            // The service checks this on entry and again when it admits the run.
-            let synced = try await cloud.synchronize(generation: generation, isEnabled: { syncIsActive })
+            // The service checks this before the run and stops the run when it stops holding.
+            let synced = try await cloud.synchronize(generation: generation, isEnabled: { [self] in syncIsActive })
             guard syncPhase == run, syncIsActive else { return }
             entries = synced.entries
             syncErrorMessage = nil

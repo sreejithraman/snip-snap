@@ -1,3 +1,4 @@
+import SnipSnapCore
 import SwiftUI
 
 private struct ListGridIcon: Identifiable {
@@ -9,7 +10,6 @@ private struct ListGridIcon: Identifiable {
 
 struct SnipListIconPicker: View {
     @Binding var selection: String
-    var accent: Color = .primary
 
     var body: some View {
         NavigationLink {
@@ -18,7 +18,7 @@ struct SnipListIconPicker: View {
             Label {
                 Text("Icon")
             } icon: {
-                Image(systemName: ListIconSymbol.supportedName(selection)).foregroundStyle(accent)
+                SnipListMarkView(mark: ListIconSymbol.pickerMark(for: selection), appearance: SnipListAppearance(preset: nil))
             }
         }
         .accessibilityIdentifier("choose-list-icon")
@@ -88,6 +88,17 @@ struct ListIconGrid: View {
         if categories.isEmpty {
             ContentUnavailableView.search(text: query)
         } else {
+            VStack(spacing: 8) {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    SnipListNoIconButton(selection: $selection, didSelect: didSelect)
+                        .padding(.top, 8)
+                }
+                iconGrid(categories)
+            }
+        }
+    }
+
+    private func iconGrid(_ categories: [SnipListIconCategory]) -> some View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 12)], spacing: 12) {
                 ForEach(categories) { category in
                     Section {
@@ -107,7 +118,6 @@ struct ListIconGrid: View {
             }
             .frame(maxWidth: .infinity)
             .onAppear { recentIcons = SnipListIconOptions.recentIcons() }
-        }
     }
 
     private func iconButton(_ icon: String) -> some View {

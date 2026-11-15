@@ -310,9 +310,9 @@ final class PanelTests: StoreBackedTestCase {
         let savedSymbol = "snipsnap.future-symbol"
         let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
 
-        XCTAssertEqual(list.displaySystemImage, "list.bullet")
+        XCTAssertEqual(list.displayMark, .letters("F"))
         XCTAssertEqual(list.systemImage, savedSymbol)
-        XCTAssertEqual(SnipList.inbox.displaySystemImage, SnipList.inbox.systemImage)
+        XCTAssertEqual(SnipList.inbox.displayMark, .icon(SnipList.inbox.systemImage))
     }
 
     func testTrackpadSwipeSwitchesOncePerHorizontalGesture() {
@@ -1114,7 +1114,9 @@ final class PanelTests: StoreBackedTestCase {
         let idle = SnipListIconOptions.displayedCategories(query: "  ", recentIcons: recents)
         XCTAssertEqual(idle.first?.title, "Recent")
         XCTAssertEqual(idle.first?.icons, recents)
-        XCTAssertEqual(idle.flatMap(\.icons).count, 30)
+        // The old default symbols mean "no icon", so the picker leaves them out.
+        XCTAssertEqual(idle.flatMap(\.icons).count, 28)
+        XCTAssertTrue(SnipList.legacyDefaultIcons.isDisjoint(with: SnipListIconOptions.availableIcons))
         XCTAssertEqual(Set(idle.flatMap(\.icons)).count, idle.flatMap(\.icons).count)
 
         let fullCatalogResult = SnipListIconOptions.displayedCategories(query: "stethoscope.circle")

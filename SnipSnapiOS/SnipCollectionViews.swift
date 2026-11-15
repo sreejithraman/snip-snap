@@ -29,8 +29,7 @@ struct SnipCollectionView: View {
     @State private var previewTask: Task<Void, Never>?
     // Geometry is sampled by actions, so scrolling should not invalidate the collection.
     @State private var gatheringFrames = GatheringFrames()
-    @State private var gatheringFlights: [GatheringFlight] = []
-    @State private var departingRows: [UUID: UUID] = [:]
+    @State private var transfers = GatheringTransfers()
     @State private var gatheringAvailableHeight: CGFloat = 0
     @FocusState private var isInlineEditorFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,7 +47,7 @@ struct SnipCollectionView: View {
     }
     private var showsListEditor: Bool { isEditingList && !model.isSearchPresented }
 
-    var body: some View {
+    private var collectionScreen: some View {
         ZStack {
             collectionList
                 .opacity(isSearching ? 0 : 1)
@@ -61,40 +60,7 @@ struct SnipCollectionView: View {
         .disabled(model.isPerformingGatheredAction)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if isSelecting && isActivePage && !model.isSearchPresented {
-                GatheredSnipsDock(
-                    model: model,
-                    copyShare: copyShare,
-                    isPerformingAction: model.isPerformingGatheredAction,
-                    move: moveGatheredSnips,
-                    delete: deleteGatheredSnips,
-                    performAction: { action in performGatheredAction(action) },
-                    cancel: endSelection,
-                    previewAttachment: previewAttachment,
-                    containerHeight: gatheringAvailableHeight,
-                    arrivingSnipIDs: Set(gatheringFlights.map { $0.snip.id }),
-                    settleArrivals: {
-                        var transaction = Transaction(animation: nil)
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) { gatheringFlights = [] }
-                    },
-                    cardFramesChanged: { frames in
-                        for index in gatheringFlights.indices {
-                            if let frame = frames[gatheringFlights[index].snip.id],
-                               gatheringFlights[index].destination != frame {
-                                gatheringFlights[index].destination = frame
-                            }
-                        }
-                    }
-                )
-                .transaction { transaction in
-                    if !gatheringFlights.isEmpty {
-                        transaction.animation = nil
-                        transaction.disablesAnimations = true
-                    }
-                }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                    selectionDockFrameChanged($0)
-                }
+                gatheredSnipsDock
             }
         }
         .modifier(ListEditorRecession(isActive: showsListEditor))
@@ -133,23 +99,7 @@ struct SnipCollectionView: View {
             value: showsListEditor
         )
         .overlay {
-            GeometryReader { geometry in
-                ForEach(gatheringFlights) { flight in
-                    GatheringFlightView(
-                        flight: flight, model: model, origin: geometry.frame(in: .global).origin
-                    ) {
-                        // Exchange the flying copy and destination in one render update.
-                        var transaction = Transaction(animation: nil)
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            gatheringFlights.removeAll { $0.id == flight.id }
-                        }
-                    }
-                    .transition(.identity)
-                }
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+            flightsOverlay
         }
         .onGeometryChange(for: CGFloat.self) { geometry in
             // The dock needs usable height, which stays stable as pages move sideways.
@@ -158,19 +108,16 @@ struct SnipCollectionView: View {
             gatheringAvailableHeight = $0
         }
         .onChange(of: model.selectedSnipIDs) { _, selectedIDs in
-            gatheringFlights.removeAll { !selectedIDs.contains($0.snip.id) }
-            departingRows = departingRows.filter { selectedIDs.contains($0.key) }
+            keepTransfers(only: selectedIDs)
         }
         .onChange(of: reduceMotion) { _, reduced in
             if reduced {
-                gatheringFlights = []
-                departingRows = [:]
+                cancelTransfers()
             }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
-                gatheringFlights = []
-                departingRows = [:]
+                cancelTransfers()
             }
         }
         .onChange(of: model.editingListID) { _, id in
@@ -180,13 +127,16 @@ struct SnipCollectionView: View {
             }
         }
         .environment(\.editMode, $editMode)
+    }
+
+    var body: some View {
+        collectionScreen
         .onChange(of: isActivePage) { _, isActive in
             if !isActive {
                 isReordering = false
                 isInlineEditorFocused = false
                 cancelAttachmentPreview()
-                gatheringFlights = []
-                departingRows = [:]
+                cancelTransfers()
             }
         }
         .onChange(of: isReordering || inlineEditDraft != nil, initial: true) { _, blocked in
@@ -199,15 +149,13 @@ struct SnipCollectionView: View {
             previewTask?.cancel()
             previewTask = nil
             blocksPageSwipe.wrappedValue = false
-            gatheringFlights = []
-            departingRows = [:]
+            cancelTransfers()
         }
         .onChange(of: model.lastSelectedListID) {
             guard isActivePage else { return }
             isReordering = false
             isInlineEditorFocused = false
-            gatheringFlights = []
-            departingRows = [:]
+            cancelTransfers()
             gatheringFrames.rows = [:]
             // The persistent dock can retain its frame without another geometry callback.
         }
@@ -219,9 +167,8 @@ struct SnipCollectionView: View {
             guard isActivePage else { return }
             model.haptics.invalidatePendingFeedback()
             if !mode.isEditing {
-                if model.isSelectingSnips || !model.selectedSnipIDs.isEmpty { model.endSelectingSnips() }
-                gatheringFlights = []
-                departingRows = [:]
+                if model.isSelectingSnips { model.endSelectingSnips() }
+                cancelTransfers()
             }
             if mode.isEditing {
                 guard inlineEditDraft == nil else {
@@ -243,17 +190,72 @@ struct SnipCollectionView: View {
                 cancelAttachmentPreview()
                 isInlineEditorFocused = false
                 isReordering = false
-                gatheringFlights = []
-                departingRows = [:]
+                cancelTransfers()
             }
         }
+    }
+
+    private func cancelTransfers() { transfers.cancelAll() }
+
+    private func keepTransfers(only ids: Set<UUID>) { transfers.keep(only: ids) }
+
+    private var gatheredSnipsDock: some View {
+        GatheredSnipsDock(
+            model: model,
+            copyShare: copyShare,
+            isPerformingAction: model.isPerformingGatheredAction,
+            move: moveGatheredSnips,
+            delete: deleteGatheredSnips,
+            performAction: { action in performGatheredAction(action) },
+            cancel: endSelection,
+            previewAttachment: previewAttachment,
+            containerHeight: gatheringAvailableHeight,
+            arrivingSnipIDs: transfers.arrivingSnipIDs,
+            settleArrivals: {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { transfers.landAll() }
+            },
+            cardFramesChanged: { frames in
+                if let aimed = transfers.aimed(at: frames) { transfers = aimed }
+            }
+        )
+        .transaction { transaction in
+            if !transfers.flights.isEmpty {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+            selectionDockFrameChanged($0)
+        }
+    }
+
+    private var flightsOverlay: some View {
+        GeometryReader { geometry in
+            ForEach(transfers.flights) { flight in
+                GatheringFlightView(
+                    flight: flight, model: model, origin: geometry.frame(in: .global).origin
+                ) {
+                    // Exchange the flying copy and destination in one render update.
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        transfers.land(flight.id)
+                    }
+                }
+                .transition(.identity)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // Search and empty states must not replace the native scrolling container.
     private var collectionList: some View {
         let snips = displayedSnips
         let remainingSnips = isSelecting ? snips.filter {
-            !model.selectedSnipIDs.contains($0.id) || departingRows[$0.id] != nil
+            !model.selectedSnipIDs.contains($0.id) || transfers.isDeparting($0.id)
         } : snips
         let recoveries = snips.isEmpty ? [] : model.recoverySnapshot.pendingSnips.filter { recovery in
             recovery.recovered.listID == displayedListID
@@ -271,7 +273,7 @@ struct SnipCollectionView: View {
                 .accessibilityIdentifier("recovered-snip-\(recovery.id)")
             }
             ForEach(remainingSnips) { snip in
-                let departure = departingRows[snip.id]
+                let departure = transfers.departure(of: snip.id)
                 Group {
                     if isSelecting {
                         Button {
@@ -287,7 +289,7 @@ struct SnipCollectionView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.isPerformingGatheredAction || departingRows[snip.id] != nil)
+                        .disabled(model.isPerformingGatheredAction || transfers.isDeparting(snip.id))
                         .accessibilityHint("Select this item.")
                         .accessibilityIdentifier("snip-\(snip.id)")
                     } else {
@@ -531,8 +533,7 @@ struct SnipCollectionView: View {
     }
 
     private func endSelection() {
-        gatheringFlights = []
-        departingRows = [:]
+        transfers.cancelAll()
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
             model.endSelectingSnips()
             editMode = .inactive
@@ -550,8 +551,7 @@ struct SnipCollectionView: View {
             )
             // Hide the source before List snapshots its removal. The transfer covers
             // this brief fade; the transparent native cell can then close the gap.
-            gatheringFlights.append(flight)
-            departingRows[snip.id] = flight.id
+            transfers.begin(flight)
             model.selectSnips(model.selectedSnipIDs.union([snip.id]))
         } else {
             model.selectSnips(model.selectedSnipIDs.union([snip.id]))
@@ -559,9 +559,9 @@ struct SnipCollectionView: View {
     }
 
     private func finishDeparture(of id: UUID, departure: UUID) {
-        guard departingRows[id] == departure else { return }
+        guard transfers.departure(of: id) == departure else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.24)) {
-            departingRows.removeValue(forKey: id)
+            transfers.finishDeparture(of: id, departure: departure)
         }
     }
 
@@ -569,15 +569,10 @@ struct SnipCollectionView: View {
         _ action: @escaping @MainActor () async -> Bool,
         requiresEmptySelection: Bool = false
     ) {
-        guard !model.isPerformingGatheredAction, isActivePage, isSelecting,
-              displayedListID == model.lastSelectedListID, !model.selectedSnips.isEmpty else { return }
-        model.isPerformingGatheredAction = true
-        let sessionID = model.gatheringSessionID
-        Task { @MainActor in
-            defer { model.isPerformingGatheredAction = false }
-            guard isSelecting, model.gatheringSessionID == sessionID else { return }
-            if await action(), model.gatheringSessionID == sessionID,
-               !requiresEmptySelection || model.selectedSnips.isEmpty {
+        guard isActivePage, isSelecting, displayedListID == model.lastSelectedListID else { return }
+        // Starting now marks the model busy before this tap returns.
+        Task.immediate { @MainActor in
+            if await model.performGatheredAction(requiresEmptySelection: requiresEmptySelection, action) {
                 endSelection()
             }
         }
@@ -662,7 +657,11 @@ struct LibrarySearchView: View {
                                 snipResult(snip)
                             }
                         } header: {
-                            Label(group.list.displayName, systemImage: group.list.displaySystemImage)
+                            Label {
+                                Text(group.list.displayName)
+                            } icon: {
+                                SnipListMarkView(list: group.list, diameter: 20)
+                            }
                                 .foregroundStyle(group.list.accent.color)
                                 .accessibilityIdentifier("search-section-\(group.list.id)")
                         }

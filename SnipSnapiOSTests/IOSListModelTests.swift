@@ -21,7 +21,7 @@ final class IOSListModelTests: IOSModelTestCase {
         XCTAssertEqual(model.selectedPage, .list(workID))
 
         model.selectedSnipID = UUID()
-        model.selectedSnipIDs = [UUID()]
+        model.selectSnips([UUID()])
         model.selectPage(.clipboard)
         XCTAssertEqual(model.selectedPage, .clipboard)
         XCTAssertEqual(model.lastSelectedListID, workID)
@@ -705,7 +705,8 @@ final class IOSListModelTests: IOSModelTestCase {
         let createdList = await model.createList(name: "Notes", color: .blue)
         XCTAssertTrue(createdList)
         let list = try XCTUnwrap(model.lists.first(where: { $0.name == "Notes" }))
-        XCTAssertEqual(list.systemImage, "list.bullet")
+        XCTAssertNil(list.icon)
+        XCTAssertEqual(list.systemImage, "")
         XCTAssertEqual(list.color, .blue)
         let createdSnip = await model.createSnip(content: "Keep me", in: list.id)
         XCTAssertTrue(createdSnip)

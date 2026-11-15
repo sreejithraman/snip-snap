@@ -141,7 +141,7 @@ extension AppModel {
             let update = try await performCLIMutation(scopeToken: request.scopeToken) {
                 guard editingID == nil else { throw SnipCLIRequestError.editingInProgress }
                 let update = try await session.performLibraryCommand(
-                    .createList(name: name, systemImage: "circle.grid.2x2.fill"),
+                    .createList(name: name, systemImage: ""),
                     sortedBy: sortMode
                 )
                 return (update, update)
