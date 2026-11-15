@@ -311,6 +311,43 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .deleted)
     }
 
+    func testRemovalReportFromASyncStartedBeforeADeleteCannotFinishIt() async {
+        let settings = SyncedContentSettingsModel(
+            mode: .iCloudSync,
+            deleteAction: { .removalPending }
+        )
+        settings.recordSyncFailure(.retryingSoon)
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .oldSyncedContentRemovalCompleted,
+            activeLibrary: ModelTestLibrary(),
+            pausesCloudWork: true
+        )
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+        // The probe counts and pauses a call in one actor turn, so a counted call can resume.
+        let olderSync = Task { await session.syncWhenPossible() }
+        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 1 }) else {
+            return XCTFail("The older sync never reached the cloud session")
+        }
+
+        await settings.deleteSyncedContent()
+        XCTAssertEqual(settings.state, .removalPending)
+        await cloudSession.resumeCloudWork()
+        await olderSync.value
+        XCTAssertEqual(settings.state, .removalPending)
+
+        let laterSync = Task { await session.syncWhenPossible() }
+        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 2 }) else {
+            return XCTFail("The later sync never reached the cloud session")
+        }
+        await cloudSession.resumeCloudWork()
+        await laterSync.value
+        XCTAssertEqual(settings.state, .deleted)
+    }
+
     func testManualPendingRemovalResultKeepsDeletionIncomplete() async {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let session = IOSAppSession(
