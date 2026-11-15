@@ -508,29 +508,6 @@ package struct CloudPendingDelete: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
-  package let storageVersion: Int
-  package let revision: UInt64
-  package let phase: CloudNamespaceBootstrapPhase
-  package let zoneCreationPending: Bool
-  package let initialFetchInventory: CloudFullFetchInventory?
-
-  package init(
-    revision: UInt64,
-    phase: CloudNamespaceBootstrapPhase,
-    zoneCreationPending: Bool = false,
-    initialFetchInventory: CloudFullFetchInventory? = nil
-  ) {
-    storageVersion = 1
-    self.revision = revision
-    self.phase = phase
-    self.zoneCreationPending = zoneCreationPending
-    self.initialFetchInventory = initialFetchInventory
-  }
-
-  package static let notEnrolled = CloudFullNamespaceState(revision: 0, phase: .notEnrolled)
-}
-
 package struct CloudFullEnrollmentState: Codable, Equatable, Sendable {
   package let storageVersion: Int
   package let namespaceState: CloudFullNamespaceState
