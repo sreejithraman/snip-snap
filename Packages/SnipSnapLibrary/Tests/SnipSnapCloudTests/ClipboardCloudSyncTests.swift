@@ -836,6 +836,31 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(account.checks == 3)
         #expect(await cloud.serial == 1)
     }
+    @Test func deleteRechecksTheAccountBeforeEachAttempt() async throws {
+        let clock = ClipboardRetryClock()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        // The device signs in to account B while the delete waits out its backoff.
+        let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { duration in
+            account.switchTo(.available(accountLineage: "account-B"))
+            clock.advance(duration)
+        })
+        let cloud = ClipboardTestCloud()
+        let client = ClipboardClient(cloud, retry: retry, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let bindingA = try JSONEncoder().encode(accountA)
+        let synced = entry("synced under account A")
+        try await client.store.insert(synced); try await client.run(scope: accountA)
+        await cloud.rateLimitDeletes(1)
+
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.sync.deleteSyncedHistory(generation: accountA)
+        }
+        #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
+        #expect((try? Data(contentsOf: client.bindingURL)) == bindingA)
+        #expect(try await setAsideEntryIDs(in: client.root).isEmpty)
+        #expect(try await client.store.load().entries.map(\.id) == [synced.id])
+    }
     @Test func matchingAccountSyncsAsBefore() async throws {
         let cloud = ClipboardTestCloud()
         let client = ClipboardClient(cloud, accountState: ClipboardTestAccount(.available(accountLineage: "account-A")))

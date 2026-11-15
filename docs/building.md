@@ -428,7 +428,9 @@ The command runs the signed Development preflight first. It uses a unique
 temporary zone and two independent sync clients to check zone creation, the
 initial fetch, text and attachment delivery, exact attachment bytes, record
 deletion, and deletion delivery to the second client. Both the fake and real
-CloudKit transports run the same checks. The test verifies the account on
+CloudKit transports run the same checks. Against CloudKit, the contract also
+checks that a clipboard fetch creates no zone: only a save creates it, and
+deleting clipboard history removes it. The test verifies the account on
 account events and before cleanup, then deletes its temporary zone and checks
 that it is gone. Errors name the failed stage; cleanup errors retain the
 original failure too.

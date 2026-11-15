@@ -115,6 +115,35 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
         XCTAssertNil(remaining)
     }
 
+    func testClipboardStageStopsWhereAFetchCreatesTheZone() async throws {
+        let transport = ZoneTrackingClipboardTransport(fetchCreatesZone: true)
+
+        do {
+            try await CloudDevelopmentTransportContract.exerciseClipboard(
+                transport: transport, name: "fake", zoneExists: { await transport.zoneExists }
+            )
+            XCTFail("A fetch that creates the zone must fail the clipboard stage.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("fake clipboard: fetch created no zone"))
+            XCTAssertTrue(error.localizedDescription.contains("clipboardFetchCreatedZone"))
+        }
+        let saves = await transport.saves
+        XCTAssertEqual(saves, 0)
+    }
+
+    func testClipboardStagePassesWhenOnlyASaveCreatesTheZone() async throws {
+        let transport = ZoneTrackingClipboardTransport(fetchCreatesZone: false)
+
+        try await CloudDevelopmentTransportContract.exerciseClipboard(
+            transport: transport, name: "fake", zoneExists: { await transport.zoneExists }
+        )
+
+        let saves = await transport.saves
+        let zoneExists = await transport.zoneExists
+        XCTAssertEqual(saves, 1)
+        XCTAssertFalse(zoneExists)
+    }
+
     func testCleanupFailurePreservesTheOriginalFailure() async {
         do {
             try await CloudDevelopmentTransportContract.runWithCleanup(
@@ -256,5 +285,34 @@ private struct TextDroppingTransport: CloudRecordTransport {
     }
     func fetchAsset(_ id: CloudRecordID, field: String, destination: CloudAssetDestination) async throws -> CloudAssetReceipt? {
         try await base.fetchAsset(id, field: field, destination: destination)
+    }
+}
+
+/// A clipboard transport whose zone exists after a save, and after a fetch when `fetchCreatesZone`.
+private actor ZoneTrackingClipboardTransport: ClipboardCloudTransport {
+    private let fetchCreatesZone: Bool
+    private var entries: [UUID: Data] = [:]
+    private(set) var zoneExists = false
+    private(set) var saves = 0
+
+    init(fetchCreatesZone: Bool) {
+        self.fetchCreatesZone = fetchCreatesZone
+    }
+
+    func fetch() -> ClipboardCloudSnapshot {
+        if fetchCreatesZone { zoneExists = true }
+        return ClipboardCloudSnapshot(entries: entries)
+    }
+
+    func save(_ snapshot: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) throws {
+        try cancellation.check()
+        saves += 1
+        zoneExists = true
+        entries = snapshot.entries
+    }
+
+    func deleteAll() {
+        zoneExists = false
+        entries = [:]
     }
 }
