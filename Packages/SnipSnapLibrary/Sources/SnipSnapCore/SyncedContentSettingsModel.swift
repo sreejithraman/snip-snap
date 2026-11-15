@@ -341,7 +341,7 @@ public final class SyncedContentSettingsModel {
     case (_, .deleting):
       String(localized: "Removing synced content from iCloud…", bundle: .main)
     case (_, .removalPending):
-      String(localized: "Sync will retry the deletion. This device keeps a recovery copy.", bundle: .main)
+      String(localized: "Some synced content is still in iCloud. This device keeps a recovery copy.", bundle: .main)
     case (_, .deleted):
       String(localized: "This device keeps a recovery copy.", bundle: .main)
     }
@@ -353,7 +353,7 @@ public final class SyncedContentSettingsModel {
   }
 
   /// Whether Settings offers Try Again for Delete Synced Content's incomplete removal.
-  public var canFinishDeleting: Bool { false }
+  public var canFinishDeleting: Bool { mode == .iCloudSync && state == .removalPending }
 
   public func enableICloudSync() async {
     guard canEnable, let enableAction else { return }
