@@ -220,6 +220,7 @@ extension SwiftDataSyncModePersistence {
     if isolation.resolution == .keepingLocalCopy {
       let sourceStore = try storeForIsolation(id: isolation.storeID)
       let sourceLibrary = try libraryForTransition(storeID: sourceStore.id)
+      try await writeHook(.beforeAccountLocalCopyMerge)
       try await sourceLibrary.prepareCloudAttachmentsForLocalCopy(
         namespaceKey: isolation.namespace.namespaceKey
       )
