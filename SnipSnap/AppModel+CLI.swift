@@ -195,7 +195,7 @@ extension AppModel {
     /// Suspends the CLI's access to the active scope before an iCloud stop. A failure is shown and recorded, and the stop goes on.
     func suspendCLIActiveScope(in store: SnipCLIRequestStore) async {
         do { try await store.suspendActiveScope() }
-        catch { presentError(error) }
+        catch { presentError(error, operation: "cli.scope_suspend") }
     }
 
     func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {
