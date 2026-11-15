@@ -662,8 +662,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         waitForClipboardRowWidth(in: app, "Control-Command-S hides names") { $0 < 80 }
 
         work.hover()
-        // The name appears as a tooltip after the pointer rests.
-        _ = app.staticTexts["Work"].waitForExistence(timeout: 3)
         keepScreenshot(of: app, named: "Pointer over Work in the rail")
     }
 

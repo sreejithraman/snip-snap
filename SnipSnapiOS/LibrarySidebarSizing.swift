@@ -29,7 +29,7 @@ enum LibrarySidebarExpandedWidth: Equatable, RawRepresentable {
 
 /// How a device's list column starts and how wide it may grow when flat. iPad starts with names
 /// shown in a wider column; phone panels, such as the open iPhone Duo, start on the thin rail.
-struct LibrarySidebarDefaults: Equatable {
+struct LibrarySidebarDefaults {
     let showsNames: Bool
     let expandedWidth: LibrarySidebarExpandedWidth
     let flatMaximumWidth: CGFloat

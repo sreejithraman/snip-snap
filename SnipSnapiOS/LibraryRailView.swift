@@ -166,14 +166,14 @@ private struct LibrarySidebarContainer: ViewModifier {
         content
             .environment(\.librarySidebarSizing, sizing)
             .onGeometryChange(for: LibrarySidebarSizing.self) { proxy in
-                guard #available(iOS 27.1, *) else {
-                    return LibrarySidebarSizing(
-                        containerWidth: proxy.size.width, hingeEdge: nil, flatMaximumWidth: defaults.flatMaximumWidth
-                    )
+                let divisions: [CGRect] = if #available(iOS 27.1, *) {
+                    proxy.reservedRegions(kind: .division).map(\.frame)
+                } else {
+                    []
                 }
                 return LibrarySidebarSizing(
                     containerWidth: proxy.size.width,
-                    divisions: proxy.reservedRegions(kind: .division).map(\.frame),
+                    divisions: divisions,
                     flatMaximumWidth: defaults.flatMaximumWidth
                 )
             } action: { sizing = $0 }
@@ -195,6 +195,7 @@ struct LibraryRailView: View {
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
     @State private var stripDrag: StripDrag?
+    @State private var scrollPosition = ScrollPosition()
     @GestureState private var isDraggingStrip = false
     private let newListStyle = NewListButtonStyle.current
 
@@ -248,6 +249,7 @@ struct LibraryRailView: View {
                 ) {
                     RailIcon(systemImage: "clipboard", color: .primary)
                 }
+                .id(LibraryPage.clipboard)
                 .accessibilityIdentifier("clipboard-sidebar")
 
                 if model.recoverySnapshot.needsAttentionCount > 0 {
@@ -267,6 +269,7 @@ struct LibraryRailView: View {
                     ) {
                         SnipListMarkView(list: list, diameter: 36, scalesWithText: false)
                     }
+                    .id(LibraryPage.list(list.id))
                     .accessibilityIdentifier("list-\(list.name)")
                     .listContextActions(
                         list: list,
@@ -284,6 +287,7 @@ struct LibraryRailView: View {
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
+        .scrollPosition($scrollPosition)
         .background {
             // Text editing keeps the arrow keys; elsewhere they move between pages like a sidebar list.
             Group {
@@ -329,7 +333,9 @@ struct LibraryRailView: View {
     }
 
     private func selectAdjacentPage(by offset: Int) {
-        if let page = model.pages.page(offset, from: model.selectedPage) { model.selectPage(page) }
+        guard let page = model.pages.page(offset, from: model.selectedPage) else { return }
+        model.selectPage(page)
+        scrollPosition.scrollTo(id: page)
     }
 
     private var widthToggleTitle: Text {

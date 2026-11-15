@@ -29,14 +29,13 @@ struct IOSAppRootView: View {
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
-    private let sidebarDefaults: LibrarySidebarDefaults
+    private let sidebarDefaults = LibrarySidebarDefaults.current
     init(
         session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil,
-        composerStorage: CompactComposerStorage = CompactComposerStorage(),
-        sidebarDefaults: LibrarySidebarDefaults = .current
+        composerStorage: CompactComposerStorage = CompactComposerStorage()
     ) {
 #if DEBUG
         if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
@@ -48,7 +47,6 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
-        self.sidebarDefaults = sidebarDefaults
     }
 
     private var listPageMotion: ListPageMotion {
