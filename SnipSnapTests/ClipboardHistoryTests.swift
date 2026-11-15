@@ -113,6 +113,12 @@ private final class ClipboardSyncGenerationSource {
     func generation() async -> String? { current }
 }
 
+/// Whether the app reports main sync on; a test turns it off to stop debounced syncs.
+@MainActor
+private final class ClipboardMainSyncSwitch {
+    var isOn = true
+}
+
 /// Holds the first upload, if asked, until the test resumes it; a cancelled run then uploads nothing.
 private actor ClipboardHeldUploadCloud: ClipboardCloudTransport {
     private var snapshot = ClipboardCloudSnapshot()
@@ -204,6 +210,7 @@ private struct ClipboardGenerationFixture {
     let secondGeneration: String
     let secondCloud: ClipboardHeldUploadCloud
     let generationSource: ClipboardSyncGenerationSource
+    let mainSync: ClipboardMainSyncSwitch
 }
 
 @MainActor
@@ -1136,12 +1143,12 @@ final class ClipboardHistoryTests: XCTestCase {
 
             writeText(copiedText, to: fixture.pasteboard)
             history.poll()
+            // The copy's save would schedule a sync; with the old binding kept, it would set the copy aside.
+            fixture.mainSync.isOn = false
             gate.release()
             await run.value
             history.poll()
             await history.flushPersistence()
-            // Drops the sync the copy requested. With the old binding kept, it would set the copy aside.
-            history.stopSync()
 
             let copies = history.entries.filter { $0.text == copiedText }
             XCTAssertEqual(copies.count, 1, "Failing at \(step)")
@@ -1150,6 +1157,7 @@ final class ClipboardHistoryTests: XCTestCase {
             XCTAssertTrue(stored.entries.contains { $0.id == copy.id }, "Failing at \(step)")
             guard step == .bindingRemoved else { continue }
 
+            fixture.mainSync.isOn = true
             await history.syncNow()
             let uploaded = await fixture.secondCloud.uploadedEntryIDs
             XCTAssertTrue(uploaded.contains(copy.id))
@@ -1492,10 +1500,11 @@ final class ClipboardHistoryTests: XCTestCase {
             resetStep: resetStep
         )
         let source = ClipboardSyncGenerationSource(firstGeneration)
+        let mainSync = ClipboardMainSyncSwitch()
         history.configureSync(
             containerIdentifier: "iCloud.org.example.snipsnap",
             rootURL: syncRoot,
-            mainEnabled: { true },
+            mainEnabled: { mainSync.isOn },
             generation: { await source.generation() },
             makeCloudService: { _, _, _ in service }
         )
@@ -1516,7 +1525,8 @@ final class ClipboardHistoryTests: XCTestCase {
             firstGeneration: firstGeneration,
             secondGeneration: secondGeneration,
             secondCloud: secondCloud,
-            generationSource: source
+            generationSource: source,
+            mainSync: mainSync
         )
     }
 
