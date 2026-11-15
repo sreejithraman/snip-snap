@@ -535,10 +535,12 @@ private final class RootHarness {
     private let host: UIHostingController<IOSAppRootView>
     private let window: UIWindow
     private let layout: RegularLibraryLayout
+    private let storage: CompactComposerStorage
 
     init(test: IOSFoldContinuityTests, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
         session = IOSAppSession(library: library)
         layout = type(of: test).regularLayout
+        self.storage = storage
         host = UIHostingController(rootView: IOSAppRootView(
             session: session, composerStorage: storage, regularLayout: layout
         ))
@@ -547,9 +549,12 @@ private final class RootHarness {
         test.addTeardownBlock { @MainActor [self] in await close() }
     }
 
-    /// Ends this test's presentations and empties its window, then lets pending layout run while the
-    /// views still exist, so nothing laid out later can reach a view this test freed.
+    /// Ends this test's presentations and takes its view tree out of the window, then keeps the views
+    /// alive briefly so work already queued for them runs before they're freed.
     private func close() async {
+        // Clear SwiftUI's requests first, so a test that failed mid-presentation isn't presented again.
+        storage.dismissAttachmentPicker()
+        storage.dismissAttachmentPreview()
         if host.presentedViewController != nil {
             host.dismiss(animated: false)
             await expect("presentations end before teardown") { host.presentedViewController == nil }
