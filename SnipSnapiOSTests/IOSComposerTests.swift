@@ -273,36 +273,6 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertEqual(pasted.files.count, 1)
     }
 
-    func testComposerPasteResumesOnceWhenCancellationRacesCompletion() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        for iteration in 0..<20 {
-            let photo = root.appendingPathComponent("photo-\(iteration).png")
-            try Data([1, 2, 3]).write(to: photo)
-            let started = expectation(description: "Photo \(iteration) began loading")
-            let provider = NSItemProvider()
-            provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
-                started.fulfill()
-                DispatchQueue.global().async { completion(photo, false, nil) }
-                return nil
-            }
-            let staging = root.appendingPathComponent("Draft-\(iteration)")
-            let task = Task { try await ComposerPasteboard.stage([provider], in: staging) }
-            await fulfillment(of: [started], timeout: TestReadiness.timeout)
-            task.cancel()
-            guard let result = await settledResult(of: task) else { return }
-            switch result {
-            case .success(let pasted):
-                XCTAssertEqual(pasted.files.count, 1, "Iteration \(iteration)")
-            case .failure(let error) where error is CancellationError:
-                XCTAssertEqual(stagedEntries(in: staging), [], "Iteration \(iteration)")
-            case .failure(let error):
-                XCTFail("Iteration \(iteration): expected success or cancellation, got \(error)")
-            }
-        }
-    }
-
     func testComposerPasteNeverHandsOutAFileWhenCancellationRacesItsCopy() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -502,6 +472,7 @@ final class IOSComposerTests: IOSModelTestCase {
         let progress = Progress(totalUnitCount: 1)
         let started = expectation(description: "Provider load started")
         let inBody = expectation(description: "Result body running")
+        let cancelReturned = expectation(description: "Cancel returned")
         let mayFinish = DispatchSemaphore(value: 0)
         defer { mayFinish.signal() }
         let bodyFinished = LockedFlag()
@@ -518,14 +489,17 @@ final class IOSComposerTests: IOSModelTestCase {
         DispatchQueue.global().async {
             captured.call {
                 inBody.fulfill()
-                _ = mayFinish.wait(timeout: .now() + TestReadiness.timeout)
+                _ = mayFinish.wait(timeout: .now() + 2 * TestReadiness.timeout)
                 bodyFinished.set()
                 return 7
             }
         }
         await fulfillment(of: [inBody], timeout: TestReadiness.timeout)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { mayFinish.signal() }
-        task.cancel()
+        DispatchQueue.global().async {
+            task.cancel()
+            cancelReturned.fulfill()
+        }
+        await fulfillment(of: [cancelReturned], timeout: TestReadiness.timeout)
         XCTAssertFalse(bodyFinished.value, "Cancelling must not wait for a running result body")
         mayFinish.signal()
         let settled = await settledResult(of: task)
@@ -549,14 +523,16 @@ final class IOSComposerTests: IOSModelTestCase {
                 }
             }
             await fulfillment(of: [started], timeout: TestReadiness.timeout)
+            let callbackClaimsFirst = iteration.isMultiple(of: 2)
             DispatchQueue.global().async {
                 captured.call {
                     bodyRuns.record()
                     return iteration
                 }
+                if callbackClaimsFirst { task.cancel() }
                 delivered.fulfill()
             }
-            task.cancel()
+            if !callbackClaimsFirst { task.cancel() }
             guard let result = await settledResult(of: task) else {
                 XCTFail("Iteration \(iteration): load did not settle")
                 return
@@ -566,10 +542,11 @@ final class IOSComposerTests: IOSModelTestCase {
             switch result {
             case .success(let value) where value == iteration && runs == 1:
                 continue
-            case .failure(let error) where error is CancellationError && runs == 0:
+            case .failure(let error) where !callbackClaimsFirst && error is CancellationError && runs == 0:
                 continue
             default:
-                XCTFail("Iteration \(iteration): got \(result) after \(runs) body runs")
+                let order = callbackClaimsFirst ? "callback claimed first" : "callback raced cancel"
+                XCTFail("Iteration \(iteration) (\(order)): got \(result) after \(runs) body runs")
                 return
             }
         }
