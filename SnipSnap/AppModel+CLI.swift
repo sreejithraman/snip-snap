@@ -201,7 +201,7 @@ extension AppModel {
     /// Ends the CLI's app session at quit. A failure is shown and recorded, and quitting goes on.
     func endCLIAppSession(_ lifecycle: SnipCLIAppLifecycle) async {
         do { try await lifecycle.stop() }
-        catch { presentError(error) }
+        catch { presentError(error, operation: "cli.session_end") }
     }
 
     func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {
