@@ -27,17 +27,25 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let frozen = try await persistence.snapshot().transition
     XCTAssertEqual(frozen?.phase, .sourceFrozen)
     XCTAssertEqual(frozen?.freezeToken, token)
-    XCTAssertEqual(frozen?.freezeSnapshotTaken, true)
+    XCTAssertEqual(try storedTransition(in: syncModeRoot)?["freezeSnapshotTaken"] as? Bool, true)
+    do {
+      _ = try await persistence.finalSnapshot(using: token)
+      XCTFail("A taken final snapshot must not be read again with its token.")
+    } catch {
+      XCTAssertEqual(error as? SyncModePersistenceError, .invalidFreezeToken)
+    }
 
     let reopened = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
     let recovered = try await reopened.snapshot().transition
     XCTAssertEqual(recovered?.phase, .candidateReady)
     XCTAssertNil(recovered?.freezeToken)
-    XCTAssertEqual(recovered?.freezeSnapshotTaken, false)
+    XCTAssertEqual(try storedTransition(in: syncModeRoot)?["freezeSnapshotTaken"] as? Bool, false)
 
     try await reopened.recordPreparationComplete()
     let resumed = try await reopened.snapshot().transition
     XCTAssertEqual(resumed?.phase, .remoteFetched)
+    let refrozen = try await reopened.freezeSource()
+    _ = try await reopened.finalSnapshot(using: refrozen)
   }
 
   func testAppAssemblyKeepsPendingCloudTransitionOutOfActiveRecoveryScope() async throws {
@@ -564,5 +572,13 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("SnipRecoveryPersistenceTests-\(UUID().uuidString)", isDirectory: true)
     return (root, root.appendingPathComponent("snips.store"))
+  }
+
+  /// The `transition` object as `activation.json` stores it.
+  private func storedTransition(in syncModeRoot: URL) throws -> [String: Any]? {
+    let manifest = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: syncModeRoot.appendingPathComponent("activation.json"))
+    ) as? [String: Any]
+    return manifest?["transition"] as? [String: Any]
   }
 }

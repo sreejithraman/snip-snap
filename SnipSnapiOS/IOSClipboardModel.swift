@@ -240,7 +240,7 @@ final class IOSClipboardModel {
 
     func resetAccountBinding() async {
         do {
-            try await setAsideHistory()
+            try await setAsideHistory(includingUnboundHistory: syncEnabled)
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
@@ -251,8 +251,8 @@ final class IOSClipboardModel {
         }
     }
 
-    private func setAsideHistory() async throws {
-        try await cloud?.resetAccountBinding()
+    private func setAsideHistory(includingUnboundHistory: Bool = false) async throws {
+        try await cloud?.resetAccountBinding(includingUnboundHistory: includingUnboundHistory)
         await load()
         syncErrorMessage = nil
     }

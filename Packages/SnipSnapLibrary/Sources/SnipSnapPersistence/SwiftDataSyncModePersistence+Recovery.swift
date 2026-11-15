@@ -68,27 +68,7 @@ extension SwiftDataSyncModePersistence {
         value.attentionReason = .storageFailure
       }
     }
-    if var transition = value.transition,
-      [
-        SyncModeTransitionPhase.sourceFrozen, .recordsMerged, .enrollmentApproved,
-        .firstSendStarted, .firstSendComplete,
-      ].contains(transition.phase)
-    {
-      if transition.phase == .sourceFrozen,
-        transition.mergeIntent?.fullReenablePlanID != nil
-      {
-        value.transition = transition
-        return
-      }
-      absorbMergeIntent(&transition)
-      value.transition = transition
-      value.transition?.supersededApprovedSnipIDs.formUnion(transition.approvedSnipIDs)
-      value.transition?.captureAcceptedServerProvenance = true
-      value.transition?.phase = .candidateReady
-      value.transition?.freezeToken = nil
-      value.transition?.freezeSnapshotTaken = false
-      value.transition?.approvedSnipIDs = []
-    }
+    value.transition?.interruptByReopen()
   }
 
   static func validatedStoreRoots(
@@ -124,16 +104,6 @@ extension SwiftDataSyncModePersistence {
 
   static func canonicalRelativeRoot(kind: SyncModeStoreKind, id: UUID) -> String {
     "stores/\(kind.rawValue)-\(id.uuidString.lowercased())"
-  }
-
-  static func absorbMergeIntent(_ transition: inout SyncModeTransition) {
-    guard let intent = transition.mergeIntent else { return }
-    transition.seedProvenance = intent.seedProvenance
-    transition.seededListIDs = intent.seededListIDs
-    transition.supersededApprovedSnipIDs.formUnion(intent.approvedSnipIDs)
-    transition.pendingSettlementSnipIDs = []
-    transition.sendAttempt = nil
-    transition.mergeIntent = nil
   }
 
   static func validate(_ value: Manifest) throws {
@@ -173,21 +143,15 @@ extension SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.invalidManifest
       }
       if let intent = transition.mergeIntent {
-        guard transition.phase == .sourceFrozen,
-          transition.freezeSnapshotTaken,
-          transition.freezeToken?.revision == intent.sourceRevision,
+        guard transition.freezeToken?.revision == intent.sourceRevision,
           intent.planDigest.count == 32,
           intent.approvedSnipIDs.isSubset(of: Set(intent.seedProvenance.map(\.candidateSnipID))),
           (intent.fullReenablePlanID.map { $0 == transition.id } ?? true)
         else { throw SyncModePersistenceError.invalidManifest }
       }
       if let attempt = transition.sendAttempt {
-        let operationIDs = Set(attempt.operations.compactMap {
-          $0.reference?.kind == .snip ? $0.reference?.domainID : nil
-        })
         let operationIdentities = Set(attempt.operations.map(\.recordIdentity))
         guard attempt.namespace == transition.namespace,
-          transition.pendingSettlementSnipIDs == operationIDs,
           operationIdentities.count == attempt.operations.count,
           attempt.operations.allSatisfy({ operation in
             attempt.namespace.zones.contains(
@@ -198,8 +162,6 @@ extension SwiftDataSyncModePersistence {
             )
           })
         else { throw SyncModePersistenceError.invalidManifest }
-      } else if !transition.pendingSettlementSnipIDs.isEmpty {
-        throw SyncModePersistenceError.invalidManifest
       }
     }
     _ = try value.accountIsolationPhase()

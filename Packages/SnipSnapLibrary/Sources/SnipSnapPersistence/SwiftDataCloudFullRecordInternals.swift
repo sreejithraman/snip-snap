@@ -135,10 +135,7 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     }
     let references = try JSONDecoder().decode(Set<CloudEntityReference>.self, from: data)
     return CloudFullEnrollmentState(
-      namespaceState: CloudFullNamespaceState(
-        revision: 0,
-        phase: references.isEmpty ? .notEnrolled : .active
-      ),
+      namespaceState: .legacy(hasReferences: !references.isEmpty),
       references: references
     )
   }

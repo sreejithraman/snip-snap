@@ -95,10 +95,10 @@ struct CloudFullBatchPlanner {
     let pendingDeletes = Dictionary(uniqueKeysWithValues:
       stored.pendingDeletes.map { ($0.reference, $0) }
     )
-    let nextInventory = CloudFullFetchInventory.after(
-      inventorySource, current: stored.namespaceState.initialFetchInventory,
-      startsWithoutToken: expectedEngine == nil, dataZone: dataZone
+    let initialFetchStep = CloudFullInitialFetchStep(
+      inventorySource, startsWithoutToken: expectedEngine == nil, dataZone: dataZone
     )
+    let nextInventory = stored.namespaceState.inventory(after: initialFetchStep)
     let cleanInitialFetch = nextInventory?.canProveAbsence == true
       && CloudFullSyncPersistence.isCleanInitialMetadataFetch(
       batch, dataZone: dataZone
@@ -335,7 +335,7 @@ struct CloudFullBatchPlanner {
         dataZone: dataZone,
         ownedZones: Set([dataZone] + (payloadZone.map { [$0] } ?? [])),
         attachmentOperationIDs: normalized.attachmentOperationIDs,
-        initialFetchInventory: nextInventory
+        initialFetch: initialFetchStep
       ),
       rawBatchData: rawBatchData,
       outboundBindings: normalized.outboundBindings,

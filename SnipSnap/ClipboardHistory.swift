@@ -594,9 +594,10 @@ final class ClipboardHistory: ObservableObject {
         defer { endSuppression(token) }
         // Copies still waiting belong to the account being left, and base never recorded them.
         dropWaitingCaptures()
+        let includingUnboundHistory = clipboardSyncEnabled
         stopSync()
         do {
-            try await setAsideCloudHistory()
+            try await setAsideCloudHistory(includingUnboundHistory: includingUnboundHistory)
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
@@ -607,7 +608,7 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
-    private func setAsideCloudHistory() async throws {
+    private func setAsideCloudHistory(includingUnboundHistory: Bool = false) async throws {
         cloudService?.stop()
         let id = UUID()
         if case .settingAside(_, let isRetired, let captures) = handoff {
@@ -618,7 +619,7 @@ final class ClipboardHistory: ObservableObject {
         try await queueHistoryWrite { [self] in
             let outcome: Result<Void, any Error>
             do {
-                try await resetBindingAndReloadHistory()
+                try await resetBindingAndReloadHistory(includingUnboundHistory: includingUnboundHistory)
                 outcome = .success(())
             } catch {
                 outcome = .failure(error)
@@ -628,9 +629,13 @@ final class ClipboardHistory: ObservableObject {
         }.value
     }
 
-    private func resetBindingAndReloadHistory() async throws {
+    private func resetBindingAndReloadHistory(includingUnboundHistory: Bool) async throws {
         do {
-            try await cloudService?.resetAccountBinding(settingAside: {
+            try await cloudService?.resetAccountBinding(includingUnboundHistory: includingUnboundHistory, settingAside: {
+                // A failed save can leave entries only in memory, and the set-aside archives the disk file.
+                do { _ = try await sharedStore.merge(state) }
+                // An unreadable history file can't take a merge, so it's set aside as-is, as before.
+                catch is DecodingError {}
                 if case .settingAside(let current, _, let captures) = handoff {
                     handoff = .settingAside(id: current, isRetired: true, captures: captures)
                 }
