@@ -4,10 +4,12 @@ import Foundation
 
 public enum ClipboardCloudError: Error, Equatable, LocalizedError {
     case conflict, accountChanged, unavailable, invalidPayload, busy, payloadTooLarge
+    /// Same account, new sync generation: set history aside with `resetAccountBinding()`, then sync again.
+    case syncGenerationChanged
     public var errorDescription: String? {
         switch self {
         case .conflict: String(localized: "Clipboard history changed on another device. Try syncing again.", bundle: .main)
-        case .accountChanged: String(localized: "Clipboard history belongs to a different iCloud account or library.", bundle: .main)
+        case .accountChanged, .syncGenerationChanged: String(localized: "Clipboard history belongs to a different iCloud account or library.", bundle: .main)
         case .unavailable: String(localized: "Clipboard sync is unavailable. Try again later.", bundle: .main)
         case .invalidPayload: String(localized: "A clipboard item could not be read.", bundle: .main)
         case .busy: String(localized: "Clipboard history is syncing.", bundle: .main)

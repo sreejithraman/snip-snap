@@ -526,10 +526,21 @@ final class ClipboardHistory: ObservableObject {
             await flushPersistence()
             guard syncPhase == run, let generation = try await syncGeneration?(),
                   syncPhase == run else { return }
-            let updated = try await cloudService.synchronize(
-                generation: generation,
-                isEnabled: { [self] in syncIsActive }
-            )
+            func synchronizeHistory() async throws -> ClipboardHistoryState {
+                try await cloudService.synchronize(
+                    generation: generation,
+                    isEnabled: { [self] in syncIsActive }
+                )
+            }
+            let updated: ClipboardHistoryState
+            do {
+                updated = try await synchronizeHistory()
+            } catch ClipboardCloudError.syncGenerationChanged {
+                // Set-aside history never uploads into the new sync generation.
+                try await setAsideCloudHistory()
+                guard syncPhase == run else { return }
+                updated = try await synchronizeHistory()
+            }
             guard syncPhase == run else { return }
             state.merge(updated)
             entries = state.entries
@@ -566,15 +577,8 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func resetCloudAccount() async {
-        cloudService?.stop()
-        let token = beginSuppression()
-        defer { endSuppression(token) }
-        await flushPersistence()
         do {
-            try await cloudService?.resetAccountBinding()
-            state = try await sharedStore.load()
-            entries = state.entries
-            syncError = nil
+            try await setAsideCloudHistory()
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
@@ -583,6 +587,17 @@ final class ClipboardHistory: ObservableObject {
             ))
             syncError = ClipboardSyncErrorMessage.accountReset(for: error)
         }
+    }
+
+    private func setAsideCloudHistory() async throws {
+        cloudService?.stop()
+        let token = beginSuppression()
+        defer { endSuppression(token) }
+        await flushPersistence()
+        try await cloudService?.resetAccountBinding()
+        state = try await sharedStore.load()
+        entries = state.entries
+        syncError = nil
     }
 
     func deleteSyncedHistory() async throws {

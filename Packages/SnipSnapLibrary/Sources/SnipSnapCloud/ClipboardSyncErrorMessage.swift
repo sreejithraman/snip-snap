@@ -28,7 +28,7 @@ public enum ClipboardSyncErrorMessage {
       return switch clipboardError {
       case .conflict:
         String(localized: "Clipboard history changed on another device. Try again.", bundle: .main)
-      case .accountChanged:
+      case .accountChanged, .syncGenerationChanged:
         String(localized: "Clipboard history belongs to another iCloud account or library.", bundle: .main)
       case .unavailable:
         String(localized: "Clipboard sync is unavailable. Try again later.", bundle: .main)

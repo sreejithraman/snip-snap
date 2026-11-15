@@ -118,7 +118,9 @@ private enum ClipboardStoredBinding {
     /// Syncs while `isEnabled` holds. If it doesn't hold on entry or when the run is admitted, the
     /// service stops and returns local history. If it stops holding during the run, the service
     /// stops the run, which throws `CancellationError`: at once when observable state it reads
-    /// changes, otherwise at the run's next step.
+    /// changes, otherwise at the run's next step. A sync for a new sync generation in the bound
+    /// account throws `syncGenerationChanged`; the caller sets history aside with
+    /// `resetAccountBinding()` before syncing again.
     @discardableResult public func synchronize(
         generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
@@ -308,7 +310,9 @@ private enum ClipboardStoredBinding {
             try JSONEncoder().encode(generation).write(to: bindingURL, options: .atomic)
         case .current:
             break
-        case .newSyncGeneration, .otherAccount:
+        case .newSyncGeneration:
+            throw ClipboardCloudError.syncGenerationChanged
+        case .otherAccount:
             throw ClipboardCloudError.accountChanged
         }
         if let binding, binding.generation == generation { return binding.transport }
