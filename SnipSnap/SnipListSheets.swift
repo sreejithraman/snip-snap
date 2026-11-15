@@ -23,7 +23,7 @@ private struct SnipListIconPicker: View {
         } label: {
             HStack(spacing: 5) {
                 SnipListMarkView(
-                    mark: SnipList.icon(stored: selection).map(SnipListMark.icon) ?? .letters("Aa"),
+                    mark: ListIconSymbol.pickerMark(for: selection),
                     appearance: SnipListAppearance(preset: nil),
                     diameter: 20
                 )
@@ -232,7 +232,6 @@ struct SnipListEditSheet: View {
                     SnipListMarkView(list: preview, diameter: 40)
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: systemImage)
-                        .foregroundStyle(appearance.color)
                         .frame(width: 64, height: 64)
                         .background(appearance.selectionFill, in: RoundedRectangle(cornerRadius: 16))
                         .overlay(alignment: .bottomTrailing) {

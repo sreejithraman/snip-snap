@@ -31,14 +31,6 @@ final class SnipListMarkTests: XCTestCase {
     XCTAssertEqual(SnipList.inbox.mark(), .icon("tray.fill"))
   }
 
-  func testClearingIconStoresEmptyStringSoOlderBuildsStillDecodeIt() {
-    var value = list("Travel", systemImage: "airplane")
-    value.icon = nil
-    XCTAssertEqual(value.systemImage, "")
-    value.icon = "star.fill"
-    XCTAssertEqual(value.systemImage, "star.fill")
-  }
-
   func testAutomaticColorIsStableForAnID() throws {
     // Pinned from an independent FNV-1a computation. Every device must derive the same color: changing this mapping recolors lists.
     let pinned: [(String, SnipListColorPreset)] = [

@@ -128,7 +128,7 @@ SIMCTL_CHILD_SNIP_SNAP_UI_TEST_LONG_LIST=1 \
   simlock simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID"
 ```
 
-Use `SIMCTL_CHILD_SNIP_SNAP_UI_TEST_RAIL_LISTS=1` instead to seed five lists
+Use `SIMCTL_CHILD_SNIP_SNAP_UI_TEST_RAIL_LISTS=1` instead to seed six lists
 that show the rail's letter marks, colors, and a custom icon.
 
 Debug builds also read these Try switches at launch, again with the

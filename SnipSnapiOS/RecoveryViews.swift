@@ -46,10 +46,10 @@ struct RecoveryCenterView: View {
                                 RecoveredListReviewView(model: model, recoveryID: recovery.id)
                             } label: {
                                 Label {
-                                Text(recovery.recovered.name)
-                            } icon: {
-                                SnipListMarkView(list: recovery.recovered)
-                            }
+                                    Text(recovery.recovered.name)
+                                } icon: {
+                                    SnipListMarkView(list: recovery.recovered)
+                                }
                             }
                         }
                     }

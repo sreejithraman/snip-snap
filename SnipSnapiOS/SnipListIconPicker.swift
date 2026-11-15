@@ -10,7 +10,6 @@ private struct ListGridIcon: Identifiable {
 
 struct SnipListIconPicker: View {
     @Binding var selection: String
-    var accent: Color = .primary
 
     var body: some View {
         NavigationLink {
@@ -19,11 +18,7 @@ struct SnipListIconPicker: View {
             Label {
                 Text("Icon")
             } icon: {
-                SnipListMarkView(
-                    mark: SnipList.icon(stored: selection).map(SnipListMark.icon) ?? .letters("Aa"),
-                    appearance: SnipListAppearance(preset: nil)
-                )
-                .foregroundStyle(accent)
+                SnipListMarkView(mark: ListIconSymbol.pickerMark(for: selection), appearance: SnipListAppearance(preset: nil))
             }
         }
         .accessibilityIdentifier("choose-list-icon")

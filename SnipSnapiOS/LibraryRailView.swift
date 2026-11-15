@@ -246,7 +246,7 @@ struct LibraryRailView: View {
                         nameOpacity: nameOpacity,
                         action: { model.selectPage(.list(list.id)) }
                     ) {
-                        SnipListMarkView(list: list, diameter: 36)
+                        SnipListMarkView(list: list, diameter: 36, scalesWithText: false)
                     }
                     .accessibilityIdentifier("list-\(list.name)")
                     .listContextActions(

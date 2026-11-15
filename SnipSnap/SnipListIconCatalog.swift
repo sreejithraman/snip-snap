@@ -1,10 +1,5 @@
 import SnipSnapCore
 import SwiftUI
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 struct SnipListIconCategory: Identifiable {
     let title: String
@@ -32,13 +27,7 @@ enum SnipListIconOptions {
     static let availableIcons = SFSymbolNames.available(
         in: ProcessInfo.processInfo.operatingSystemVersion
     ) { name in
-        autoreleasepool {
-#if os(macOS)
-            NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
-#else
-            UIImage(systemName: name) != nil
-#endif
-        }
+        autoreleasepool { ListIconSymbol.isAvailable(name) }
     }.filter { !SnipList.legacyDefaultIcons.contains($0) }
     private static let availableIconSet = Set(availableIcons)
 

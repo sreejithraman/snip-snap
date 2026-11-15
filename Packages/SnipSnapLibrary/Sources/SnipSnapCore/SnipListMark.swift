@@ -12,17 +12,14 @@ extension SnipList {
   public static let legacyDefaultIcons: Set<String> = ["list.bullet", "circle.grid.2x2.fill"]
 
   /// Colors a list can get without a choice, in a fixed order so every device derives the same one.
-  /// Slate is left out because it reads as neutral. Append new presets at the end only.
+  /// Slate is left out because it reads as neutral. Changing this list's order or length recolors existing lists.
   public static let automaticColors: [SnipListColorPreset] = [
     .red, .orange, .yellow, .green, .teal, .blue, .indigo, .violet, .pink, .clay,
   ]
 
   /// The chosen symbol, or nil when the list shows letters.
   /// Stored as an empty string: every synced build requires the field to be present.
-  public var icon: String? {
-    get { Self.icon(stored: systemImage) }
-    set { systemImage = newValue ?? "" }
-  }
+  public var icon: String? { Self.icon(stored: systemImage) }
 
   public static func icon(stored systemImage: String) -> String? {
     systemImage.isEmpty || legacyDefaultIcons.contains(systemImage) ? nil : systemImage

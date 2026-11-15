@@ -116,6 +116,11 @@ extension SnipList {
 }
 
 enum ListIconSymbol {
+    /// What an icon picker shows for its stored choice: the symbol if this OS can draw it, else a letters sample.
+    static func pickerMark(for selection: String) -> SnipListMark {
+        SnipList.icon(stored: selection).flatMap { isAvailable($0) ? .icon($0) : nil } ?? .letters("Aa")
+    }
+
     static func isAvailable(_ name: String) -> Bool {
 #if os(macOS)
         NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
