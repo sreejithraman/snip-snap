@@ -4,10 +4,20 @@ import SnipSnapCore
 
 package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncConfiguring,
     CloudAutomaticSyncScheduling, CKSyncEngineDelegate {
-    private let database: CKDatabase
+    typealias RecordReader = @Sendable (
+        _ recordIDs: [CKRecord.ID], _ desiredKeys: [CKRecord.FieldKey]?
+    ) async throws -> [CKRecord.ID: Result<CKRecord, any Error>]
+    typealias EngineFactory = @Sendable (
+        _ serialization: CKSyncEngine.State.Serialization?,
+        _ automaticallySync: Bool,
+        _ delegate: CloudKitRecordTransport
+    ) -> any CloudKitRecordEngine
+
     private let namespace: CloudSyncNamespace
     private let automaticallyFetchedZones: Set<CloudZoneID>
-    private var engine: CKSyncEngine?
+    private let readRecords: RecordReader
+    private let makeEngine: EngineFactory
+    private var engine: (any CloudKitRecordEngine)?
     private var currentSerialization: Data?
     private var currentFetchZones: [CKRecordZone.ID] = []
     private var fetchedBatchID = UUID()
@@ -39,10 +49,37 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         automaticallyFetchedZones: Set<CloudZoneID>? = nil,
         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
     ) {
-        self.database = database
+        self.init(
+            namespace: namespace,
+            automaticallyFetchedZones: automaticallyFetchedZones,
+            diagnostics: diagnostics,
+            readRecords: { recordIDs, desiredKeys in
+                try await database.records(for: recordIDs, desiredKeys: desiredKeys)
+            },
+            makeEngine: { serialization, automaticallySync, delegate in
+                var configuration = CKSyncEngine.Configuration(
+                    database: database,
+                    stateSerialization: serialization,
+                    delegate: delegate
+                )
+                configuration.automaticallySync = automaticallySync
+                return CKSyncEngine(configuration)
+            }
+        )
+    }
+
+    init(
+        namespace: CloudSyncNamespace,
+        automaticallyFetchedZones: Set<CloudZoneID>?,
+        diagnostics: AppDiagnosticRecorder,
+        readRecords: @escaping RecordReader,
+        makeEngine: @escaping EngineFactory
+    ) {
         self.namespace = namespace
         self.automaticallyFetchedZones = automaticallyFetchedZones ?? namespace.zones
         self.diagnostics = diagnostics
+        self.readRecords = readRecords
+        self.makeEngine = makeEngine
     }
 
     package func start(state: CloudEngineStateEnvelope?) throws {
@@ -66,14 +103,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         outboundQueue.restoreAdmission(outboundAdmission)
         currentSerialization = state?.serialization
         requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
-        var configuration = CKSyncEngine.Configuration(
-            database: database,
-            stateSerialization: serialization,
-            delegate: self
-        )
-        configuration.automaticallySync = automaticallySync && !outboundAdmission.blocksAll
         currentFetchZones = automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
-        engine = CKSyncEngine(configuration)
+        engine = makeEngine(serialization, automaticallySync && !outboundAdmission.blocksAll, self)
         observePendingAdmission()
         if let initialOutbound {
             try scheduleAutomaticSync(initialOutbound)
@@ -241,10 +272,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     ) async throws -> CloudRecordSnapshot? {
         let recordID = CloudKitRecordMapper.recordID(for: id)
         do {
-            let results = try await database.records(
-                for: [recordID],
-                desiredKeys: Array(fields).sorted()
-            )
+            let results = try await readRecords([recordID], Array(fields).sorted())
             guard let result = results[recordID] else { return nil }
             do {
                 return try CloudKitRecordMapper.snapshot(
@@ -270,7 +298,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         var stage = CloudSyncDiagnostics.AttachmentStage.cloudKitRequest
         CloudSyncDiagnostics.attachmentStarted(stage)
         do {
-            let results = try await database.records(for: [recordID], desiredKeys: [field])
+            let results = try await readRecords([recordID], [field])
             CloudSyncDiagnostics.attachmentSucceeded(stage)
             stage = .cloudKitRecord
             CloudSyncDiagnostics.attachmentStarted(stage)
@@ -307,54 +335,58 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     }
 
     package func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        handle(CloudKitRecordEngineEvent(event), from: syncEngine)
+    }
+
+    func handle(_ event: CloudKitRecordEngineEvent, from syncEngine: any CloudKitRecordEngine) {
         guard syncEngine === engine else { return }
         switch event {
-        case .stateUpdate(let update):
-            do {
-                currentSerialization = try JSONEncoder().encode(update.stateSerialization)
+        case .stateUpdate(let serialization):
+            if let serialization {
+                currentSerialization = serialization
                 if !fetchCycleInProgress, !sendCycleInProgress, let state = envelope() {
                     mailbox.append(.checkpoint(UUID(), state))
                 }
-            } catch {
+            } else {
                 fetchedDatabaseEvents.append(.failed(nil, .invalidRecord))
             }
-        case .fetchedDatabaseChanges(let changes):
+        case .fetchedDatabaseChanges(let modifications, let deletions):
             fetchedDatabaseEvents.append(
-                contentsOf: changes.modifications.map {
-                    .zoneChanged(CloudKitRecordMapper.id(for: $0.zoneID))
+                contentsOf: modifications.map {
+                    .zoneChanged(CloudKitRecordMapper.id(for: $0))
                 }
             )
             fetchedDatabaseEvents.append(
-                contentsOf: changes.deletions.map {
+                contentsOf: deletions.map {
                     .zoneDeleted(
                         CloudKitRecordMapper.id(for: $0.zoneID),
                         reason: Self.deletionReason($0.reason)
                     )
                 }
             )
-        case .fetchedRecordZoneChanges(let changes):
-            for modification in changes.modifications {
+        case .fetchedRecordZoneChanges(let modifications, let deletions):
+            for record in modifications {
                 do {
                     fetchedItems.append(
-                        .record(try CloudKitRecordMapper.snapshot(modification.record))
+                        .record(try CloudKitRecordMapper.snapshot(record))
                     )
                 } catch {
                     fetchedItems.append(
                         .failed(
-                            CloudKitRecordMapper.id(for: modification.record.recordID),
+                            CloudKitRecordMapper.id(for: record.recordID),
                             .invalidRecord
                         )
                     )
                 }
             }
             fetchedItems.append(
-                contentsOf: changes.deletions.map {
-                    .deleted(CloudKitRecordMapper.id(for: $0.recordID))
+                contentsOf: deletions.map {
+                    .deleted(CloudKitRecordMapper.id(for: $0))
                 }
             )
-        case .didFetchRecordZoneChanges(let result):
-            let zone = CloudKitRecordMapper.id(for: result.zoneID)
-            if let error = result.error {
+        case .didFetchRecordZoneChanges(let zoneID, let error):
+            let zone = CloudKitRecordMapper.id(for: zoneID)
+            if let error {
                 if Self.isEncryptedDataReset(error) {
                     fetchedDatabaseEvents.append(.zoneDeleted(zone, reason: .encryptedDataReset))
                 } else {
@@ -363,35 +395,37 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             } else {
                 fetchedZoneEvents.append(.fetched(zone))
             }
-        case .sentDatabaseChanges(let changes):
+        case .sentDatabaseChanges(let savedZones, let failedZoneSaves, let failedZoneDeletes,
+                                  let deletedZoneIDs):
             sentDatabaseEvents.append(
-                contentsOf: changes.savedZones.map {
-                    .zoneSaved(CloudKitRecordMapper.id(for: $0.zoneID))
+                contentsOf: savedZones.map {
+                    .zoneSaved(CloudKitRecordMapper.id(for: $0))
                 }
             )
             sentDatabaseEvents.append(
-                contentsOf: changes.failedZoneSaves.map {
-                    let zone = CloudKitRecordMapper.id(for: $0.zone.zoneID)
+                contentsOf: failedZoneSaves.map {
+                    let zone = CloudKitRecordMapper.id(for: $0.zoneID)
                     return Self.isEncryptedDataReset($0.error)
                         ? .zoneDeleted(zone, reason: .encryptedDataReset)
                         : .failed(zone, Self.failure($0.error))
                 }
             )
             sentDatabaseEvents.append(
-                contentsOf: changes.failedZoneDeletes.map {
-                    let zone = CloudKitRecordMapper.id(for: $0.key)
-                    return Self.isEncryptedDataReset($0.value)
+                contentsOf: failedZoneDeletes.map {
+                    let zone = CloudKitRecordMapper.id(for: $0.zoneID)
+                    return Self.isEncryptedDataReset($0.error)
                         ? .zoneDeleted(zone, reason: .encryptedDataReset)
-                        : .failed(zone, Self.failure($0.value))
+                        : .failed(zone, Self.failure($0.error))
                 }
             )
             sentDatabaseEvents.append(
-                contentsOf: changes.deletedZoneIDs.map {
+                contentsOf: deletedZoneIDs.map {
                     .zoneDeleted(CloudKitRecordMapper.id(for: $0), reason: .deleted)
                 }
             )
-        case .sentRecordZoneChanges(let changes):
-            for record in changes.savedRecords {
+        case .sentRecordZoneChanges(let savedRecords, let deletedRecordIDs, let failedRecordSaves,
+                                    let failedRecordDeletes):
+            for record in savedRecords {
                 do {
                     let snapshot = try CloudKitRecordMapper.snapshot(record)
                     sendResults[snapshot.id] = .saved(snapshot)
@@ -400,18 +434,18 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                     sendResults[id] = .failed(id, .invalidRecord)
                 }
             }
-            for recordID in changes.deletedRecordIDs {
+            for recordID in deletedRecordIDs {
                 let id = CloudKitRecordMapper.id(for: recordID)
                 sendResults[id] = .deleted(id)
             }
-            for failure in changes.failedRecordSaves {
-                let id = CloudKitRecordMapper.id(for: failure.record.recordID)
+            for failure in failedRecordSaves {
+                let id = CloudKitRecordMapper.id(for: failure.recordID)
                 if Self.isEncryptedDataReset(failure.error) {
                     sentDatabaseEvents.append(.zoneDeleted(id.zone, reason: .encryptedDataReset))
                 }
                 sendResults[id] = sendResult(for: id, error: failure.error)
             }
-            for (recordID, error) in changes.failedRecordDeletes {
+            for (recordID, error) in failedRecordDeletes {
                 let id = CloudKitRecordMapper.id(for: recordID)
                 if Self.isEncryptedDataReset(error) {
                     sentDatabaseEvents.append(.zoneDeleted(id.zone, reason: .encryptedDataReset))
@@ -438,7 +472,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             resumeCycleWaiters()
         case .accountChange:
             mailbox.append(.accountChange(UUID()))
-        default:
+        case .other:
             break
         }
         observePendingAdmission()
@@ -448,6 +482,13 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     package func nextRecordZoneChangeBatch(
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
+    ) async -> CKSyncEngine.RecordZoneChangeBatch? {
+        await nextRecordZoneChangeBatch(scope: context.options.scope, from: syncEngine)
+    }
+
+    func nextRecordZoneChangeBatch(
+        scope: CKSyncEngine.SendChangesOptions.Scope,
+        from syncEngine: any CloudKitRecordEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         guard syncEngine === engine else { return nil }
         guard !requiresInitialFetch, !mailbox.blocksRecordProvider,
@@ -465,8 +506,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         }
         guard syncEngine === engine, !requiresInitialFetch, !mailbox.blocksRecordProvider,
               !outboundQueue.admission.blocksAll else { return nil }
-        let pendingIDs = Set(syncEngine.state.pendingRecordZoneChanges.filter {
-            context.options.scope.contains($0)
+        let pendingIDs = Set(syncEngine.pendingRecordZoneChanges.filter {
+            scope.contains($0)
         }.compactMap { change -> CloudRecordID? in
             switch change {
             case .saveRecord(let id), .deleteRecord(let id): CloudKitRecordMapper.id(for: id)
@@ -510,10 +551,14 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         _ context: CKSyncEngine.FetchChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.FetchChangesOptions {
+        nextFetchChangesOptions()
+    }
+
+    func nextFetchChangesOptions() -> CKSyncEngine.FetchChangesOptions {
         CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(currentFetchZones))
     }
 
-    private func recordMappingFailed(_ id: CloudRecordID, cycleID: UUID, from source: CKSyncEngine) {
+    private func recordMappingFailed(_ id: CloudRecordID, cycleID: UUID, from source: any CloudKitRecordEngine) {
         guard source === engine, outboundQueue.cycle?.id == cycleID else { return }
         outboundQueue.recordSupplied([id])
         sendResults[id] = .failed(id, .invalidRecord)
@@ -548,7 +593,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             databaseEvents: sentDatabaseEvents, engineState: nil)), zones: namespace.zones)
         guard let engine else { return }
         let admission = outboundQueue.admission
-        let blockedChanges = engine.state.pendingRecordZoneChanges.filter { change in
+        let blockedChanges = engine.pendingRecordZoneChanges.filter { change in
             let id: CKRecord.ID
             switch change {
             case .saveRecord(let recordID), .deleteRecord(let recordID): id = recordID
@@ -556,9 +601,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
             return admission.blocksAll || admission.blockedRecordIDs.contains(CloudKitRecordMapper.id(for: id))
         }
-        if !blockedChanges.isEmpty { engine.state.remove(pendingRecordZoneChanges: blockedChanges) }
-        if admission.blocksAll, !engine.state.pendingDatabaseChanges.isEmpty {
-            engine.state.remove(pendingDatabaseChanges: engine.state.pendingDatabaseChanges)
+        if !blockedChanges.isEmpty { engine.remove(pendingRecordZoneChanges: blockedChanges) }
+        if admission.blocksAll, !engine.pendingDatabaseChanges.isEmpty {
+            engine.remove(pendingDatabaseChanges: engine.pendingDatabaseChanges)
         }
     }
 
@@ -646,7 +691,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         let admitted = outboundQueue.schedule(batch)
         let desired = outboundQueue.current
         let records = Dictionary(desired.operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        let obsoleteRecords = engine.state.pendingRecordZoneChanges.filter { change in
+        let obsoleteRecords = engine.pendingRecordZoneChanges.filter { change in
             switch change {
             case .saveRecord(let id):
                 if case .save? = records[CloudKitRecordMapper.id(for: id)] { return false }
@@ -656,27 +701,27 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
             return true
         }
-        let obsoleteZones = engine.state.pendingDatabaseChanges.filter { change in
+        let obsoleteZones = engine.pendingDatabaseChanges.filter { change in
             switch change {
             case .saveZone(let zone): !desired.zonesToSave.contains(CloudKitRecordMapper.id(for: zone.zoneID))
             case .deleteZone: true
             @unknown default: true
             }
         }
-        if !obsoleteRecords.isEmpty { engine.state.remove(pendingRecordZoneChanges: obsoleteRecords) }
-        if !obsoleteZones.isEmpty { engine.state.remove(pendingDatabaseChanges: obsoleteZones) }
+        if !obsoleteRecords.isEmpty { engine.remove(pendingRecordZoneChanges: obsoleteRecords) }
+        if !obsoleteZones.isEmpty { engine.remove(pendingDatabaseChanges: obsoleteZones) }
         // A newer snapshot can withdraw queued work during a cycle, but cannot add
         // new record bodies until that cycle's exact acknowledgement commits.
         guard let admitted else { return }
         if !admitted.zonesToSave.isEmpty {
-            engine.state.add(
+            engine.add(
                 pendingDatabaseChanges: admitted.zonesToSave.map {
                     .saveZone(CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0)))
                 }
             )
         }
         if !admitted.operations.isEmpty {
-            engine.state.add(
+            engine.add(
                 pendingRecordZoneChanges: admitted.operations.map { operation in
                     let recordID = CloudKitRecordMapper.recordID(for: operation.id)
                     return switch operation {
