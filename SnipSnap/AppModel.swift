@@ -306,7 +306,7 @@ final class AppModel: ObservableObject {
             case retired
         }
 
-        /// A list absent here is in the library, or left it without draft text.
+        /// A list with no entry owns no Inbox tail, so its redirected text appends.
         private var deletedLists: [UUID: DeletedList] = [:]
         private var inboxRevision: UInt64 = 0
 
