@@ -47,7 +47,8 @@ To run either group on its own:
 
 The Mac group includes policy and shared package tests. The iOS group runs
 `SnipSnapiOSTests` with parallel XCTest disabled and checks the same app
-build's bundles. The Mac and iOS CI jobs still run in parallel.
+build's bundles. An iOS test that runs past 180 seconds fails, and XCTest
+adds a spindump of the hung app to its result bundle. The Mac and iOS CI jobs still run in parallel.
 
 Run the full unsigned build matrix before a release:
 

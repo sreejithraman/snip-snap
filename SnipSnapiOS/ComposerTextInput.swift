@@ -336,25 +336,20 @@ enum ComposerPasteboard {
             for provider in providers
             where isText(provider) && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 try Task.checkCancellation()
-                let load = ComposerProviderLoad<String>()
-                let value = try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation { continuation in
-                        guard load.begin(continuation) else { return }
-                        let finish: @Sendable (String?, (any Error)?) -> Void = { string, error in
-                            load.finish {
-                                if let error { throw ProviderLoadFailure(underlying: error) }
-                                guard let string else { throw ProviderLoadFailure(underlying: CocoaError(.fileReadUnknown)) }
-                                return string
-                            }
+                let value = try await ProviderLoad<String>.run { finish in
+                    let deliver: @Sendable (String?, (any Error)?) -> Void = { string, error in
+                        finish {
+                            if let error { throw ProviderLoadFailure(underlying: error) }
+                            guard let string else { throw ProviderLoadFailure(underlying: CocoaError(.fileReadUnknown)) }
+                            return string
                         }
-                        let progress = provider.canLoadObject(ofClass: NSString.self)
-                            ? provider.loadObject(ofClass: String.self) { finish($0, $1) }
-                            : provider.loadObject(ofClass: NSAttributedString.self) {
-                                finish(($0 as? NSAttributedString)?.string, $1)
-                            }
-                        load.setProgress(progress)
                     }
-                } onCancel: { load.cancel() }
+                    return provider.canLoadObject(ofClass: NSString.self)
+                        ? provider.loadObject(ofClass: String.self) { deliver($0, $1) }
+                        : provider.loadObject(ofClass: NSAttributedString.self) {
+                            deliver(($0 as? NSAttributedString)?.string, $1)
+                        }
+                }
                 let isFileURL = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines))?.isFileURL == true
                 if !isFileURL || !isAttachment(provider) { text += value }
             }
@@ -389,44 +384,35 @@ enum ComposerPasteboard {
                 let isFileURL = type == UTType.fileURL.identifier
                 let directory = batch.appendingPathComponent(UUID().uuidString, isDirectory: true)
                 let suggestedName = provider.suggestedName
-                let load = ComposerProviderLoad<StagedAttachment>()
-                let file: StagedAttachment = try await withTaskCancellationHandler {
-                    try await withCheckedThrowingContinuation { continuation in
-                        guard load.begin(continuation) else { return }
-                        let copy: @Sendable (URL?, Error?) -> Void = { source, error in
-                            load.finish {
-                                if let error { throw ProviderLoadFailure(underlying: error) }
-                                guard let source, source.isFileURL else { throw SnipLibraryError.attachmentCopyFailed }
-                                let access = source.startAccessingSecurityScopedResource()
-                                defer { if access { source.stopAccessingSecurityScopedResource() } }
-                                let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                                guard values.isRegularFile == true, values.isSymbolicLink != true else {
-                                    throw SnipLibraryError.attachmentCopyFailed
-                                }
-                                var name = URL(fileURLWithPath: suggestedName ?? source.lastPathComponent).lastPathComponent
-                                if name.isEmpty { name = "Pasted File" }
-                                if URL(fileURLWithPath: name).pathExtension.isEmpty {
-                                    let suffix = isFileURL ? source.pathExtension : UTType(type)?.preferredFilenameExtension
-                                    if let suffix, !suffix.isEmpty { name += "." + suffix }
-                                }
-                                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                                let destination = directory.appendingPathComponent(name)
-                                // Provider URLs expire when this callback returns.
-                                try FileManager.default.copyItem(at: source, to: destination)
-                                let size = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                                return StagedAttachment(fileName: name, byteCount: Int64(size), url: destination)
+                let file = try await ProviderLoad<StagedAttachment>.run { finish in
+                    let copy: @Sendable (URL?, Error?) -> Void = { source, error in
+                        finish {
+                            if let error { throw ProviderLoadFailure(underlying: error) }
+                            guard let source, source.isFileURL else { throw SnipLibraryError.attachmentCopyFailed }
+                            let access = source.startAccessingSecurityScopedResource()
+                            defer { if access { source.stopAccessingSecurityScopedResource() } }
+                            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                                throw SnipLibraryError.attachmentCopyFailed
                             }
+                            var name = URL(fileURLWithPath: suggestedName ?? source.lastPathComponent).lastPathComponent
+                            if name.isEmpty { name = "Pasted File" }
+                            if URL(fileURLWithPath: name).pathExtension.isEmpty {
+                                let suffix = isFileURL ? source.pathExtension : UTType(type)?.preferredFilenameExtension
+                                if let suffix, !suffix.isEmpty { name += "." + suffix }
+                            }
+                            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                            let destination = directory.appendingPathComponent(name)
+                            // Provider URLs expire when this callback returns.
+                            try FileManager.default.copyItem(at: source, to: destination)
+                            let size = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                            return StagedAttachment(fileName: name, byteCount: Int64(size), url: destination)
                         }
-                        let progress: Progress
-                        if isFileURL {
-                            progress = provider.loadObject(ofClass: URL.self) { url, error in copy(url, error) }
-                        } else {
-                            progress = provider.loadFileRepresentation(forTypeIdentifier: type, completionHandler: copy)
-                        }
-                        load.setProgress(progress)
                     }
-                } onCancel: {
-                    load.cancel()
+                    if isFileURL {
+                        return provider.loadObject(ofClass: URL.self) { url, error in copy(url, error) }
+                    }
+                    return provider.loadFileRepresentation(forTypeIdentifier: type, completionHandler: copy)
                 }
                 staged.append(file)
             }
@@ -445,52 +431,97 @@ private struct ProviderLoadFailure: Error {
     let underlying: any Error
 }
 
-/// Cancellation and callback completion share a lock so a late file callback
-/// cannot recreate staging files after the cancelled batch has been cleaned.
-private final class ComposerProviderLoad<Value: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Value, Error>?
-    private var progress: Progress?
-    private var isCancelled = false
+/// Loads one provider value and resumes its caller exactly once. The first callback claims the load
+/// under the lock and runs its result outside it, so cancelling never waits for a copy and a callback
+/// after cancellation never runs. A load claimed before cancellation still delivers its value; the
+/// caller's next cancellation check cleans up what it staged.
+final class ProviderLoad<Value: Sendable>: @unchecked Sendable {
+    private struct Waiter {
+        let continuation: CheckedContinuation<Value, Error>
+        var progress: Progress?
+    }
 
-    func begin(_ continuation: CheckedContinuation<Value, Error>) -> Bool {
+    private enum Phase {
+        case notStarted
+        case waiting(Waiter)
+        case completed
+        case cancelled
+    }
+
+    private let lock = NSLock()
+    private var phase = Phase.notStarted
+
+    private init() {}
+
+    /// `start` begins the provider load and returns its progress. The load's callback hands its result
+    /// to `finish`, which runs the result only when it claims a waiting load.
+    static func run(
+        isolation: isolated (any Actor)? = #isolation,
+        _ start: (_ finish: @escaping @Sendable (_ result: () throws -> Value) -> Void) -> Progress
+    ) async throws -> Value {
+        let load = ProviderLoad()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation(isolation: isolation) { continuation in
+                guard load.begin(continuation) else { return }
+                load.receive(start { load.finish($0) })
+            }
+        } onCancel: {
+            load.cancel()
+        }
+    }
+
+    private func begin(_ continuation: CheckedContinuation<Value, Error>) -> Bool {
         lock.lock()
-        if isCancelled {
+        guard case .notStarted = phase else {
             lock.unlock()
             continuation.resume(throwing: CancellationError())
             return false
         }
-        self.continuation = continuation
+        phase = .waiting(Waiter(continuation: continuation))
         lock.unlock()
         return true
     }
 
-    func setProgress(_ progress: Progress) {
+    private func receive(_ progress: Progress) {
         lock.lock()
-        self.progress = progress
-        let cancelled = isCancelled
-        lock.unlock()
-        if cancelled { progress.cancel() }
+        switch phase {
+        case .waiting(var waiter):
+            waiter.progress = progress
+            phase = .waiting(waiter)
+            lock.unlock()
+        case .cancelled:
+            lock.unlock()
+            progress.cancel()
+        case .notStarted, .completed:
+            lock.unlock()
+        }
     }
 
-    func finish(_ operation: () throws -> Value) {
+    private func finish(_ result: () throws -> Value) {
         lock.lock()
-        guard let continuation, !isCancelled else { lock.unlock(); return }
-        self.continuation = nil
-        let result = Result { try operation() }
+        guard case .waiting(let waiter) = phase else {
+            lock.unlock()
+            return
+        }
+        phase = .completed
         lock.unlock()
-        continuation.resume(with: result)
+        waiter.continuation.resume(with: Result { try result() })
     }
 
-    func cancel() {
+    private func cancel() {
         lock.lock()
-        isCancelled = true
-        let continuation = continuation
-        self.continuation = nil
-        let progress = progress
-        lock.unlock()
-        progress?.cancel()
-        continuation?.resume(throwing: CancellationError())
+        switch phase {
+        case .notStarted:
+            phase = .cancelled
+            lock.unlock()
+        case .waiting(let waiter):
+            phase = .cancelled
+            lock.unlock()
+            waiter.progress?.cancel()
+            waiter.continuation.resume(throwing: CancellationError())
+        case .completed, .cancelled:
+            lock.unlock()
+        }
     }
 }
 

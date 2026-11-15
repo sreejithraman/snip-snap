@@ -19,11 +19,10 @@ extension SwiftDataSnipLibrary {
       publications.map { ($0.metadataIdentity, $0) },
       uniquingKeysWith: { first, _ in first }
     )
-    let cleanups = try Self.cloudAttachmentCleanups(
+    var cleanupQueue = try CloudAttachmentCleanupQueue(
       namespaceKey: namespaceKey,
       context: context
     )
-    var byCleanup = Dictionary(uniqueKeysWithValues: cleanups.map { ($0.identity, $0) })
     var materializedAttachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
@@ -68,7 +67,7 @@ extension SwiftDataSnipLibrary {
     )
     var cacheByAttachment = Dictionary(grouping: cacheRows, by: \.attachmentID)
     var pendingReplacementIDsByLocation = Dictionary(
-      grouping: publications.filter { $0.isLocallyPresent && !$0.metadataAccepted },
+      grouping: publications.filter { $0.lifecycle.isPresentAwaitingMetadata },
       by: { "\($0.snipID.uuidString)|\($0.position)" }
     ).mapValues { rows in
       rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
@@ -77,27 +76,6 @@ extension SwiftDataSnipLibrary {
       for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
         context.delete(row)
       }
-    }
-    func insertCleanup(
-      identity: CloudTextStorageIdentity,
-      shadowData: Data?,
-      blockedByAttachmentID: UUID? = nil
-    ) {
-      if let current = byCleanup[identity] {
-        if current.shadowData == nil { current.shadowData = shadowData }
-        if current.blockedByAttachmentID == nil {
-          current.blockedByAttachmentID = blockedByAttachmentID
-        }
-        return
-      }
-      let row = StoredCloudAttachmentCleanup(
-        namespaceKey: namespaceKey,
-        identity: identity,
-        shadowData: shadowData,
-        blockedByAttachmentID: blockedByAttachmentID
-      )
-      context.insert(row)
-      byCleanup[identity] = row
     }
     func removeMaterialized(attachmentID: UUID, snipID: UUID) {
       let references = storedReferences[attachmentID] ?? []
@@ -111,6 +89,14 @@ extension SwiftDataSnipLibrary {
         context.delete(attachment)
       }
     }
+    /// Drops a publication another device deleted, with its download and its place on the snip.
+    /// Queues no payload cleanup.
+    func removeRemotelyDeleted(_ row: StoredCloudAttachmentPublication) {
+      removeCache(for: row.attachmentID)
+      removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
+      context.delete(row)
+      byAttachment.removeValue(forKey: row.attachmentID)
+    }
     for transition in transitions {
       switch transition {
       case .remoteMetadataAccepted(
@@ -119,10 +105,12 @@ extension SwiftDataSnipLibrary {
         let shadow,
         let systemFields
       ):
+        let metadataRecord = CloudAttachmentAcceptedRecord(
+          shadowData: shadow,
+          systemFields: systemFields
+        )
         if let row = byAttachment[metadata.attachmentID] {
-          if row.metadataAccepted,
-            row.metadataShadowData == shadow,
-            row.metadataSystemFields == systemFields { continue }
+          if row.lifecycle.hasAcceptedMetadata(metadataRecord) { continue }
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
@@ -135,15 +123,10 @@ extension SwiftDataSnipLibrary {
           row.contentType = metadata.contentType
           row.byteCount = metadata.byteCount
           row.sha256 = metadata.sha256
-          row.payloadZoneName = metadata.payloadIdentity.zoneName
-          row.payloadOwnerName = metadata.payloadIdentity.ownerName
-          row.payloadRecordName = metadata.payloadIdentity.recordName
-          row.payloadAccepted = true
-          row.metadataAccepted = true
-          row.metadataShadowData = shadow
-          row.metadataSystemFields = systemFields
-          row.lastFailure = nil
-          row.revision += 1
+          row.lifecycle.acceptRemoteMetadata(
+            payloadIdentity: metadata.payloadIdentity,
+            metadataRecord: metadataRecord
+          )
         } else {
           let row = StoredCloudAttachmentPublication(
             namespaceKey: namespaceKey,
@@ -158,75 +141,53 @@ extension SwiftDataSnipLibrary {
             metadataIdentity: metadataIdentity,
             payloadIdentity: metadata.payloadIdentity
           )
-          row.payloadAccepted = true
-          row.metadataAccepted = true
-          row.metadataShadowData = shadow
-          row.metadataSystemFields = systemFields
-          row.lastFailure = nil
+          row.lifecycle = .remoteAttachment(
+            payloadIdentity: metadata.payloadIdentity,
+            metadataRecord: metadataRecord
+          )
           context.insert(row)
         }
       case .payloadAccepted(let attachmentID, let expected, let shadow, let systemFields):
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.missingPublication
         }
-        if row.payloadAccepted, row.payloadShadowData == shadow,
-          row.payloadSystemFields == systemFields { continue }
-        guard row.revision == expected, !row.payloadAccepted else {
-          throw CloudAttachmentStorageError.staleTransition
-        }
-        row.payloadAccepted = true
-        row.payloadShadowData = shadow
-        row.payloadSystemFields = systemFields
-        row.uploadRelativePath = nil
-        row.lastFailure = nil
-        row.revision += 1
+        try row.lifecycle.acceptPayload(
+          CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
+          expectedRevision: expected
+        )
       case .metadataAccepted(let attachmentID, let expected, let shadow, let systemFields):
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.missingPublication
         }
-        if row.metadataAccepted, row.metadataShadowData == shadow,
-          row.metadataSystemFields == systemFields { continue }
-        guard row.revision == expected, row.payloadAccepted else {
-          throw CloudAttachmentStorageError.staleTransition
+        if let owedCleanup = try row.lifecycle.acceptMetadata(
+          CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
+          expectedRevision: expected
+        ) {
+          cleanupQueue.queue(owedCleanup)
         }
-        row.metadataAccepted = true
-        row.metadataShadowData = shadow
-        row.metadataSystemFields = systemFields
-        if let prior = row.priorPayloadIdentity {
-          insertCleanup(identity: prior, shadowData: row.priorPayloadShadowData)
-          row.priorPayloadZoneName = nil
-          row.priorPayloadOwnerName = nil
-          row.priorPayloadRecordName = nil
-          row.priorPayloadShadowData = nil
-        }
-        row.lastFailure = nil
-        row.revision += 1
       case .metadataConflict(let attachmentID, let expected, let shadow, let systemFields):
-        guard let row = byAttachment[attachmentID], row.revision == expected else {
+        guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        row.metadataAccepted = false
-        row.metadataShadowData = shadow
-        row.metadataSystemFields = systemFields
-        row.lastFailure = nil
-        row.revision += 1
+        try row.lifecycle.recordMetadataConflict(
+          CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
+          expectedRevision: expected
+        )
       case .payloadCollision(let attachmentID, let expected, let replacementIdentity):
-        guard let row = byAttachment[attachmentID], row.revision == expected,
-          !row.payloadAccepted
-        else { throw CloudAttachmentStorageError.staleTransition }
-        row.payloadZoneName = replacementIdentity.zoneName
-        row.payloadOwnerName = replacementIdentity.ownerName
-        row.payloadRecordName = replacementIdentity.recordName
-        row.lastFailure = nil
-        row.revision += 1
+        guard let row = byAttachment[attachmentID] else {
+          throw CloudAttachmentStorageError.staleTransition
+        }
+        try row.lifecycle.adoptCollisionReplacement(
+          replacementIdentity,
+          expectedRevision: expected
+        )
       case .metadataUnknown(
         let attachmentID,
         let expected,
         let replacementAttachmentID,
         let replacementMetadataIdentity
       ):
-        guard let row = byAttachment[attachmentID], row.revision == expected,
-          row.isLocallyPresent,
+        guard let row = byAttachment[attachmentID],
           replacementAttachmentID != attachmentID,
           replacementMetadataIdentity.zoneName == row.metadataZoneName,
           replacementMetadataIdentity.ownerName == row.metadataOwnerName,
@@ -235,10 +196,18 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
+        let replacementLifecycle = try row.lifecycle.remappedReplacement(
+          expectedRevision: expected
+        )
         guard byAttachment[replacementAttachmentID] == nil,
           !storedAttachments.keys.contains(replacementAttachmentID)
         else {
           throw CloudAttachmentStorageError.staleTransition
+        }
+        guard row.lifecycle.republishesUnknownMetadata else {
+          // The device that deleted it owns the payload's cleanup.
+          removeRemotelyDeleted(row)
+          continue
         }
         let oldAttachments = storedAttachments.removeValue(forKey: attachmentID) ?? []
         var newAttachments: [StoredAttachmentRecord] = []
@@ -278,20 +247,11 @@ extension SwiftDataSnipLibrary {
           contentType: row.contentType,
           byteCount: row.byteCount,
           sha256: row.sha256,
-          sourceRelativePath: row.sourceRelativePath,
+          sourceRelativePath: replacementLifecycle.localSourceRelativePath,
           metadataIdentity: replacementMetadataIdentity,
-          payloadIdentity: row.payloadIdentity
+          payloadIdentity: replacementLifecycle.payloadIdentity
         )
-        replacement.isLocallyPresent = row.isLocallyPresent
-        replacement.uploadRelativePath = row.uploadRelativePath
-        replacement.payloadAccepted = row.payloadAccepted
-        replacement.payloadShadowData = row.payloadShadowData
-        replacement.payloadSystemFields = row.payloadSystemFields
-        replacement.priorPayloadZoneName = row.priorPayloadZoneName
-        replacement.priorPayloadOwnerName = row.priorPayloadOwnerName
-        replacement.priorPayloadRecordName = row.priorPayloadRecordName
-        replacement.priorPayloadShadowData = row.priorPayloadShadowData
-        replacement.revision = row.revision + 1
+        replacement.lifecycle = replacementLifecycle
         context.insert(replacement)
         context.delete(row)
         byAttachment.removeValue(forKey: attachmentID)
@@ -303,25 +263,22 @@ extension SwiftDataSnipLibrary {
         pendingReplacementIDsByLocation[locationKey] = Array(Set(replacementIDs)).sorted {
           $0.uuidString < $1.uuidString
         }
+        cleanupQueue.remapBlockers(from: attachmentID, to: replacementAttachmentID)
       case .operationFailed(let attachmentID, let expected, let failure):
-        guard let row = byAttachment[attachmentID], row.revision == expected else {
+        guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        row.lastFailure = failure.rawValue
-        row.revision += 1
+        try row.lifecycle.recordFailure(failure, expectedRevision: expected)
       case .metadataDeleteAccepted(let attachmentID, let expected):
-        guard let row = byAttachment[attachmentID], row.revision == expected,
-          !row.isLocallyPresent
-        else { throw CloudAttachmentStorageError.staleTransition }
+        guard let row = byAttachment[attachmentID] else {
+          throw CloudAttachmentStorageError.staleTransition
+        }
+        let owedCleanup = try row.lifecycle.acceptMetadataDeletion(expectedRevision: expected)
         let locationKey = "\(row.snipID.uuidString)|\(row.position)"
         let replacementAttachmentID = pendingReplacementIDsByLocation[locationKey]?.first(where: {
           $0 != attachmentID
         })
-        insertCleanup(
-          identity: row.payloadIdentity,
-          shadowData: row.payloadShadowData,
-          blockedByAttachmentID: replacementAttachmentID
-        )
+        cleanupQueue.queue(owedCleanup, blockedBy: replacementAttachmentID)
         removeCache(for: attachmentID)
         context.delete(row)
         byAttachment.removeValue(forKey: attachmentID)
@@ -332,49 +289,32 @@ extension SwiftDataSnipLibrary {
         let systemFields,
         let payloadIdentity
       ):
-        guard let row = byAttachment[attachmentID], row.revision == expected,
-          !row.isLocallyPresent
-        else { throw CloudAttachmentStorageError.staleTransition }
-        if row.payloadIdentity != payloadIdentity {
-          insertCleanup(identity: row.payloadIdentity, shadowData: row.payloadShadowData)
-          removeCache(for: attachmentID)
-          row.payloadZoneName = payloadIdentity.zoneName
-          row.payloadOwnerName = payloadIdentity.ownerName
-          row.payloadRecordName = payloadIdentity.recordName
-          row.payloadShadowData = nil
-          row.payloadSystemFields = nil
+        guard let row = byAttachment[attachmentID] else {
+          throw CloudAttachmentStorageError.staleTransition
         }
-        row.payloadAccepted = true
-        row.metadataAccepted = true
-        row.metadataShadowData = shadow
-        row.metadataSystemFields = systemFields
-        row.lastFailure = nil
-        row.revision += 1
+        if let owedCleanup = try row.lifecycle.recordMetadataDeletionConflict(
+          CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
+          payloadIdentity: payloadIdentity,
+          expectedRevision: expected
+        ) {
+          cleanupQueue.queue(owedCleanup)
+          removeCache(for: attachmentID)
+        }
       case .remoteMetadataDeleted(let metadataIdentity):
         guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
-        insertCleanup(identity: row.payloadIdentity, shadowData: row.payloadShadowData)
-        removeCache(for: row.attachmentID)
-        removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
-        context.delete(row)
-        byAttachment.removeValue(forKey: row.attachmentID)
+        cleanupQueue.queue(row.lifecycle.payloadCleanup)
+        removeRemotelyDeleted(row)
       case .cleanupAccepted(let identity, let expected):
-        guard let row = byCleanup[identity] else { continue }
-        guard row.revision == expected else { throw CloudAttachmentStorageError.staleTransition }
-        context.delete(row)
+        try cleanupQueue.acceptDeletion(of: identity, expectedRevision: expected)
       case .cleanupConflict(let identity, let expected, let shadow):
-        guard let row = byCleanup[identity], row.revision == expected else {
-          throw CloudAttachmentStorageError.staleTransition
-        }
-        row.shadowData = shadow
-        row.lastFailure = nil
-        row.revision += 1
+        try cleanupQueue.recordConflict(
+          for: identity,
+          shadowData: shadow,
+          expectedRevision: expected
+        )
       case .cleanupFailed(let identity, let expected, let failure):
-        guard let row = byCleanup[identity], row.revision == expected else {
-          throw CloudAttachmentStorageError.staleTransition
-        }
-        row.lastFailure = failure.rawValue
-        row.revision += 1
+        try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
   }
@@ -402,7 +342,7 @@ extension SwiftDataSnipLibrary {
         acceptedAttachmentIDs.contains($0.attachmentID)
       }
       .compactMap { row in
-        try row.uploadRelativePath.map {
+        try row.lifecycle.queuedUploadRelativePath.map {
           try Self.validatedChild(relativePath: $0, root: uploadRoot)
         }
       }

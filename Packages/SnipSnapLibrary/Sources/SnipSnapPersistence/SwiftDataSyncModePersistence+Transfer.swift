@@ -7,15 +7,11 @@ extension SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.transitionInProgress
     }
     var next = manifest
-    guard var transition = next.transition, transition.phase == .remoteFetched,
-      transition.sourceStoreID == next.activeStoreID,
+    guard let transition = next.transition, transition.sourceStoreID == next.activeStoreID,
       let source = next.stores.first(where: { $0.id == transition.sourceStoreID })
     else { throw SyncModePersistenceError.transitionInProgress }
     let token = SyncModeFreezeToken(id: UUID(), sourceStoreID: source.id, revision: source.revision)
-    transition.phase = .sourceFrozen
-    transition.freezeToken = token
-    transition.freezeSnapshotTaken = false
-    next.transition = transition
+    try next.updateTransition { try $0.freezeSource(token) }
     try commit(next)
     return token
   }
@@ -24,12 +20,10 @@ extension SwiftDataSyncModePersistence {
     using token: SyncModeFreezeToken
   ) async throws -> SnipLibraryTransferSnapshot {
     var next = manifest
-    guard var transition = next.transition, transition.phase == .sourceFrozen,
-      transition.freezeToken == token, !transition.freezeSnapshotTaken,
-      store(id: token.sourceStoreID)?.revision == token.revision
-    else { throw SyncModePersistenceError.invalidFreezeToken }
-    transition.freezeSnapshotTaken = true
-    next.transition = transition
+    try next.updateTransition(orThrow: .invalidFreezeToken) { try $0.takeFinalSnapshot(token) }
+    guard store(id: token.sourceStoreID)?.revision == token.revision else {
+      throw SyncModePersistenceError.invalidFreezeToken
+    }
     try commit(next)
     try await readHook()
     return try await libraryForTransition(storeID: token.sourceStoreID)
@@ -41,8 +35,7 @@ extension SwiftDataSyncModePersistence {
     using token: SyncModeFreezeToken,
     acceptedTargetTextBySnipID suppliedAcceptedText: [UUID: String]? = nil
   ) async throws -> SnipLibraryTransferResult {
-    guard let transition = manifest.transition, transition.phase == .sourceFrozen,
-      transition.freezeToken == token, transition.freezeSnapshotTaken,
+    guard let transition = manifest.transition, transition.awaitsMerge(using: token),
       source.revision == token.revision,
       let candidateStore = store(id: transition.candidateStoreID)
     else { throw SyncModePersistenceError.invalidFreezeToken }
@@ -94,22 +87,15 @@ extension SwiftDataSyncModePersistence {
       seededListIDs: seededListIDs
     )
     var intended = manifest
-    intended.transition?.mergeIntent = intent
+    try intended.updateTransition(orThrow: .invalidFreezeToken) {
+      try $0.recordMergeIntent(intent, using: token)
+    }
     try commit(intended)
     try crashHook(.beforeCandidateMergeDurability)
     _ = try await candidate.applyTransferPlan(plan, currentRevision: candidateStore.revision)
     try crashHook(.afterCandidateMergeDurability)
-    guard manifest.transition?.mergeIntent == intent else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
     var next = manifest
-    next.transition?.phase = .recordsMerged
-    next.transition?.approvedSnipIDs = intent.approvedSnipIDs
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
-    next.transition?.seedProvenance = intent.seedProvenance
-    next.transition?.seededListIDs = intent.seededListIDs
-    next.transition?.mergeIntent = nil
+    try next.updateTransition { try $0.finishMerge(intent) }
     try commit(next)
     return SnipLibraryTransferResult(
       approvedSnipIDs: intent.approvedSnipIDs,
@@ -122,8 +108,7 @@ extension SwiftDataSyncModePersistence {
     using token: SyncModeFreezeToken,
     plan: CloudFullReenableApplyPlan
   ) async throws -> SnipLibraryTransferResult {
-    guard let transition = manifest.transition, transition.phase == .sourceFrozen,
-      transition.freezeToken == token, transition.freezeSnapshotTaken,
+    guard let transition = manifest.transition, transition.awaitsMerge(using: token),
       source.revision == token.revision,
       plan.transitionID == transition.id,
       plan.namespaceKey == transition.namespace?.namespaceKey.rawValue,
@@ -161,7 +146,9 @@ extension SwiftDataSyncModePersistence {
     )
     try stageFullReenablePlan(plan, candidateStoreID: transition.candidateStoreID)
     var intended = manifest
-    intended.transition?.mergeIntent = intent
+    try intended.updateTransition(orThrow: .invalidFreezeToken) {
+      try $0.recordMergeIntent(intent, using: token)
+    }
     try commit(intended)
     try crashHook(.beforeCandidateMergeDurability)
     do {
@@ -240,10 +227,7 @@ extension SwiftDataSyncModePersistence {
             fullReenablePlanID: intent.fullReenablePlanID
           )
           var next = manifest
-          guard next.transition?.mergeIntent == intent else {
-            throw SyncModePersistenceError.transitionInProgress
-          }
-          next.transition?.mergeIntent = migrated
+          try next.updateTransition { try $0.replaceMergeIntent(intent, with: migrated) }
           try commit(next)
           intent = migrated
         }
@@ -287,17 +271,8 @@ extension SwiftDataSyncModePersistence {
   }
 
   private func advanceFullReenableIntent(_ intent: SyncModeMergeIntent) throws {
-    guard manifest.transition?.mergeIntent == intent else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
     var next = manifest
-    next.transition?.phase = .recordsMerged
-    next.transition?.approvedSnipIDs = intent.approvedSnipIDs
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
-    next.transition?.seedProvenance = intent.seedProvenance
-    next.transition?.seededListIDs = intent.seededListIDs
-    next.transition?.mergeIntent = nil
+    try next.updateTransition { try $0.finishMerge(intent) }
     try commit(next)
     removeStagedFullReenablePlan(
       candidateStoreID: manifest.transition?.candidateStoreID,
@@ -309,18 +284,11 @@ extension SwiftDataSyncModePersistence {
     _ intent: SyncModeMergeIntent,
     reason: ICloudSyncAttentionReason?
   ) throws {
+    var next = manifest
+    try next.updateTransition { try $0.abandonMerge(intent) }
     guard let transition = manifest.transition,
-      transition.mergeIntent == intent,
       manifest.activeStoreID == transition.sourceStoreID
     else { throw SyncModePersistenceError.transitionInProgress }
-    var next = manifest
-    next.transition?.mergeIntent = nil
-    next.transition?.phase = .candidateReady
-    next.transition?.freezeToken = nil
-    next.transition?.freezeSnapshotTaken = false
-    next.transition?.approvedSnipIDs = []
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
     next.attentionReason = reason
     try commit(next)
     removeStagedFullReenablePlan(
