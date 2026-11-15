@@ -14,6 +14,73 @@ extension CloudFullSyncPersistenceTests {
     try await assertFreshEngineDiscardsEarlierAttemptPresence(checkpointed: true)
   }
 
+  func testInitialFetchInventoryStartsGrowsAndEndsAcrossReopen() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "InventoryLifecycle")
+    defer { store.remove() }
+    let zone = store.zone
+    let inboxRecord = try store.inboxRecord()
+    let snip = Snip(content: "observed by the first fetch", origin: .quickEntry)
+    let snipRecord = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
+      for: CloudFullRecordCodec.snipDraft(snip, in: zone)
+    ))
+    let inbox = CloudFullSyncPersistence.storageIdentity(inboxRecord.id)
+    let observedSnip = CloudFullSyncPersistence.storageIdentity(snipRecord.id)
+
+    try await store.persistence.prepareInitialFetch()
+    try await store.expectInventory([], canProveAbsence: true, revision: 1, "a fresh engine")
+    try await store.expect(.notEnrolled, pending: false, revision: 1, "a fresh engine keeps the phase")
+    try await store.apply(store.fetch([.record(inboxRecord), .record(snipRecord)], initial: true))
+    try await store.expectInventory([inbox, observedSnip], canProveAbsence: true, revision: 2,
+      "an initial batch")
+
+    var reopened = try store.reopened()
+    try await reopened.expectInventory([inbox, observedSnip], canProveAbsence: true, revision: 2,
+      "reopen during the attempt")
+    try await reopened.apply(reopened.fetch([.deleted(snipRecord.id)], initial: true))
+    try await reopened.expectInventory([inbox], canProveAbsence: true, revision: 3, "an initial deletion")
+    try await reopened.apply(reopened.fetch([.failed(nil, .retryable)], initial: true))
+    try await reopened.expectInventory([inbox], canProveAbsence: false, revision: 4, "a failed initial batch")
+    reopened = try reopened.reopened()
+    try await reopened.expectInventory([inbox], canProveAbsence: false, revision: 4,
+      "reopen after losing absence proof")
+
+    try await reopened.apply(reopened.fetch())
+    try await reopened.expectNoInventory(revision: 5, "an incremental fetch")
+    try await reopened.persistence.saveEngineState(reopened.engineState(requiresInitialFetch: true))
+    try await reopened.expectInventory([], canProveAbsence: true, revision: 6, "a first initial checkpoint")
+    try await reopened.persistence.saveEngineState(reopened.engineState(requiresInitialFetch: true))
+    try await reopened.expectInventory([], canProveAbsence: true, revision: 6, "a later initial checkpoint")
+    try await reopened.persistence.prepareInitialFetch()
+    try await reopened.expectInventory([], canProveAbsence: true, revision: 7, "a fresh engine restarts")
+    try await reopened.persistence.saveEngineState(reopened.engineState(requiresInitialFetch: true))
+    try await reopened.expectInventory([], canProveAbsence: true, revision: 7,
+      "a checkpoint during a started attempt")
+    try await reopened.apply(reopened.fetch([.record(inboxRecord)], initial: true))
+    try await reopened.expectInventory([inbox], canProveAbsence: true, revision: 8,
+      "an initial batch after the checkpoint")
+
+    try await reopened.apply(reopened.fetch())
+    try await reopened.expectNoInventory(revision: 9, "a second incremental fetch")
+    try await reopened.persistence.saveEngineState(reopened.engineState(requiresInitialFetch: false))
+    try await reopened.expectNoInventory(revision: 9, "an incremental checkpoint")
+    try await reopened.apply(reopened.fetch([.record(inboxRecord)], initial: true))
+    try await reopened.expectInventory([inbox], canProveAbsence: false, revision: 10,
+      "an initial batch that resumes a token")
+    try await reopened.expect(.active, pending: false, revision: 10, "inventory steps keep the phase")
+  }
+
+  func testTokenlessInitialFetchStartsItsOwnInventory() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "InventoryImplicitStart")
+    defer { store.remove() }
+    let inboxRecord = try store.inboxRecord()
+
+    try await store.apply(store.fetch([.record(inboxRecord)], initial: true))
+
+    try await store.expectInventory([CloudFullSyncPersistence.storageIdentity(inboxRecord.id)],
+      canProveAbsence: true, revision: 1, "a tokenless initial batch")
+    try await store.expect(.active, pending: false, revision: 1, "a tokenless initial batch")
+  }
+
   private func assertFreshEngineDiscardsEarlierAttemptPresence(checkpointed: Bool) async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullFetchRestart-\(UUID().uuidString)")
