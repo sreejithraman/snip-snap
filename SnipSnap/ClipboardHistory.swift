@@ -666,15 +666,6 @@ final class ClipboardHistory: ObservableObject {
         await save()
     }
 
-    func deleteSyncedHistory() async throws {
-        guard let cloudService, let generation = try await syncGeneration?() else { return }
-        try await queueHistoryWrite { [self] in
-            try await cloudService.deleteSyncedHistory(generation: generation)
-            state = try await sharedStore.load()
-            entries = state.entries
-        }.value
-    }
-
     func setPaused(_ paused: Bool) {
         guard isPaused != paused else { return }
         defaults.set(paused, forKey: Self.pausedDefaultsKey)
