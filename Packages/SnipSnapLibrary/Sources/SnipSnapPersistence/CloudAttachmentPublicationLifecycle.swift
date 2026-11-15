@@ -134,6 +134,10 @@ struct CloudAttachmentPublicationLifecycle {
     return true
   }
 
+  /// CloudKit holds the payload, so a device without its bytes can download them while a
+  /// metadata edit still waits to sync.
+  var isPayloadRecoverableFromCloudKit: Bool { isPayloadAccepted }
+
   var payloadShadowData: Data? { acceptedPayload?.shadowData }
 
   var metadataShadowData: Data? { metadataRecord.shadowData }
@@ -150,6 +154,10 @@ struct CloudAttachmentPublicationLifecycle {
 
   /// Present with unpublished metadata, so a cleanup at its location must wait for it.
   var isPresentAwaitingMetadata: Bool { isLocallyPresent && !isMetadataAccepted }
+
+  /// Whether this device republishes an attachment whose metadata record CloudKit no longer
+  /// knows. Only a device with the local bytes can. Any other device applies the remote delete.
+  var republishesUnknownMetadata: Bool { localSourceRelativePath != nil }
 
   /// The cleanup this attachment's payload is owed once nothing references it.
   var payloadCleanup: CloudAttachmentOwedCleanup {

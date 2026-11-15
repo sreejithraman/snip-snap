@@ -97,7 +97,7 @@ extension SwiftDataSnipLibrary {
   }
 
   /// Verifies durable bytes, or makes a durable copy of a verified cache entry.
-  /// Returns `false` only when accepted Cloud metadata can recover unavailable bytes.
+  /// Returns `false` only when the bytes are unavailable here but recoverable from CloudKit.
   package func materializeCloudAttachmentForLocalCopy(
     namespaceKey: CloudSyncNamespaceKey,
     attachmentID: UUID
@@ -136,7 +136,7 @@ extension SwiftDataSnipLibrary {
         expectedByteCount: publication.byteCount,
         expectedSHA256: publication.sha256
       )
-      if !isValid, !lifecycle.isMetadataAccepted {
+      if !isValid, !lifecycle.isPayloadRecoverableFromCloudKit {
         throw SnipLibraryError.attachmentCopyFailed
       }
       return isValid
@@ -149,7 +149,7 @@ extension SwiftDataSnipLibrary {
     do {
       cachedSource = try attachmentURL(relativePath: attachment.relativePath)
     } catch {
-      guard lifecycle.isMetadataAccepted else { throw error }
+      guard lifecycle.isPayloadRecoverableFromCloudKit else { throw error }
       return false
     }
     let source: URL
@@ -165,7 +165,9 @@ extension SwiftDataSnipLibrary {
       expectedByteCount: publication.byteCount,
       expectedSHA256: publication.sha256
     ) else {
-      guard lifecycle.isMetadataAccepted else { throw SnipLibraryError.attachmentCopyFailed }
+      guard lifecycle.isPayloadRecoverableFromCloudKit else {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
       return false
     }
     var durableCopy: CloudAttachmentDurableCopy?
