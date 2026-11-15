@@ -53,14 +53,56 @@ package actor CloudFullSyncCoordinator {
     }
   }
 
+  /// Whether this coordinator's engine runs, and whether that engine, or the next one,
+  /// must finish the first fetch before sending. A run's own refetch after an expired
+  /// token stays in `RunState`: it outlives the restart inside its run and ends with it.
+  private enum EngineSession {
+    case stopped(requiresInitialFetch: Bool)
+    case running(requiresInitialFetch: Bool)
+
+    var isRunning: Bool {
+      if case .running = self { true } else { false }
+    }
+
+    var requiresInitialFetch: Bool {
+      switch self {
+      case .stopped(let required), .running(let required): required
+      }
+    }
+
+    /// Try Again, an expired token, or an unreadable outbound plan dropped the engine.
+    mutating func reset() {
+      self = .stopped(requiresInitialFetch: true)
+    }
+
+    /// A stored engine state or checkpoint says whether the first fetch is done.
+    mutating func adoptStoredState(requiresInitialFetch: Bool) {
+      self = isRunning
+        ? .running(requiresInitialFetch: requiresInitialFetch)
+        : .stopped(requiresInitialFetch: requiresInitialFetch)
+    }
+
+    mutating func start() {
+      self = .running(requiresInitialFetch: requiresInitialFetch)
+    }
+
+    mutating func startEmpty() {
+      self = .running(requiresInitialFetch: true)
+    }
+
+    /// A committed fetch batch ended the first fetch.
+    mutating func completeInitialFetch() {
+      adoptStoredState(requiresInitialFetch: false)
+    }
+  }
+
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
-  private var started = false
   private let operationGate = AsyncOperationGate()
-  private var requiresInitialFetch = true
+  private var session = EngineSession.stopped(requiresInitialFetch: true)
 
   package init(
     store: any CloudFullSyncStore,
@@ -154,8 +196,7 @@ package actor CloudFullSyncCoordinator {
       try await beforeStateSave()
       try await store.clearEngineState()
       await transport.reset()
-      started = false
-      requiresInitialFetch = true
+      session.reset()
     }
   }
 
@@ -180,7 +221,7 @@ package actor CloudFullSyncCoordinator {
       try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeStateSave)
       if !schedulingRequest, !state.processedEvents { return try await outcome(for: state) }
       try await ensureStarted()
-      if !state.blocksOutbound, !requiresInitialFetch {
+      if !state.blocksOutbound, !session.requiresInitialFetch {
         try await schedulePendingChanges(beforeSchedule: beforeStateSave)
       }
       let outcome = try await outcome(for: state)
@@ -219,7 +260,7 @@ package actor CloudFullSyncCoordinator {
     try await recoverStaged(beforeApply: beforeApply)
     try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeApply)
     try await ensureStarted()
-    if fetch || (send && requiresInitialFetch) {
+    if fetch || (send && session.requiresInitialFetch) {
       let fetched = try await transport.fetch(scope: fetch ? fetchScope : .all)
       try await applyReturned(.fetched(fetched), outbound: nil, state: &state, beforeApply: beforeApply)
       if state.resetEngine {
@@ -230,7 +271,7 @@ package actor CloudFullSyncCoordinator {
       }
     }
     var sendCount = 0
-    while send, !state.blocksOutbound, !requiresInitialFetch {
+    while send, !state.blocksOutbound, !session.requiresInitialFetch {
       let outbound = try await pendingChangesOrResetEngine()
       guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { break }
       guard sendCount < 16 else { break }
@@ -247,7 +288,7 @@ package actor CloudFullSyncCoordinator {
   }
 
   private func ensureStarted() async throws {
-    guard !started else { return }
+    guard !session.isRunning else { return }
     let state: CloudEngineStateEnvelope?
     do {
       state = try await store.loadEngineState()
@@ -258,7 +299,8 @@ package actor CloudFullSyncCoordinator {
       try await restartEmptyEngine()
       return
     }
-    requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
+    let requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
+    session.adoptStoredState(requiresInitialFetch: requiresInitialFetch)
     if requiresInitialFetch { try await store.prepareInitialFetch() }
     let outbound = requiresInitialFetch ? nil : try await pendingChangesOrResetEngine()
     do {
@@ -272,15 +314,14 @@ package actor CloudFullSyncCoordinator {
       try await restartEmptyEngine()
       return
     }
-    started = true
+    session.start()
   }
 
   private func restartEmptyEngine() async throws {
     try await store.clearEngineState()
     try await transport.start(state: nil, initialOutbound: nil,
       outboundAdmission: store.outboundAdmission())
-    started = true
-    requiresInitialFetch = true
+    session.startEmpty()
   }
 
   private func recoverStaged(beforeApply: @escaping @Sendable () async throws -> Void) async throws {
@@ -305,7 +346,7 @@ package actor CloudFullSyncCoordinator {
       }
     }
     if !staged.isEmpty, let state = try await store.loadEngineState() {
-      requiresInitialFetch = state.requiresInitialFetch
+      session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch)
     }
   }
 
@@ -324,7 +365,7 @@ package actor CloudFullSyncCoordinator {
       case .checkpoint(_, let checkpoint):
         try await beforeStateSave()
         try await store.saveEngineState(checkpoint)
-        requiresInitialFetch = checkpoint.requiresInitialFetch
+        session.adoptStoredState(requiresInitialFetch: checkpoint.requiresInitialFetch)
         try await transport.confirmApplied(event.id)
       case .batch(let pending):
         try await beforeApply()
@@ -372,8 +413,7 @@ package actor CloudFullSyncCoordinator {
     if CloudSyncIssueError.requiresEngineReset(batch) {
       try await store.clearEngineState()
       await transport.reset()
-      started = false
-      requiresInitialFetch = true
+      session.reset()
       state.resetEngine = true
       return
     }
@@ -383,7 +423,7 @@ package actor CloudFullSyncCoordinator {
       state.fetched = true
       state.fetchIssue = issue
       if !CloudSyncIssueError.blocksOutbound(in: batch), batch.engineState?.requiresInitialFetch == false {
-        requiresInitialFetch = false
+        session.completeInitialFetch()
       }
     case .sent(let sent):
       if sent.hasResults { state.sendIssue = issue }
@@ -432,6 +472,7 @@ package actor CloudFullSyncCoordinator {
     } else {
       CloudFullSyncStatus.pending
     }
+    let requiresInitialFetch = session.requiresInitialFetch
     let stored: CloudFullSyncStatus
     if includeStoredStatus {
       stored = currentStatus
@@ -487,8 +528,7 @@ package actor CloudFullSyncCoordinator {
     catch is CloudRecordError {
       try await store.clearEngineState()
       await transport.reset()
-      started = false
-      requiresInitialFetch = true
+      session.reset()
       throw CloudSyncRetryableError.itemFailure
     }
   }
