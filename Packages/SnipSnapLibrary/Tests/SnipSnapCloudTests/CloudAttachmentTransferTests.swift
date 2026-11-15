@@ -3894,7 +3894,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       let acknowledged = try await snapshot(client.library, client.namespace)
       XCTAssertEqual(acknowledged, removed, "An abandoned save failure must not change its cleanup: \(failure).")
       let fullStorage = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
-      XCTAssertEqual(fullStorage.namespaceState.phase, namespaceBefore.namespaceState.phase, "An abandoned attachment save must never trigger zone recovery.")
+      XCTAssertEqual(fullStorage.namespaceState.phase, namespaceBefore.namespaceState.phase, "A discarded row's abandoned save must not trigger zone recovery.")
     }
   }
 
@@ -3935,6 +3935,72 @@ final class CloudAttachmentTransferTests: XCTestCase {
       XCTAssertNil(payloadRecord, "No payload of the removed attachment may stay in CloudKit.")
     }
     let settled = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(settled.publications, [], "The removal must settle its publication.")
+    XCTAssertEqual(settled.cleanups, [], "The removal must settle every cleanup.")
+  }
+
+  func testFetchingAnUnacknowledgedMetadataDeleteAfterReplacementRemovesBothPayloads() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["replaced"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    try await client.sync.sync()
+    // Consume our published metadata so a later fetch cannot mask the removal's pending phase.
+    try await client.sync.fetchRemote()
+    let publishedStorage = try await snapshot(client.library, client.namespace)
+    let published = try XCTUnwrap(publishedStorage.publications.first, "The attachment must publish.")
+    XCTAssertTrue(published.metadataAccepted, "The attachment's metadata must publish.")
+    let durableFile = try XCTUnwrap(published.localSourceURL, "The attachment must keep its local file.")
+    try Data("replacement bytes that never upload".utf8).write(to: durableFile)
+    _ = try await client.store.pendingChanges()
+    let replacedStorage = try await snapshot(client.library, client.namespace)
+    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The attachment must keep its publication.")
+    XCTAssertFalse(replaced.payloadAccepted, "The replacement payload must still be pending.")
+    XCTAssertEqual(
+      replaced.priorPayloadIdentity,
+      published.metadata.payloadIdentity,
+      "The published payload must wait as the replaced payload."
+    )
+    let payloadIDs = [published.metadata.payloadIdentity, replaced.metadata.payloadIdentity]
+      .map(CloudAttachmentRecordCodec.recordID)
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+
+    let outbound = try await client.store.pendingChanges()
+    let metadataID = CloudAttachmentRecordCodec.recordID(published.metadataIdentity)
+    XCTAssertTrue(outbound.operations.contains(where: { operation in
+      if case .delete(let id, _) = operation { id == metadataID } else { false }
+    }), "The removal must plan the metadata delete.")
+    // CloudKit applies the delete, but the app dies before staging its returned batch.
+    _ = try await client.transport.send(outbound)
+    let deletedMetadata = await client.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(deletedMetadata, "The server must apply the metadata delete before the relaunch.")
+    let staged = try await client.store.stagedBatches()
+    XCTAssertEqual(staged, [], "The sent result must not be staged before the relaunch.")
+    let relaunched = try reopened(client)
+
+    // Start the fresh transport directly so no outbound plan precedes the fetched tombstone.
+    let persistedState = try await relaunched.store.loadEngineState()
+    XCTAssertNotNil(persistedState, "The relaunch must restore the persisted fetch cursors.")
+    try await relaunched.transport.start(state: persistedState)
+    let fetched = try await relaunched.transport.fetch(scope: .zones([
+      CloudZoneID(name: "data", ownerName: "owner")
+    ]))
+    XCTAssertTrue(fetched.items.contains(where: { item in
+      if case .deleted(let id) = item { id == metadataID } else { false }
+    }), "The restored cursor must fetch the unstaged metadata deletion.")
+    try await relaunched.store.stage(.fetched(fetched))
+    try await relaunched.store.applyStaged(fetched.id)
+    try await relaunched.transport.confirmApplied(fetched.id)
+    for _ in 0..<3 { try await relaunched.sync.sync() }
+
+    let metadataRecord = await client.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(published.metadataIdentity)
+    )
+    XCTAssertNil(metadataRecord, "The removal must delete the published metadata.")
+    for payloadID in payloadIDs {
+      let payloadRecord = await client.server.fullSnapshot(for: payloadID)
+      XCTAssertNil(payloadRecord, "No payload of the removed attachment may stay in CloudKit.")
+    }
+    let settled = try await snapshot(relaunched.library, relaunched.namespace)
     XCTAssertEqual(settled.publications, [], "The removal must settle its publication.")
     XCTAssertEqual(settled.cleanups, [], "The removal must settle every cleanup.")
   }
@@ -4274,39 +4340,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
   /// One client with one snip whose attachments come from local files, enrolled but not synced.
   private func makeAttachmentClient(fileNames: [String]) async throws -> AttachmentClient {
-    let root = temporaryDirectory()
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let sources = try fileNames.map { name in
-      let url = root.appendingPathComponent("\(name).txt")
-      try Data("\(name) bytes".utf8).write(to: url)
-      return url
-    }
-    let storeURL = root.appendingPathComponent("client.store")
-    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
-    let added = try await library.perform(
-      .add(
-        content: "local attachments",
-        origin: .quickEntry,
-        source: nil,
-        listID: SnipList.inbox.id,
-        attachmentURLs: sources,
-        requestID: UUID(),
-        now: .distantPast
-      ),
-      sortedBy: .manual
-    )
-    let snipID = try XCTUnwrap(added.snapshot.snips.first?.id, "The fixture must save its snip.")
+    let seed = try await makeLocalAttachmentSeed(names: fileNames)
     let client = attachmentClient(
-      root: root,
-      storeURL: storeURL,
-      library: library,
-      namespace: namespaceValue(),
+      root: seed.root,
+      storeURL: seed.storeURL,
+      library: seed.library,
+      namespace: seed.namespace,
       server: FakeCloudServer(),
-      snipID: snipID
+      snipID: seed.snipID
     )
     try await client.store.approveEnrollment(references: [
       CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
-      CloudEntityReference(kind: .snip, domainID: snipID),
+      CloudEntityReference(kind: .snip, domainID: seed.snipID),
     ])
     return client
   }
@@ -4679,9 +4724,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
   }
 
-  private func makePendingAttachmentFixture(
-    names: [String]
-  ) async throws -> PendingAttachmentFixture {
+  private func makeLocalAttachmentSeed(names: [String]) async throws -> LocalAttachmentSeed {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let sources = try names.map { name in
@@ -4689,8 +4732,9 @@ final class CloudAttachmentTransferTests: XCTestCase {
       try Data("\(name) payload".utf8).write(to: url)
       return url
     }
-    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
-    _ = try await library.perform(
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let added = try await library.perform(
       .add(
         content: "attachment fixture",
         origin: .quickEntry,
@@ -4702,18 +4746,30 @@ final class CloudAttachmentTransferTests: XCTestCase {
       ),
       sortedBy: .manual
     )
-    let namespace = namespaceValue()
-    let store = CloudFullSyncPersistence(
+    return LocalAttachmentSeed(
+      root: root,
+      storeURL: storeURL,
       library: library,
-      namespace: namespace,
+      namespace: namespaceValue(),
+      snipID: try XCTUnwrap(added.snapshot.snips.first?.id, "The fixture must save its snip.")
+    )
+  }
+
+  private func makePendingAttachmentFixture(
+    names: [String]
+  ) async throws -> PendingAttachmentFixture {
+    let seed = try await makeLocalAttachmentSeed(names: names)
+    let store = CloudFullSyncPersistence(
+      library: seed.library,
+      namespace: seed.namespace,
       dataZone: CloudZoneID(name: "data", ownerName: "owner"),
       payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
     )
     _ = try await store.pendingChanges()
     return PendingAttachmentFixture(
-      root: root,
-      library: library,
-      namespace: namespace,
+      root: seed.root,
+      library: seed.library,
+      namespace: seed.namespace,
       store: store
     )
   }
@@ -4850,18 +4906,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     _ pair: DownloadedAttachmentPair,
     keeping attachmentIDs: [UUID]
   ) async throws {
-    let local = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
-    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == pair.snipID }))
-    _ = try await pair.receiverLibrary.perform(
-      .editAttachments(
-        snipID: snip.id,
-        content: snip.content,
-        edits: attachmentIDs.map { SnipAttachmentEdit.existing(attachmentID: $0) },
-        expectedUpdatedAt: snip.updatedAt,
-        now: Date(timeIntervalSince1970: 2)
-      ),
-      sortedBy: .manual
-    )
+    try await keepAttachments(attachmentIDs, ofSnip: pair.snipID, in: pair.receiverLibrary)
   }
 
   private func publication(
@@ -4957,6 +5002,14 @@ private struct AvailableCacheFixture {
   let namespace: CloudSyncNamespace
   let attachmentID: UUID
   let cachedURL: URL
+}
+
+private struct LocalAttachmentSeed {
+  let root: URL
+  let storeURL: URL
+  let library: SwiftDataSnipLibrary
+  let namespace: CloudSyncNamespace
+  let snipID: UUID
 }
 
 private struct PendingAttachmentFixture {

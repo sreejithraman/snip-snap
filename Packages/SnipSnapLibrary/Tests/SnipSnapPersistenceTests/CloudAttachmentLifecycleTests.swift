@@ -238,6 +238,29 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertEqual(deleted.cleanups.first(where: { $0.identity == published.metadata.payloadIdentity })?.shadowData, published.payloadShadowData, "The published payload's cleanup must keep its shadow.")
   }
 
+  func testFetchingMetadataDeletionAfterAReplacementWasRemovedOwesBothPayloadsCleanup() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let published = try await publishLocalAttachment(fixture)
+    try await replaceFixtureFile(fixture)
+    let replacedStorage = try await attachmentStorage(fixture.library)
+    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The replacement must keep the publication.")
+    XCTAssertFalse(replaced.payloadAccepted, "The replacement payload must still be pending.")
+    XCTAssertEqual(replaced.priorPayloadIdentity, published.metadata.payloadIdentity, "The row must retain the published payload.")
+    _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
+    try await reconcile(fixture.library)
+
+    try await commit(fixture.library, [.remoteMetadataDeleted(
+      metadataIdentity: published.metadataIdentity
+    )])
+
+    let deleted = try await attachmentStorage(fixture.library)
+    XCTAssertTrue(deleted.publications.isEmpty, "The fetched metadata delete must retire the publication.")
+    XCTAssertEqual(deleted.cleanups.count, 2, "Each payload must have exactly one cleanup.")
+    XCTAssertEqual(Set(deleted.cleanups.map(\.identity)), Set([published.metadata.payloadIdentity, replaced.metadata.payloadIdentity]), "Both payloads must be owed cleanup after the fetched metadata delete.")
+    XCTAssertEqual(deleted.cleanups.first(where: { $0.identity == published.metadata.payloadIdentity })?.shadowData, published.payloadShadowData, "The published payload's cleanup must keep its accepted shadow.")
+  }
+
   func testRemovalSaveFailureKeepsThePublicationAndQueuedUploadAfterReopen() async throws {
     let fixture = try await makeLocalAttachmentFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
