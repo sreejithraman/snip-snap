@@ -366,7 +366,6 @@ extension CloudFullSyncPersistence {
       }
     }
     for publication in publications where !publication.isLocallyPresent
-      && publication.metadataAccepted
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {
@@ -379,7 +378,10 @@ extension CloudFullSyncPersistence {
         plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
       }
     }
+    let namedPayloads = Set(publications.map(\.metadata.payloadIdentity))
+      .union(publications.compactMap(\.priorPayloadIdentity))
     for cleanup in snapshot.cleanups where !isTerminalAttachmentFailure(cleanup.lastFailure) {
+      guard !namedPayloads.contains(cleanup.identity) else { continue }
       if let blockedByAttachmentID = cleanup.blockedByAttachmentID,
         let replacement = publicationByID[blockedByAttachmentID],
         !replacement.metadataAccepted

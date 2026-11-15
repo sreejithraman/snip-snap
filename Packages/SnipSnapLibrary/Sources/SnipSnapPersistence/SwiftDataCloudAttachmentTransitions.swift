@@ -273,12 +273,14 @@ extension SwiftDataSnipLibrary {
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        let owedCleanup = try row.lifecycle.acceptMetadataDeletion(expectedRevision: expected)
+        let owedCleanups = try row.lifecycle.acceptMetadataDeletion(expectedRevision: expected)
         let locationKey = "\(row.snipID.uuidString)|\(row.position)"
         let replacementAttachmentID = pendingReplacementIDsByLocation[locationKey]?.first(where: {
           $0 != attachmentID
         })
-        cleanupQueue.queue(owedCleanup, blockedBy: replacementAttachmentID)
+        for cleanup in owedCleanups {
+          cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
+        }
         removeCache(for: attachmentID)
         context.delete(row)
         byAttachment.removeValue(forKey: attachmentID)

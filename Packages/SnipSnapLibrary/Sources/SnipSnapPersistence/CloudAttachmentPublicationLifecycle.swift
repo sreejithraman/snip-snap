@@ -12,20 +12,22 @@ struct CloudAttachmentAcceptedRecord: Equatable, Sendable {
 }
 
 /// A payload record owed a delete, with the shadow to delete it from.
-struct CloudAttachmentOwedCleanup {
+struct CloudAttachmentOwedCleanup: Equatable {
   let identity: CloudTextStorageIdentity
   let shadowData: Data?
 }
 
 /// What removing an attachment from its snip leaves for the caller to do.
-enum CloudAttachmentLocalRemoval {
-  /// The publication stays until CloudKit accepts the delete of its published metadata.
-  case awaitMetadataDeletion
-  /// The payload never reached CloudKit, so the publication row goes with its queued upload.
-  case discardPendingPayload(queuedUpload: String?)
-  /// The metadata isn't accepted, so the publication row goes and the accepted payload is owed a
-  /// cleanup. Metadata published before a pending local edit still names that payload in CloudKit.
-  case discardAcceptedPayload(owedCleanup: CloudAttachmentOwedCleanup)
+enum CloudAttachmentLocalRemoval: Equatable {
+  /// CloudKit may hold metadata, so the publication stays until its delete is accepted.
+  case awaitMetadataDeletion(abandonedUpload: CloudAttachmentAbandonedUpload?)
+  case discard(abandonedUpload: CloudAttachmentAbandonedUpload)
+}
+
+/// An unaccepted payload whose upload may be in flight, owed a cleanup with no shadow.
+struct CloudAttachmentAbandonedUpload: Equatable {
+  let cleanup: CloudAttachmentOwedCleanup
+  let queuedUpload: String?
 }
 
 /// One attachment's publication in one sync namespace.
@@ -129,6 +131,11 @@ struct CloudAttachmentPublicationLifecycle {
 
   var isPayloadAccepted: Bool { acceptedPayload != nil }
 
+  /// CloudKit accepted metadata at least once and may still hold it after a local edit.
+  var hasPublishedMetadata: Bool { metadataRecord != .unrecorded }
+
+  private var mayHaveCloudMetadata: Bool { hasPublishedMetadata || acceptedPayload != nil }
+
   var isMetadataAccepted: Bool {
     guard case .published = upload else { return false }
     return true
@@ -195,9 +202,8 @@ struct CloudAttachmentPublicationLifecycle {
     presence = .present(localSource: relativePath)
   }
 
-  /// Queues new local bytes under a new payload identity. Returns the cleanup owed by an
-  /// accepted payload whose metadata isn't accepted. A published payload instead waits as the
-  /// replaced payload until the new metadata publishes.
+  /// Queues new local bytes. A payload published by metadata waits until that metadata changes;
+  /// an accepted payload never published by metadata is owed a cleanup now.
   mutating func replacePayload(
     with identity: CloudTextStorageIdentity,
     queuedUpload: String
@@ -207,7 +213,11 @@ struct CloudAttachmentPublicationLifecycle {
     case .payloadPending:
       break
     case .metadataPending:
-      owedCleanup = payloadCleanup
+      if hasPublishedMetadata && replacedPayload == nil {
+        replacedPayload = payloadCleanup
+      } else {
+        owedCleanup = payloadCleanup
+      }
     case .published:
       replacedPayload = payloadCleanup
     }
@@ -230,12 +240,18 @@ struct CloudAttachmentPublicationLifecycle {
     failure = nil
     revision += 1
     switch upload {
-    case .published:
-      return .awaitMetadataDeletion
-    case .metadataPending:
-      return .discardAcceptedPayload(owedCleanup: payloadCleanup)
+    case .published, .metadataPending:
+      return .awaitMetadataDeletion(abandonedUpload: nil)
     case .payloadPending(let queuedUpload):
-      return .discardPendingPayload(queuedUpload: queuedUpload)
+      let abandoned = CloudAttachmentAbandonedUpload(
+        cleanup: payloadCleanup,
+        queuedUpload: queuedUpload
+      )
+      if mayHaveCloudMetadata {
+        upload = .payloadPending(queuedUpload: nil)
+        return .awaitMetadataDeletion(abandonedUpload: abandoned)
+      }
+      return .discard(abandonedUpload: abandoned)
     }
   }
 
@@ -333,12 +349,15 @@ struct CloudAttachmentPublicationLifecycle {
     revision += 1
   }
 
-  /// Returns the cleanup the payload is owed now that its metadata is gone.
-  func acceptMetadataDeletion(expectedRevision: UInt64) throws -> CloudAttachmentOwedCleanup {
+  /// Returns the accepted payloads owed cleanup now that their metadata is gone.
+  func acceptMetadataDeletion(expectedRevision: UInt64) throws -> [CloudAttachmentOwedCleanup] {
     guard revision == expectedRevision, !isLocallyPresent else {
       throw CloudAttachmentStorageError.staleTransition
     }
-    return payloadCleanup
+    var cleanups: [CloudAttachmentOwedCleanup] = []
+    if acceptedPayload != nil { cleanups.append(payloadCleanup) }
+    if let replacedPayload { cleanups.append(replacedPayload) }
+    return cleanups
   }
 
   /// Adopts the server's metadata after a delete conflict, so the delete retries from it.
