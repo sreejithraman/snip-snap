@@ -171,8 +171,9 @@ final class ClipboardHistoryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("ClipboardFiles"))
         let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"), fileStore: files)
+        // The text names H's path, so only decoding the copy as legacy history lets H go.
         let legacy = """
-        [{"id":"\(UUID().uuidString)","capturedAt":"2026-01-01T00:00:00Z","sourceApplication":"Editor","items":[{"representations":[{"type":"public.rtf","data":"YWJj"}]}],"plainText":"formatted text"}]
+        [{"id":"\(UUID().uuidString)","capturedAt":"2026-01-01T00:00:00Z","sourceApplication":"Editor","items":[{"representations":[{"type":"public.rtf","data":"YWJj"}]}],"plainText":"dir/h.txt"}]
         """
         try Data(legacy.utf8).write(to: store.url)
         try await store.setAside()
@@ -185,20 +186,26 @@ final class ClipboardHistoryTests: XCTestCase {
     }
 
     func testUndecodableSetAsideHistoryKeepsTheFilesItNames() async throws {
-        let directory = try root()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("ClipboardFiles"))
-        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"), fileStore: files)
-        try writeUndecodableSetAsideHistory(owning: "dir/f.txt", in: directory)
-        let f = try entry("f", owningImported: "dir/f.txt", in: files)
-        let h = try entry("h", owningImported: "dir/h.txt", in: files)
-        try await store.insert(f.entry)
-        try await store.insert(h.entry)
+        let encodings: [(name: String, formatting: JSONEncoder.OutputFormatting)] = [
+            ("escaped slashes", .sortedKeys),
+            ("raw slashes", [.sortedKeys, .withoutEscapingSlashes]),
+        ]
+        for encoding in encodings {
+            let directory = try root()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("ClipboardFiles"))
+            let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"), fileStore: files)
+            try writeUndecodableSetAsideHistory(owning: "dir/f.txt", in: directory, outputFormatting: encoding.formatting)
+            let f = try entry("f", owningImported: "dir/f.txt", in: files)
+            let h = try entry("h", owningImported: "dir/h.txt", in: files)
+            try await store.insert(f.entry)
+            try await store.insert(h.entry)
 
-        try await store.clearUnpinned()
+            try await store.clearUnpinned()
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: f.url.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: h.url.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: f.url.path), encoding.name)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: h.url.path), encoding.name)
+        }
     }
 
     func testUndecodableSetAsideHistoryKeepsNoFileItDoesNotName() async throws {
@@ -241,10 +248,11 @@ final class ClipboardHistoryTests: XCTestCase {
         return try (entry, files.url(for: file))
     }
 
-    private func writeUndecodableSetAsideHistory(owning relativePath: String, in directory: URL) throws {
+    private func writeUndecodableSetAsideHistory(owning relativePath: String, in directory: URL,
+                                                 outputFormatting: JSONEncoder.OutputFormatting = .sortedKeys) throws {
         var entry = text("set aside")
         entry.ownedFiles = [ClipboardOwnedFile(name: URL(fileURLWithPath: relativePath).lastPathComponent, relativePath: relativePath)]
-        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let encoder = JSONEncoder(); encoder.outputFormatting = outputFormatting
         let copy = try encoder.encode(ClipboardHistoryState(entries: [entry])).dropLast()
         try copy.write(to: directory.appendingPathComponent("clipboard-quarantine-\(UUID().uuidString).json"))
     }
