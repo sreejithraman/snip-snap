@@ -198,18 +198,23 @@ extension SwiftDataSyncModePersistence {
     _ choice: ICloudAccountIsolationChoice
   ) async throws {
     try await resumeDeclaredAccountIsolation()
+    let requested: ICloudAccountIsolationResolution = choice == .keepLocalCopy
+      ? .keepingLocalCopy : .removing
+    try storeAccountIsolationResolution(requested)
+    try await reconcileAccountIsolationResolution()
+  }
+
+  private func storeAccountIsolationResolution(
+    _ requested: ICloudAccountIsolationResolution
+  ) throws {
     guard let isolation = manifest.accountIsolation else {
       throw SyncModePersistenceError.transitionInProgress
     }
-    let requested: ICloudAccountIsolationResolution = choice == .keepLocalCopy
-      ? .keepingLocalCopy : .removing
-    if isolation.resolution != requested {
-      var intended = manifest
-      try intended.chooseAccountIsolationResolution(requested)
-      try commit(intended)
-      try crashHook(.afterAccountResolutionIntent)
-    }
-    try await reconcileAccountIsolationResolution()
+    guard isolation.resolution != requested else { return }
+    var intended = manifest
+    try intended.chooseAccountIsolationResolution(requested)
+    try commit(intended)
+    try crashHook(.afterAccountResolutionIntent)
   }
 
   /// Finishes a stored Keep or Remove. Calls run one at a time in arrival order. A call that
@@ -237,6 +242,39 @@ extension SwiftDataSyncModePersistence {
       try crashHook(.afterAccountLocalCopyMerge)
     }
     try finishAccountIsolationResolution(isolation)
+  }
+
+  /// Keeps a returning account's isolated copy in one turn. `preserve` readies that copy's
+  /// attachments first, and its result is returned. Returns nil, and stores nothing, when that
+  /// isolation ended or the user chose Remove.
+  package func keepReturningAccountIsolation(
+    _ isolationID: UUID,
+    preservingAttachments preserve: @Sendable (_ isolatedStoreID: UUID) async throws -> Bool
+  ) async throws -> Bool? {
+    try await accountIsolationTurns.withLease {
+      try await self.keepReturningInTurn(isolationID, preserve)
+    }
+  }
+
+  private func keepReturningInTurn(
+    _ isolationID: UUID,
+    _ preserve: @Sendable (_ isolatedStoreID: UUID) async throws -> Bool
+  ) async throws -> Bool? {
+    try await resumeDeclaredAccountIsolation()
+    guard let isolation = keepableIsolation(isolationID) else { return nil }
+    let recovered = try await preserve(isolation.storeID)
+    // A Remove stored during the download wins.
+    guard keepableIsolation(isolationID) != nil else { return nil }
+    try storeAccountIsolationResolution(.keepingLocalCopy)
+    try await reconcileInTurn()
+    return recovered
+  }
+
+  private func keepableIsolation(_ id: UUID) -> ICloudAccountIsolation? {
+    guard let isolation = manifest.accountIsolation, isolation.id == id,
+      isolation.resolution != .removing
+    else { return nil }
+    return isolation
   }
 
   private func finishAccountIsolationResolution(

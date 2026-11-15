@@ -201,7 +201,7 @@
     "Sync off" : {},
     "Sync on" : {},
     "Sync paused" : {},
-    "Sync text, images, and pinned files across your devices. Files that have synced keep syncing after you unpin them." : {},
+    "Sync text, images, and pinned files across your devices. Clipboard history already on this device will upload to iCloud. Files that have synced keep syncing after you unpin them." : {},
     "Sync turned off" : {},
     "Sync will retry the remaining changes." : {},
     "Synced content deleted" : {},

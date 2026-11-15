@@ -6,7 +6,7 @@ enum AppDiagnosticCodePolicy {
 
   static let operations: Set<String> = [
     "app.startup", "app.termination", "app.user_action", "app.unknown",
-    "cli.readiness",
+    "cli.readiness", "cli.scope_suspend", "cli.session_end",
     "attachment.asset_copy", "attachment.cache_clear", "attachment.cache_install",
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
     "attachment.import_select", "attachment.import_stage", "attachment.prepare",

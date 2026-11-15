@@ -2036,3 +2036,190 @@ private func makeInjectedSyncCoordinator(
         )
     )
 }
+
+extension ICloudSyncModeCoordinatorTests {
+    func testSameAccountReturnFinishesItsDownloadBeforeAUsersRemove() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await startSameAccountReturnPausedInItsDownload(root: root)
+        let coordinator = fixture.coordinator
+        let removeEnded = TaskEndMark()
+        let remove = Task {
+            defer { removeEnded.set() }
+            return try await coordinator.resolveAccountIsolation(.remove)
+        }
+        // Bounded: the Remove must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let removeStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .removing
+        }
+        if !removeStored { XCTFail("The user's Remove must be stored during the download") }
+        let removeEndedEarly = await removeEnded.wait(within: .seconds(2))
+        XCTAssertFalse(removeEndedEarly, "The user's Remove must wait for the download's turn")
+        fixture.fetchPause.release()
+
+        do {
+            let returned = try await fixture.returning.value
+            XCTAssertEqual(returned.state, .off)
+        } catch {
+            XCTFail("The same-account return must finish beside the user's Remove: \(error)")
+        }
+        do {
+            _ = try await remove.value
+        } catch {
+            XCTFail("The user's Remove must finish after the download: \(error)")
+        }
+        let storage = try await fixture.persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.isolatedRoot.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.isolatedCacheRoot.path))
+        let visible = await (try await fixture.persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertFalse(visible.snips.map(\.content).contains("prior account work"))
+    }
+
+    func testUsersKeepWaitsForTheSameAccountReturnsDownload() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await startSameAccountReturnPausedInItsDownload(root: root)
+        let coordinator = fixture.coordinator
+        let keepEnded = TaskEndMark()
+        let keep = Task {
+            defer { keepEnded.set() }
+            return try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+        }
+        // Bounded: the Keep must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let keepStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .keepingLocalCopy
+        }
+        if !keepStored { XCTFail("The user's Keep must be stored during the download") }
+        let keepEndedEarly = await keepEnded.wait(within: .seconds(2))
+        XCTAssertFalse(keepEndedEarly, "The user's Keep must wait for the download's turn")
+        fixture.fetchPause.release()
+
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must wait for the download, then finish: \(error)")
+        }
+        do {
+            let returned = try await fixture.returning.value
+            XCTAssertEqual(returned.state, .off)
+        } catch {
+            XCTFail("The same-account return must finish its Keep: \(error)")
+        }
+        let storage = try await fixture.persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await fixture.persistence.activeLibrary())
+            .snapshot(sortedBy: .manual)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+        let keptURL = try XCTUnwrap(visible.attachmentURLs[fixture.attachmentID])
+        XCTAssertEqual(try Data(contentsOf: keptURL), fixture.bytes)
+    }
+
+    /// Isolates an iCloud cache whose only attachment's bytes now exist only in CloudKit, then
+    /// brings the same account back. Returns with that refresh held in its download.
+    private func startSameAccountReturnPausedInItsDownload(
+        root: URL
+    ) async throws -> SameAccountReturn {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let cacheRoot = root.appendingPathComponent("AppGroup/Library/Caches/CloudAttachments")
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
+        let sourceURL = root.appendingPathComponent("prior-account-attachment.txt")
+        let bytes = Data("prior account attachment".utf8)
+        try bytes.write(to: sourceURL)
+        let library = try await persistence.activeLibrary()
+        let added = try await library.perform(
+            .add(
+                content: "prior account work",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account-a",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let fetchPause = AssetFetchPause()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                PausingAssetFetchTransport(
+                    inner: FakeCloudRecordTransport(server: server, namespace: namespace),
+                    pause: fetchPause
+                )
+            },
+            accountStateSource: account
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let cloudStore = try await persistence.snapshot().activeStore
+        let uploaded = await (try await persistence.activeLibrary()).snapshot(sortedBy: .manual)
+        try FileManager.default.removeItem(at: XCTUnwrap(uploaded.attachmentURLs[attachmentID]))
+
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolated.accountIsolation?.storeID, cloudStore.id)
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        let isolatedRoot = root.appendingPathComponent(cloudStore.relativeRoot, isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: isolatedRoot.path))
+        let isolatedCacheRoot = try XCTUnwrap(
+            SwiftDataSyncModePersistence.cacheRootURL(base: cacheRoot, storeID: cloudStore.id)
+        )
+
+        fetchPause.arm()
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        let returning = Task { try await coordinator.refreshAccountState() }
+        let paused = await fetchPause.waitUntilPaused(within: .seconds(5))
+        if !paused { XCTFail("The same-account return must reach its attachment download") }
+        return SameAccountReturn(
+            persistence: persistence,
+            coordinator: coordinator,
+            fetchPause: fetchPause,
+            returning: returning,
+            attachmentID: attachmentID,
+            bytes: bytes,
+            isolatedRoot: isolatedRoot,
+            isolatedCacheRoot: isolatedCacheRoot
+        )
+    }
+}
+
+private struct SameAccountReturn: Sendable {
+    let persistence: SwiftDataSyncModePersistence
+    let coordinator: ICloudSyncModeCoordinator
+    let fetchPause: AssetFetchPause
+    let returning: Task<ICloudSyncModeStatus, any Error>
+    let attachmentID: UUID
+    let bytes: Data
+    let isolatedRoot: URL
+    let isolatedCacheRoot: URL
+}

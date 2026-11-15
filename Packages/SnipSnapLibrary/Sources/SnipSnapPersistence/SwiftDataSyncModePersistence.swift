@@ -370,9 +370,23 @@ package actor SwiftDataSyncModePersistence {
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
-    guard store.lifecycle != .creating else { throw SyncModePersistenceError.missingStore }
+    guard store.lifecycle != .creating, store.lifecycle != .deleting else {
+      throw SyncModePersistenceError.missingStore
+    }
+    let fileURL = storeFileURL(store)
+    // A mode change's inactive candidate before the swap, and its retired source after it, must
+    // have their files, so an empty recreate never stands in for either. The active store keeps
+    // open-or-create so the app stays usable, though that can't protect a swapped-in candidate
+    // whose files vanish. Recovery, isolated, and other inactive stores are exempt: recreating
+    // them can't replace user data, and refusing them would strand the user.
+    let isModeChangeStore = manifest.transition.map {
+      [$0.sourceStoreID, $0.candidateStoreID].contains(store.id)
+    } ?? false
+    guard store.id == manifest.activeStoreID || !isModeChangeStore
+      || FileManager.default.fileExists(atPath: fileURL.path)
+    else { throw SyncModePersistenceError.missingStore }
     return try SwiftDataSnipLibrary(
-      storeURL: storeURL(store).appendingPathComponent("snips.store"),
+      storeURL: fileURL,
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
@@ -415,16 +429,27 @@ package actor SwiftDataSyncModePersistence {
       guard transition.targetKind == targetKind, transition.namespace == namespace else {
         throw SyncModePersistenceError.transitionInProgress
       }
-      // Finish only a rollback this process couldn't commit, so another operation's work in
-      // flight is never undone.
-      guard transition == strandedRollback else { return transition }
-      if transition.phase == .candidateDeclared {
+      if manifest.activeStoreID == transition.sourceStoreID,
+        !hasStoreFile(id: transition.candidateStoreID)
+      {
+        // Before the swap, the source still holds the library, so a fresh candidate loses
+        // nothing.
         try abortUnactivatedCandidate(reason: nil)
-      } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
-        try unfreezeBeforePointerSwap()
-        return try currentTransition()
+        let operation: StaticString = transition.targetKind == .iCloudSync
+          ? "sync.setup" : "sync.disable"
+        diagnostics.record(.missing(operation: operation))
       } else {
-        return transition
+        // Finish only a rollback this process couldn't commit, so another operation's work in
+        // flight is never undone.
+        guard transition == strandedRollback else { return transition }
+        if transition.phase == .candidateDeclared {
+          try abortUnactivatedCandidate(reason: nil)
+        } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
+          try unfreezeBeforePointerSwap()
+          return try currentTransition()
+        } else {
+          return transition
+        }
       }
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
@@ -507,6 +532,9 @@ package actor SwiftDataSyncModePersistence {
     guard let transition = manifest.transition,
       store(id: transition.candidateStoreID)?.lifecycle == .ready
     else { throw SyncModePersistenceError.transitionInProgress }
+    guard hasStoreFile(id: transition.candidateStoreID) else {
+      throw SyncModePersistenceError.missingStore
+    }
     try crashHook(.beforePointerSwap)
     next.activeStoreID = transition.candidateStoreID
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
@@ -809,6 +837,15 @@ package actor SwiftDataSyncModePersistence {
 
   func storeURL(_ store: SyncModeStore) -> URL {
     rootURL.appendingPathComponent(store.relativeRoot, isDirectory: true)
+  }
+
+  func storeFileURL(_ store: SyncModeStore) -> URL {
+    storeURL(store).appendingPathComponent("snips.store", isDirectory: false)
+  }
+
+  private func hasStoreFile(id: UUID) -> Bool {
+    guard let listed = store(id: id) else { return false }
+    return FileManager.default.fileExists(atPath: storeFileURL(listed).path)
   }
 
   nonisolated static func cacheRootURL(base: URL?, storeID: UUID) -> URL? {

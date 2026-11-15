@@ -1,0 +1,48 @@
+Snip Snap 0.6.1 Beta 257 — iOS
+
+- Present a replacement share request after a pending one cancels
+- Let tests drive the CloudKit record transport's lifecycle
+- Make the CloudKit record transport lifecycle explicit
+- Let the open iPhone Duo's list rail resize into a named sidebar
+- Make outbound send admission and mailbox delivery explicit
+- Record crashes and system kills in the diagnostics export
+- Let the latest Share tap win over an earlier one still preparing
+- Give iOS attachment preparation one transfer status owner
+- Keep write admission closed until a reservation clear reaches disk
+- Make diagnostics settings, writer, and background activity explicit state machines
+- Stop a clipboard upload in flight when iCloud sync turns off
+- Give the snip editor draft explicit lifecycle machines
+- Give gathered snips one session owner on iOS
+- Stop iOS from holding App Group locks while suspendable
+- Show letters and an automatic color for lists without an icon
+- Give the image viewer's zoom and pan one value
+- Make list-page motion and edge creation explicit state machines
+- Release write admission after any failed library write
+- Give import coalescing, the account choice, and toast timing explicit phases
+- Give app sync requests one explicit queue machine
+- Give iPad the open Duo's resizable list rail
+- Make the collection reset lifecycle explicit and stop a finished delete from overriding sync results
+- Keep clipboard sync working after another device resets the sync generation
+- Give provider and photo loads one explicit cancellation machine
+- Finish a failed Apple Account isolation without relaunch, as an explicit state machine
+- Make attachment publication, cleanup, and download installation explicit state machines
+- Give glass menus and expandable text one transition owner
+- Don't block the main thread when a paste is cancelled mid-copy
+- Store an account-isolation choice only after its swap finishes
+- Keep downloaded attachments syncing and openable after a metadata edit
+- Set aside unbound clipboard history on an account change when clipboard sync is on
+- Clear "Deletion incomplete" once a sync request shows Delete Synced Content finished
+- Make the sync-mode transition one explicit state machine and let Try Again recover a stranded change
+- Make iCloud enrollment explicit and stop endless zone re-saves
+- Keep memory-only clipboard entries when a set-aside follows a failed save
+- Give the sync engine session and corrupt-record recovery explicit machines, and stop recovery deleting delivered records
+- Make a user's Keep and a background status take turns on the Keep merge
+- Keep attachments consistent when they change while their iCloud operations are in flight
+- Let sync-mode Try Again finish only a rollback this process couldn't commit
+- Turn sync off when a stop's cleanup fails
+- Keep enrollment edge cases in defined states after SM27, and fix the #354 payload-only fetch regression
+- Record a failed CLI suspend as cli.scope_suspend
+- Say existing clipboard history will upload when clipboard sync turns on
+- Keep pruning clipboard files after an undecodable set-aside copy
+- Preserve a returning account's attachments inside the Keep's turn
+- Keep clipboard history out of the next account after a failed account reset

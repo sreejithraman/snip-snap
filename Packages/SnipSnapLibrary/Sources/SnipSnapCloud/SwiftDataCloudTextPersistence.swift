@@ -238,7 +238,12 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 liveSnipIDs: localIDs,
                 deletionRecoveryData: try Self.encode(.modeRetryDeletion)
             )
-            guard let next = snapshot.namespaceState.replacingSeedApproval(with: snipIDs) else {
+            guard let next = snapshot.namespaceState.replacingSeedApproval(
+                with: snipIDs,
+                liveSnipIDs: localIDs,
+                recordedSnipIDs: Set(snapshot.records.map(\.snipID)),
+                sentSnipIDs: snapshot.sentSnipIDs
+            ) else {
                 return
             }
             try await library.transitionCloudTextNamespace(
