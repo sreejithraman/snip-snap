@@ -953,3 +953,238 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testRoot.path))
     }
 }
+
+// MARK: - Image viewer zoom
+
+final class ImageViewerZoomTests: XCTestCase {
+    /// The image fills the viewport exactly, so at scale s the pan limit is
+    /// 50 × (s − 1) across and 100 × (s − 1) down.
+    private let bounds = ImageViewerBounds(
+        imageSize: CGSize(width: 100, height: 200),
+        viewport: CGSize(width: 100, height: 200)
+    )
+    private let longSwipeDown = CGSize(width: 10, height: 150)
+
+    func testDoubleTapZoomsToTwiceAndBackToBaseZoom() {
+        var zoom = ImageViewerZoom()
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 2)
+        XCTAssertEqual(zoom.offset, .zero)
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+
+        zoom.pinchEnded(magnification: 3, in: bounds)
+        XCTAssertFalse(zoom.dragEnded(
+            translation: CGSize(width: 40, height: -60), magnification: 1, in: bounds
+        ))
+        XCTAssertEqual(zoom.scale, 3)
+        XCTAssertEqual(zoom.offset, CGSize(width: 40, height: -60))
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testPinchEndClampsScaleAndBoundsOffset() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchEnded(magnification: 5, in: bounds)
+        XCTAssertEqual(zoom.scale, 3)
+        _ = zoom.dragEnded(translation: CGSize(width: 500, height: 500), magnification: 1, in: bounds)
+        XCTAssertEqual(zoom.offset, CGSize(width: 100, height: 200))
+
+        zoom.pinchEnded(magnification: 0.5, in: bounds)
+        XCTAssertEqual(zoom.scale, 1.5)
+        XCTAssertEqual(zoom.offset, CGSize(width: 25, height: 50))
+
+        zoom.pinchEnded(magnification: 0.1, in: bounds)
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testDragAboveBaseZoomPansWithinTheImage() {
+        var zoom = ImageViewerZoom()
+        zoom.toggle()
+        let pan = CGSize(width: 30, height: -80)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: pan, magnification: 1, reduceMotion: false, in: bounds),
+            pan
+        )
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: pan, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, pan)
+
+        XCTAssertEqual(
+            zoom.displayOffset(
+                dragTranslation: CGSize(width: 100, height: -100),
+                magnification: 1,
+                reduceMotion: false,
+                in: bounds
+            ),
+            CGSize(width: 50, height: -100)
+        )
+        XCTAssertFalse(zoom.dragEnded(
+            translation: CGSize(width: 100, height: -100), magnification: 1, in: bounds
+        ))
+        XCTAssertEqual(zoom.offset, CGSize(width: 50, height: -100))
+
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, CGSize(width: 50, height: 50))
+    }
+
+    func testSwipeDownAtBaseZoomCloses() {
+        var zoom = ImageViewerZoom()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: longSwipeDown, magnification: 1, reduceMotion: false, in: bounds),
+            CGSize(width: 0, height: 150)
+        )
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: longSwipeDown, magnification: 1, reduceMotion: true, in: bounds),
+            .zero
+        )
+        let swipeUp = CGSize(width: 0, height: -150)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: swipeUp, magnification: 1), 0)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: swipeUp, magnification: 1, reduceMotion: false, in: bounds),
+            .zero
+        )
+
+        let staysOpen = [
+            CGSize(width: 0, height: 100),
+            swipeUp,
+            CGSize(width: 150, height: 120),
+        ]
+        for translation in staysOpen {
+            XCTAssertFalse(
+                zoom.dragEnded(translation: translation, magnification: 1, in: bounds),
+                "\(translation) should not close the viewer"
+            )
+        }
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testPinchWithoutADragDoesNotBlockTheSwipeToClose() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchChanged(whileDragging: false)
+        zoom.pinchEnded(magnification: 1, in: bounds)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    /// Within one drag, a pinch that ends at base zoom still makes the drag a pan.
+    func testPinchedDragStillPansAfterThePinchEndsAtBaseZoom() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.pinchEnded(magnification: 1, in: bounds)
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testDragEndAloneClearsThePinchMark() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    func testCancelledPinchDragDoesNotBlockTheNextSwipeToClose() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        // The system takes the touches, so the drag stops without ending. Before this fix,
+        // nothing cleared the pinch mark at a cancel, and this swipe panned.
+        zoom.dragStopped()
+
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    /// SwiftUI may reset the gesture state before it calls `onEnded`.
+    func testPinchedDragPansWhenItsEndArrivesAfterTheStop() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStopped()
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testSwipeClosesAfterAPinchedDragEndsBeforeItsStop() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        zoom.dragStopped()
+
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    /// A pinch can arrive in the drag's first frame, before its start is observed.
+    func testFirstFramePinchKeepsTheDragAPan() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    func testFirstFramePinchAfterACancelledPinchedDragKeepsTheNewDragAPan() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStopped()
+
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    func testReadsUseTheMagnificationInProgress() {
+        var zoom = ImageViewerZoom()
+        let reach = CGSize(width: 80, height: -150)
+        XCTAssertEqual(zoom.effectiveScale(magnification: 2), 2)
+        XCTAssertEqual(zoom.effectiveScale(magnification: 4), 3)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: reach, magnification: 2, reduceMotion: false, in: bounds),
+            CGSize(width: 50, height: -100)
+        )
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 2), 0)
+
+        zoom.toggle()
+        XCTAssertEqual(zoom.effectiveScale(magnification: 0.75), 1.5)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: reach, magnification: 0.75, reduceMotion: false, in: bounds),
+            CGSize(width: 25, height: -50)
+        )
+        XCTAssertEqual(zoom.effectiveScale(magnification: 0.25), 1)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 0.25), 150)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: longSwipeDown, magnification: 0.25, reduceMotion: false, in: bounds),
+            CGSize(width: 0, height: 150)
+        )
+    }
+
+    /// A 200 × 100 image fits a 100 × 200 viewport at half size, 100 × 50, so it only
+    /// pans across: 50 at 2x and 100 at 3x.
+    func testBoundsFitTheImageByItsTighterAxis() {
+        let wide = ImageViewerBounds(
+            imageSize: CGSize(width: 200, height: 100),
+            viewport: CGSize(width: 100, height: 200)
+        )
+        let far = CGSize(width: 500, height: 500)
+        XCTAssertEqual(wide.bounded(far, scale: 1), .zero)
+        XCTAssertEqual(wide.bounded(far, scale: 2), CGSize(width: 50, height: 0))
+        XCTAssertEqual(wide.bounded(far, scale: 3), CGSize(width: 100, height: 0))
+    }
+}

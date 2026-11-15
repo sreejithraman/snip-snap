@@ -90,6 +90,8 @@ struct ListPageMotion: Equatable {
         let addProgressCorrection: CGFloat
         var cursor: CGFloat
         var reachedAdd = false
+        var addProgress: CGFloat = 0
+        var expansion = ListSelectorExpansion()
 
         private func remainingCorrection(in geometry: ListSelectorGeometry) -> CGFloat {
             let thresholdCursor = (geometry.centers.last ?? 0) + ListSelectorGeometry.pullThreshold
@@ -123,6 +125,8 @@ struct ListPageMotion: Equatable {
         let isNewListCancel: Bool
         var reachedCreationThreshold = false
         var reachedCancelThreshold = false
+        var creationCueProgress: CGFloat = 0
+        var cancelCueProgress: CGFloat = 0
 
         var creationThreshold: CGFloat { min(220, pageWidth * 0.55) }
         var cancelThreshold: CGFloat { min(175, pageWidth * 0.45) }
@@ -196,21 +200,76 @@ struct ListPageMotion: Equatable {
         reachedThreshold && rawProgress < 1 ? sqrt(rawProgress) : rawProgress
     }
 
-    private(set) var transition: Transition?
-    private var drag: Drag?
-    private var pageDrag: PageDrag?
-    private var rejectsSelectorDrag = false
-    private var expansion = ListSelectorExpansion()
-    private(set) var pageCreationProgress: CGFloat = 0
-    private(set) var newListCancelProgress: CGFloat = 0
-    private var selectorCreationProgress: CGFloat = 0
-    private(set) var isCreatingFromEdge = false
+    private enum Gesture: Equatable {
+        /// Resting or settling: `transition` alone describes the motion.
+        case none
+        case selector(Drag)
+        case page(PageDrag)
+        /// A committed add pull holds at the add cue until creation resolves.
+        case creatingFromEdge(EdgeCreationSource)
+    }
 
-    var isDragging: Bool { drag != nil || pageDrag != nil }
-    var isSelectorDragging: Bool { drag != nil }
+    private enum EdgeCreationSource: Equatable { case selector, page }
+
+    /// The selector's drag gesture outlives page drags and settlements, so a
+    /// rejected one stays rejected until that gesture ends.
+    private enum SelectorGestureAdmission: Equatable { case open, rejected }
+
+    private(set) var transition: Transition?
+    private var gesture = Gesture.none
+    private var selectorGesture = SelectorGestureAdmission.open
+
+    var isDragging: Bool {
+        switch gesture {
+        case .selector, .page: true
+        case .none, .creatingFromEdge: false
+        }
+    }
+
+    var isSelectorDragging: Bool {
+        if case .selector = gesture { return true }
+        return false
+    }
+
+    private var isPageDragging: Bool {
+        if case .page = gesture { return true }
+        return false
+    }
+
+    var isCreatingFromEdge: Bool {
+        if case .creatingFromEdge = gesture { return true }
+        return false
+    }
+
     var isEnteringNewList: Bool { transition?.directEntrance == true }
-    var dragCursor: CGFloat? { drag?.cursor }
-    var dragDistance: CGFloat { expansion.distance }
+
+    var dragCursor: CGFloat? {
+        if case .selector(let drag) = gesture { return drag.cursor }
+        return nil
+    }
+
+    var dragDistance: CGFloat {
+        if case .selector(let drag) = gesture { return drag.expansion.distance }
+        return 0
+    }
+
+    var pageCreationProgress: CGFloat {
+        if case .page(let pageDrag) = gesture { return pageDrag.creationCueProgress }
+        return 0
+    }
+
+    var newListCancelProgress: CGFloat {
+        if case .page(let pageDrag) = gesture { return pageDrag.cancelCueProgress }
+        return 0
+    }
+
+    private var selectorCreationProgress: CGFloat {
+        switch gesture {
+        case .selector(let drag): drag.addProgress
+        case .creatingFromEdge(.selector): 1
+        case .none, .page, .creatingFromEdge(.page): 0
+        }
+    }
 
     mutating func updateDrag(
         translation: CGSize,
@@ -221,12 +280,12 @@ struct ListPageMotion: Equatable {
         layoutDirection: LayoutDirection,
         at date: Date
     ) {
-        guard !rejectsSelectorDrag else { return }
+        guard selectorGesture == .open else { return }
         if isCreatingFromEdge {
-            rejectsSelectorDrag = true
+            selectorGesture = .rejected
             return
         }
-        if drag == nil {
+        if !isSelectorDragging {
             guard abs(translation.width) > abs(translation.height),
                   let selected = pages.firstIndex(of: selectedPage) else { return }
             if let transition {
@@ -234,24 +293,23 @@ struct ListPageMotion: Equatable {
                 let lastPage = CGFloat(max(0, transition.pages.count - 1))
                 if transition.directEntrance || position < 0
                     || (position > lastPage && (!transition.beganInSelector || transition.settlement == nil)) {
-                    rejectsSelectorDrag = true
+                    selectorGesture = .rejected
                     return
                 }
             }
+            // Read the visible frame before the selector replaces a page drag.
             let visibleFrame = frame(pages: pages, selectedPage: selectedPage, at: date)
             let visibleAddProgress = visibleFrame.creationProgress(
                 dragProgress: pageCreationProgress, holdsAtAdd: isCreatingFromEdge
             )
-            isCreatingFromEdge = false
             let position = transition?.position(at: date) ?? CGFloat(selected)
-            pageDrag = nil
             let origin = visibleFrame.selectorPresentation(in: geometry)?.cursor
                 ?? (visibleAddProgress > 0
                     ? visibleFrame.selectorPullCursor(
                         in: geometry, progress: visibleAddProgress, holdsAtAdd: false
                     )
                     : geometry.cursor(at: position))
-            drag = Drag(
+            gesture = .selector(Drag(
                 originCursor: origin,
                 sourceIndex: selected,
                 direction: layoutDirection == .rightToLeft ? -1 : 1,
@@ -260,21 +318,21 @@ struct ListPageMotion: Equatable {
                 ),
                 addProgressCorrection: visibleAddProgress - geometry.pullProgress(at: origin),
                 cursor: origin
-            )
+            ))
             transition = Transition(
                 pages: pages, source: selectedPage, position: geometry.pagePosition(at: origin),
                 pageWidth: pageWidth,
                 beganInSelector: true
             )
         }
-        guard var drag else { return }
+        guard case .selector(var drag) = gesture else { return }
         drag.cursor = drag.originCursor - translation.width * drag.direction
         let rawProgress = geometry.pullProgress(at: drag.cursor)
         if rawProgress >= 1 { drag.reachedAdd = true }
-        self.drag = drag
-        selectorCreationProgress = drag.presentedAddProgress(in: geometry)
-        expansion.update(distance: abs(drag.cursor - drag.originCursor))
-        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: selectorCreationProgress)
+        drag.addProgress = drag.presentedAddProgress(in: geometry)
+        drag.expansion.update(distance: abs(drag.cursor - drag.originCursor))
+        gesture = .selector(drag)
+        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: drag.addProgress)
     }
 
     mutating func updatePageDrag(
@@ -288,16 +346,15 @@ struct ListPageMotion: Equatable {
         at date: Date
     ) {
         guard pageWidth > 0, pages.count > 1, !isCreatingFromEdge else { return }
-        if pageDrag == nil {
-            guard isStart, transition?.settlement == nil, drag == nil,
+        if !isPageDragging {
+            guard isStart, transition?.settlement == nil, !isSelectorDragging,
                   abs(translation.width) > abs(translation.height),
                   let source = pages.firstIndex(of: selectedPage) else { return }
-            isCreatingFromEdge = false
             let position = transition?.position(at: date) ?? CGFloat(source)
             let direction: CGFloat = layoutDirection == .rightToLeft ? -1 : 1
             let step = -translation.width * direction >= 0 ? 1 : -1
             let cancelTarget = cancelTo.flatMap { pages.firstIndex(of: $0) }
-            pageDrag = PageDrag(
+            gesture = .page(PageDrag(
                 sourceIndex: source,
                 neighborIndex: cancelTarget ?? min(pages.count - 1, max(0, source + step)),
                 originPosition: position,
@@ -305,26 +362,26 @@ struct ListPageMotion: Equatable {
                 direction: direction,
                 isTrailingEdge: cancelTarget == nil && source == pages.count - 1 && step > 0,
                 isNewListCancel: cancelTarget != nil
-            )
+            ))
             transition = Transition(pages: pages, source: selectedPage, position: position,
                                     pageWidth: pageWidth)
             transition?.directEntrance = cancelTarget != nil
             transition?.directDestination = cancelTarget
         }
-        guard var pageDrag else { return }
+        guard case .page(var pageDrag) = gesture else { return }
         guard transition?.pages == pages else {
             interrupt()
             return
         }
         let rawProgress = pageDrag.creationProgress(for: translation)
         if rawProgress >= 1 { pageDrag.reachedCreationThreshold = true }
-        pageCreationProgress = pageDrag.presentedCreationProgress(for: translation)
+        pageDrag.creationCueProgress = pageDrag.presentedCreationProgress(for: translation)
         if pageDrag.cancelProgress(for: translation) >= 1 {
             pageDrag.reachedCancelThreshold = true
         }
-        newListCancelProgress = pageDrag.presentedCancelProgress(for: translation)
+        pageDrag.cancelCueProgress = pageDrag.presentedCancelProgress(for: translation)
         transition?.position = pageDrag.clampedPosition(for: translation)
-        self.pageDrag = pageDrag
+        gesture = .page(pageDrag)
     }
 
     mutating func releasePageDrag(
@@ -333,11 +390,11 @@ struct ListPageMotion: Equatable {
         reduceMotion: Bool,
         at date: Date
     ) -> Release? {
-        guard let pageDrag, transition != nil else { return nil }
-        self.pageDrag = nil
+        guard case .page(var pageDrag) = gesture, transition != nil else { return nil }
         if pageDrag.isNewListCancel {
             let cancels = pageDrag.cancelProgress(for: translation) >= 1
-            newListCancelProgress = pageDrag.presentedCancelProgress(for: translation)
+            pageDrag.cancelCueProgress = pageDrag.presentedCancelProgress(for: translation)
+            gesture = .page(pageDrag)
             transition?.position = pageDrag.clampedPosition(for: translation)
             let destination = cancels ? pageDrag.neighborIndex : pageDrag.sourceIndex
             let completion: Settlement.Completion = cancels ? .cancelNewList : .navigate
@@ -348,7 +405,8 @@ struct ListPageMotion: Equatable {
         let distance = -translation.width * pageDrag.direction
         let projectedDistance = -predictedEndTranslation.width * pageDrag.direction
         let createsList = pageDrag.creationProgress(for: translation) >= 1
-        pageCreationProgress = pageDrag.presentedCreationProgress(for: translation)
+        pageDrag.creationCueProgress = pageDrag.presentedCreationProgress(for: translation)
+        gesture = .page(pageDrag)
         transition?.position = pageDrag.clampedPosition(for: translation)
         if createsList {
             holdCommittedPagePull(at: date)
@@ -367,8 +425,7 @@ struct ListPageMotion: Equatable {
     }
 
     mutating func cancelPageDrag(reduceMotion: Bool, at date: Date) {
-        guard let pageDrag else { return }
-        self.pageDrag = nil
+        guard case .page(let pageDrag) = gesture else { return }
         settle(to: pageDrag.sourceIndex, reduceMotion: reduceMotion,
                springBack: pageDrag.neighborIndex == pageDrag.sourceIndex, at: date)
     }
@@ -385,32 +442,30 @@ struct ListPageMotion: Equatable {
         reduceMotion: Bool,
         at date: Date
     ) -> Release? {
-        defer { rejectsSelectorDrag = false }
-        guard var drag else { return nil }
+        defer { selectorGesture = .open }
+        guard case .selector(var drag) = gesture else { return nil }
         // Once the drag has claimed the horizontal axis, a diagonal release
         // still ends it. Gesture-state reset handles cancellation separately.
         drag.cursor = drag.originCursor - translation.width * drag.direction
         let rawProgress = geometry.pullProgress(at: drag.cursor)
-        selectorCreationProgress = drag.presentedAddProgress(in: geometry)
-        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: selectorCreationProgress)
-        self.drag = nil
+        drag.addProgress = drag.presentedAddProgress(in: geometry)
+        transition?.position = drag.pagePosition(in: geometry, presentedAddProgress: drag.addProgress)
         if rawProgress >= 1 {
-            expansion.update(distance: nil)
-            isCreatingFromEdge = true
+            gesture = .creatingFromEdge(.selector)
             return .createList
         }
+        gesture = .selector(drag)
         let destination = geometry.nearestIndex(to: drag.cursor)
         settle(to: destination, reduceMotion: reduceMotion,
-               springBack: selectorCreationProgress > 0, at: date)
+               springBack: drag.addProgress > 0, at: date)
         return .select(destination)
     }
 
     mutating func cancelDrag(reduceMotion: Bool, at date: Date) {
-        defer { rejectsSelectorDrag = false }
-        guard let drag else { return }
-        self.drag = nil
+        defer { selectorGesture = .open }
+        guard case .selector(let drag) = gesture else { return }
         settle(to: drag.sourceIndex, reduceMotion: reduceMotion,
-               springBack: selectorCreationProgress > 0, at: date)
+               springBack: drag.addProgress > 0, at: date)
     }
 
     @discardableResult
@@ -425,9 +480,6 @@ struct ListPageMotion: Equatable {
     ) -> Bool {
         guard pages.indices.contains(destination), let source = pages.firstIndex(of: selectedPage),
               directEntrance || (!isEnteringNewList && !isCreatingFromEdge) else { return false }
-        isCreatingFromEdge = false
-        drag = nil
-        pageDrag = nil
         if transition == nil || directEntrance {
             transition = Transition(pages: pages, source: selectedPage, position: CGFloat(source))
         }
@@ -463,7 +515,6 @@ struct ListPageMotion: Equatable {
             transition?.directDestination = destination
             transition?.directEntranceInitialProgress = initialProgress
             transition?.showsAddCueDuringEntrance = true
-            isCreatingFromEdge = false
             settle(to: destination, reduceMotion: reduceMotion, at: date)
             return
         }
@@ -511,7 +562,6 @@ struct ListPageMotion: Equatable {
     mutating func returnFromCommittedCreation(reduceMotion: Bool, at date: Date) {
         guard isCreatingFromEdge, let source = transition?.source,
               let sourceIndex = transition?.pages.firstIndex(of: source) else { return }
-        isCreatingFromEdge = false
         transition?.settlement = nil
         settle(to: sourceIndex, reduceMotion: reduceMotion, springBack: true, at: date)
     }
@@ -540,17 +590,17 @@ struct ListPageMotion: Equatable {
             beganInSelector: beganInSelector
         )
         transition?.creationProgressAtRelease = 1
-        isCreatingFromEdge = false
-        drag = nil
-        pageDrag = nil
         settle(to: destination, reduceMotion: reduceMotion, springBack: true, at: date)
     }
 
+    /// Ends the gesture and carries its last cue progress into the settlement.
     private mutating func settle(
         to destination: Int, reduceMotion: Bool, springBack: Bool = false,
         completion: Settlement.Completion = .navigate, at date: Date
     ) {
-        expansion.update(distance: nil)
+        let releasedCreationProgress = max(pageCreationProgress, selectorCreationProgress)
+        let releasedCancelProgress = newListCancelProgress
+        gesture = .none
         guard var transition else { return }
         let presentedCreationProgress: CGFloat
         if let previousSettlement = transition.settlement {
@@ -560,16 +610,10 @@ struct ListPageMotion: Equatable {
             presentedCreationProgress = transition.creationProgressAtRelease
         }
         transition.position = transition.position(at: date)
-        transition.creationProgressAtRelease = max(
-            presentedCreationProgress,
-            max(pageCreationProgress, selectorCreationProgress)
-        )
+        transition.creationProgressAtRelease = max(presentedCreationProgress, releasedCreationProgress)
         transition.cancelProgressAtRelease = max(
-            transition.cancelProgressAtRelease, newListCancelProgress
+            transition.cancelProgressAtRelease, releasedCancelProgress
         )
-        pageCreationProgress = 0
-        newListCancelProgress = 0
-        selectorCreationProgress = 0
         let useSpring = springBack && !reduceMotion
         transition.settlement = Settlement(
             startedAt: date,
@@ -591,28 +635,20 @@ struct ListPageMotion: Equatable {
             curve: .easeOut,
             completion: .createList
         )
-        pageCreationProgress = 0
-        isCreatingFromEdge = true
+        gesture = .creatingFromEdge(.page)
         self.transition = transition
     }
 
     mutating func finishSettlement(_ id: UUID) {
         guard transition?.settlement?.id == id else { return }
-        let rejectedGestureIsStillActive = rejectsSelectorDrag
-        interrupt()
-        rejectsSelectorDrag = rejectedGestureIsStillActive
+        gesture = .none
+        transition = nil
     }
 
     mutating func interrupt() {
-        expansion.update(distance: nil)
-        pageCreationProgress = 0
-        newListCancelProgress = 0
-        selectorCreationProgress = 0
-        rejectsSelectorDrag = false
-        isCreatingFromEdge = false
-        drag = nil
-        pageDrag = nil
+        gesture = .none
         transition = nil
+        selectorGesture = .open
     }
 
     static func duration(reduceMotion: Bool) -> TimeInterval { reduceMotion ? 0.12 : 0.24 }
@@ -890,5 +926,36 @@ struct ListPageSettlementObserver: ViewModifier {
             guard let id = state.value.transition?.settlement?.id else { return }
             await complete(id)
         }
+    }
+}
+
+/// The root's one running edge-created New List request. Starting another or
+/// cancelling ends the current one; its late steps see a stale ID and stop.
+struct ListEdgeCreationRequest {
+    private enum Phase {
+        case idle
+        case running(id: UUID, task: Task<Void, Never>)
+    }
+
+    private var phase = Phase.idle
+
+    func isCurrent(_ id: UUID) -> Bool {
+        guard case .running(let currentID, _) = phase else { return false }
+        return currentID == id
+    }
+
+    mutating func begin(_ id: UUID, task: Task<Void, Never>) {
+        cancel()
+        phase = .running(id: id, task: task)
+    }
+
+    mutating func finish(_ id: UUID) {
+        guard isCurrent(id) else { return }
+        phase = .idle
+    }
+
+    mutating func cancel() {
+        if case .running(_, let task) = phase { task.cancel() }
+        phase = .idle
     }
 }

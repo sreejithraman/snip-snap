@@ -48,14 +48,18 @@ struct ListPagePanObserver: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        private enum Pan: Equatable {
+            case idle
+            case tracking(ListPagePanDirection, presentationInterrupted: Bool)
+        }
+
         var canBegin: (ListPagePanDirection) -> Bool
         var canBeginAt: (CGPoint) -> Bool
         var onPan: (ListPagePanDirection, CGSize, CGSize?, UIGestureRecognizer.State) -> Void
         weak var attachmentView: UIView?
         private weak var attachedWindow: UIWindow?
         private var recognizer: UIPanGestureRecognizer?
-        private var direction: ListPagePanDirection?
-        private var presentationInterrupted = false
+        private var pan = Pan.idle
 
         init(
             canBegin: @escaping (ListPagePanDirection) -> Bool,
@@ -81,16 +85,13 @@ struct ListPagePanObserver: UIViewRepresentable {
         }
 
         @objc private func handle(_ recognizer: UIPanGestureRecognizer) {
-            guard let window = recognizer.view as? UIWindow else { return }
+            guard let window = recognizer.view as? UIWindow,
+                  case .tracking(let direction, let wasInterrupted) = pan else { return }
             let translation = recognizer.translation(in: window)
             let velocity = recognizer.velocity(in: window)
-            if recognizer.state == .began {
-                presentationInterrupted = false
-            }
-            if window.rootViewController?.presentedViewController != nil {
-                presentationInterrupted = true
-            }
-            guard let direction else { return }
+            let isInterrupted = window.rootViewController?.presentedViewController != nil
+                || (recognizer.state != .began && wasInterrupted)
+            pan = .tracking(direction, presentationInterrupted: isInterrupted)
             let projected = CGSize(
                 width: translation.x + velocity.x * 0.12,
                 height: translation.y + velocity.y * 0.12
@@ -99,16 +100,15 @@ struct ListPagePanObserver: UIViewRepresentable {
                 direction,
                 CGSize(width: translation.x, height: translation.y),
                 projected,
-                presentationInterrupted ? .cancelled : recognizer.state
+                isInterrupted ? .cancelled : recognizer.state
             )
             if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
-                presentationInterrupted = false
-                self.direction = nil
+                pan = .idle
             }
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            direction = nil
+            pan = .idle
             guard let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
                   let window = attachedWindow,
                   let direction = availableDirection(for: recognizer) else { return false }
@@ -117,7 +117,7 @@ struct ListPagePanObserver: UIViewRepresentable {
             // A physical device can report zero translation at shouldBegin.
             let initialMovement = velocity == .zero ? translation : velocity
             guard abs(initialMovement.x) > abs(initialMovement.y) else { return false }
-            self.direction = direction
+            pan = .tracking(direction, presentationInterrupted: false)
             return true
         }
 

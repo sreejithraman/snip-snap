@@ -260,8 +260,9 @@ final class AppCoordinator {
             if model.isShowingClipboard {
                 let activeList = model.lists.first(where: { $0.id == model.activeListID }) ?? .inbox
                 model.selectList(activeList)
+            } else {
+                model.exitSearch()
             }
-            model.exitSearch()
         }
         showPanel(panelWindow, focusing: model.editingID == nil ? .inlineEntry : nil)
     }
@@ -287,7 +288,6 @@ final class AppCoordinator {
             return
         }
         model.showClipboard()
-        model.exitSearch()
         showPanel(panelWindow, focusing: .clipboard)
     }
 

@@ -4,13 +4,14 @@ import SwiftUI
 struct MoveDestinationOptions: View {
     let destinations: [SnipList]
     let identifierPrefix: String
+    var isSystemMenu = false
     let move: (UUID) -> Void
     let addList: () -> Void
 
     var body: some View {
         ForEach(destinations) { list in
             Button { move(list.id) } label: {
-                ListDestinationLabel(list: list)
+                ListDestinationLabel(list: list, isSystemMenuItem: isSystemMenu)
             }
             .accessibilityIdentifier("\(identifierPrefix)\(list.name)")
         }
@@ -29,6 +30,7 @@ struct MoveSnipMenu: View {
             MoveDestinationOptions(
                 destinations: model.moveDestinations(for: [snip]),
                 identifierPrefix: "move-to-",
+                isSystemMenu: true,
                 move: { listID in Task { await model.moveSnip(id: snip.id, to: listID) } },
                 addList: { model.requestNewListMove(snips: [snip]) }
             )
