@@ -125,6 +125,9 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease(libraryAction)
   }
 
+  /// Requests waiting for the next batch, not counting the batch that is running.
+  package var queuedRequestCount: Int { requests.count }
+
   private func request(_ kind: RequestKind) async throws -> SnipSnapCloudSyncResult {
     let id = UUID()
     return try await withTaskCancellationHandler {
