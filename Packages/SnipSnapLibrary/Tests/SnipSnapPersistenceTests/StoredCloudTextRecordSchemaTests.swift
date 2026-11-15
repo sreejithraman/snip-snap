@@ -22,8 +22,10 @@ final class StoredCloudTextRecordSchemaTests: XCTestCase {
   }
 
   func testStoredCloudTextRecordVersionHashIsUnchanged() throws {
-    // Captured on main cce6fd62 before the reached-iCloud rule moved. A different hash means the
-    // entity's stored schema changed by accident.
+    // Main cce6fd62's hash, from its tests-only CI run. Core Data hashes the entity name and
+    // uniqueness constraints, and each attribute's name, type, and optional, transient, and
+    // read-only flags. Indexes are not part of it. On failure, compare the model source with
+    // main under the same toolchain before you update this value.
     let mainHash = "aKAc0Q2WodiUVGCIFZpGhcSUtFfqh3kNyabBEIXL6w4="
     let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let model = try XCTUnwrap(NSManagedObjectModel.makeManagedObjectModel(for: schema))
