@@ -1934,9 +1934,9 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [first, second])
     }
 
-    // SM27-F1 H5: like seed pruning, an empty re-merge that finishes seeding must exclude every
-    // live snip without a sent record, so snips the merge did not approve stay off iCloud. The
-    // placeholder rows seeding reserves before a send do not count as sent.
+    // SM27-F1 H5: an empty re-merge that finishes seeding excludes every approval it drops that
+    // never reached iCloud, so neither unapproved snip uploads. A placeholder row that seeding
+    // reserved before a send doesn't count as reaching iCloud.
     func testSeedingModeMergeWithoutPendingZoneCreationExcludesUnlinkedSnipsOnAnEmptyApproval() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -2216,6 +2216,34 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty, "the in-flight snip stays linked")
+        XCTAssertEqual(savedTexts(in: pending), [inFlight: "save in flight"])
+    }
+
+    // SM27-F2 (#365 regression): as above, but an empty re-merge finishes seeding. It excludes the
+    // dropped addition, which never reached iCloud, and leaves the in-flight snip linked, so that
+    // snip still uploads.
+    func testActiveModeMergeEmptyRemergeKeepsAnInFlightSnipSyncing() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let (inFlight, addition, _) = try await mergeWhileASaveIsInFlight(bridge, library: library)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [addition])
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+
+        try await bridge.approveModeMerge(snipIDs: [])
+
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(
+            stored.namespaceState.excludedSnipIDs, [addition],
+            "the dropped addition stays off iCloud, and the in-flight snip stays linked"
+        )
+        let pending = try await bridge.pendingChanges()
         XCTAssertEqual(savedTexts(in: pending), [inFlight: "save in flight"])
     }
 
