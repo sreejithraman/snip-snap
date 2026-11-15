@@ -3178,8 +3178,11 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
 
     try await receiver.sync.fetchRemote()
 
-    let partial = try await receiver.library.storedAttachmentReferencePositions(for: first.snipID)
-    XCTAssertEqual(partial, [b.metadata.attachmentID: 1], "A partial fetch must retain B's cloud coordinate.")
+    let partial = try await snapshot(receiver.library, receiver.namespace)
+    XCTAssertEqual(try publication(of: b.metadata.attachmentID, in: partial).metadata.position, 1,
+      "A partial fetch must retain B's cloud coordinate.")
+    let partialShadowPosition = try await acknowledgedPosition(of: b.metadata.attachmentID, in: receiver)
+    XCTAssertEqual(partialShadowPosition, 1, "B's shadow must keep its cloud coordinate.")
 
     try await receiver.sync.fetchRemote()
 
@@ -3555,7 +3558,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     }
   }
 
-  func testAReconciledReorderKeepsTheWholeRecordOverARemoteRenameWhileAwaitingAcknowledgement() async throws {
+  func testAReconciledReorderKeepsItsOrderAndTakesARemoteRenameWhileAwaitingAcknowledgement() async throws {
     let pair = try await makeDownloadedAttachmentPair()
     defer { try? FileManager.default.removeItem(at: pair.root) }
     try await keepAttachments([pair.second.id, pair.first.id], ofSnip: pair.snipID, in: pair.senderLibrary)
@@ -3580,7 +3583,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     let kept = try publication(of: pair.second.id, in: keptStorage)
     XCTAssertFalse(kept.metadataAccepted)
     XCTAssertEqual(kept.metadata.position, 0)
-    XCTAssertEqual(kept.metadata.fileName, "second.txt")
+    XCTAssertEqual(kept.metadata.fileName, "renamed on 2.txt")
     let remote = await pair.server.fullSnapshot(
       for: CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
     )
@@ -3589,8 +3592,98 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await pair.receiver.sync()
     try await pair.sender.fetchRemote()
     try await assertSyncedAttachments([
-      (id: pair.second.id, fileName: "second.txt"), (id: pair.first.id, fileName: "first.txt"),
+      (id: pair.second.id, fileName: "renamed on 2.txt"), (id: pair.first.id, fileName: "first.txt"),
     ], in: pair)
+  }
+
+  func testARevertedUnsentRenameTakesANewerRemoteRename() async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: "renamed on 2.txt", in: pair.receiverLibrary)
+    _ = try await pair.receiverStore.pendingChanges()
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: pair.second.fileName, in: pair.receiverLibrary)
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: "renamed on 1.txt", in: pair.senderLibrary)
+    try await pair.sender.sync()
+
+    try await pair.receiver.sync()
+    try await pair.sender.fetchRemote()
+
+    try await assertSyncedAttachments([
+      (id: pair.first.id, fileName: "first.txt"), (id: pair.second.id, fileName: "renamed on 1.txt"),
+    ], in: pair)
+    for store in [pair.senderStore, pair.receiverStore] {
+      let next = try await store.pendingChanges()
+      XCTAssertFalse(plansMetadataSave(for: pair.second, in: next), "A reverted rename must not resend the old name.")
+    }
+  }
+
+  func testAnUnreadableMetadataShadowKeepsAPendingAttachmentEdit() async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: "kept on 2.txt", in: pair.receiverLibrary)
+    _ = try await pair.receiverStore.pendingChanges()
+    let pendingStorage = try await snapshot(pair.receiverLibrary, pair.namespace)
+    let pending = try publication(of: pair.second.id, in: pendingStorage)
+    try await pair.receiverLibrary.commitCloudAttachmentTransitions(
+      namespaceKey: pair.namespace.namespaceKey,
+      transitions: [.metadataConflict(attachmentID: pair.second.id, expectedRevision: pending.revision,
+        shadowData: Data("not-a-cloud-record-shadow".utf8), systemFields: Data())]
+    )
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: "renamed on 1.txt", in: pair.senderLibrary)
+    try await pair.sender.sync()
+    let remote = await pair.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
+    )
+    let fetched = try XCTUnwrap(remote)
+
+    try await pair.receiver.fetchRemote()
+
+    let keptStorage = try await snapshot(pair.receiverLibrary, pair.namespace)
+    let kept = try publication(of: pair.second.id, in: keptStorage)
+    XCTAssertFalse(kept.metadataAccepted)
+    XCTAssertEqual(kept.metadata.fileName, "kept on 2.txt", "Without a readable base, the pending edit keeps its whole record.")
+    XCTAssertEqual(kept.metadataShadowData, fetched.shadow.data)
+    try await pair.receiver.sync()
+    try await pair.sender.fetchRemote()
+    try await assertSyncedAttachments([
+      (id: pair.first.id, fileName: "first.txt"), (id: pair.second.id, fileName: "kept on 2.txt"),
+    ], in: pair)
+  }
+
+  func testAConflictingAttachmentSaveKeepsBothDevicesEditsToDifferentFields() async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await keepAttachments([pair.second.id, pair.first.id], ofSnip: pair.snipID, in: pair.senderLibrary)
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: "renamed on 2.txt", in: pair.receiverLibrary)
+    try await pair.receiver.sync()
+
+    // Sending without a fetch saves the reorder against the base the rename replaced.
+    try await pair.sender.sendPending()
+
+    let conflicted = try await snapshot(pair.senderLibrary, pair.namespace)
+    XCTAssertFalse(try publication(of: pair.second.id, in: conflicted).metadataAccepted)
+    let server = await pair.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
+    )
+    XCTAssertEqual(server?.encryptedFields["fileName"], .string("renamed on 2.txt"), "CloudKit must reject the stale save.")
+    try await pair.sender.sendPending()
+    try await pair.receiver.sync()
+    try await pair.sender.fetchRemote()
+
+    try await assertSyncedAttachments([
+      (id: pair.second.id, fileName: "renamed on 2.txt"), (id: pair.first.id, fileName: "first.txt"),
+    ], in: pair)
+    for store in [pair.senderStore, pair.receiverStore] {
+      let next = try await store.pendingChanges()
+      XCTAssertFalse(plansMetadataSave(for: pair.first, in: next))
+      XCTAssertFalse(plansMetadataSave(for: pair.second, in: next))
+    }
   }
 
   func testAnUnsentRenameOnTheDeviceHoldingTheFilesPublishesAgainstANewerRemoteRename() async throws {
@@ -4860,7 +4953,6 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await assertRestoreRepublished(held, in: upgraded, text: text)
   }
 
-  // 4e: the user renames an attachment, then renames it again while the first save is in flight.
   func testAHeldMetadataAcknowledgementPreservesAnUnreconciledPrependOnTheFileHolder() async throws {
     let clients = try await makeAttachmentEditClients()
     let holder = clients.holder
@@ -4877,7 +4969,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
     XCTAssertEqual(snip.attachments.map(\.id), expected, "An earlier acknowledgement must keep the unreconciled prepend.")
-    try await assertHeldRenamePlacementSettles(expected, between: clients)
+    try await assertPlacementSettlesKeepingCRename(expected, between: clients)
   }
 
   func testAHeldMetadataAcknowledgementPreservesARemovalBeforeAnUnreconciledAppend() async throws {
@@ -4901,9 +4993,71 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
     XCTAssertEqual(snip.attachments.map(\.id), expected, "The append must follow C without a stale-coordinate tie.")
-    try await assertHeldRenamePlacementSettles(expected, between: clients)
+    try await assertPlacementSettlesKeepingCRename(expected, between: clients)
   }
 
+  func testRevertingAReorderDuringItsSaveKeepsTheRevertAfterTheAcknowledgement() async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let original = AttachmentMatrixMember.initial.map(\.id)
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: holder.snipID, in: holder.library)
+    let outbound = try await holder.store.pendingChanges()
+    let sent = try await holder.transport.send(outbound)
+    try await keepAttachments(original, ofSnip: holder.snipID, in: holder.library)
+
+    try await holder.store.stage(.sent(sent), outbound: outbound)
+    try await holder.store.applyStaged(sent.id)
+    try await holder.transport.confirmApplied(sent.id)
+
+    let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), original, "The reorder's acknowledgement must keep the revert made during its save.")
+    try await assertPlacementSettles(original, between: clients)
+  }
+
+  func testAnUnreconciledPrependKeepsItsPlaceWhenARemoteReorderArrives() async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    let peer = clients.downloaded
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let n = AttachmentMatrixMember.n.id
+    try await insertUnreconciledAttachment(id: n, fileName: "N.txt", at: 0, in: holder)
+    try await keepAttachments(AttachmentMatrixMember.remoteOrder.map(\.id), ofSnip: peer.snipID, in: peer.library)
+    try await peer.sync.sync()
+
+    try await holder.sync.fetchRemote()
+
+    let expected = [n] + AttachmentMatrixMember.remoteOrder.map(\.id)
+    let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), expected, "The prepend must stay first beside the remote reorder.")
+    try await assertPlacementSettles(expected, between: clients)
+  }
+
+  func testAnUnreconciledRemovalLeavesNoGapWhenARemoteRenameArrives() async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    let peer = clients.downloaded
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let b = AttachmentMatrixMember.b.id
+    let c = AttachmentMatrixMember.c.id
+    let z = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    try await keepAttachments([b, c], ofSnip: holder.snipID, in: holder.library)
+    try await renameAttachment(ofSnip: peer.snipID, attachmentID: c, to: "renamed C.txt", in: peer.library)
+    try await peer.sync.sync()
+
+    try await holder.sync.fetchRemote()
+    try await insertUnreconciledAttachment(id: z, fileName: "Z.txt", at: 2, in: holder)
+
+    let expected = [b, c, z]
+    let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), expected, "The append must follow C without a stale-coordinate tie.")
+    try await assertPlacementSettlesKeepingCRename(expected, between: clients)
+  }
+
+  // 4e: the user renames an attachment, then renames it again while the first save is in flight.
   func testAnEditDuringAnInFlightMetadataSaveStaysPendingAfterTheSaveIsAccepted() async throws {
     let client = try await makeAttachmentClient(fileNames: ["a"])
     defer { try? FileManager.default.removeItem(at: client.root) }
@@ -5584,7 +5738,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await client.library.setUnpublishedAttachmentID(imported.id, to: id, for: client.snipID)
   }
 
-  private func assertHeldRenamePlacementSettles(
+  private func assertPlacementSettles(
     _ expected: [UUID], between clients: AttachmentEditClients
   ) async throws {
     let holder = clients.holder
@@ -5596,7 +5750,15 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       try await peer.sync.sync()
     }
     let order = try await assertSettledAttachmentOrder(Set(expected), between: holder, and: peer)
-    XCTAssertEqual(order, expected, "The placement made during the held acknowledgement must reach both devices and the server.")
+    XCTAssertEqual(order, expected, "The local placement must reach both devices and the server.")
+  }
+
+  private func assertPlacementSettlesKeepingCRename(
+    _ expected: [UUID], between clients: AttachmentEditClients
+  ) async throws {
+    try await assertPlacementSettles(expected, between: clients)
+    let holder = clients.holder
+    let peer = clients.downloaded
     let c = AttachmentMatrixMember.c.id
     for client in [holder, peer] {
       let snapshot = try await client.library.checkedSnapshot(sortedBy: .manual)
@@ -6549,6 +6711,16 @@ fileprivate extension AttachmentTransferTestSupport {
     try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
   }
 
+  /// The position iCloud last acknowledged for the attachment, read from its stored shadow.
+  func acknowledgedPosition(of attachmentID: UUID, in client: AttachmentClient) async throws -> Int? {
+    let storage = try await snapshot(client.library, client.namespace)
+    guard let shadow = storage.publications.first(where: {
+      $0.metadata.attachmentID == attachmentID
+    })?.metadataShadowData else { return nil }
+    let record = try CloudRecordShadow(data: shadow).record()
+    return try CloudAttachmentRecordCodec.metadata(from: CloudKitRecordMapper.snapshot(record)).position
+  }
+
   func makeLocalAttachmentSeed(names: [String]) async throws -> LocalAttachmentSeed {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -6661,7 +6833,7 @@ private struct AttachmentMatrixCell: Sendable, CustomStringConvertible {
       names[AttachmentMatrixMember.n.id] = AttachmentMatrixMember.n.fileName
     }
     if remote == .add { names[AttachmentMatrixMember.m.id] = AttachmentMatrixMember.m.fileName }
-    if remote == .rename && local != .inFlightReorder { names[AttachmentMatrixMember.b.id] = "remote-B.txt" }
+    if remote == .rename { names[AttachmentMatrixMember.b.id] = "remote-B.txt" }
     if local == .rename { names[AttachmentMatrixMember.b.id] = "local-B.txt" }
     return names
   }
@@ -6676,24 +6848,6 @@ private struct AttachmentMatrixCell: Sendable, CustomStringConvertible {
       members = AttachmentMatrixMember.initial
     }
     return members.map(\.id).filter { expectedNames[$0] != nil }
-  }
-
-  // SM33-D5 permits the pending device's whole edit, subject to main's edit-survival floor.
-  var allowedNames: [[UUID: String]] {
-    guard local == .removeRecorded && remote == .rename else { return [expectedNames] }
-    var pendingNames = expectedNames
-    pendingNames[AttachmentMatrixMember.b.id] = AttachmentMatrixMember.b.fileName
-    return [expectedNames, pendingNames]
-  }
-
-  var allowedSharedOrders: [[UUID]] {
-    let remoteAddWithLocalReorder = remote == .add && (local == .reorder || local == .inFlightReorder)
-    let localMembershipWithRemoteReorder = remote == .reorder && (local == .addRecorded || local == .removeRecorded)
-    guard remoteAddWithLocalReorder || localMembershipWithRemoteReorder else {
-      return [expectedSharedOrder]
-    }
-    let pendingOrder = AttachmentMatrixMember.initial.map(\.id).filter { expectedNames[$0] != nil }
-    return [expectedSharedOrder, pendingOrder]
   }
 
   var mainFloorSharedOrder: [UUID]? {
@@ -6801,15 +6955,15 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
 
     try await receiver.sync.fetchRemote()
 
-    let partial = try await receiver.library.storedAttachmentReferencePositions(for: holder.snipID)
-    #expect(partial == [b: 1], "\(scenario) partial fetch retains B1")
+    let partial = try await acknowledgedPosition(of: b, in: receiver)
+    #expect(partial == 1, "\(scenario) partial fetch keeps B1 in B's shadow")
     let plan = try await receiver.store.pendingChanges()
     #expect(plan.operations.contains(where: { operation in
       guard case .save(let draft) = operation else { return false }
       return draft.id == metadataID(.b) && draft.encryptedFields["position"] == .int64(0)
     }), "\(scenario) the partial plan records B0")
-    let afterPlan = try await receiver.library.storedAttachmentReferencePositions(for: holder.snipID)
-    #expect(afterPlan == [b: 1], "\(scenario) planning must preserve raw B1 until acknowledgement")
+    let afterPlan = try await acknowledgedPosition(of: b, in: receiver)
+    #expect(afterPlan == 1, "\(scenario) planning keeps B1 in B's shadow until acknowledgement")
     if acknowledgedBeforeRetry { try await receiver.sync.sendPending() }
 
     try await receiver.sync.fetchRemote()
@@ -6932,7 +7086,6 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     let sharedIDs = Set(AttachmentMatrixMember.initial.map(\.id)).intersection(expectedIDs)
     let types = await clients.holder.server.storedRecordTypes(in: CloudZoneID(name: "data", ownerName: "owner"))
     var failures: [String] = []
-    var mainFloorChecks: [(condition: Bool, message: String)] = []
     func check(_ condition: Bool, _ message: String) {
       #expect(condition, "\(cell) \(message)")
       if !condition { failures.append(message) }
@@ -6956,19 +7109,19 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
       if case .string(let name)? = present.encryptedFields["fileName"] { serverNames[member.id] = name }
       if case .string(let type)? = present.encryptedFields["contentType"] { serverTypes[member.id] = type }
     }
-    check(cell.allowedNames.contains(serverNames), "server names follow field winners or the pending exception")
+    check(serverNames == expectedNames, "server names follow field winners")
     check(serverTypes == expectedTypes, "server types")
     let serverOrder = serverPositions.keys.sorted {
       if serverPositions[$0] != serverPositions[$1] { return serverPositions[$0, default: 0] < serverPositions[$1, default: 0] }
       return $0.uuidString < $1.uuidString
     }
     let serverSharedOrder = serverOrder.filter { sharedIDs.contains($0) }
-    check(cell.allowedSharedOrders.contains(serverSharedOrder), "server shared order follows the winner or the pending exception")
+    check(serverSharedOrder == cell.expectedSharedOrder, "server shared order follows the winner")
     if let mainOrder = cell.mainFloorSharedOrder {
-      mainFloorChecks.append((serverSharedOrder == mainOrder, "server keeps the reorder retained by main c42d47d5"))
+      check(serverSharedOrder == mainOrder, "server keeps the reorder retained by main c42d47d5")
     }
     for (id, name) in cell.mainFloorNames {
-      mainFloorChecks.append((serverNames[id] == name, "server keeps the rename retained by main c42d47d5"))
+      check(serverNames[id] == name, "server keeps the rename retained by main c42d47d5")
     }
     var deviceLogs: [String] = []
     for (role, client) in [("H", clients.holder), ("D", clients.downloaded)] {
@@ -6980,17 +7133,17 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
       check(Set(order) == expectedIDs && order.count == expectedIDs.count, "\(role) membership")
       check(order == serverOrder, "\(role) agrees with server order")
       let sharedOrder = order.filter { sharedIDs.contains($0) }
-      check(cell.allowedSharedOrders.contains(sharedOrder), "\(role) shared order follows the winner or the pending exception")
+      check(sharedOrder == cell.expectedSharedOrder, "\(role) shared order follows the winner")
       let names = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.fileName }
       let contentTypes = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.contentType ?? "<nil>" }
-      check(cell.allowedNames.contains(names), "\(role) names follow the winner or the pending exception")
+      check(names == expectedNames, "\(role) names follow the winner")
       check(names == serverNames, "\(role) agrees with server names")
       check(contentTypes == expectedTypes && contentTypes == serverTypes, "\(role) types")
       if let mainOrder = cell.mainFloorSharedOrder {
-        mainFloorChecks.append((sharedOrder == mainOrder, "\(role) keeps the reorder retained by main c42d47d5"))
+        check(sharedOrder == mainOrder, "\(role) keeps the reorder retained by main c42d47d5")
       }
       for (id, name) in cell.mainFloorNames {
-        mainFloorChecks.append((names[id] == name, "\(role) keeps the rename retained by main c42d47d5"))
+        check(names[id] == name, "\(role) keeps the rename retained by main c42d47d5")
       }
       let positions = try await client.library.storedAttachmentReferencePositions(for: client.snipID)
       check(Set(positions.keys) == expectedIDs, "\(role) stored membership")
@@ -7005,24 +7158,9 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
         return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
       }), "\(role) quiet after settlement")
     }
-    let shiftedSiblingIssue = cell.role == .downloaded && cell.local == .removeRecorded
-      && (cell.remote == .rename || cell.remote == .reorder)
-    if shiftedSiblingIssue {
-      withKnownIssue("SM33-F2: a shifted sibling needs its last acknowledged values") {
-        for floor in mainFloorChecks {
-          #expect(floor.condition, "\(cell) \(floor.message)")
-        }
-      }
-      if mainFloorChecks.allSatisfy({ $0.condition }) {
-        failures.append("SM33-F2 known issue unexpectedly passed")
-      }
-    } else {
-      for floor in mainFloorChecks { check(floor.condition, floor.message) }
-    }
     let result = failures.isEmpty ? "PASS" : "FAIL"
     let server = format(order: serverOrder, positions: serverPositions, names: serverNames, types: serverTypes)
-    let knownIssue = shiftedSiblingIssue ? " knownIssue=SM33-F2" : ""
-    return "result=\(result)\(knownIssue) server=\(server) \(deviceLogs.joined(separator: " ")) failures=\(String(reflecting: failures.joined(separator: "; ")))"
+    return "result=\(result) server=\(server) \(deviceLogs.joined(separator: " ")) failures=\(String(reflecting: failures.joined(separator: "; ")))"
   }
 
   private func format(order: [UUID], positions: [UUID: Int], names: [UUID: String], types: [UUID: String]) -> String {
