@@ -82,9 +82,19 @@ protocol IOSPasteboardWriting: AnyObject {
     func write(_ items: [IOSCopyItem]) -> Bool
 }
 
+/// The parts of `UIPasteboard` that `IOSSystemPasteboard` writes through.
+@MainActor
+protocol IOSItemProviderPasteboard: AnyObject {
+    var name: UIPasteboard.Name { get }
+    var changeCount: Int { get }
+    func setItemProviders(_ itemProviders: [NSItemProvider], localOnly: Bool, expirationDate: Date?)
+}
+
+extension UIPasteboard: IOSItemProviderPasteboard {}
+
 @MainActor
 final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
-    private let pasteboard: UIPasteboard
+    private let pasteboard: any IOSItemProviderPasteboard
     private let stagingRoot: URL
     private let fileManager: FileManager
     private enum LeaseState {
@@ -100,7 +110,7 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
     }
 
     init(
-        pasteboard: UIPasteboard = .general,
+        pasteboard: any IOSItemProviderPasteboard = UIPasteboard.general,
         stagingRoot: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapPasteboard", isDirectory: true),
         fileManager: FileManager = .default
@@ -114,7 +124,7 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
             self,
             selector: #selector(pasteboardChanged),
             name: UIPasteboard.changedNotification,
-            object: pasteboard
+            object: pasteboard as AnyObject
         )
         NotificationCenter.default.addObserver(
             self,
@@ -369,6 +379,8 @@ final class IOSCopyShareCoordinator {
     }
 
     @ObservationIgnored private var copyRequest: CopyRequest?
+    /// The latest share tap. Share requests stay separate from copy requests.
+    @ObservationIgnored private var latestShareToken: UUID?
 
     private(set) var unavailableFilesNotice: IOSUnavailableFilesNotice?
     private(set) var shareRequest: IOSShareRequest?
@@ -469,11 +481,14 @@ final class IOSCopyShareCoordinator {
 
     func share(snips: [Snip], model: IOSAppModel) async {
         model.haptics.invalidatePendingFeedback()
+        let token = UUID()
+        latestShareToken = token
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
         let preparation = await makePreparedPayload(snips: current, model: model, use: .export)
         guard let payload = preparation.payload, !Task.isCancelled else { return }
+        guard isCurrentShareRequest(token) else { return }
         guard requireAllFiles(
             in: payload,
             preparationErrorCode: preparation.failureCode,
@@ -556,6 +571,10 @@ final class IOSCopyShareCoordinator {
 
     private func isCurrentCopyRequest(_ token: UUID) -> Bool {
         copyRequest?.token == token
+    }
+
+    private func isCurrentShareRequest(_ token: UUID) -> Bool {
+        latestShareToken == token
     }
 
     private func makePreparedPayload(
@@ -765,7 +784,10 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {
-        let coordinator = context.coordinator
+        presentPendingRequest(in: controller, coordinator: context.coordinator)
+    }
+
+    private func presentPendingRequest(in controller: UIViewController, coordinator: Coordinator) {
         guard let request, controller.presentedViewController == nil, coordinator.isIdle else { return }
         let activity = makeActivityController(for: request, coordinator: coordinator)
         if let popover = activity.popoverPresentationController {
@@ -782,6 +804,8 @@ struct IOSShareSheetPresenter: UIViewControllerRepresentable {
             guard coordinator.isActive(for: request.id) else { return }
             guard self.request?.id == request.id, controller.presentedViewController == nil else {
                 coordinator.cancel(request.id)
+                // A replacement that arrived while this request waited gets no other update.
+                self.presentPendingRequest(in: controller, coordinator: coordinator)
                 return
             }
             controller.present(activity, animated: true)

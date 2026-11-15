@@ -593,7 +593,7 @@ func waitForQueuedMutations(
   orFinished: @Sendable () -> Bool = { false }
 ) async throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-  while await persistence.activeMutationWaiters.count != count {
+  while await persistence.queuedWriterCount != count {
     if orFinished() { return }
     guard ContinuousClock.now < deadline else { throw AdmissionTestError.timedOut }
     try await Task.sleep(for: .milliseconds(1))

@@ -73,25 +73,29 @@ public struct SnipSnapCloudActiveLibrary: Sendable {
 @MainActor
 public final class SnipSnapCloudLifecycleHooks {
   public typealias SyncAction = @MainActor @Sendable () async -> Void
+  private enum Phase: Equatable {
+    case idle
+    case syncing(followUpRequested: Bool)
+  }
+
   private let syncAction: SyncAction
-  private var isSyncing = false
-  private var needsAnotherSync = false
+  private var phase = Phase.idle
 
   public init(syncWhenPossible: @escaping SyncAction) {
     syncAction = syncWhenPossible
   }
 
+  /// A trigger during a sync returns at once and asks for one more sync after it.
   public func run() async {
-    if isSyncing {
-      needsAnotherSync = true
+    guard phase == .idle else {
+      phase = .syncing(followUpRequested: true)
       return
     }
-    isSyncing = true
     repeat {
-      needsAnotherSync = false
+      phase = .syncing(followUpRequested: false)
       await syncAction()
-    } while needsAnotherSync
-    isSyncing = false
+    } while phase == .syncing(followUpRequested: true)
+    phase = .idle
   }
 }
 

@@ -277,6 +277,76 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         XCTAssertNil(coordinator.unavailableFilesNotice)
     }
 
+    func testNewerShareWinsWhileOlderAttachmentPreparationWaits() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "note.txt")
+        let older = Snip(content: "Older share", origin: .quickEntry, attachments: [attachment])
+        let newer = Snip(content: "Newer share", origin: .quickEntry)
+        let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [older, newer]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: RecordingPasteboard())
+        let olderShare = Task { await coordinator.share(snips: [older], model: model) }
+        await handler.waitUntilPrepareStarts()
+
+        await coordinator.share(snips: [newer], model: model)
+        let newerItems = coordinator.shareRequest?.items
+        await handler.finishPrepare(with: .success(file))
+        await olderShare.value
+
+        XCTAssertEqual(newerItems, [.text("Newer share")])
+        XCTAssertEqual(coordinator.shareRequest?.items, [.text("Newer share")])
+        XCTAssertNil(coordinator.unavailableFilesNotice)
+    }
+
+    func testOlderShareDoesNotClearNewerShareUnavailableFilesNotice() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("Attachment".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let olderAttachment = try testAttachment(id: UUID(), fileName: "older.txt")
+        let newerAttachment = try testAttachment(id: UUID(), fileName: "newer.txt")
+        let older = Snip(content: "Older share", origin: .quickEntry, attachments: [olderAttachment])
+        let newer = Snip(content: "Newer share", origin: .quickEntry, attachments: [newerAttachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [
+            olderAttachment.id: .waiting,
+            newerAttachment.id: .waiting,
+        ])
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: [older, newer]),
+            cloudSyncHandler: handler
+        )
+        await model.load()
+        let diagnostics = IOSDiagnosticRecorderProbe()
+        let coordinator = IOSCopyShareCoordinator(
+            pasteboard: RecordingPasteboard(),
+            diagnostics: diagnostics.recorder
+        )
+        let olderShare = Task { await coordinator.share(snips: [older], model: model) }
+        await handler.waitUntilPrepareStarts()
+
+        let newerShare = Task { await coordinator.share(snips: [newer], model: model) }
+        await handler.waitUntilPrepareCount(2)
+        await handler.finishPrepare(with: .failure(SnipLibraryError.attachmentCopyFailed), at: 1)
+        await newerShare.value
+        let newerFileNames = coordinator.unavailableFilesNotice?.payload.unavailableFileNames
+        let newerShareRequest = coordinator.shareRequest
+        let newerDiagnostics = diagnostics.events.map(\.line)
+        await handler.finishPrepare(with: .success(file))
+        await olderShare.value
+
+        XCTAssertEqual(newerFileNames, ["newer.txt"])
+        XCTAssertNil(newerShareRequest)
+        XCTAssertEqual(diagnostics.events.filter { $0.operation == "attachment.prepare" }.count, 1)
+        XCTAssertEqual(coordinator.unavailableFilesNotice?.payload.unavailableFileNames, ["newer.txt"])
+        XCTAssertNil(coordinator.shareRequest)
+        XCTAssertEqual(diagnostics.events.map(\.line), newerDiagnostics)
+    }
+
     func testNewerCopyPreventsOlderPostWriteCompletionWhileLibraryIsLocked() async throws {
         let older = Snip(content: "Older copy", origin: .quickEntry)
         let newer = Snip(content: "Newer copy", origin: .quickEntry, pinnedAt: Date())
@@ -896,6 +966,26 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
     }
 
+    func testTextOnlyWriteReleasesEarlierFileLeaseWithoutPasteboardNotifications() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardSilent-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Lease".utf8).write(to: sourceURL)
+        let writer = IOSSystemPasteboard(
+            pasteboard: SilentItemProviderPasteboard(),
+            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
+        )
+        XCTAssertTrue(writer.write([.file(sourceURL)]))
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+
+        XCTAssertTrue(writer.write([.text("Text only")]))
+
+        XCTAssertNil(writer.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+    }
+
     func testFailedFileWriteKeepsEarlierFileLease() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapPasteboardFailedWrite-\(UUID().uuidString)", isDirectory: true)
@@ -919,5 +1009,16 @@ final class IOSSnipCopyTests: IOSModelTestCase {
             at: stagingRoot, includingPropertiesForKeys: nil
         )
         XCTAssertEqual(stagedDirectories.map(\.lastPathComponent), [leaseDirectory.lastPathComponent])
+    }
+}
+
+/// Never posts pasteboard notifications, so only `write` can release a lease.
+@MainActor
+private final class SilentItemProviderPasteboard: IOSItemProviderPasteboard {
+    let name = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+    private(set) var changeCount = 0
+
+    func setItemProviders(_ itemProviders: [NSItemProvider], localOnly: Bool, expirationDate: Date?) {
+        changeCount += 1
     }
 }

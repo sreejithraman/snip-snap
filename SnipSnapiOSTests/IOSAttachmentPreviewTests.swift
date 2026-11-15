@@ -336,6 +336,35 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         XCTAssertEqual(retryURL, url)
     }
 
+    func testOverlappingCancelledPreparationsKeepTheStateARefreshReported() async {
+        let id = UUID()
+        let handler = IOSCloudSyncHandlerProbe(states: [id: .waiting])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+
+        let first = Task {
+            await model.prepareAttachment(id, for: .preview, showsFailureAlert: false)
+        }
+        await handler.waitUntilPrepareCount(1)
+        let second = Task {
+            await model.prepareAttachment(id, for: .preview, showsFailureAlert: false)
+        }
+        await handler.waitUntilPrepareCount(2)
+        await handler.setState(.available, for: id)
+        await model.load()
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+
+        await handler.finishPrepare(with: .failure(CancellationError()))
+        let firstURL = await first.value
+        XCTAssertNil(firstURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .syncing)
+
+        await handler.finishPrepare(with: .failure(CancellationError()))
+        let secondURL = await second.value
+        XCTAssertNil(secondURL)
+        XCTAssertEqual(model.attachmentTransferState(for: id), .available)
+    }
+
     func testUsableAttachmentURLRejectsAStaleFile() async throws {
         let id = UUID()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -760,6 +789,25 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         let prepared = await preparing.value
         XCTAssertEqual(prepared, verified)
         XCTAssertEqual(model.attachmentURL(for: id), verified)
+    }
+
+    func testModeReadFailureWhileICloudSyncIsOnHidesTheUnverifiedLocalURL() async {
+        let id = UUID()
+        let local = URL(fileURLWithPath: "/tmp/active-then-unknown.txt")
+        let handler = IOSCloudSyncHandlerProbe(states: [:], activeReadFailsAfterFirst: true)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(attachmentURLs: [id: local]),
+            cloudSyncHandler: handler
+        )
+
+        await model.load()
+        XCTAssertEqual(model.attachmentURL(for: id), local)
+        XCTAssertTrue(model.isCloudSyncActive)
+
+        await model.load()
+        XCTAssertTrue(model.isCloudSyncActive)
+        XCTAssertNil(model.attachmentURL(for: id))
+        XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
     }
 
     func testExistingEditorDraftUsesVerifiedPrepareEvenWithALocalURL() async {

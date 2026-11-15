@@ -114,6 +114,7 @@
 		E10000000000000000000005 /* SnipCollectionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* SnipCollectionViews.swift */; };
 		C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* LibrarySidebarViews.swift */; };
 		D9A100000000000000000002 /* LibraryRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000001 /* LibraryRailView.swift */; };
+		D9A100000000000000000006 /* LibrarySidebarSizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A100000000000000000005 /* LibrarySidebarSizing.swift */; };
 		C10000000000000000000004 /* RecoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* RecoveryViews.swift */; };
 		C10000000000000000000005 /* MoveSnipMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* MoveSnipMenu.swift */; };
 		E10000000000000000000006 /* EditorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000006 /* EditorViews.swift */; };
@@ -389,6 +390,7 @@
 		E20000000000000000000005 /* SnipCollectionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCollectionViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000003 /* LibrarySidebarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarViews.swift; sourceTree = "<group>"; };
 		D9A100000000000000000001 /* LibraryRailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryRailView.swift; sourceTree = "<group>"; };
+		D9A100000000000000000005 /* LibrarySidebarSizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySidebarSizing.swift; sourceTree = "<group>"; };
 		C20000000000000000000004 /* RecoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryViews.swift; sourceTree = "<group>"; };
 		C20000000000000000000005 /* MoveSnipMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoveSnipMenu.swift; sourceTree = "<group>"; };
 		E20000000000000000000006 /* EditorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViews.swift; sourceTree = "<group>"; };
@@ -719,6 +721,7 @@
 				B1B000000000000000000101 /* CompactLibraryPageStack.swift */,
 				C20000000000000000000003 /* LibrarySidebarViews.swift */,
 				D9A100000000000000000001 /* LibraryRailView.swift */,
+				D9A100000000000000000005 /* LibrarySidebarSizing.swift */,
 				E20000000000000000000005 /* SnipCollectionViews.swift */,
 				A940E1000000000000000004 /* CollectionScreenPresentation.swift */,
 				C20000000000000000000004 /* RecoveryViews.swift */,
@@ -1192,6 +1195,7 @@
 				B1B000000000000000000001 /* CompactLibraryPageStack.swift in Sources */,
 				C10000000000000000000003 /* LibrarySidebarViews.swift in Sources */,
 				D9A100000000000000000002 /* LibraryRailView.swift in Sources */,
+				D9A100000000000000000006 /* LibrarySidebarSizing.swift in Sources */,
 				E10000000000000000000005 /* SnipCollectionViews.swift in Sources */,
 				A940E1000000000000000003 /* CollectionScreenPresentation.swift in Sources */,
 				C10000000000000000000004 /* RecoveryViews.swift in Sources */,
