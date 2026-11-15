@@ -83,8 +83,8 @@ package enum ClipboardBindingResetStep: Sendable {
     private let resetStep: @MainActor (ClipboardBindingResetStep) async throws -> Void
     private var binding: ClipboardCloudBinding?
     private var lifecycle = ClipboardCloudLifecycle.idle
-    /// A started account reset hasn't set history aside yet, so nothing may bind. In memory only.
-    private var isSetAsidePending = false
+    /// The started account reset that hasn't set history aside yet, so nothing may bind. In memory only.
+    private var pendingSetAside: UUID?
 
     public convenience init(store: ClipboardHistoryStore,
                             containerIdentifier: String, syncRootURL: URL) {
@@ -227,14 +227,15 @@ package enum ClipboardBindingResetStep: Sendable {
         includingUnboundHistory: Bool = false,
         settingAside: @MainActor () async throws -> Void = {}
     ) async throws {
-        guard includingUnboundHistory || isSetAsidePending
+        guard includingUnboundHistory || pendingSetAside != nil
             || FileManager.default.fileExists(atPath: bindingURL.path) else { return }
-        isSetAsidePending = true
+        let setAside = UUID()
+        pendingSetAside = setAside
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         try await settingAside()
         try await store.setAside()
-        isSetAsidePending = false
+        if pendingSetAside == setAside { pendingSetAside = nil }
         try await resetStep(.historyCleared)
         try removeBinding()
         try await resetStep(.bindingRemoved)
@@ -316,7 +317,7 @@ package enum ClipboardBindingResetStep: Sendable {
         lifecycle = .idle
     }
     private func bind(to generation: String) throws -> any ClipboardCloudTransport {
-        if isSetAsidePending { throw ClipboardCloudError.syncGenerationChanged }
+        if pendingSetAside != nil { throw ClipboardCloudError.syncGenerationChanged }
         let stored = try (try? Data(contentsOf: bindingURL)).map { try JSONDecoder().decode(String.self, from: $0) }
         switch ClipboardStoredBinding(stored: stored, requested: generation) {
         case .unbound:

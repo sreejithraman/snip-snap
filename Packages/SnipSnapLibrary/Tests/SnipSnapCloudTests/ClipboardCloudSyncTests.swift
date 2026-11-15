@@ -13,6 +13,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     var unavailable = false
     var conflictOnce = false
     var rateLimitedFetches = 0
+    var rateLimitedDeletes = 0
     var fetchObserver: (@Sendable () -> Void)?
     var fetchRequests = 0
     var pauseSave = false
@@ -35,6 +36,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     func setUnavailable(_ value: Bool) { unavailable = value }
     func setConflict() { conflictOnce = true }
     func rateLimitFetches(_ count: Int) { rateLimitedFetches = count }
+    func rateLimitDeletes(_ count: Int) { rateLimitedDeletes = count }
     func observeFetches(_ observer: @escaping @Sendable () -> Void) { fetchObserver = observer }
     func fetchCount() -> Int { fetchRequests }
     func fetch() throws -> ClipboardCloudSnapshot {
@@ -42,11 +44,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         fetchObserver?()
         if rateLimitedFetches > 0 {
             rateLimitedFetches -= 1
-            throw CKError(_nsError: NSError(
-                domain: CKErrorDomain,
-                code: CKError.Code.requestRateLimited.rawValue,
-                userInfo: [CKErrorRetryAfterKey: 10]
-            ))
+            throw Self.rateLimited()
         }
         if unavailable { throw ClipboardCloudError.unavailable }
         return snapshot
@@ -63,7 +61,20 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
         guard incoming.version == snapshot.version else { throw ClipboardCloudError.conflict }
         serial += 1; snapshot = incoming; snapshot.version = Data(String(serial).utf8)
     }
-    func deleteAll() { snapshot = ClipboardCloudSnapshot() }
+    func deleteAll() throws {
+        if rateLimitedDeletes > 0 {
+            rateLimitedDeletes -= 1
+            throw Self.rateLimited()
+        }
+        snapshot = ClipboardCloudSnapshot()
+    }
+    private static func rateLimited() -> CKError {
+        CKError(_nsError: NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.requestRateLimited.rawValue,
+            userInfo: [CKErrorRetryAfterKey: 10]
+        ))
+    }
 }
 
 @MainActor private struct ClipboardClient {
@@ -783,6 +794,45 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
             try await client.sync.resetAccountBinding(includingUnboundHistory: true,
                                                       settingAside: { throw SettingAsideFailure() })
         }
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
+            try await client.run(scope: "account-generation-B")
+        }
+        #expect(try await cloud.fetch().entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: bindingURL.path))
+
+        try await client.sync.resetAccountBinding()
+        #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
+        #expect(try await client.store.load().entries.isEmpty)
+
+        try await client.run(scope: "account-generation-B")
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func busyAccountResetKeepsUnboundHistoryOutOfTheNextAccount() async throws {
+        let clock = ClipboardRetryClock()
+        let sleep = ClipboardRetrySleepGate()
+        let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { duration in
+            try await sleep.wait()
+            clock.advance(duration)
+        })
+        let cloud = ClipboardTestCloud()
+        await cloud.rateLimitDeletes(1)
+        let client = ClipboardClient(cloud, retry: retry)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let older = entry("never synced")
+        try await client.store.insert(older)
+        let deleting = Task { try await client.sync.deleteSyncedHistory(generation: "account-generation-A") }
+
+        let waiting = await eventually { sleep.isWaiting }
+        if !waiting { deleting.cancel() }
+        try #require(waiting, "The cloud delete retry never waited")
+        await #expect(throws: ClipboardCloudError.busy) {
+            try await client.sync.resetAccountBinding(includingUnboundHistory: true)
+        }
+        sleep.release()
+        try await deleting.value
+
         await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
             try await client.run(scope: "account-generation-B")
         }
