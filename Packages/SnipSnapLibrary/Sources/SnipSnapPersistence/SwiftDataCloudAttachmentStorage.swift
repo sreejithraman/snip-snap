@@ -555,7 +555,7 @@ extension SwiftDataSnipLibrary {
     for entry in entries {
       try lock.check()
       guard let publication = publications[entry.attachmentID],
-        publication.lifecycle.isMetadataAccepted,
+        publication.lifecycle.isPayloadRecoverableFromCloudKit,
         publication.payloadIdentity == entry.payloadIdentity
       else {
         context.delete(entry)
@@ -624,7 +624,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     ).first(where: { $0.attachmentID == attachmentID }),
-      publication.lifecycle.isMetadataAccepted,
+      publication.lifecycle.isPayloadRecoverableFromCloudKit,
       publication.payloadIdentity == row.payloadIdentity
     else {
       if let url = try? cloudAttachmentFiles.cacheFileURL(

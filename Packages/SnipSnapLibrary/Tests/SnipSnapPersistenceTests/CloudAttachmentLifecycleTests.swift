@@ -716,6 +716,161 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: secondCache.path))
   }
 
+  // MARK: Downloads while metadata waits to sync
+
+  // CloudKit holds each payload below while its metadata waits to sync, so each case fails if
+  // its reader goes back to requiring accepted metadata.
+
+  func testTouchKeepsAVerifiedDownloadWhileTheMetadataWaitsToSync() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let bytes = Data("download touched while its metadata waits".utf8)
+    let download = try await makeDownloadAwaitingMetadata(in: library, bytes: bytes)
+    let touchedAt = Date(timeIntervalSince1970: 10)
+
+    let touched = try await library.touchCloudAttachmentCache(
+      namespaceKey: namespace,
+      attachmentID: download.metadata.attachmentID,
+      now: touchedAt
+    )
+
+    XCTAssertEqual(
+      touched?.standardizedFileURL,
+      download.cachedURL.standardizedFileURL,
+      "Touch must return the verified download."
+    )
+    XCTAssertEqual(
+      try? Data(contentsOf: download.cachedURL),
+      bytes,
+      "Touch must keep the cached bytes."
+    )
+    let storage = try await attachmentStorage(library)
+    XCTAssertEqual(
+      storage.cacheEntries.map(\.attachmentID),
+      [download.metadata.attachmentID],
+      "Touch must keep the cache entry."
+    )
+    XCTAssertEqual(
+      storage.cacheEntries.first?.lastAccessedAt,
+      touchedAt,
+      "Touch must record the access."
+    )
+  }
+
+  func testSweepKeepsAVerifiedDownloadWhileTheMetadataWaitsToSync() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let bytes = Data("download swept while its metadata waits".utf8)
+    let download = try await makeDownloadAwaitingMetadata(in: library, bytes: bytes)
+
+    try await library.sweepCloudAttachmentCache(namespaceKey: namespace, maximumBytes: 1_024)
+
+    XCTAssertEqual(
+      try? Data(contentsOf: download.cachedURL),
+      bytes,
+      "The sweep must keep the cached file."
+    )
+    let storage = try await attachmentStorage(library)
+    XCTAssertEqual(
+      storage.cacheEntries.map(\.attachmentID),
+      [download.metadata.attachmentID],
+      "The sweep must keep the cache entry."
+    )
+  }
+
+  func testDurableCopyRecoversAnInvalidDurableFileWhileTheMetadataWaitsToSync() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("durable copy damaged while its metadata waits".utf8)
+    let download = try await makeDownloadAwaitingMetadata(in: library, bytes: bytes)
+    let attachmentID = download.metadata.attachmentID
+    let copied = try await library.materializeCloudAttachmentForLocalCopy(
+      namespaceKey: namespace,
+      attachmentID: attachmentID
+    )
+    XCTAssertTrue(copied, "The verified download must become the durable copy.")
+    let durable = try await storedAttachment(library, attachmentID)
+    XCTAssertFalse(
+      durable.attachment.relativePath.hasPrefix("CloudDownloads/"),
+      "The attachment must now point at its durable copy."
+    )
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: download.metadata)
+    try FileManager.default.removeItem(at: durableURL)
+    try Data(repeating: 0xA5, count: bytes.count).write(to: durableURL)
+
+    await assertDurableCopyDefersToCloudKit(
+      library,
+      attachmentID,
+      "An invalid durable file must be recoverable from CloudKit"
+    )
+  }
+
+  func testDurableCopyRecoversAnUnresolvableCachePathWhileTheMetadataWaitsToSync() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("cache path broken while its metadata waits".utf8)
+    let download = try await makeDownloadAwaitingMetadata(in: library, bytes: bytes)
+    let elsewhere = root.appendingPathComponent("elsewhere.txt")
+    try bytes.write(to: elsewhere)
+    try FileManager.default.removeItem(at: download.cachedURL)
+    try FileManager.default.createSymbolicLink(
+      at: download.cachedURL,
+      withDestinationURL: elsewhere
+    )
+
+    await assertDurableCopyDefersToCloudKit(
+      library,
+      download.metadata.attachmentID,
+      "A cache path that doesn't resolve must be recoverable from CloudKit"
+    )
+
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: durableCopyURL(storeURL: storeURL, metadata: download.metadata).path
+      ),
+      "The durable copy must not follow the link."
+    )
+  }
+
+  func testDurableCopyRecoversCorruptCachedBytesWhileTheMetadataWaitsToSync() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("cached bytes corrupted while its metadata waits".utf8)
+    let download = try await makeDownloadAwaitingMetadata(in: library, bytes: bytes)
+    try Data(repeating: 0xA5, count: bytes.count).write(to: download.cachedURL)
+
+    await assertDurableCopyDefersToCloudKit(
+      library,
+      download.metadata.attachmentID,
+      "Corrupt cached bytes must be recoverable from CloudKit"
+    )
+
+    let stored = try await storedAttachment(library, download.metadata.attachmentID)
+    XCTAssertTrue(
+      stored.attachment.relativePath.hasPrefix("CloudDownloads/"),
+      "Corrupt cached bytes must not become the durable copy."
+    )
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: durableCopyURL(storeURL: storeURL, metadata: download.metadata).path
+      ),
+      "Corrupt cached bytes must not be copied."
+    )
+  }
+
   // MARK: Defect regressions
 
   // DC1: a copy killed midway leaves a partial file at the durable destination. No stored
@@ -1132,6 +1287,63 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     let downloaded = try await storedAttachment(library, metadata.attachmentID)
     XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
     return metadata
+  }
+
+  /// A remote attachment with verified bytes in the download cache whose metadata save then
+  /// conflicted, so CloudKit holds its payload while its metadata waits to sync.
+  private func makeDownloadAwaitingMetadata(
+    in library: SwiftDataSnipLibrary,
+    bytes: Data
+  ) async throws -> (metadata: CloudAttachmentMetadataValue, cachedURL: URL) {
+    let snipID = try await addSnip(to: library)
+    let metadata = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: "pending.txt",
+      bytes: bytes
+    )
+    let staged = try await stageDownload(bytes, in: library)
+    let cachedURL = try await installDownload(metadata, bytes: bytes, staged: staged, in: library)
+    let published = try await attachmentStorage(library)
+    let revision = try XCTUnwrap(published.publications.first(where: {
+      $0.metadata.attachmentID == metadata.attachmentID
+    })).revision
+    try await commit(library, [.metadataConflict(
+      attachmentID: metadata.attachmentID,
+      expectedRevision: revision,
+      shadowData: Data("conflicting-metadata-shadow".utf8),
+      systemFields: Data("conflicting-metadata-fields".utf8)
+    )])
+    let pending = try await attachmentStorage(library)
+    let publication = try XCTUnwrap(pending.publications.first(where: {
+      $0.metadata.attachmentID == metadata.attachmentID
+    }))
+    XCTAssertTrue(publication.payloadAccepted, "CloudKit must hold the payload.")
+    XCTAssertFalse(publication.metadataAccepted, "The metadata must wait to sync.")
+    XCTAssertNil(publication.localSourceURL, "This device must hold only the download.")
+    XCTAssertEqual(pending.cacheEntries.count, 1, "The download must stay cached.")
+    return (metadata, cachedURL)
+  }
+
+  /// Asserts that the durable copy reports bytes it can't use here as recoverable from CloudKit
+  /// instead of failing.
+  private func assertDurableCopyDefersToCloudKit(
+    _ library: SwiftDataSnipLibrary,
+    _ attachmentID: UUID,
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async {
+    do {
+      let ready = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace,
+        attachmentID: attachmentID
+      )
+      XCTAssertFalse(ready, "\(message).", file: file, line: line)
+    } catch {
+      XCTFail("\(message): \(error)", file: file, line: line)
+    }
   }
 
   private func stageDownload(_ bytes: Data, in library: SwiftDataSnipLibrary) async throws -> URL {
