@@ -289,14 +289,16 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         let (model, handler, draft, existing) = try await makeExistingAttachmentEditor()
         defer { draft.discard() }
 
-        draft.previewAttachment(existing, using: model)
-        await handler.waitUntilPrepareStarts()
         draft.presentAttachmentPicker(.files, replacing: existing.id)
         draft.dismissAttachmentPicker(.files)
+        draft.previewAttachment(existing, using: model)
+        await handler.waitUntilPrepareStarts()
         let replacement = try makeSourceFile("replacement.txt")
         draft.stage(.success([replacement]), using: model)
         await waitUntilStagingStops(draft)
+        XCTAssertEqual(draft.attachments.map(\.id), [existing.id])
         XCTAssertEqual(draft.attachments.first?.source, .replacement(attachmentID: existing.id))
+        XCTAssertFalse(draft.canDismiss, "The preview is still preparing")
         await handler.finishPrepare(with: .success(URL(fileURLWithPath: "/tmp/replaced-preview.txt")))
         _ = await TestReadiness.wait { draft.canDismiss }
 

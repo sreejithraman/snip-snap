@@ -30,9 +30,7 @@ final class SnipEditorDraft {
     /// Pickers and previews are modal, so one occupies the editor at a time.
     private enum Presentation: Equatable {
         case none
-        case picker(AttachmentSource, target: AttachmentTarget)
-        /// The picker closed, and its result can still arrive.
-        case pickerClosed(target: AttachmentTarget)
+        case picker(AttachmentSource)
         case preparingPreview(session: UUID)
         case preview(URL)
     }
@@ -44,6 +42,8 @@ final class SnipEditorDraft {
     var selectedPhotos: [PhotosPickerItem] = []
     private var phase = Phase.editing(.idle)
     private var presentation = Presentation.none
+    /// A picker's result can arrive after it closes.
+    private var pendingPick: AttachmentTarget? = nil
     private let stagingDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("SnipSnapAttachmentDrafts", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -82,21 +82,18 @@ final class SnipEditorDraft {
     }
 
     var presentedPicker: AttachmentSource? {
-        if case .picker(let source, target: _) = presentation { source } else { nil }
+        if case .picker(let source) = presentation { source } else { nil }
     }
 
     /// A replacing picker takes one item.
     var pickerReplacesAttachment: Bool {
-        switch presentation {
-        case .picker(_, target: .replace), .pickerClosed(target: .replace): true
-        default: false
-        }
+        if case .some(.replace) = pendingPick { true } else { false }
     }
 
     private var isPreviewing: Bool {
         switch presentation {
         case .preparingPreview, .preview: true
-        case .none, .picker, .pickerClosed: false
+        case .none, .picker: false
         }
     }
 
@@ -133,6 +130,7 @@ final class SnipEditorDraft {
         guard case .editing(let work) = phase else { return }
         phase = .discarded(finishing: work)
         presentation = .none
+        pendingPick = nil
         switch work {
         case .idle: cleanStagingDirectory()
         case .staging(session: _, task: let task): task.cancel()
@@ -141,13 +139,14 @@ final class SnipEditorDraft {
     }
 
     func presentAttachmentPicker(_ source: AttachmentSource, replacing attachmentID: UUID? = nil) {
-        presentation = .picker(source, target: attachmentID.map(AttachmentTarget.replace) ?? .append)
+        presentation = .picker(source)
+        pendingPick = attachmentID.map(AttachmentTarget.replace) ?? .append
     }
 
-    /// The picker closed itself. Its target waits for the result.
+    /// The picker closed itself. Its pending pick waits for the result.
     func dismissAttachmentPicker(_ source: AttachmentSource) {
-        guard case .picker(source, target: let target) = presentation else { return }
-        presentation = .pickerClosed(target: target)
+        guard presentation == .picker(source) else { return }
+        presentation = .none
     }
 
     func finishCameraCapture(_ image: UIImage?, using model: IOSAppModel) {
@@ -155,16 +154,12 @@ final class SnipEditorDraft {
         if let image {
             stageMedia(.camera(image), using: model)
         } else {
-            dropPickerTarget()
+            pendingPick = nil
         }
     }
 
     func previewAttachment(_ attachment: AttachmentDraft, using model: IOSAppModel) {
-        guard case .editing = phase else { return }
-        switch presentation {
-        case .none, .pickerClosed: break
-        case .picker, .preparingPreview, .preview: return
-        }
+        guard case .editing = phase, presentation == .none else { return }
         let session = UUID()
         presentation = .preparingPreview(session: session)
         Task {
@@ -195,13 +190,14 @@ final class SnipEditorDraft {
             if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
                 model.presentError(error, operation: "attachment.import_select")
             }
-            dropPickerTarget()
+            pendingPick = nil
         }
     }
 
     func stageMedia(_ input: AttachmentMediaInput, using model: IOSAppModel) {
         guard case .editing(.idle) = phase else { return }
-        let target = takePickerTarget()
+        let target = pendingPick ?? .append
+        pendingPick = nil
         let selectedInput: AttachmentMediaInput
         if case .files(let urls) = input, case .replace = target {
             selectedInput = .files(Array(urls.prefix(1)))
@@ -257,20 +253,6 @@ final class SnipEditorDraft {
     private func finishDiscardedWork() {
         phase = .discarded(finishing: .idle)
         cleanStagingDirectory()
-    }
-
-    private func takePickerTarget() -> AttachmentTarget {
-        switch presentation {
-        case .picker(_, target: let target), .pickerClosed(target: let target):
-            presentation = .none
-            return target
-        case .none, .preparingPreview, .preview:
-            return .append
-        }
-    }
-
-    private func dropPickerTarget() {
-        _ = takePickerTarget()
     }
 
     private func preparedPreview(
