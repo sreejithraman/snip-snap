@@ -241,7 +241,8 @@ extension ICloudSyncModeCoordinatorTests {
     }
 
     /// SM23-F3-D5: the candidate's files vanish while a full re-enable merge is in flight. Try
-    /// Again from a second coordinator must not abort the transition under the live merge.
+    /// Again from a second coordinator must leave the transition alone, so once the files are
+    /// back the held merge finishes its own setup.
     func testEnableTryAgainLeavesAFullMergeInFlightWhoseCandidateFilesVanish() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -269,27 +270,33 @@ extension ICloudSyncModeCoordinatorTests {
             }
         }
         await pause.waitUntilPaused()
-        guard await pause.hasPaused else {
-            _ = await first.result
-            XCTFail("The enable finished without reaching its plan apply.")
-            return
-        }
-        // Nothing between the pause and the resume throws, so the held enable always resumes.
         let held = try? await persistence.snapshot()
-        var removedCandidate = false
+        var heldCandidateRoot: URL?
         if let candidateID = held?.transition?.candidateStoreID,
            let candidate = await persistence.store(id: candidateID) {
-            let candidateRoot = await persistence.storeURL(candidate)
-            removedCandidate = (try? FileManager.default.removeItem(at: candidateRoot)) != nil
+            heldCandidateRoot = await persistence.storeURL(candidate)
         }
+        guard await pause.hasPaused, let candidateRoot = heldCandidateRoot else {
+            await pause.resume()
+            _ = await first.result
+            XCTFail("The enable must pause at its plan apply, with a candidate.")
+            return
+        }
+        // Nothing between here and the resume throws, so the held enable always resumes.
+        // A move within the test root is a rename, so the files the held enable has open keep
+        // their inodes and match the path again once moved back. Until then, Try Again finds no
+        // `snips.store`.
+        let aside = root.appendingPathComponent("candidate-aside", isDirectory: true)
+        let movedAside = (try? FileManager.default.moveItem(at: candidateRoot, to: aside)) != nil
         let retried = await Task { try await tryAgain.enableOrRetry() }.result
         let afterRetry = try? await persistence.snapshot()
         let missingDuringRetry = probe.count(.missing(operation: "sync.setup"))
+        let movedBack = (try? FileManager.default.moveItem(at: aside, to: candidateRoot)) != nil
         await pause.resume()
-        // The held merge then fails, because its candidate is gone. How it fails isn't pinned.
-        _ = await first.result
+        let finished = await first.result
 
-        XCTAssertTrue(removedCandidate, "The candidate's files must be gone before Try Again.")
+        XCTAssertTrue(movedAside, "The candidate's files must be gone during Try Again.")
+        XCTAssertTrue(movedBack, "The candidate's files must be back before the merge resumes.")
         XCTAssertEqual(held?.transition?.phase, .sourceFrozen)
         XCTAssertNotNil(held?.transition?.mergeIntent)
         // Before SM23-F3-D5, these fail: Try Again aborts the transition under the live merge,
@@ -302,10 +309,12 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertEqual(error as? SyncModePersistenceError, .missingStore)
         }
 
-        // With no merge in flight, the next Try Again starts a fresh setup, once.
-        let finished = try await tryAgain.enableOrRetry()
-        XCTAssertEqual(finished.state, .on)
-        XCTAssertEqual(probe.count(.missing(operation: "sync.setup")), 1)
+        // The held enable then finishes its own setup. Before SM23-F3-D5, it fails instead:
+        // Try Again's fresh setup took its place.
+        XCTAssertEqual(try finished.get().state, .on)
+        let storage = try await persistence.snapshot()
+        XCTAssertEqual(storage.activeStore.id, held?.transition?.candidateStoreID)
+        XCTAssertEqual(probe.count(.missing(operation: "sync.setup")), 0)
         try await assertModeChangeFinished(persistence, on: .iCloudSync, holding: texts)
     }
 
