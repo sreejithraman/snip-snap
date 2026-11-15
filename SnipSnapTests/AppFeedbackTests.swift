@@ -106,6 +106,27 @@ final class AppFeedbackTests: XCTestCase {
     }
 
     @MainActor
+    func testInteractionPausesInformationalToastWhileVoiceOverRuns() {
+        let start = ContinuousClock().now
+        let lifetime = AppToastLifetime(expiresAt: start.advanced(by: .seconds(3)), isActionable: false)
+        let focused = UUID()
+
+        lifetime.setVoiceOverEnabled(true, at: start)
+        lifetime.setInteractionPaused(true, owner: focused, at: start.advanced(by: .seconds(1)))
+        lifetime.setVoiceOverEnabled(true, at: start.advanced(by: .seconds(2)))
+        lifetime.setInteractionPaused(false, owner: UUID(), at: start.advanced(by: .seconds(3)))
+        XCTAssertTrue(lifetime.isPaused)
+        XCTAssertEqual(lifetime.deadline, start.advanced(by: .seconds(3)))
+        XCTAssertFalse(lifetime.canExpire(at: start.advanced(by: .seconds(4))))
+        lifetime.setInteractionPaused(false, owner: focused, at: start.advanced(by: .seconds(5)))
+
+        XCTAssertFalse(lifetime.isPaused)
+        XCTAssertEqual(lifetime.deadline, start.advanced(by: .seconds(7)))
+        XCTAssertFalse(lifetime.canExpire(at: start.advanced(by: .seconds(6))))
+        XCTAssertTrue(lifetime.canExpire(at: start.advanced(by: .seconds(7))))
+    }
+
+    @MainActor
     func testToastCopiesShareLifetimeAndReplacementsDoNot() {
         let toast = AppToast.markedDone(count: 1, id: UUID())
         let copy = toast

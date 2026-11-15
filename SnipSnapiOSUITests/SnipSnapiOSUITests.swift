@@ -537,7 +537,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
-            throw XCTSkip("This check needs the regular-width sidebar or rail.")
+            throw XCTSkip("This check needs the regular-width rail.")
         }
         createList("Work", in: app)
         let clipboard = app.buttons["clipboard-sidebar"]
@@ -546,10 +546,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(clipboard.isSelected)
 
-        // The iPad sidebar has its own actions menu; the iPhone rail leaves only the page's.
-        let actions = UIDevice.current.userInterfaceIdiom == .pad
-            ? app.navigationBars["Lists"].buttons["library-actions"]
-            : app.buttons["library-actions"]
+        // The rail has no actions menu of its own, so this is the page's.
+        let actions = app.buttons["library-actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 3))
         actions.tap()
         XCTAssertFalse(app.buttons["select-snips"].exists)
@@ -558,16 +556,17 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings"].exists)
     }
 
-    /// Launches into the iPhone's regular-width rail, or skips where the window shows another layout.
+    /// Launches into the regular-width rail showing marks only, or skips where the window is compact.
     private func launchAppShowingRail(storeName: String) throws -> XCUIApplication {
         let app = launchApp(storeName: storeName)
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("This check needs the regular-width rail.")
         }
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            throw XCTSkip("iPad keeps the sidebar.")
-        }
         XCTAssertTrue(app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3))
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            waitForClipboardRowWidth(in: app, "iPad shows names by default") { $0 > 150 }
+            app.buttons["sidebar-width-toggle"].tap()
+        }
         return app
     }
 
@@ -586,7 +585,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let storeName = "rail-width-\(UUID().uuidString)"
         var app = try launchAppShowingRail(storeName: storeName)
-        waitForClipboardRowWidth(in: app, "Rail by default") { $0 < 80 }
+        waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
 
         app.buttons["sidebar-width-toggle"].tap()
         waitForClipboardRowWidth(in: app, "Names shown") { $0 > 150 }
@@ -597,13 +596,18 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         app.buttons["sidebar-width-toggle"].tap()
         waitForClipboardRowWidth(in: app, "Rail again") { $0 < 80 }
+
+        // iPad starts with names, so only a second relaunch shows the rail choice was saved.
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        waitForClipboardRowWidth(in: app, "Rail after relaunch") { $0 < 80 }
     }
 
     func testRailEdgeDragsResizeAndIgnoresVerticalDrags() throws {
         continueAfterFailure = false
         let app = try launchAppShowingRail(storeName: "rail-drag-\(UUID().uuidString)")
         let clipboard = app.buttons["clipboard-sidebar"]
-        waitForClipboardRowWidth(in: app, "Rail by default") { $0 < 80 }
+        waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
         // Points come from the row itself: on the open Duo, the app's XCTest origin can be offset
         // from element frames. Rows keep a 12-pt inset, so the column is the row plus 24 pt wide.
         func dragFromColumnEdge(by offset: CGVector) {
@@ -628,6 +632,54 @@ final class SnipSnapiOSUITests: XCTestCase {
             predicate: NSPredicate { _, _ in clipboard.frame.width >= 80 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 1), .timedOut,
                        "A vertical drag on the rail's edge must not resize it.")
+    }
+
+    /// XCTest key events don't reach the iPhone Duo's inner panel, so this runs on iPad.
+    func testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames() throws {
+        continueAfterFailure = false
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            throw XCTSkip("XCTest key events reach the rail only on iPad.")
+        }
+        let app = try launchAppShowingRail(storeName: "rail-keys-\(UUID().uuidString)")
+        waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
+        createList("Work", in: app)
+        dismissComposerKeyboard(in: app)
+        let clipboard = app.buttons["clipboard-sidebar"]
+        let inbox = app.buttons["list-Inbox"]
+        let work = app.buttons["list-Work"]
+        XCTAssertTrue(work.waitForExistence(timeout: 3))
+        clipboard.tap()
+        XCTAssertTrue(clipboard.isSelected)
+
+        app.typeKey(.downArrow, modifierFlags: [])
+        waitForSelection(inbox, "Down arrow selects Inbox")
+        app.typeKey(.downArrow, modifierFlags: [])
+        waitForSelection(work, "Down arrow selects Work")
+        app.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(work.isSelected, "The last page stays selected at the end of the rail.")
+        app.typeKey(.upArrow, modifierFlags: [])
+        waitForSelection(inbox, "Up arrow selects Inbox")
+        keepScreenshot(of: app, named: "Rail keyboard focus on Inbox")
+
+        app.typeKey("s", modifierFlags: [.command, .control])
+        waitForClipboardRowWidth(in: app, "Control-Command-S shows names") { $0 > 150 }
+        app.typeKey("s", modifierFlags: [.command, .control])
+        waitForClipboardRowWidth(in: app, "Control-Command-S hides names") { $0 < 80 }
+
+        work.hover()
+        keepScreenshot(of: app, named: "Pointer over Work in the rail")
+    }
+
+    private func waitForSelection(_ element: XCUIElement, _ description: String) {
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 3), .completed, description)
+    }
+
+    private func keepScreenshot(of app: XCUIApplication, named name: String) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 
     func testLastSnipCanScrollAboveCompactControls() throws {
@@ -1040,10 +1092,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             if actions.waitForExistence(timeout: 2) {
                 actions.tap()
             } else {
-                let showSidebar = app.buttons["Show Sidebar"]
-                if showSidebar.exists {
-                    showSidebar.tap()
-                } else if app.buttons["BackButton"].exists {
+                if app.buttons["BackButton"].exists {
                     app.buttons["BackButton"].tap()
                 } else {
                     app.navigationBars.buttons.firstMatch.tap()
@@ -1830,7 +1879,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         // edges, so tap half a point inside each edge.
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
-            throw XCTSkip("This check needs the regular-width sidebar.")
+            throw XCTSkip("This check needs the regular-width rail.")
         }
         returnToLists(in: app)
         XCTAssertGreaterThanOrEqual(app.buttons["new-list"].frame.width, 44)
@@ -2033,7 +2082,7 @@ final class SnipSnapiOSUITests: XCTestCase {
             composer.waitForExistence(timeout: 5),
             "The quick composer must exist on both iPhone and iPad."
         )
-        // The sidebar's New List is a system bar button; its touch target has its own test.
+        // The rail's New List has its own touch-target test.
         for control in usesCompactSelector ? [addAttachments, send, newList] : [addAttachments, send] {
             XCTAssertGreaterThanOrEqual(control.frame.width, 44)
             XCTAssertGreaterThanOrEqual(control.frame.height, 44)
@@ -2384,7 +2433,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
-            throw XCTSkip("This check needs the regular-width sidebar.")
+            throw XCTSkip("This check needs the regular-width rail.")
         }
         // On the iPhone Duo's inner panel, app.frame stays portrait while elements use the
         // landscape window, so XCTest can't type or tap by coordinates there.
@@ -3483,10 +3532,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let app = launchApp()
         var actions = app.buttons["library-actions"]
         if !actions.waitForExistence(timeout: 1) {
-            let showSidebar = app.buttons["Show Sidebar"]
-            if showSidebar.exists {
-                showSidebar.tap()
-            } else if app.buttons["BackButton"].exists {
+            if app.buttons["BackButton"].exists {
                 app.buttons["BackButton"].tap()
             } else {
                 app.navigationBars.buttons.firstMatch.tap()
@@ -5887,9 +5933,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         let actions = app.buttons["library-actions"]
         for _ in 0..<3 {
             if actions.exists { break }
-            if app.buttons["Show Sidebar"].exists {
-                app.buttons["Show Sidebar"].tap()
-            } else if app.buttons["BackButton"].exists {
+            if app.buttons["BackButton"].exists {
                 app.buttons["BackButton"].tap()
             } else if app.navigationBars.buttons.firstMatch.exists {
                 app.navigationBars.buttons.firstMatch.tap()
@@ -5980,12 +6024,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         dismissComposerKeyboard(in: app)
         returnToCollection(in: app)
         if app.descendants(matching: .any)["list-selector"].exists { return }
-        if !app.buttons["new-list"].exists {
-            if app.buttons["Show Sidebar"].exists {
-                app.buttons["Show Sidebar"].tap()
-            } else if app.buttons["BackButton"].exists {
-                app.buttons["BackButton"].tap()
-            }
+        if !app.buttons["new-list"].exists, app.buttons["BackButton"].exists {
+            app.buttons["BackButton"].tap()
         }
         XCTAssertTrue(app.buttons["new-list"].waitForExistence(timeout: 3))
     }

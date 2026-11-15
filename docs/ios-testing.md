@@ -134,8 +134,6 @@ that show the rail's letter marks, colors, and a custom icon.
 Debug builds also read these Try switches at launch, again with the
 `SIMCTL_CHILD_` prefix. Release builds ignore them.
 
-- `SNIP_SNAP_REGULAR_LAYOUT=rail|sidebar` picks the regular-width layout, for
-  example to preview the rail on iPad.
 - `SNIP_SNAP_NEW_LIST_BUTTON=roundPlus|roundCompose|inlinePlus|inlineStackBadgePlus`
   picks the rail's New List button.
 
@@ -386,13 +384,18 @@ global services.
 Existing conditional tests have these preconditions:
 
 - Compact-library and compact-selector tests require a compact window. In a
-  regular-width window, iPad uses the sidebar layout, and iPhones (the open
-  iPhone Duo, or a large iPhone in landscape) use the icon rail.
-  `testClipboardHidesSavedListActionsOnIPad` requires either one.
-  `testRailShowsListNamesAcrossRelaunchUntilToggledBack` and
+  regular-width window, iPad, the open iPhone Duo, and a large iPhone in
+  landscape all use the resizable rail. iPad starts with list names shown; the
+  others start on the thin rail.
+  `testClipboardHidesSavedListActionsOnIPad`,
+  `testRailShowsListNamesAcrossRelaunchUntilToggledBack`, and
   `testRailEdgeDragsResizeAndIgnoresVerticalDrags` require the rail. The
   rail's width choice is saved per `SNIP_SNAP_UI_TEST_STORE`, so each run
-  starts on the thin rail.
+  starts from the device default.
+  `testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames` runs only on iPad,
+  because XCTest key events don't reach the Duo's inner panel. It is left out
+  of the `lists` group: on the iPad Simulator its key presses, ⌃⌘S included,
+  reach the app on some runs and not others.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one
   image in the selected Simulator's Photos library. They declare a skip when

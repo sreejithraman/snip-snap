@@ -19,8 +19,7 @@ struct IOSAppRootView: View {
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage: CompactComposerStorage
     @State private var listPageMotionState = ListPageMotionState()
-    @State private var edgeCreationTask: Task<Void, Never>?
-    @State private var edgeCreationTaskID: UUID?
+    @State private var edgeCreation = ListEdgeCreationRequest()
     @State private var clipboardViewState = ClipboardViewState()
     @State private var isCompactComposerFocused = false
 #if DEBUG
@@ -29,14 +28,13 @@ struct IOSAppRootView: View {
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
-    private let regularLayout: RegularLibraryLayout
+    private let sidebarDefaults = LibrarySidebarDefaults.current
     init(
         session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil,
-        composerStorage: CompactComposerStorage = CompactComposerStorage(),
-        regularLayout: RegularLibraryLayout = .current
+        composerStorage: CompactComposerStorage = CompactComposerStorage()
     ) {
 #if DEBUG
         if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
@@ -48,7 +46,6 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
-        self.regularLayout = regularLayout
     }
 
     private var listPageMotion: ListPageMotion {
@@ -142,21 +139,6 @@ struct IOSAppRootView: View {
                     .opacity(0.01)
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("haptic-event")
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            // The rail's New List button anchors the badge instead.
-            if horizontalSizeClass == .regular, regularLayout == .sidebar,
-               let bundleID = Bundle.main.bundleIdentifier,
-               let suffix = bundleID.components(separatedBy: ".dev").last,
-               bundleID.contains(".dev"), let slot = Int(suffix) {
-                Text(verbatim: "DEV \(slot)")
-                    .font(.caption2.bold())
-                    .padding(4)
-                    .background(.yellow, in: Capsule())
-                    .foregroundStyle(.black)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -489,36 +471,19 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         } else {
-            switch regularLayout {
-            case .sidebar:
-                NavigationSplitView {
-                    ListSidebarView(
-                        model: model,
-                        sheet: $sheet,
-                        editMode: collectionEditModeBinding,
-                        syncedContentSettings: session.syncedContentSettings,
-                        syncNow: { await session.retrySyncWhenPossible() },
-                        deleteList: deleteList
-                    )
-                } detail: {
-                    regularDetail(libraryActions: nil)
-                }
-                .librarySearchable(model: model)
-            case .rail:
-                HStack(spacing: 0) {
-                    LibraryRailView(model: model, sheet: $sheet, deleteList: deleteList)
-                        .ignoresSafeArea(.keyboard)
-                        // Its resize handle straddles the card's leading edge.
-                        .zIndex(1)
-                    regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
-                        .librarySearchable(model: model)
-                        .sideButtonsWhereVerticalBar()
-                        .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
-                        .mask { railCardShape.ignoresSafeArea() }
-                }
-                .librarySidebarContainer()
-                .background(Color(.secondarySystemBackground).ignoresSafeArea())
+            HStack(spacing: 0) {
+                LibraryRailView(model: model, sheet: $sheet, defaults: sidebarDefaults, deleteList: deleteList)
+                    .ignoresSafeArea(.keyboard)
+                    // Its resize handle straddles the card's leading edge.
+                    .zIndex(1)
+                regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
+                    .librarySearchable(model: model)
+                    .sideButtonsWhereVerticalBar()
+                    .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
+                    .mask { railCardShape.ignoresSafeArea() }
             }
+            .librarySidebarContainer(sidebarDefaults)
+            .background(Color(.secondarySystemBackground).ignoresSafeArea())
         }
     }
 
@@ -527,7 +492,7 @@ struct IOSAppRootView: View {
         UnevenRoundedRectangle(topLeadingRadius: 26, bottomLeadingRadius: 26, style: .continuous)
     }
 
-    private func regularDetail(libraryActions: LibraryActionsMenu?) -> some View {
+    private func regularDetail(libraryActions: LibraryActionsMenu) -> some View {
         NavigationStack {
             ZStack {
                 if model.selectedPage == .clipboard {
@@ -612,9 +577,7 @@ struct IOSAppRootView: View {
     }
 
     private func cancelEdgeCreation() {
-        edgeCreationTask?.cancel()
-        edgeCreationTask = nil
-        edgeCreationTaskID = nil
+        edgeCreation.cancel()
     }
 
     private func deleteList(_ id: UUID) async {
@@ -731,16 +694,9 @@ struct IOSAppRootView: View {
             }
             return
         }
-        cancelEdgeCreation()
         let requestID = UUID()
-        edgeCreationTaskID = requestID
         let task = Task { @MainActor in
-            defer {
-                if edgeCreationTaskID == requestID {
-                    edgeCreationTask = nil
-                    edgeCreationTaskID = nil
-                }
-            }
+            defer { edgeCreation.finish(requestID) }
             guard !Task.isCancelled,
                   settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
                   canCreateListFromEdge(sourcePage, pages: pages) else {
@@ -753,7 +709,7 @@ struct IOSAppRootView: View {
             }
             let pendingListID = model.newListID
             await model.openNewList(ifSelectedPageIs: sourcePage)
-            guard !Task.isCancelled, edgeCreationTaskID == requestID,
+            guard !Task.isCancelled, edgeCreation.isCurrent(requestID),
                   settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
                   model.newListID == pendingListID else { return }
             if let pendingListID, !model.isSearchPresented,
@@ -768,7 +724,7 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         }
-        edgeCreationTask = task
+        edgeCreation.begin(requestID, task: task)
         await task.value
     }
 

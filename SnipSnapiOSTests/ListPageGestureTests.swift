@@ -772,6 +772,64 @@ final class ListPageGestureTests: XCTestCase {
         XCTAssertTrue(motion.isSelectorDragging)
     }
 
+    func testSelectorGestureRejectedDuringLeadingPageRubberBandStaysRejectedUntilItEnds() throws {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let geometry = ListSelectorGeometry(widths: [90, 110])
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        let pagePull = CGSize(width: 180, height: 0)
+        let selectorPull = CGSize(width: -40, height: 0)
+
+        for endsWithRelease in [true, false] {
+            var motion = ListPageMotion()
+            motion.updatePageDrag(
+                translation: pagePull, selectedPage: pages[0], pages: pages,
+                pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+            )
+            XCTAssertLessThan(motion.frame(pages: pages, selectedPage: pages[0], at: now).position, 0)
+
+            motion.updateDrag(
+                translation: selectorPull, selectedPage: pages[0], pages: pages,
+                geometry: geometry, layoutDirection: .leftToRight, at: now
+            )
+            XCTAssertFalse(motion.isSelectorDragging)
+            XCTAssertTrue(motion.isDragging, "The page drag keeps tracking")
+
+            XCTAssertEqual(motion.releasePageDrag(
+                translation: pagePull, predictedEndTranslation: pagePull,
+                reduceMotion: false, at: now
+            ), .select(0))
+            let settlement = try XCTUnwrap(motion.transition?.settlement)
+            motion.updateDrag(
+                translation: selectorPull, selectedPage: pages[0], pages: pages,
+                geometry: geometry, layoutDirection: .leftToRight, at: now.addingTimeInterval(0.1)
+            )
+            XCTAssertFalse(motion.isDragging, "The same finger must stay rejected after the page drag ends")
+
+            motion.finishSettlement(settlement.id)
+            XCTAssertNil(motion.transition)
+            motion.updateDrag(
+                translation: selectorPull, selectedPage: pages[0], pages: pages,
+                geometry: geometry, layoutDirection: .leftToRight, at: now.addingTimeInterval(1)
+            )
+            XCTAssertFalse(motion.isDragging, "The same finger must stay rejected after the settlement finishes")
+            XCTAssertNil(motion.transition)
+
+            if endsWithRelease {
+                XCTAssertNil(motion.release(
+                    translation: selectorPull, geometry: geometry,
+                    reduceMotion: false, at: now.addingTimeInterval(1)
+                ))
+            } else {
+                motion.cancelDrag(reduceMotion: false, at: now.addingTimeInterval(1))
+            }
+            motion.updateDrag(
+                translation: selectorPull, selectedPage: pages[0], pages: pages,
+                geometry: geometry, layoutDirection: .leftToRight, at: now.addingTimeInterval(1.1)
+            )
+            XCTAssertTrue(motion.isSelectorDragging, "A new selector gesture can drag")
+        }
+    }
+
     func testCompletedSelectorPullHoldsSharedAddPresentationFromEarlierPage() {
         let pages: [LibraryPage] = [.clipboard, .list(UUID())]
         let geometry = ListSelectorGeometry(widths: [90, 110])
@@ -811,6 +869,36 @@ final class ListPageGestureTests: XCTestCase {
         XCTAssertLessThan(entranceMiddle.edgeAddProgress, 1)
         motion.interrupt()
         XCTAssertFalse(motion.isCreatingFromEdge)
+    }
+
+    func testCommittedSelectorPullReturnsFromTheHeldAddCue() {
+        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
+        let geometry = ListSelectorGeometry(widths: [90, 110])
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        var motion = ListPageMotion()
+        let pull = CGSize(width: -170, height: 0)
+        motion.updateDrag(
+            translation: pull, selectedPage: pages[1], pages: pages,
+            geometry: geometry, layoutDirection: .leftToRight, at: now
+        )
+        XCTAssertEqual(motion.release(
+            translation: pull, geometry: geometry, reduceMotion: false, at: now
+        ), .createList)
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now).edgeAddProgress, 1)
+
+        let returnAt = now.addingTimeInterval(0.3)
+        motion.returnFromCommittedCreation(reduceMotion: false, at: returnAt)
+        XCTAssertFalse(motion.isCreatingFromEdge)
+        XCTAssertEqual(motion.transition?.settlement?.curve, .edgeSpring)
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: returnAt).edgeAddProgress, 1)
+        let returning = motion.frame(pages: pages, selectedPage: pages[1], at: returnAt.addingTimeInterval(0.22))
+        XCTAssertGreaterThan(returning.edgeAddProgress, 0)
+        XCTAssertLessThan(returning.edgeAddProgress, 1)
+        XCTAssertEqual(
+            motion.frame(pages: pages, selectedPage: pages[1],
+                         at: returnAt.addingTimeInterval(ListPageMotion.edgeReturnDuration)).edgeAddProgress,
+            0, accuracy: 0.0001
+        )
     }
 
     func testPagePanCannotTakeOverCommittedSelectorCreation() {
