@@ -369,7 +369,9 @@ package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
   package let result: SnipLibraryTransferResult
   package let planDigest: Data
 
-  private struct DigestInput: Codable {
+  /// Unordered values go in sorted: a Set or Dictionary iterates in a per-instance order, so a
+  /// plan restored from disk would otherwise digest differently.
+  private struct DigestInput: Encodable {
     let storageVersion: Int
     let transitionID: UUID
     let namespaceKey: String
@@ -378,13 +380,26 @@ package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
     let targetDigest: Data
     let snips: [Snip]
     let lists: [SnipList]
-    let attachmentData: [UUID: Data]
+    let attachmentData: SortedAttachmentData
     let dormantPayload: Data
     let acceptedCAS: [CloudFullReenableAcceptedCAS]
     let conflicts: [CloudConflictInput]
     let recoveryInputs: [CloudFullRecoveryInput]
-    let approvedSnipIDs: Set<UUID>
-    let recoveredSourceSnipIDs: Set<UUID>
+    let approvedSnipIDs: [UUID]
+    let recoveredSourceSnipIDs: [UUID]
+  }
+
+  /// Encodes as `[UUID: Data]` does, alternating IDs and bytes, with the entries sorted by ID.
+  private struct SortedAttachmentData: Encodable {
+    let values: [UUID: Data]
+
+    func encode(to encoder: any Encoder) throws {
+      var container = encoder.unkeyedContainer()
+      for (id, data) in values.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        try container.encode(id)
+        try container.encode(data)
+      }
+    }
   }
 
   package init(
@@ -502,13 +517,13 @@ package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
       targetDigest: targetDigest,
       snips: snips,
       lists: lists,
-      attachmentData: attachmentData,
+      attachmentData: SortedAttachmentData(values: attachmentData),
       dormantPayload: dormantPayload,
       acceptedCAS: acceptedCAS,
       conflicts: conflicts,
       recoveryInputs: recoveryInputs,
-      approvedSnipIDs: result.approvedSnipIDs,
-      recoveredSourceSnipIDs: result.recoveredSourceSnipIDs
+      approvedSnipIDs: result.approvedSnipIDs.sorted { $0.uuidString < $1.uuidString },
+      recoveredSourceSnipIDs: result.recoveredSourceSnipIDs.sorted { $0.uuidString < $1.uuidString }
     ))
     return Data(SHA256.hash(data: data))
   }
