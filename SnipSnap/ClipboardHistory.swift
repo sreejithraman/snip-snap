@@ -331,6 +331,7 @@ final class ClipboardHistory: ObservableObject {
         didSet { defaults.set(pendingUploadIDs.map(\.uuidString), forKey: "clipboardPendingUploadIDs") }
     }
     private var cloudService: ClipboardCloudSyncService?
+    var cloudChecksAccount: Bool { cloudService?.checksAccount == true }
     private var mainSyncEnabled: (() -> Bool)?
     private var syncGeneration: (() async throws -> String?)?
     @Published private var syncPhase: ClipboardSyncPhase

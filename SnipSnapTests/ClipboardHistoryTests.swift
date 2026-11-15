@@ -943,6 +943,28 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertNil(history.syncError)
     }
 
+    func testFirstPollAfterAnAccountChangeWhileQuitUploadsNothing() async throws {
+        try await assertFirstPollUploadsNothingUnderAnotherAccount(historyBoundToAccountA: true)
+    }
+
+    func testFirstPollAfterAnAccountChangeWhileQuitUploadsNothingFromUnboundHistory() async throws {
+        try await assertFirstPollUploadsNothingUnderAnotherAccount(historyBoundToAccountA: false)
+    }
+
+    func testAppCompositionChecksTheAccount() throws {
+        let context = try makeContext()
+        // As SnipSnapApp wires it, with no service factory.
+        context.history.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: context.storeURL.deletingLastPathComponent()
+                .appendingPathComponent("SyncMode", isDirectory: true),
+            mainEnabled: { false },
+            generation: { nil }
+        )
+
+        XCTAssertTrue(context.history.cloudChecksAccount)
+    }
+
     func testAccountResetWithoutAClipboardBindingKeepsAnEditMadeDuringIt() async throws {
         let kept = clipboardEntry("kept")
         let deleted = clipboardEntry("deleted")
@@ -1839,6 +1861,52 @@ final class ClipboardHistoryTests: XCTestCase {
             generationSource: source,
             mainSync: mainSync
         )
+    }
+
+    /// Relaunches on history copied under account A while the device is now on account B, and
+    /// lets the first poll's sync run to its end.
+    private func assertFirstPollUploadsNothingUnderAnotherAccount(historyBoundToAccountA bound: Bool) async throws {
+        let quit = try makeContext(persistedEntries: [clipboardEntry("copied under account A")])
+        let accountA = clipboardSyncGeneration(account: "account-A")
+        let syncRoot = quit.storeURL.deletingLastPathComponent()
+            .appendingPathComponent("SyncMode", isDirectory: true)
+        let bindingURL = syncRoot.appendingPathComponent("clipboard-account-binding.json")
+        if bound {
+            try FileManager.default.createDirectory(at: syncRoot, withIntermediateDirectories: true)
+            try JSONEncoder().encode(accountA).write(to: bindingURL)
+        }
+        quit.defaults.set(true, forKey: "clipboardSyncEnabled")
+        let cloud = ClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let source = ClipboardSyncGenerationSource(accountA)
+        let history = ClipboardHistory(pasteboard: quit.pasteboard, defaults: quit.defaults, storeURL: quit.storeURL)
+        history.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: syncRoot,
+            mainEnabled: { true },
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRoot in
+                ClipboardCloudSyncService(
+                    store: store, syncRootURL: syncRoot, makeTransport: { _ in cloud },
+                    accountState: FixedICloudAccountStateSource(state: .available(accountLineage: "account-B"))
+                )
+            }
+        )
+        await history.waitForInitialLoad()
+
+        // The first poll after launch asks for a sync at once.
+        history.poll()
+        try await waitUntil { source.requestCount > 0 && !history.isSyncing }
+
+        let uploaded = await cloud.uploadedEntryIDs
+        let uploadedTombstones = await cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertNotNil(history.syncError)
+        if bound {
+            XCTAssertEqual(try Data(contentsOf: bindingURL), try JSONEncoder().encode(accountA))
+        } else {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: bindingURL.path))
+        }
     }
 
     /// The history set aside beside the active one, which must be the only one.

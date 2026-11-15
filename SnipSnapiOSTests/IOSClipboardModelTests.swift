@@ -287,6 +287,56 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(model.syncErrorMessage)
     }
 
+    func testAppSessionClipboardChecksTheAccount() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        // As SnipSnapiOSApp wires it, with no service factory.
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            clipboardRootURL: root,
+            clipboardSyncRootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
+            clipboardContainerIdentifier: "iCloud.org.example.snipsnap"
+        )
+
+        XCTAssertTrue(session.clipboard.cloudChecksAccount)
+    }
+
+    func testSyncUnderAnotherAccountUploadsNothing() async throws {
+        let cloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        let accountA = clipboardSyncGeneration(account: "account-A")
+        var madeStore: ClipboardHistoryStore?
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: preferences,
+            generation: { accountA },
+            makeCloudService: { store, _, syncRootURL in
+                madeStore = store
+                // The device is signed in to account B.
+                return ClipboardCloudSyncService(
+                    store: store, syncRootURL: syncRootURL, makeTransport: { _ in cloud },
+                    accountState: FixedICloudAccountStateSource(state: .available(accountLineage: "account-B"))
+                )
+            }
+        )
+        let store = try XCTUnwrap(madeStore)
+        _ = try await store.insert(textEntry("copied under account A"))
+
+        await model.synchronize()
+
+        let uploaded = await cloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertNotNil(model.syncErrorMessage)
+        let bindingURL = root.appendingPathComponent("SyncMode", isDirectory: true)
+            .appendingPathComponent("clipboard-account-binding.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bindingURL.path))
+    }
+
     func testAccountResetSetsAsideUnboundClipboardHistoryWhileClipboardSyncIsOn() async throws {
         let older = textEntry("never synced")
         let unbound = try await makeUnboundClipboardModel(holding: [older], syncEnabled: true)
