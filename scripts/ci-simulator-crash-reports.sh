@@ -12,7 +12,7 @@ report_dirs=(${(s.:.)${SNIP_SNAP_CRASH_REPORT_DIRS:-$HOME/Library/Logs/Diagnosti
 
 reports=()
 for dir in "${report_dirs[@]}"; do
-    reports+=("$dir"/SimLaunchHost*.ips(N))
+    reports+=("$dir"/**/SimLaunchHost*.ips(N))
 done
 
 {
@@ -25,14 +25,18 @@ done
             header, body = File.read(path).split("\n", 2)
             meta = JSON.parse(header) rescue {}
             report = JSON.parse(body.to_s) rescue {}
-            exception = report.fetch("exception", {})
-            images = report.fetch("usedImages", [])
-            thread = report.fetch("threads", []).find { |t| t["triggered"] } || {}
-            frame = thread.fetch("frames", []).first || {}
-            image = images[frame["imageIndex"].to_i] || {}
-            symbol = [File.basename(image["path"].to_s), frame["symbol"]].compact.join(" ")
+            report = {} unless report.is_a?(Hash)
+            meta = {} unless meta.is_a?(Hash)
+            exception = report["exception"].is_a?(Hash) ? report["exception"] : {}
+            images = Array(report["usedImages"])
+            thread = Array(report["threads"]).find { |t| t.is_a?(Hash) && t["triggered"] } || {}
+            frame = Array(thread["frames"]).first || {}
+            index = frame["imageIndex"]
+            image = index.is_a?(Integer) && index >= 0 ? (images[index] || {}) : {}
+            symbol = [File.basename(image["path"].to_s), frame["symbol"]].reject { |part| part.to_s.empty? }.join(" ")
+            kind = [exception["type"], exception["signal"], exception["subtype"]].compact.join(" ")
             puts "- `#{File.basename(path)}`: #{meta["timestamp"] || "unknown time"}, " \
-                 "#{[exception["type"], exception["signal"], exception["subtype"]].compact.join(" ")}; " \
+                 "#{kind.empty? ? "unknown exception" : kind}; " \
                  "faulting frame: #{symbol.empty? ? "unknown" : symbol}"
           rescue StandardError => error
             puts "- `#{File.basename(path)}`: unreadable (#{error.class})"

@@ -139,8 +139,8 @@ CI=true run_tests --ios-only
 /usr/bin/grep -Fx 'crash-reports:after-boot' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- '-destination platform=iOS Simulator,id=STUB-SIMULATOR ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 assert_destination_without_boot() {
-    if /usr/bin/grep -q '^boot:' "$SNIP_SNAP_TEST_CALLS"; then
-        print -u2 "Only CI runs on the default destination may boot a Simulator."
+    if /usr/bin/grep -q '^boot:\|^crash-reports:' "$SNIP_SNAP_TEST_CALLS"; then
+        print -u2 "Only CI runs on the default destination may boot a Simulator or list its crash reports."
         exit 1
     fi
     /usr/bin/grep -F -- "-destination $1 " "$SNIP_SNAP_TEST_CALLS" >/dev/null

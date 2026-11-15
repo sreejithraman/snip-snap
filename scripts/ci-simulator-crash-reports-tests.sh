@@ -4,8 +4,8 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/snip-snap-crash-report-tests.XXXXXX")"
-trap '/bin/rm -rf "$work"' EXIT
-/bin/mkdir -p "$work/repo/scripts" "$work/reports" "$work/empty"
+trap '/bin/chmod -R u+rwx "$work" 2>/dev/null; /bin/rm -rf "$work"' EXIT
+/bin/mkdir -p "$work/repo/scripts" "$work/reports/Retired" "$work/empty"
 /bin/cp "$script_dir/ci-simulator-crash-reports.sh" "$work/repo/scripts/"
 lister="$work/repo/scripts/ci-simulator-crash-reports.sh"
 
@@ -26,6 +26,9 @@ print -r -- '{"timestamp":"2026-11-15 20:58:53.00 +0000","bug_type":"309"}
             {"triggered":true,"frames":[{"imageIndex":0,"symbol":"forEachLoadCommand"}]}]}' \
     > "$work/reports/SimLaunchHost.arm64-2026-11-15-205853.ips"
 print -r -- 'not json' > "$work/reports/SimLaunchHost.arm64-broken.ips"
+print -r -- '{"timestamp":"2026-11-15 20:49:31.00 +0000"}
+{"exception":null,"threads":[{"triggered":true,"frames":[{"imageIndex":-1}]}]}' \
+    > "$work/reports/Retired/SimLaunchHost.arm64-2026-11-15-204931.ips"
 print -r -- '{}' > "$work/reports/Other-2026-11-15.ips"
 
 SNIP_SNAP_CRASH_REPORT_DIRS="$work/reports" GITHUB_STEP_SUMMARY="$work/summary" \
@@ -35,15 +38,21 @@ summary="$(<"$work/summary")"
 [[ "$summary" == *'2026-11-15 20:58:53.00 +0000, EXC_BAD_ACCESS SIGBUS KERN_MEMORY_ERROR at 0x1031a0000; faulting frame: dyld forEachLoadCommand'* ]] ||
     fail "missing the report's time, exception, or faulting frame: $summary"
 [[ "$summary" == *'SimLaunchHost.arm64-broken.ips'* ]] || fail "an unreadable report must still be listed"
+[[ "$summary" == *'SimLaunchHost.arm64-2026-11-15-204931.ips`: 2026-11-15 20:49:31.00 +0000, unknown exception; faulting frame: unknown'* ]] ||
+    fail "a retired report with no exception must keep its time: $summary"
 [[ "$summary" != *Other-* ]] || fail "only SimLaunchHost reports belong in the summary"
 [[ "$(<"$work/out")" == "$summary" ]] || fail "the log and the summary must match"
 [[ -f "$work/repo/artifacts/simulator-crash-reports/SimLaunchHost.arm64-2026-11-15-205853.ips" ]] ||
     fail "reports must be copied for upload"
 [[ ! -e "$work/repo/artifacts/simulator-crash-reports/Other-2026-11-15.ips" ]] || fail "only SimLaunchHost reports are copied"
 
-/bin/chmod 000 "$work/reports"
+/bin/chmod 000 "$work/reports/SimLaunchHost.arm64-2026-11-15-205853.ips"
+/bin/rm -rf "$work/repo/artifacts"
+print -r -- 'not a directory' > "$work/repo/artifacts"
 SNIP_SNAP_CRASH_REPORT_DIRS="$work/reports" GITHUB_STEP_SUMMARY="$work/unwritable/summary" \
-    "$lister" after-tests > /dev/null 2>&1 || fail "unreadable reports and an unwritable summary must not fail the job"
-/bin/chmod 755 "$work/reports"
+    "$lister" after-tests > "$work/out-unreadable" 2>/dev/null ||
+    fail "an unreadable report, an unwritable summary, and a failed copy must not fail the job"
+/usr/bin/grep -F 'SimLaunchHost.arm64-2026-11-15-205853.ips`: unreadable' "$work/out-unreadable" >/dev/null ||
+    fail "an unreadable report must be listed as unreadable"
 
 print "Simulator crash report checks passed."
