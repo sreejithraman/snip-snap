@@ -63,6 +63,11 @@ private enum ClipboardStoredBinding {
     }
 }
 
+/// A step of `resetAccountBinding()` that a test can pause or fail at.
+package enum ClipboardBindingResetStep: Sendable {
+    case historyCleared, bindingRemoved
+}
+
 /// Shares the saved-snips account/generation scope, but requires its own opt-in.
 @MainActor public final class ClipboardCloudSyncService {
     public var isSyncing: Bool {
@@ -75,6 +80,7 @@ private enum ClipboardStoredBinding {
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
     private let retry: CloudKitOperationRetry
+    private let resetStep: @MainActor (ClipboardBindingResetStep) async throws -> Void
     private var binding: ClipboardCloudBinding?
     private var lifecycle = ClipboardCloudLifecycle.idle
 
@@ -87,12 +93,14 @@ private enum ClipboardStoredBinding {
     }
     package init(store: ClipboardHistoryStore, syncRootURL: URL,
                  makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport,
-                 retry: CloudKitOperationRetry = CloudKitOperationRetry()) {
+                 retry: CloudKitOperationRetry = CloudKitOperationRetry(),
+                 resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in }) {
         self.store = store
         worker = ClipboardPayloadWorker(store: store, files: store.files)
         bindingURL = syncRootURL.appendingPathComponent("clipboard-account-binding.json")
         self.makeTransport = makeTransport
         self.retry = retry
+        self.resetStep = resetStep
     }
 
     /// Call before disabling sync or responding to an account change. A sync call waiting for a
@@ -217,7 +225,9 @@ private enum ClipboardStoredBinding {
         defer { endUnbinding(unbinding) }
         try quarantineHistory()
         try await store.save(ClipboardHistoryState())
+        try await resetStep(.historyCleared)
         try removeBinding()
+        try await resetStep(.bindingRemoved)
         await worker.reset()
     }
     private func quarantineHistory() throws {

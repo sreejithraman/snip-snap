@@ -4,7 +4,7 @@ import Foundation
 
 public enum ClipboardCloudError: Error, Equatable, LocalizedError {
     case conflict, accountChanged, unavailable, invalidPayload, busy, payloadTooLarge
-    /// Same account, new sync generation: set history aside with `resetAccountBinding()`, then sync again.
+    /// Same account, new sync generation.
     case syncGenerationChanged
     public var errorDescription: String? {
         switch self {

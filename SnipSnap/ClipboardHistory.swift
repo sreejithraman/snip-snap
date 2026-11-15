@@ -589,12 +589,33 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
+    /// Runs as one link in the persistence chain, so no other write merges the old history back.
     private func setAsideCloudHistory() async throws {
         cloudService?.stop()
         let token = beginSuppression()
         defer { endSuppression(token) }
-        await flushPersistence()
-        try await cloudService?.resetAccountBinding()
+        let earlierWrites = [clearTask, initialLoadTask, captureAttemptTask, persistenceScheduleTask]
+        let setAside = Task {
+            for write in earlierWrites { await write?.value }
+            try await retireCloudHistory()
+        }
+        persistenceScheduleTask = Task { _ = await setAside.result }
+        try await setAside.value
+    }
+
+    private func retireCloudHistory() async throws {
+        state = ClipboardHistoryState()
+        entries = []
+        do {
+            try await cloudService?.resetAccountBinding()
+        } catch {
+            // Old history survives only a reset that failed before removing the binding, which still blocks the new generation.
+            if let kept = try? await sharedStore.load() {
+                state = kept
+                entries = state.entries
+            }
+            throw error
+        }
         state = try await sharedStore.load()
         entries = state.entries
         syncError = nil
