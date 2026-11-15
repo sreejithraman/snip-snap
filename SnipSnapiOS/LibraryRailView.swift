@@ -138,33 +138,6 @@ enum NewListButtonStyle: String {
     var isPinned: Bool { self == .roundPlus || self == .roundCompose }
 }
 
-/// What the rail draws for a list in place of its name.
-enum RailListMark: Equatable {
-    case icon(String)
-    case letters(String)
-
-    enum Policy: String {
-        case letterBadgeForDefaultIcon = "letters"
-        case iconOnly = "icons"
-
-        static let current: Policy = TryOverride.value("SNIP_SNAP_RAIL_LIST_MARK") ?? .letterBadgeForDefaultIcon
-    }
-
-    /// Icons a list has until someone picks one: the app's new-list icon and the core fallback.
-    static let defaultIcons: Set<String> = [ListIconSymbol.defaultName, "circle.grid.2x2.fill"]
-
-    init(name: String, systemImage: String, policy: Policy = .current) {
-        guard policy == .letterBadgeForDefaultIcon, Self.defaultIcons.contains(systemImage) else {
-            self = .icon(systemImage)
-            return
-        }
-        let initials = name.split(whereSeparator: \.isWhitespace)
-            .compactMap { word in word.first(where: { $0.isLetter || $0.isNumber }) }
-            .prefix(2)
-        self = initials.isEmpty ? .icon(systemImage) : .letters(String(initials).uppercased())
-    }
-}
-
 extension EnvironmentValues {
     /// Sizing for a library sidebar, set by the container that holds it and its detail.
     @Entry var librarySidebarSizing = LibrarySidebarSizing.unmeasured
@@ -273,7 +246,7 @@ struct LibraryRailView: View {
                         nameOpacity: nameOpacity,
                         action: { model.selectPage(.list(list.id)) }
                     ) {
-                        RailListMarkView(list: list)
+                        SnipListMarkView(list: list, diameter: 36, scalesWithText: false)
                     }
                     .accessibilityIdentifier("list-\(list.name)")
                     .listContextActions(
@@ -555,26 +528,5 @@ private struct RailIcon: View {
         Image(systemName: systemImage)
             .font(.system(size: 22, weight: .medium))
             .foregroundStyle(color)
-    }
-}
-
-private struct RailListMarkView: View {
-    @Environment(\.self) private var environment
-    let list: SnipList
-
-    var body: some View {
-        switch RailListMark(name: list.displayName, systemImage: list.displaySystemImage) {
-        case .icon(let systemImage):
-            RailIcon(systemImage: systemImage, color: list.accent.color)
-        case .letters(let letters):
-            Text(verbatim: letters)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-                .foregroundStyle(list.color == nil ? Color.primary : list.accent.filledControlLabel(in: environment))
-                .padding(4)
-                .frame(width: 36, height: 36)
-                .background(list.color == nil ? Color(.systemGray4) : list.accent.color, in: Circle())
-        }
     }
 }

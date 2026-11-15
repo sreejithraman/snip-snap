@@ -2,6 +2,7 @@ import AppKit
 import SnipSnapCore
 import XCTest
 @testable import SnipSnap
+@testable import SnipSnapCloud
 @testable import SnipSnapPersistence
 
 private final class ClipboardDiagnosticProbe: @unchecked Sendable {
@@ -82,6 +83,43 @@ private final class ClipboardSyncGenerationGate {
 }
 
 private struct ClipboardSyncTestFailure: Error {}
+
+/// Holds the first upload until the test resumes it; a cancelled run then uploads nothing.
+private actor ClipboardHeldUploadCloud: ClipboardCloudTransport {
+    private var snapshot = ClipboardCloudSnapshot()
+    private var holdsNextSave = true
+    private var heldSave: CheckedContinuation<Void, Never>?
+
+    var uploadedEntryIDs: Set<UUID> { Set(snapshot.entries.keys) }
+
+    /// Waits for the upload to be held. On timeout it stops holding, so no later upload hangs.
+    func uploadHeld(within timeout: Duration = .seconds(5)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while heldSave == nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if heldSave == nil { holdsNextSave = false }
+        return heldSave != nil
+    }
+
+    func resumeUpload() {
+        heldSave?.resume()
+        heldSave = nil
+    }
+
+    func fetch() -> ClipboardCloudSnapshot { snapshot }
+
+    func save(_ incoming: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws {
+        if holdsNextSave {
+            holdsNextSave = false
+            await withCheckedContinuation { heldSave = $0 }
+        }
+        try cancellation.check()
+        snapshot = incoming
+    }
+
+    func deleteAll() { snapshot = ClipboardCloudSnapshot() }
+}
 
 @MainActor
 final class ClipboardHistoryTests: XCTestCase {
@@ -587,6 +625,53 @@ final class ClipboardHistoryTests: XCTestCase {
         try await waitUntil(timeout: .seconds(3), reportingTimeout: false) { gate.requestCount > 2 }
 
         XCTAssertEqual(gate.requestCount, 2)
+    }
+
+    func testTurningICloudSyncOffFromTheStaleCopyAlertStopsTheUploadInFlight() async throws {
+        let cloud = ClipboardHeldUploadCloud()
+        let (disableFinished, finishDisable) = AsyncStream<Void>.makeStream()
+        let settings = SyncedContentSettingsModel(
+            mode: .iCloudSync,
+            initialState: .failed(.iCloudUnavailable),
+            disableAction: { _ in for await _ in disableFinished {} }
+        )
+        let context = try makeContext()
+        let history = context.history
+        let syncRoot = context.storeURL.deletingLastPathComponent()
+            .appendingPathComponent("SyncMode", isDirectory: true)
+        let service = ClipboardCloudSyncService(store: history.sharedStore, syncRootURL: syncRoot,
+                                                makeTransport: { _ in cloud })
+        history.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: syncRoot,
+            // As SnipSnapApp wires it.
+            mainEnabled: {
+                guard settings.mode == .iCloudSync else { return false }
+                switch settings.state {
+                case .disabling, .deleting: return false
+                default: return true
+                }
+            },
+            generation: { "account-generation-A" },
+            makeCloudService: { _, _, _ in service }
+        )
+        try await history.sharedStore.insert(clipboardEntry("stays local"))
+        history.setSyncEnabled(true)
+        let run = Task { await history.syncNow() }
+        let uploadHeld = await cloud.uploadHeld()
+        XCTAssertTrue(uploadHeld, "The upload never started")
+
+        // The alert's Turn off sync button.
+        let disabling = Task.immediate { await settings.disableICloudSync(.useCurrentCache) }
+        try await waitUntil { !service.isSyncing }
+        await cloud.resumeUpload()
+        await run.value
+
+        let uploaded = await cloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertNil(history.syncError)
+        finishDisable.finish()
+        await disabling.value
     }
 
     func testPauseSurvivesRelaunch() throws {

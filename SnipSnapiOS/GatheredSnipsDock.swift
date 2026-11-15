@@ -18,7 +18,7 @@ struct GatheredSnipsDock: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var showsContents: Bool {
         get { model.isSelectionExpanded }
-        nonmutating set { model.isSelectionExpanded = newValue }
+        nonmutating set { model.setSelectionExpanded(newValue) }
     }
     @State private var isMoveMenuPresented = false
     @State private var headerFrame = CGRect.zero
@@ -541,6 +541,60 @@ struct GatheringFlight: Identifiable {
     let source: CGRect
     let sourceIsSelecting: Bool
     var destination: CGRect?
+}
+
+/// Each gathered row fades out while its copy flies to the dock; either can finish first.
+struct GatheringTransfers {
+    private(set) var flights: [GatheringFlight] = []
+    /// The flight that started each row's fade, so a stale fade completion does nothing.
+    private var departures: [UUID: UUID] = [:]
+
+    var arrivingSnipIDs: Set<UUID> { Set(flights.map(\.snip.id)) }
+
+    func departure(of snipID: UUID) -> UUID? { departures[snipID] }
+
+    func isDeparting(_ snipID: UUID) -> Bool { departures[snipID] != nil }
+
+    mutating func begin(_ flight: GatheringFlight) {
+        flights.append(flight)
+        departures[flight.snip.id] = flight.id
+    }
+
+    mutating func land(_ flightID: UUID) {
+        flights.removeAll { $0.id == flightID }
+    }
+
+    mutating func landAll() {
+        flights = []
+    }
+
+    /// Returns nil when every flight already targets its frame, so callers can skip the write.
+    func aimed(at frames: [UUID: CGRect]) -> GatheringTransfers? {
+        var aimed = self
+        var changed = false
+        for index in aimed.flights.indices {
+            if let frame = frames[aimed.flights[index].snip.id], aimed.flights[index].destination != frame {
+                aimed.flights[index].destination = frame
+                changed = true
+            }
+        }
+        return changed ? aimed : nil
+    }
+
+    mutating func finishDeparture(of snipID: UUID, departure: UUID) {
+        guard departures[snipID] == departure else { return }
+        departures.removeValue(forKey: snipID)
+    }
+
+    mutating func keep(only selectedIDs: Set<UUID>) {
+        flights.removeAll { !selectedIDs.contains($0.snip.id) }
+        departures = departures.filter { selectedIDs.contains($0.key) }
+    }
+
+    mutating func cancelAll() {
+        flights = []
+        departures = [:]
+    }
 }
 
 struct GatheringFlightView: View {

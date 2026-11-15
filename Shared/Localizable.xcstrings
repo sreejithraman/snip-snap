@@ -431,7 +431,10 @@
     "Pink" : {},
     "Clay" : {},
     "Slate" : {},
-    "Neutral" : {
+    "Automatic" : {
+
+    },
+    "No icon" : {
 
     },
     "Red" : {

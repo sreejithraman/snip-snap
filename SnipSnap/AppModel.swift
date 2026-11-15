@@ -25,7 +25,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var lists: [SnipList] = [.inbox]
     @Published private(set) var libraryRevision = UUID()
     @Published var activeListID: UUID
-    @Published var isShowingClipboard = false
+    @Published private(set) var isShowingClipboard = false
     @Published var clipboardViewOptions = ClipboardViewOptions()
     @Published private(set) var isSearchExpanded = false
     @Published private var storedQuery = ""
@@ -77,18 +77,121 @@ final class AppModel: ObservableObject {
             anchor: selectionState.anchor, focus: selectionState.focus, modifiers: modifiers
         ))
     }
-    @Published var editingID: UUID? {
-        didSet {
-            guard oldValue != editingID else { return }
-            editorOrigin = editingID.flatMap { id in
-                guard let snip = snips.first(where: { $0.id == id }),
-                      let index = lists.firstIndex(where: { $0.id == snip.listID }) else { return nil }
-                return (lists[index], index)
+    private struct InlineEdit {
+        let sessionID: UUID
+        let snipID: UUID
+        let origin: (list: SnipList, index: Int)?
+        var attachments: [URL]
+    }
+
+    private enum InlineEditor {
+        case closed
+        case editing(InlineEdit)
+        case saving(InlineEdit)
+
+        var edit: InlineEdit? {
+            switch self {
+            case .closed: nil
+            case .editing(let edit), .saving(let edit): edit
             }
-            reconcileActiveList()
+        }
+
+        mutating func updateEdit(_ update: (inout InlineEdit) -> Void) {
+            switch self {
+            case .closed:
+                return
+            case .editing(var edit):
+                update(&edit)
+                self = .editing(edit)
+            case .saving(var edit):
+                update(&edit)
+                self = .saving(edit)
+            }
         }
     }
-    private var editorOrigin: (list: SnipList, index: Int)?
+
+    @Published private var inlineEditor = InlineEditor.closed
+    private var pendingEditOpening: (snipID: UUID, request: UUID)?
+    var editingID: UUID? { inlineEditor.edit?.snipID }
+    var inlineEditSessionID: UUID? { inlineEditor.edit?.sessionID }
+    var inlineEditAttachments: [URL] { inlineEditor.edit?.attachments ?? [] }
+    var isSavingInlineEdit: Bool {
+        guard case .saving = inlineEditor else { return false }
+        return true
+    }
+
+    func cancelEditing() {
+        guard case .editing = inlineEditor else { return }
+        closeInlineEditor()
+    }
+
+    func addInlineEditAttachments(_ urls: [URL], to sessionID: UUID) {
+        guard case .editing(var edit) = inlineEditor, edit.sessionID == sessionID else { return }
+        edit.attachments.append(
+            contentsOf: PanelFileDropValidation.newFiles(in: urls, excluding: edit.attachments)
+        )
+        inlineEditor = .editing(edit)
+    }
+
+    func removeInlineEditAttachment(_ url: URL, from sessionID: UUID) {
+        guard inlineEditSessionID == sessionID else { return }
+        inlineEditor.updateEdit { edit in edit.attachments.removeAll { $0 == url } }
+    }
+
+    /// Returns true only when this call saved and closed its own edit session.
+    func saveInlineEdit(content: String, in sessionID: UUID) async -> Bool {
+        guard case .editing(let edit) = inlineEditor, edit.sessionID == sessionID else { return false }
+        inlineEditor = .saving(edit)
+        let snipID = edit.snipID
+        let attachmentURLs = edit.attachments
+        let result: Result<Void, Error>? = await withCommandLock {
+            guard savingEdit(sessionID) != nil else { return nil }
+            return await performMutationUnlocked {
+                try await performUpdate(
+                    id: snipID, content: content,
+                    attachmentURLs: attachmentURLs, expectedUpdatedAt: nil
+                )
+            }
+        }
+        guard let result else { return false }
+        switch result {
+        case .failure(let error):
+            presentError(error, operation: "snip.update")
+            if let current = savingEdit(sessionID) {
+                inlineEditor = .editing(current)
+            }
+            return false
+        case .success:
+            dismissFailure(for: "snip.update")
+            guard savingEdit(sessionID) != nil else { return false }
+            closeInlineEditor()
+            return true
+        }
+    }
+
+    private func savingEdit(_ sessionID: UUID) -> InlineEdit? {
+        guard case .saving(let edit) = inlineEditor, edit.sessionID == sessionID else { return nil }
+        return edit
+    }
+
+    private func openInlineEdit(_ snip: Snip) {
+        pendingEditOpening = nil
+        let originIndex = lists.firstIndex(where: { $0.id == snip.listID })
+        inlineEditor = .editing(InlineEdit(
+            sessionID: UUID(),
+            snipID: snip.id,
+            origin: originIndex.map { (list: lists[$0], index: $0) },
+            attachments: snip.attachments.compactMap { attachmentURL(for: $0) }
+        ))
+        reconcileActiveList()
+    }
+
+    private func closeInlineEditor() {
+        guard editingID != nil else { return }
+        inlineEditor = .closed
+        reconcileActiveList()
+    }
+
     @Published private var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var presentedError: String? { snackbarAndErrors.presentedFailure?.message }
@@ -165,6 +268,10 @@ final class AppModel: ObservableObject {
         isSearchExpanded = false
     }
 
+    var restingFocusTarget: PanelFocusTarget {
+        isSearchExpanded ? .search : (isShowingClipboard ? .clipboard : .list)
+    }
+
     var hasActiveQuery: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -188,15 +295,70 @@ final class AppModel: ObservableObject {
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     let composerDrafts: ComposerDraftStore
-    private var redirectedComposerTextByList: [UUID: String] = [:]
-    private var redirectedInboxRevisionByList: [UUID: UInt64] = [:]
-    private var inboxDraftRevision: UInt64 = 0
-    private var retiredComposerListIDs: Set<UUID> = []
+
+    /// Routes composer text for lists that left the library.
+    private struct ComposerRedirection {
+        private enum DeletedList {
+            /// Deleted in this draft scope. Its draft text moved to the end of Inbox at
+            /// `inboxRevision`; later text from its composer replaces that tail.
+            case redirected(text: String, inboxRevision: UInt64)
+            /// Left with the previous draft scope. Its composer no longer writes.
+            case retired
+        }
+
+        /// A list with no entry owns no Inbox tail, so its redirected text appends.
+        private var deletedLists: [UUID: DeletedList] = [:]
+        private var inboxRevision: UInt64 = 0
+
+        func isRetired(_ listID: UUID) -> Bool {
+            if case .retired = deletedLists[listID] { true } else { false }
+        }
+
+        mutating func inboxChanged() { inboxRevision &+= 1 }
+
+        mutating func listsReturned(_ liveIDs: Set<UUID>) {
+            deletedLists = deletedLists.filter { !liveIDs.contains($0.key) }
+        }
+
+        mutating func listDeleted(_ listID: UUID, movedText: String) {
+            inboxChanged()
+            guard !movedText.isEmpty else { return }
+            deletedLists[listID] = .redirected(text: movedText, inboxRevision: inboxRevision)
+        }
+
+        /// Returns the new Inbox text, or nil when Inbox keeps its text.
+        mutating func redirect(_ text: String, from listID: UUID, inboxText: String) -> String? {
+            var previous = ""
+            var ownsInboxTail = false
+            if case .redirected(let redirectedText, let revision) = deletedLists[listID] {
+                previous = redirectedText
+                ownsInboxTail = revision == inboxRevision
+            }
+            guard text != previous else { return nil }
+            var updated: String?
+            if ownsInboxTail, !previous.isEmpty, inboxText.hasSuffix(previous) {
+                var base = String(inboxText.dropLast(previous.count))
+                if base.hasSuffix("\n\n") { base.removeLast(2) }
+                updated = base + (base.isEmpty || text.isEmpty ? "" : "\n\n") + text
+            } else if !text.isEmpty {
+                updated = inboxText + (inboxText.isEmpty ? "" : "\n\n") + text
+            }
+            inboxChanged()
+            deletedLists[listID] = .redirected(text: text, inboxRevision: inboxRevision)
+            return updated
+        }
+
+        mutating func switchScope(retiring listIDs: Set<UUID>) {
+            deletedLists = Dictionary(uniqueKeysWithValues: listIDs.map { ($0, DeletedList.retired) })
+            inboxChanged()
+        }
+    }
+
+    private var composerRedirection = ComposerRedirection()
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
     private let publishShareDestinations: (([SnipList]) -> Void)?
-    private var clipboardWriteGeneration = 0
-    private var pendingClipboardWriteTask: Task<Bool, Never>?
+    private let clipboardWrites = ClipboardWriteSequence()
     private var initialLoadTask: Task<Void, Never>?
     let clipboardHistory: ClipboardHistory
 
@@ -205,11 +367,10 @@ final class AppModel: ObservableObject {
     }
 
     var displayedLists: [SnipList] {
-        guard let editorOrigin,
-              snips.contains(where: { $0.id == editingID }),
-              !lists.contains(where: { $0.id == editorOrigin.list.id }) else { return lists }
+        guard let origin = inlineEditor.edit?.origin,
+              !lists.contains(where: { $0.id == origin.list.id }) else { return lists }
         var displayed = lists
-        displayed.insert(editorOrigin.list, at: min(editorOrigin.index, displayed.count))
+        displayed.insert(origin.list, at: min(origin.index, displayed.count))
         return displayed
     }
 
@@ -231,13 +392,13 @@ final class AppModel: ObservableObject {
             sourceLabel: { $0.displaySourceLabel }
         )
         let rendered: [Snip]
-        if let editingID, let editorOrigin {
+        if let editingID, let origin = inlineEditor.edit?.origin {
             let matchingIDs = Set(matches.map(\.id))
             // Moving the mounted row would discard its draft and temporary attachments.
             rendered = snips.compactMap { snip in
                 if snip.id == editingID {
                     var editor = snip
-                    editor.listID = editorOrigin.list.id
+                    editor.listID = origin.list.id
                     return editor
                 }
                 return matchingIDs.contains(snip.id) ? snip : nil
@@ -471,7 +632,7 @@ final class AppModel: ObservableObject {
             let newDraftScope = recoveryScope?.rawValue ?? "local"
             let scopeChanged = composerDrafts.scope != newDraftScope
             if recoveryScope == nil || scopeChanged {
-                editingID = nil
+                closeInlineEditor()
             }
             let previousListIDs = Set(lists.map(\.id))
             let state = await session.replaceLibrary(
@@ -481,20 +642,14 @@ final class AppModel: ObservableObject {
             )
             if scopeChanged {
                 composerDrafts.switchScope(to: newDraftScope)
-                redirectedComposerTextByList.removeAll()
-                redirectedInboxRevisionByList.removeAll()
-                inboxDraftRevision &+= 1
             }
             apply(state)
             libraryRevision = UUID()
             let currentListIDs = Set(lists.map(\.id))
             if scopeChanged {
-                retiredComposerListIDs = previousListIDs.subtracting(currentListIDs)
+                composerRedirection.switchScope(retiring: previousListIDs.subtracting(currentListIDs))
             }
             await reloadUnlocked()
-            if let editingID, !snips.contains(where: { $0.id == editingID }) {
-                self.editingID = nil
-            }
         }
     }
 
@@ -546,7 +701,7 @@ final class AppModel: ObservableObject {
     func moveUnattributedLegacyDraftToInbox(_ id: UUID) {
         composerDrafts.moveUnattributedLegacyDraftToInbox(id)
         legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
-        inboxDraftRevision &+= 1
+        composerRedirection.inboxChanged()
     }
     var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
     var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
@@ -595,14 +750,17 @@ final class AppModel: ObservableObject {
         snips = snapshot.snips
         lists = snapshot.lists
         let liveIDs = Set(lists.map(\.id))
-        retiredComposerListIDs.subtract(liveIDs)
+        composerRedirection.listsReturned(liveIDs)
         if reconcileOrphanDrafts {
             for id in composerDrafts.draftListIDs()
-                where !liveIDs.contains(id) && !retiredComposerListIDs.contains(id) {
-                moveComposerDraftToInbox(from: id)
+                where !liveIDs.contains(id) && !composerRedirection.isRetired(id) {
+                redirectDeletedListDraft(from: id)
             }
         }
         attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
+        if let editingID, !snips.contains(where: { $0.id == editingID }) {
+            closeInlineEditor()
+        }
         reconcileActiveList()
         reconcileSelection()
         publishShareDestinations?(lists)
@@ -739,18 +897,30 @@ final class AppModel: ObservableObject {
         expectedUpdatedAt: Date? = nil
     ) async -> Result<Void, Error> {
         await performMutation {
-            let update = try await session.performLibraryCommand(
-                .update(
-                    id: id,
-                    content: content,
-                    attachmentURLs: attachmentURLs,
-                    expectedUpdatedAt: expectedUpdatedAt,
-                    now: Date()
-                ),
-                sortedBy: sortMode
+            try await performUpdate(
+                id: id, content: content,
+                attachmentURLs: attachmentURLs, expectedUpdatedAt: expectedUpdatedAt
             )
-            return (update, ())
         }
+    }
+
+    private func performUpdate(
+        id: UUID,
+        content: String,
+        attachmentURLs: [URL]?,
+        expectedUpdatedAt: Date?
+    ) async throws -> (SnipLibraryUpdate, Void) {
+        let update = try await session.performLibraryCommand(
+            .update(
+                id: id,
+                content: content,
+                attachmentURLs: attachmentURLs,
+                expectedUpdatedAt: expectedUpdatedAt,
+                now: Date()
+            ),
+            sortedBy: sortMode
+        )
+        return (update, ())
     }
 
     func selectList(_ list: SnipList, preservingSelection: Bool = false) {
@@ -778,29 +948,16 @@ final class AppModel: ObservableObject {
     }
 
     func saveComposerText(_ text: String, for listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
-        let destinationID = liveComposerListID(listID)
-        guard destinationID != listID else {
+        guard !composerRedirection.isRetired(listID) else { return }
+        guard liveComposerListID(listID) != listID else {
             composerDrafts.setText(text, for: listID)
-            if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
+            if listID == SnipList.inboxID { composerRedirection.inboxChanged() }
             return
         }
-        let previous = redirectedComposerTextByList[listID] ?? ""
-        guard text != previous else { return }
-        let current = composerDrafts.draft(for: destinationID).text
-        if redirectedInboxRevisionByList[listID] == inboxDraftRevision,
-           !previous.isEmpty, current.hasSuffix(previous) {
-            var base = String(current.dropLast(previous.count))
-            if base.hasSuffix("\n\n") { base.removeLast(2) }
-            let separator = base.isEmpty || text.isEmpty ? "" : "\n\n"
-            composerDrafts.setText(base + separator + text, for: destinationID)
-        } else if !text.isEmpty {
-            let separator = current.isEmpty ? "" : "\n\n"
-            composerDrafts.setText(current + separator + text, for: destinationID)
+        let inboxText = composerDrafts.draft(for: SnipList.inboxID).text
+        if let updated = composerRedirection.redirect(text, from: listID, inboxText: inboxText) {
+            composerDrafts.setText(updated, for: SnipList.inboxID)
         }
-        redirectedComposerTextByList[listID] = text
-        inboxDraftRevision &+= 1
-        redirectedInboxRevisionByList[listID] = inboxDraftRevision
     }
 
     func flushComposerDrafts() {
@@ -808,17 +965,17 @@ final class AppModel: ObservableObject {
     }
 
     func addDraftAttachments(_ urls: [URL], to listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.add(urls, to: liveComposerListID(listID))
     }
 
     func replaceDraftAttachments(_ urls: [URL], in listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.replaceAttachments(urls, for: liveComposerListID(listID))
     }
 
     func addTemporaryDraftAttachment(_ url: URL, to listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.addTemporary(url, to: liveComposerListID(listID))
     }
 
@@ -827,14 +984,14 @@ final class AppModel: ObservableObject {
     }
 
     func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.finishScreenCapture(
             url, in: liveComposerListID(listID), succeeded: succeeded
         )
     }
 
     func removeDraftAttachment(_ url: URL, from listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.remove(url, from: liveComposerListID(listID))
     }
 
@@ -843,20 +1000,22 @@ final class AppModel: ObservableObject {
     }
 
     func clearDraft(for listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.clear(listID: listID)
-        if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
+        if listID == SnipList.inboxID { composerRedirection.inboxChanged() }
     }
 
     func moveComposerDraftToInbox(from listID: UUID) {
+        composerDrafts.moveDraft(from: listID, to: SnipList.inboxID)
+        composerDrafts.flushText()
+        composerRedirection.inboxChanged()
+    }
+
+    private func redirectDeletedListDraft(from listID: UUID) {
         let text = composerDrafts.draft(for: listID).text
         composerDrafts.moveDraft(from: listID, to: SnipList.inboxID)
         composerDrafts.flushText()
-        inboxDraftRevision &+= 1
-        if !text.isEmpty {
-            redirectedComposerTextByList[listID] = text
-            redirectedInboxRevisionByList[listID] = inboxDraftRevision
-        }
+        composerRedirection.listDeleted(listID, movedText: text)
     }
 
     func saveComposerDraft(
@@ -868,7 +1027,7 @@ final class AppModel: ObservableObject {
         let destinationID = destinationListID ?? listID
         return await withCommandLock {
             guard libraryRevision == revision, composerDrafts.scope == scope,
-                  !retiredComposerListIDs.contains(listID),
+                  !composerRedirection.isRetired(listID),
                   liveComposerListID(listID) == listID,
                   lists.contains(where: { $0.id == destinationID }) else { return false }
             let snapshot = composerDrafts.beginSave(listID: listID, content: content)
@@ -1440,40 +1599,55 @@ final class AppModel: ObservableObject {
         applySelection(.init(selection: Set(ids), anchor: ids.first, focus: ids.last))
     }
 
+    private var inlineEditOpeningView: (
+        isShowingClipboard: Bool, isSearchExpanded: Bool, query: String, activeListID: UUID
+    ) {
+        (isShowingClipboard, isSearchExpanded, query, activeListID)
+    }
+
+    private var canOpenInlineEdit: Bool {
+        (!isSearchExpanded || hasActiveQuery) && (!isShowingClipboard || isSearchExpanded)
+    }
+
     @discardableResult
     func beginEditing(_ id: UUID) async -> Bool {
         guard !isCLIInteractionReserved else { return false }
         if editingID == id { return true }
         guard editingID == nil,
-              (!isSearchExpanded || hasActiveQuery),
-              (!isShowingClipboard || isSearchExpanded),
+              canOpenInlineEdit,
               let snip = filteredSnips.first(where: { $0.id == id }) else { return false }
-        let startingSearchState = isSearchExpanded
-        let startingQuery = query
-        let startingListID = activeListID
-        let startingClipboardState = isShowingClipboard
+        let request = UUID()
+        pendingEditOpening = (snipID: id, request: request)
+        let startingView = inlineEditOpeningView
         do {
             _ = try await prepareAttachments(snip.attachments, for: .open)
             return await withCommandLock {
                 if editingID == id { return true }
-                guard !isCLIInteractionReserved, editingID == nil,
-                      isSearchExpanded == startingSearchState,
-                      query == startingQuery,
-                      activeListID == startingListID,
-                      isShowingClipboard == startingClipboardState,
-                      (!isSearchExpanded || hasActiveQuery),
-                      (!isShowingClipboard || isSearchExpanded),
+                guard pendingEditOpening?.snipID == id,
+                      !isCLIInteractionReserved, editingID == nil,
+                      inlineEditOpeningView == startingView,
                       let current = filteredSnips.first(where: { $0.id == id }),
-                      current.attachments == snip.attachments else { return false }
-                editingID = id
+                      current.attachments == snip.attachments else {
+                    endEditOpening(request)
+                    return false
+                }
+                openInlineEdit(current)
                 return true
             }
         } catch is CancellationError {
+            endEditOpening(request)
             return false
         } catch {
-            presentError(error, operation: "attachment.prepare")
+            let isLatest = pendingEditOpening?.request == request
+            endEditOpening(request)
+            if isLatest { presentError(error, operation: "attachment.prepare") }
             return false
         }
+    }
+
+    private func endEditOpening(_ request: UUID) {
+        guard pendingEditOpening?.request == request else { return }
+        pendingEditOpening = nil
     }
 
     @discardableResult
@@ -1527,9 +1701,7 @@ final class AppModel: ObservableObject {
         mutation: @MainActor @Sendable () async -> Bool
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
-        let task = startClipboardWrite(snips, feedback: .silent, to: pasteboard)
-        let generation = clipboardWriteGeneration
-        pendingClipboardWriteTask = task
+        let (token, task) = startClipboardWrite(snips, feedback: .silent, to: pasteboard)
         let copied = await withTaskCancellationHandler {
             await task.value
         } onCancel: {
@@ -1537,11 +1709,11 @@ final class AppModel: ObservableObject {
         }
         guard copied else { return false }
         guard requiresMutation else {
-            if generation == clipboardWriteGeneration { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
+            if clipboardWrites.isCurrent(token) { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
             return true
         }
         return await withCommandLock {
-            guard generation == clipboardWriteGeneration else { return true }
+            guard clipboardWrites.isCurrent(token) else { return true }
             let failureID = latestFailure?.id
             let markedDone = await mutation()
             if latestFailure?.id == failureID { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
@@ -1558,14 +1730,14 @@ final class AppModel: ObservableObject {
         switch placement {
         case .snips(let snips):
             guard !snips.isEmpty else { return false }
-            pendingClipboardWriteTask = startClipboardWrite(
+            _ = startClipboardWrite(
                 snips,
                 feedback: feedback,
                 to: pasteboard
             )
             return true
         case .clipboardEntry(let entry):
-            _ = nextClipboardWriteGeneration()
+            clipboardWrites.supersede()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -1583,15 +1755,14 @@ final class AppModel: ObservableObject {
                 snips,
                 feedback: feedback,
                 to: pasteboard
-            )
-            pendingClipboardWriteTask = task
+            ).task
             return await withTaskCancellationHandler {
                 await task.value
             } onCancel: {
                 task.cancel()
             }
         case .clipboardEntry(let entry):
-            _ = nextClipboardWriteGeneration()
+            clipboardWrites.supersede()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -1620,30 +1791,31 @@ final class AppModel: ObservableObject {
         _ snips: [Snip],
         feedback: ClipboardPlacementFeedback,
         to pasteboard: NSPasteboard
-    ) -> Task<Bool, Never> {
+    ) -> (token: ClipboardWriteSequence.Token, task: Task<Bool, Never>) {
         let changeCount = pasteboard.changeCount
-        let generation = nextClipboardWriteGeneration()
-        let failureID = latestFailure?.id
-        return Task {
-            let copied = await placeSnipsOnClipboard(
-                snips,
-                to: pasteboard,
-                generation: generation,
+        return clipboardWrites.begin { token in
+            let write = SnipClipboardWrite(
+                token: token,
+                pasteboard: pasteboard,
                 expectedChangeCount: changeCount
             )
-            guard copied, !Task.isCancelled, generation == clipboardWriteGeneration else { return copied }
-            dismissCopyFailure(matching: failureID)
-            if feedback == .notify { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
-            return copied
+            let failureID = latestFailure?.id
+            return Task {
+                defer { clipboardWrites.finish(token) }
+                let copied = await placeSnipsOnClipboard(snips, with: write)
+                guard copied, !Task.isCancelled, clipboardWrites.isCurrent(token) else { return copied }
+                dismissCopyFailure(matching: failureID)
+                if feedback == .notify { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
+                return copied
+            }
         }
     }
 
     private func placeSnipsOnClipboard(
         _ snips: [Snip],
-        to pasteboard: NSPasteboard,
-        generation: Int,
-        expectedChangeCount: Int
+        with write: SnipClipboardWrite
     ) async -> Bool {
+        let pasteboard = write.pasteboard
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
         let prepared: [UUID: URL]
@@ -1652,11 +1824,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return false
         } catch {
-            if shouldPresentClipboardError(
-                generation: generation,
-                pasteboard: pasteboard,
-                expectedChangeCount: expectedChangeCount
-            ) {
+            if shouldPresentClipboardError(for: write) {
                 presentError(error, operation: "attachment.prepare")
             }
             return false
@@ -1664,8 +1832,8 @@ final class AppModel: ObservableObject {
         let export: SnipPasteboardExport
         do {
             let text = SnipFormatter.formatForClipboard(snips: snips)
-            guard generation == clipboardWriteGeneration,
-                  pasteboard.changeCount == expectedChangeCount else { return false }
+            guard clipboardWrites.isCurrent(write.token),
+                  write.leavesPasteboardUnchanged else { return false }
             export = try await preparePasteboardExport(
                 text,
                 attachments.compactMap { prepared[$0.id] }
@@ -1673,18 +1841,14 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return false
         } catch {
-            if shouldPresentClipboardError(
-                generation: generation,
-                pasteboard: pasteboard,
-                expectedChangeCount: expectedChangeCount
-            ) {
+            if shouldPresentClipboardError(for: write) {
                 presentError(error, operation: "clipboard.export")
             }
             return false
         }
         guard !Task.isCancelled,
-              generation == clipboardWriteGeneration,
-              pasteboard.changeCount == expectedChangeCount else { return false }
+              clipboardWrites.isCurrent(write.token),
+              write.leavesPasteboardUnchanged else { return false }
         let objects = export.pasteboardWriters()
         let writeChangeCount = pasteboard.clearContents()
         let copied = pasteboard.writeObjects(objects)
@@ -1703,24 +1867,14 @@ final class AppModel: ObservableObject {
         return copied
     }
 
-    private func shouldPresentClipboardError(
-        generation: Int,
-        pasteboard: NSPasteboard,
-        expectedChangeCount: Int
-    ) -> Bool {
+    private func shouldPresentClipboardError(for write: SnipClipboardWrite) -> Bool {
         !Task.isCancelled
-            && generation == clipboardWriteGeneration
-            && pasteboard.changeCount == expectedChangeCount
-    }
-
-    private func nextClipboardWriteGeneration() -> Int {
-        pendingClipboardWriteTask?.cancel()
-        clipboardWriteGeneration += 1
-        return clipboardWriteGeneration
+            && clipboardWrites.isCurrent(write.token)
+            && write.leavesPasteboardUnchanged
     }
 
     func waitForPendingClipboardWrite() async {
-        _ = await pendingClipboardWriteTask?.value
+        _ = await clipboardWrites.pendingTask?.value
     }
 
     func clearDownloadedFiles() async throws {

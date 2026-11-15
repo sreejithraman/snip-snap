@@ -48,7 +48,9 @@ final class AppModelCLILibraryTests: StoreBackedTestCase {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let snip = try await add("Editing", to: library)
         let model = AppModel(library: library, defaults: defaults())
-        model.editingID = snip.id
+        await model.waitForInitialLoad()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
         model.saveComposerText("Draft", for: SnipList.inboxID)
         let action = SnipCLILibraryAction.setDone(snips: [reference(snip)], done: true)
         do {

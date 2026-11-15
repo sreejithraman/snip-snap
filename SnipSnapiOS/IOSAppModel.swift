@@ -62,27 +62,74 @@ final class IOSAppModel {
     private(set) var attachmentURLs: [UUID: URL]
     private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
     private var preparedAttachments: [UUID: PreparedAttachmentRecord] = [:]
-    private(set) var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
+    private var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
     @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
+    private var cloudAttachmentKnowledge: CloudAttachmentKnowledge
     private struct PreparedAttachmentRecord {
         var url: URL
         var identity: PreparedAttachmentIdentity?
     }
 
+    /// The preparations of one attachment that are running at the same time.
     private struct AttachmentPreparationGroup {
-        var activeCount: Int
-        let initialState: SyncedAttachmentTransferState
-        var didSucceed = false
-        var didFail = false
+        var memberCount = 0
+        var strongestOutcome = AttachmentPreparationOutcome.cancelled
+        /// Shown again when every member is cancelled. Each refresh replaces it.
+        var reportedState: SyncedAttachmentTransferState?
+
+        var shownState: SyncedAttachmentTransferState? {
+            if strongestOutcome == .succeeded { return .available }
+            if memberCount > 0 { return .syncing }
+            if strongestOutcome == .failed { return .failed }
+            return reportedState
+        }
     }
-    private enum AttachmentPreparationOutcome {
-        case succeeded
+    /// Declared weakest first, so a group keeps the strongest outcome of its members.
+    private enum AttachmentPreparationOutcome: Comparable {
         case cancelled
         case failed
+        case succeeded
     }
-    private(set) var isCloudSyncActive = false
-    private var hasKnownCloudSyncActivity: Bool
-    private var hasKnownCloudAttachmentStates = false
+    /// Where attachment files come from once the app knows whether iCloud sync is on.
+    private enum AttachmentFileSource: Equatable {
+        /// No iCloud handler, or iCloud sync is off: library files are used as they are.
+        case libraryFiles
+        /// iCloud sync is on. Until its transfer states are current, only verified downloads show.
+        case iCloudSync(statesAreCurrent: Bool)
+    }
+    private enum CloudAttachmentKnowledge {
+        /// Whether iCloud sync is on is unknown: never read, being read by `refresh`, or the read failed.
+        case unknown(lastKnown: AttachmentFileSource?, refresh: UUID?)
+        /// iCloud sync is on and `refresh` is reading its transfer states; the last ones stay in use.
+        case readingStates(refresh: UUID, lastStatesAreCurrent: Bool)
+        case known(AttachmentFileSource)
+
+        var source: AttachmentFileSource? {
+            switch self {
+            case .unknown: nil
+            case .readingStates(_, let lastStatesAreCurrent):
+                .iCloudSync(statesAreCurrent: lastStatesAreCurrent)
+            case .known(let source): source
+            }
+        }
+
+        var lastKnownSource: AttachmentFileSource? {
+            if case .unknown(let lastKnown, _) = self { return lastKnown }
+            return source
+        }
+
+        var refresh: UUID? {
+            switch self {
+            case .unknown(_, let refresh): refresh
+            case .readingStates(let refresh, _): refresh
+            case .known: nil
+            }
+        }
+    }
+    var isCloudSyncActive: Bool {
+        if case .iCloudSync = cloudAttachmentKnowledge.lastKnownSource { return true }
+        return false
+    }
     private enum BackupImportPhase {
         case idle
         case previewing(operation: UUID)
@@ -131,25 +178,34 @@ final class IOSAppModel {
         return false
     }
     var selectedSnipID: UUID?
-    var selectedSnipIDs: Set<UUID> = [] {
-        didSet {
-            let added = selectedSnipIDs.subtracting(oldValue)
-            // Individual taps prepend the newest item. Bulk selection has a stable list order.
-            let newIDs = Snip.sorted(snips.filter { added.contains($0.id) }, by: sortMode).map(\.id)
-            selectedSnipOrder = newIDs + selectedSnipOrder.filter { selectedSnipIDs.contains($0) }
+    /// A gathering session runs from Select or the first gathered snip until it ends.
+    /// A class, so readers of one field don't refresh when another changes.
+    @MainActor @Observable fileprivate final class GatheringSession {
+        let id = UUID()
+        private(set) var snipIDs: Set<UUID> = []
+        /// Newest first. Snips gathered together keep their list order.
+        private(set) var order: [UUID] = []
+        var isExpanded = false
+
+        func replaceSnips(with ids: Set<UUID>, orderingNew: (Set<UUID>) -> [UUID]) {
+            order = orderingNew(ids.subtracting(snipIDs)) + order.filter(ids.contains)
+            snipIDs = ids
         }
     }
-    private var selectedSnipOrder: [UUID] = []
-    var isSelectingSnips = false
-    var isSelectionExpanded = false
+    private var gathering: GatheringSession?
+    var isSelectingSnips: Bool { gathering != nil }
+    var selectedSnipIDs: Set<UUID> { gathering?.snipIDs ?? [] }
+    var isSelectionExpanded: Bool { gathering?.isExpanded ?? false }
+    var gatheringSessionID: UUID? { gathering?.id }
     struct NewListMoveRequest {
         let ids: [UUID]
         let sortMode: SnipSortMode
         let selectionSessionID: UUID?
     }
-    var newListMoveRequest: NewListMoveRequest?
-    var isPerformingGatheredAction = false
-    @ObservationIgnored private(set) var gatheringSessionID = UUID()
+    // Separate from the session: it also serves single-snip moves.
+    private(set) var newListMoveRequest: NewListMoveRequest?
+    // Spans sessions, so only one gathered action runs at a time.
+    private(set) var isPerformingGatheredAction = false
     var isSearchPresented = false {
         didSet {
             if isSearchPresented != oldValue { selectionRevision &+= 1 }
@@ -239,7 +295,9 @@ final class IOSAppModel {
         self.haptics = haptics
         self.diagnostics = diagnostics
         self.publishShareDestinations = publishShareDestinations
-        hasKnownCloudSyncActivity = cloudSyncHandler == nil
+        cloudAttachmentKnowledge = cloudSyncHandler == nil
+            ? .known(.libraryFiles)
+            : .unknown(lastKnown: nil, refresh: nil)
         snips = initialSnapshot.snips
         lists = initialSnapshot.lists
         attachmentURLs = initialSnapshot.attachmentURLs
@@ -285,13 +343,27 @@ final class IOSAppModel {
         if case .list = selectedPage { setSelectedPage(.list(listID)) }
     }
 
+    func beginSelectingSnips() {
+        if gathering == nil { gathering = GatheringSession() }
+    }
+
+    func setSelectionExpanded(_ isExpanded: Bool) {
+        guard let gathering, gathering.isExpanded != isExpanded else { return }
+        gathering.isExpanded = isExpanded
+    }
+
     func endSelectingSnips() {
         haptics.invalidatePendingFeedback()
-        selectedSnipIDs = []
-        isSelectingSnips = false
-        isSelectionExpanded = false
+        gathering = nil
         newListMoveRequest = nil
-        gatheringSessionID = UUID()
+    }
+
+    private func replaceGatheredSnips(with ids: Set<UUID>) {
+        guard let session = gathering, ids != session.snipIDs else { return }
+        // Individual taps prepend the newest item. Bulk selection has a stable list order.
+        session.replaceSnips(with: ids) { added in
+            Snip.sorted(snips.filter { added.contains($0.id) }, by: sortMode).map(\.id)
+        }
     }
 
     func beginEditingSnip(_ id: UUID) {
@@ -337,14 +409,14 @@ final class IOSAppModel {
 
     func selectSnips(_ ids: Set<UUID>) {
         guard ids != selectedSnipIDs else { return }
-        selectedSnipIDs = ids
-        if !ids.isEmpty { isSelectingSnips = true }
+        beginSelectingSnips()
+        replaceGatheredSnips(with: ids)
         haptics.emit(.selection, for: haptics.beginInteraction())
     }
 
     var selectedSnips: [Snip] {
         let byID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
-        return selectedSnipOrder.compactMap { byID[$0] }
+        return (gathering?.order ?? []).compactMap { byID[$0] }
     }
 
     func moveDestinations(for snips: [Snip]) -> [SnipList] {
@@ -354,22 +426,26 @@ final class IOSAppModel {
 
     func requestNewListMove(snips: [Snip], fromSelection: Bool = false) {
         guard !snips.isEmpty, !isPerformingGatheredAction else { return }
+        let selectionSessionID = fromSelection ? gatheringSessionID : nil
+        guard !fromSelection || selectionSessionID != nil else { return }
         newListMoveRequest = NewListMoveRequest(
             ids: snips.map(\.id), sortMode: fromSelection ? sortMode : .chronological,
-            selectionSessionID: fromSelection ? gatheringSessionID : nil
+            selectionSessionID: selectionSessionID
         )
     }
+
+    func dismissNewListMove() { newListMoveRequest = nil }
 
     @discardableResult
     func createListAndMove(_ request: NewListMoveRequest, name: String) async -> Bool {
         guard !isPerformingGatheredAction else { return false }
         isPerformingGatheredAction = true
         defer { isPerformingGatheredAction = false }
-        return await withUserMutation { interaction in
+        let didMove = await withUserMutation { interaction in
             guard request.selectionSessionID.map({ $0 == gatheringSessionID }) ?? true else { return false }
             let ids = request.ids.filter { id in snips.contains { $0.id == id } }
             guard !ids.isEmpty, let listID = await createListUnlocked(
-                name: name, systemImage: ListIconSymbol.defaultName, color: nil, selectCreatedList: false
+                name: name, systemImage: "", color: nil, selectCreatedList: false
             ) else { return false }
             let moved = await moveSelectionUnlocked(
                 ids: ids, to: listID, sortedBy: request.sortMode, feedbackInteraction: interaction,
@@ -381,6 +457,26 @@ final class IOSAppModel {
             }
             return moved
         }
+        guard didMove else { return false }
+        newListMoveRequest = nil
+        if let sessionID = request.selectionSessionID, sessionID == gatheringSessionID,
+           selectedSnipIDs.isEmpty {
+            endSelectingSnips()
+        }
+        return true
+    }
+
+    /// Admits one gathered action at a time. Returns true when the action succeeded and its
+    /// session should end.
+    func performGatheredAction(
+        requiresEmptySelection: Bool = false, _ action: @MainActor () async -> Bool
+    ) async -> Bool {
+        guard !isPerformingGatheredAction, let sessionID = gatheringSessionID,
+              !selectedSnips.isEmpty else { return false }
+        isPerformingGatheredAction = true
+        defer { isPerformingGatheredAction = false }
+        guard await action(), gatheringSessionID == sessionID else { return false }
+        return !requiresEmptySelection || selectedSnips.isEmpty
     }
 
     var visibleSnips: [Snip] {
@@ -512,9 +608,9 @@ final class IOSAppModel {
             guard ids.count >= 2 else { return false }
             return await performUserAction(.merge(ids: ids, now: Date()), feedbackInteraction: interaction) { outcome in
                 guard case .merged(let snip) = outcome,
-                      gatheringSessionID == sessionID else { return }
+                      let sessionID, gatheringSessionID == sessionID else { return }
                 selectedSnipID = snip.id
-                selectedSnipIDs = [snip.id]
+                replaceGatheredSnips(with: [snip.id])
                 if completionFilter == .done { completionFilter = .all }
             }
         }
@@ -627,7 +723,7 @@ final class IOSAppModel {
                   expectedPage.map({ selectedPage == $0 }) ?? true else { return }
             var shouldRollBack = false
             guard let createdID = await createListUnlocked(
-                name: String(localized: "New List"), systemImage: ListIconSymbol.defaultName, color: nil,
+                name: String(localized: "New List"), systemImage: "", color: nil,
                 namePolicy: .available, selectCreatedList: false,
                 onCreated: { createdID in
                     if Task.isCancelled || self.isSearchPresented
@@ -754,7 +850,7 @@ final class IOSAppModel {
     }
 
     @discardableResult
-    func createList(name: String, systemImage: String = ListIconSymbol.defaultName, color: SnipListColorPreset? = nil) async -> Bool {
+    func createList(name: String, systemImage: String = "", color: SnipListColorPreset? = nil) async -> Bool {
         await withUserMutation { _ in
             await createListUnlocked(name: name, systemImage: systemImage, color: color) != nil
         }
@@ -895,15 +991,17 @@ final class IOSAppModel {
     }
 
     func attachmentURL(for attachmentID: UUID) -> URL? {
-        if cloudSyncHandler != nil, !hasKnownCloudSyncActivity {
+        switch cloudAttachmentKnowledge.source {
+        case nil:
             return preparedAttachments[attachmentID]?.url
+        case .libraryFiles:
+            return attachmentURLs[attachmentID]
+        case .iCloudSync(let statesAreCurrent):
+            if !statesAreCurrent || attachmentTransferStates[attachmentID] != nil {
+                return preparedAttachments[attachmentID]?.url
+            }
+            return attachmentURLs[attachmentID]
         }
-        if isCloudSyncActive,
-           !hasKnownCloudAttachmentStates || attachmentTransferStates[attachmentID] != nil
-        {
-            return preparedAttachments[attachmentID]?.url
-        }
-        return attachmentURLs[attachmentID]
     }
 
     func usableAttachmentURL(for attachmentID: UUID) -> URL? {
@@ -914,9 +1012,12 @@ final class IOSAppModel {
 
     func attachmentTransferState(for attachmentID: UUID) -> SyncedAttachmentTransferState {
         if let state = attachmentTransferStates[attachmentID] { return state }
-        if cloudSyncHandler != nil, !hasKnownCloudSyncActivity { return .waiting }
-        if isCloudSyncActive, !hasKnownCloudAttachmentStates { return .waiting }
-        return attachmentURLs[attachmentID] == nil ? .waiting : .available
+        switch cloudAttachmentKnowledge.source {
+        case nil, .iCloudSync(statesAreCurrent: false):
+            return .waiting
+        case .libraryFiles, .iCloudSync(statesAreCurrent: true):
+            return attachmentURLs[attachmentID] == nil ? .waiting : .available
+        }
     }
 
     /// Prepared bytes may be cached, but a stale page/search request must not present them.
@@ -950,21 +1051,20 @@ final class IOSAppModel {
             .compactMap { $0 }
             .first(where: isAvailablePreparedAttachment)
         guard let cloudSyncHandler else { return localURL }
-        if hasKnownCloudSyncActivity, !isCloudSyncActive {
+        let source = cloudAttachmentKnowledge.source
+        if source == .libraryFiles {
             return localURL
         }
-        if hasKnownCloudSyncActivity,
-           hasKnownCloudAttachmentStates,
+        if source == .iCloudSync(statesAreCurrent: true),
            attachmentTransferStates[attachmentID] == nil,
            let localURL
         {
             return localURL
         }
         var group = attachmentPreparations[attachmentID] ?? AttachmentPreparationGroup(
-            activeCount: 0,
-            initialState: attachmentTransferStates[attachmentID] ?? .waiting
+            reportedState: attachmentTransferStates[attachmentID] ?? .waiting
         )
-        group.activeCount += 1
+        group.memberCount += 1
         attachmentPreparations[attachmentID] = group
         attachmentTransferStates[attachmentID] = .syncing
         let identity = preparedAttachmentIdentity(for: attachmentID)
@@ -1029,22 +1129,10 @@ final class IOSAppModel {
         _ attachmentID: UUID, outcome: AttachmentPreparationOutcome
     ) {
         guard var group = attachmentPreparations[attachmentID] else { return }
-        group.activeCount -= 1
-        switch outcome {
-        case .succeeded: group.didSucceed = true
-        case .failed: group.didFail = true
-        case .cancelled: break
-        }
-        if group.didSucceed {
-            attachmentTransferStates[attachmentID] = .available
-        } else if group.activeCount > 0 {
-            attachmentTransferStates[attachmentID] = .syncing
-        } else if group.didFail {
-            attachmentTransferStates[attachmentID] = .failed
-        } else if attachmentTransferStates[attachmentID] == .syncing {
-            attachmentTransferStates[attachmentID] = group.initialState
-        }
-        attachmentPreparations[attachmentID] = group.activeCount > 0 ? group : nil
+        group.memberCount -= 1
+        group.strongestOutcome = max(group.strongestOutcome, outcome)
+        attachmentTransferStates[attachmentID] = group.shownState
+        attachmentPreparations[attachmentID] = group.memberCount > 0 ? group : nil
     }
 
     private struct PreparedAttachmentIdentity: Equatable {
@@ -1160,7 +1248,7 @@ final class IOSAppModel {
         return await performUserAction(command, feedbackInteraction: feedbackInteraction) { _ in
             // Shared movement must not consume a newer selection, or an ordinary item's selection.
             guard let selectionSessionID, selectionSessionID == gatheringSessionID else { return }
-            selectedSnipIDs.subtract(moving)
+            replaceGatheredSnips(with: selectedSnipIDs.subtracting(moving))
             if let selectedSnipID, moving.contains(selectedSnipID) {
                 self.selectedSnipID = nil
             }
@@ -1313,7 +1401,7 @@ final class IOSAppModel {
             clearPendingUndoToast()
             clearFailure(for: "snip.delete")
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
-            selectedSnipIDs.subtract(ids)
+            replaceGatheredSnips(with: selectedSnipIDs.subtracting(ids))
             snackbarAndErrors.show(.deleted(count: count, id: token))
             haptics.emit(.deleted, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
@@ -1529,42 +1617,78 @@ final class IOSAppModel {
         if let snipEditorDraft, !snips.contains(where: { $0.id == snipEditorDraft.original.id }) {
             finishInlineSnipEdit(snipEditorDraft)
         }
-        selectedSnipIDs.formIntersection(snips.map(\.id))
+        replaceGatheredSnips(with: selectedSnipIDs.intersection(snips.map(\.id)))
         // The share picker reads this catalog from outside the app process.
         publishShareDestinations?(lists)
     }
 
     private func refreshAttachmentTransferStates() async {
         guard let cloudSyncHandler else {
-            isCloudSyncActive = false
-            hasKnownCloudSyncActivity = true
-            hasKnownCloudAttachmentStates = true
-            attachmentTransferStates = Dictionary(uniqueKeysWithValues:
+            cloudAttachmentKnowledge = .known(.libraryFiles)
+            replaceAttachmentTransferStates(with: Dictionary(uniqueKeysWithValues:
                 attachmentURLs.keys.map { ($0, .available) }
-            )
+            ))
             return
         }
-        hasKnownCloudSyncActivity = false
+        let refresh = UUID()
+        let lastKnown = cloudAttachmentKnowledge.lastKnownSource
+        cloudAttachmentKnowledge = .unknown(lastKnown: lastKnown, refresh: refresh)
+        // A failed read keeps the last known states while iCloud is unavailable.
+        let isActive: Bool
         do {
-            isCloudSyncActive = try await cloudSyncHandler.isCloudSyncActive()
-            hasKnownCloudSyncActivity = true
-            guard isCloudSyncActive else {
-                hasKnownCloudAttachmentStates = true
-                attachmentTransferStates = [:]
-                preparedAttachments.removeAll()
-                return
-            }
-            attachmentTransferStates = try await cloudSyncHandler.syncedAttachmentStates()
-            hasKnownCloudAttachmentStates = true
-            // Failed must show the failure badge, not the downloaded photo.
-            // Waiting and syncing keep it, or a refresh brings the spinner back.
-            preparedAttachments = preparedAttachments.filter { id, _ in
-                guard let state = attachmentTransferStates[id] else { return false }
-                return state != .failed
-            }
+            isActive = try await cloudSyncHandler.isCloudSyncActive()
         } catch {
-            if isCloudSyncActive { hasKnownCloudAttachmentStates = false }
-            // Keep the last known states while iCloud is unavailable.
+            guard cloudAttachmentKnowledge.refresh == refresh else { return }
+            if case .iCloudSync = lastKnown {
+                cloudAttachmentKnowledge = .unknown(
+                    lastKnown: .iCloudSync(statesAreCurrent: false), refresh: nil
+                )
+            } else {
+                cloudAttachmentKnowledge = .unknown(lastKnown: lastKnown, refresh: nil)
+            }
+            return
+        }
+        guard cloudAttachmentKnowledge.refresh == refresh else { return }
+        guard isActive else {
+            cloudAttachmentKnowledge = .known(.libraryFiles)
+            replaceAttachmentTransferStates(with: [:])
+            preparedAttachments.removeAll()
+            return
+        }
+        // With iCloud sync off, its empty transfer states were current.
+        let lastStatesAreCurrent = switch lastKnown {
+        case nil: false
+        case .libraryFiles: true
+        case .iCloudSync(let statesAreCurrent): statesAreCurrent
+        }
+        cloudAttachmentKnowledge = .readingStates(
+            refresh: refresh, lastStatesAreCurrent: lastStatesAreCurrent
+        )
+        let states: [UUID: SyncedAttachmentTransferState]
+        do {
+            states = try await cloudSyncHandler.syncedAttachmentStates()
+        } catch {
+            guard cloudAttachmentKnowledge.refresh == refresh else { return }
+            cloudAttachmentKnowledge = .known(.iCloudSync(statesAreCurrent: false))
+            return
+        }
+        guard cloudAttachmentKnowledge.refresh == refresh else { return }
+        replaceAttachmentTransferStates(with: states)
+        cloudAttachmentKnowledge = .known(.iCloudSync(statesAreCurrent: true))
+        // Failed must show the failure badge, not the downloaded photo.
+        // Waiting and syncing keep it, or a refresh brings the spinner back.
+        preparedAttachments = preparedAttachments.filter { id, _ in
+            guard let state = attachmentTransferStates[id] else { return false }
+            return state != .failed
+        }
+    }
+
+    private func replaceAttachmentTransferStates(
+        with states: [UUID: SyncedAttachmentTransferState]
+    ) {
+        attachmentTransferStates = states
+        for id in attachmentPreparations.keys {
+            attachmentPreparations[id]?.reportedState = states[id]
         }
     }
 

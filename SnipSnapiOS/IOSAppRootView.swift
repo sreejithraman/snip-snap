@@ -64,7 +64,7 @@ struct IOSAppRootView: View {
     private var collectionEditMode: EditMode {
         get { model.isSelectingSnips ? .active : .inactive }
         nonmutating set {
-            if newValue.isEditing { model.isSelectingSnips = true }
+            if newValue.isEditing { model.beginSelectingSnips() }
             else if model.isSelectingSnips { model.endSelectingSnips() }
         }
     }
@@ -222,7 +222,7 @@ struct IOSAppRootView: View {
         .sheet(
             isPresented: Binding(
                 get: { model.newListMoveRequest != nil },
-                set: { if !$0 { model.newListMoveRequest = nil } }
+                set: { if !$0 { model.dismissNewListMove() } }
             ),
             onDismiss: { model.clearFailure(for: "list.create") }
         ) {
@@ -240,22 +240,14 @@ struct IOSAppRootView: View {
                     .navigationTitle("Add List")
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { model.newListMoveRequest = nil }
+                            Button("Cancel") { model.dismissNewListMove() }
                                 .disabled(model.isPerformingGatheredAction)
                                 .accessibilityIdentifier("cancel-create-move")
                         }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Create and Move") {
                                 let name = newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines)
-                                Task { @MainActor in
-                                    guard await model.createListAndMove(request, name: name) else { return }
-                                    model.newListMoveRequest = nil
-                                    if request.selectionSessionID == model.gatheringSessionID,
-                                       model.selectedSnipIDs.isEmpty {
-                                        model.endSelectingSnips()
-                                        collectionEditMode = .inactive
-                                    }
-                                }
+                                Task { @MainActor in await model.createListAndMove(request, name: name) }
                             }
                             .disabled(newMoveListName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       || model.isPerformingGatheredAction)
@@ -797,7 +789,7 @@ struct IOSAppRootView: View {
         }
     }
 
-    /// Default-icon lists show letter marks in the rail; the others keep their icon.
+    /// Lists without an icon show letters; the others keep their icon.
     private func seedRailListsFixtureIfRequested() async {
         guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_RAIL_LISTS"] == "1",
               model.snips.isEmpty else { return }
@@ -809,6 +801,8 @@ struct IOSAppRootView: View {
         }
         _ = await model.createList(name: "Travel", systemImage: "airplane", color: .blue)
         _ = await model.createList(name: "Ideas", color: .orange)
+        // Older builds saved this symbol on every new list.
+        _ = await model.createList(name: "Archive", systemImage: "list.bullet")
         model.selectList(SnipList.inboxID)
     }
 

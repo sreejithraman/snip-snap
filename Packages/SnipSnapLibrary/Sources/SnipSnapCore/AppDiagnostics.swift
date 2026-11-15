@@ -5,7 +5,7 @@ enum AppDiagnosticCodePolicy {
   static let unknownError = "other.UnknownError"
 
   static let operations: Set<String> = [
-    "app.startup", "app.user_action", "app.unknown",
+    "app.startup", "app.termination", "app.user_action", "app.unknown",
     "cli.readiness",
     "attachment.asset_copy", "attachment.cache_clear", "attachment.cache_install",
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
@@ -30,7 +30,7 @@ enum AppDiagnosticCodePolicy {
     "snip.completion_after_copy", "snip.undo_done",
     "snip.replace_all", "snip.undo_delete", "list.create", "list.restore", "list.update",
     "list.delete", "list.move", "library.apply_patch", "library.batch", "attachment.prune",
-    "recovery.resolve", "library.write_admission",
+    "recovery.resolve", "library.write_admission", "library.relocate",
     "sync.account_refresh", "sync.account_resolve", "sync.account_status",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
     "sync.setup", "sync.stop", "sync.snapshot", "sync.provider", "sync.fetch", "sync.send",
@@ -59,6 +59,7 @@ enum AppDiagnosticCodePolicy {
     "library.readOnlyRecovery", "library.transferUnsupported", "library.transferConflict",
     "library.recoveryNotFound", "library.recoveryChanged", "library.invalidRecoveryChoice",
     "library.importChanged", "library.deviceActionChanged",
+    "library.relocationConflict",
     "storage.invalidPath", "storage.invalidRelativePath", "storage.pathOutsideRoot",
     "storage.symbolicLinkRoot", "storage.symbolicLinkDescendant", "storage.invalidMetadata",
     "storage.staleTransition", "storage.missingPublication", "storage.hashMismatch",
@@ -75,6 +76,7 @@ enum AppDiagnosticCodePolicy {
     "sync.accessDenied", "sync.someChangesPending", "sync.attachmentMissing",
     "sync.attachmentUnavailable", "sync.attachmentStorageUnavailable", "sync.setupBlocked",
     "sync.iCloudDataReset", "sync.iCloudAccountChanged", "sync.appDataIssue",
+    "termination.watchdog", "termination.fileLock", "termination.crash",
   ]
 
   static func operation(_ raw: String) -> String {
@@ -170,6 +172,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   public let pendingEvents: Int?
   public let blockedRecords: Int?
   public let writeReason: AppDiagnosticWriteReason?
+  public let termination: AppDiagnosticTermination?
 
   private init(
     operation: StaticString,
@@ -187,7 +190,8 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     pendingDownloads: Int? = nil,
     pendingEvents: Int? = nil,
     blockedRecords: Int? = nil,
-    writeReason: AppDiagnosticWriteReason? = nil
+    writeReason: AppDiagnosticWriteReason? = nil,
+    termination: AppDiagnosticTermination? = nil
   ) {
     self.operation = AppDiagnosticCodePolicy.operation(String(describing: operation))
     self.outcome = outcome
@@ -205,6 +209,13 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     self.pendingEvents = pendingEvents.flatMap { $0 >= 0 ? $0 : nil }
     self.blockedRecords = blockedRecords.flatMap { $0 >= 0 ? $0 : nil }
     self.writeReason = writeReason
+    self.termination = termination
+  }
+
+  /// A previous run that ended abnormally, as the platform reported it.
+  static func termination(_ termination: AppDiagnosticTermination) -> Self {
+    Self(operation: "app.termination", outcome: .failed, visibility: .background,
+      errorCode: termination.kind.errorCode, termination: termination)
   }
 
   public static func writeAdmission(
@@ -322,6 +333,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     if let pendingDownloads { fields.append("pending_downloads=\(pendingDownloads)") }
     if let pendingEvents { fields.append("pending_events=\(pendingEvents)") }
     if let blockedRecords { fields.append("blocked_records=\(blockedRecords)") }
+    fields += termination?.fields ?? []
     return fields.joined(separator: " ")
   }
 
@@ -598,8 +610,7 @@ public final class AppDiagnosticScope: @unchecked Sendable {
     }
   }
 
-  func record(_ event: AppDiagnosticEvent) {
-    let submittedAt = Date()
+  func record(_ event: AppDiagnosticEvent, at occurredAt: Date = Date()) {
     switch event.outcome {
     case .failed:
       logger.error("\(event.line, privacy: .public)")
@@ -608,7 +619,7 @@ public final class AppDiagnosticScope: @unchecked Sendable {
     case .started, .succeeded:
       logger.info("\(event.line, privacy: .public)")
     }
-    if controlsAvailable { writer.submit(event, at: submittedAt) }
+    if controlsAvailable { writer.submit(event, at: occurredAt) }
   }
 
   private func perform<T>(_ operation: () throws -> T) throws -> T {

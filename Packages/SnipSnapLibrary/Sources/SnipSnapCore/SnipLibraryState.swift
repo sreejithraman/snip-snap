@@ -82,7 +82,7 @@ package struct SnipLibraryState {
       let list = SnipList(
         id: UUID(),
         name: cleanName,
-        systemImage: systemImage.isEmpty ? "circle.grid.2x2.fill" : systemImage,
+        systemImage: systemImage,
         color: color,
         position: 0,
         sortKey: sortKey
