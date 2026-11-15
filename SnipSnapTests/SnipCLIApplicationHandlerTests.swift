@@ -118,7 +118,14 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let settingsRetry = Task { await settings.performExplicitSync { await gate.suspend() } }
         await gate.waitUntilEntered()
 
-        let receipt = try await handle(.retrySync, using: handler, model: model)
+        let receipt: SnipCLIReceipt
+        do {
+            receipt = try await handle(.retrySync, using: handler, model: model)
+        } catch {
+            gate.resume()
+            await settingsRetry.value
+            throw error
+        }
 
         XCTAssertEqual(retries.count, 0)
         XCTAssertEqual(receipt.status, .success)
