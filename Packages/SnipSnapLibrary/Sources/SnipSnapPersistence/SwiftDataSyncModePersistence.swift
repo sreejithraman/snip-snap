@@ -399,7 +399,17 @@ package actor SwiftDataSyncModePersistence {
       guard transition.targetKind == targetKind, transition.namespace == namespace else {
         throw SyncModePersistenceError.transitionInProgress
       }
-      return transition
+      // Mode operations run one at a time through the app's operation gate, and reopen clears
+      // both stages below the same way. So here they are leftovers of a rollback whose commit
+      // failed, and finishing that rollback lets Try Again continue.
+      if transition.phase == .candidateDeclared {
+        try abortUnactivatedCandidate(reason: nil)
+      } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
+        try unfreezeBeforePointerSwap()
+        return try currentTransition()
+      } else {
+        return transition
+      }
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
       throw SyncModePersistenceError.namespaceMismatch
