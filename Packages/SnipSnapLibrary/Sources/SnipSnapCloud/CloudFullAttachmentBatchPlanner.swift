@@ -95,6 +95,12 @@ struct CloudFullAttachmentBatchPlanner {
         local.payloadAccepted, local.priorPayloadIdentity == nil,
         metadata.payloadIdentity == local.metadata.payloadIdentity
       {
+        // SM33-F2A: another device's order arrives whole only in the next fetch.
+        if case .save(let draft) = operation,
+          CloudAttachmentOrderWrite.carriesOrder(conflict: snapshot, draft: draft)
+        {
+          return .handled(nil)
+        }
         // ADR 0028: another device's change merges like a fetched record (SM33 D-F2-1). A row
         // still owed its replaced payload's cleanup keeps the conflict path, whose next
         // acknowledged save releases that cleanup.
@@ -190,6 +196,9 @@ struct CloudFullAttachmentBatchPlanner {
               expectedRevision: local.revision
             ))
           }
+          // SM33-F2A: an acknowledged row is saved only to carry its snip's order. It waits for
+          // the fetch that brings the other device's delete instead of returning under a new ID.
+          if local.metadataAccepted { return .handled(nil) }
           return .handled(metadataUnknown(local))
         }
         guard local.isLocallyPresent, local.payloadAccepted, !local.metadataAccepted else {

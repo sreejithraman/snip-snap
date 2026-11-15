@@ -7519,6 +7519,153 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     #expect(metadataSavePositions(in: plan) == [.b: 0, .a: 1, .c: 2])
   }
 
+  /// SM33-F2A: R's reorder lands, then L renames B and sends without a fetch. The conflict shows
+  /// only B, so it applies nothing, and B waits for the fetch that brings R's whole order.
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testAnOrderCarryingConflictAppliesNothingAndWaitsForAFetch(_ role: AttachmentMatrixRole) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = clients.devices(localRole: role)
+    let b = AttachmentMatrixMember.b.id
+    try await keepAttachments(AttachmentMatrixMember.remoteOrder.map(\.id), ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sync()
+    try await renameAttachment(ofSnip: local.snipID, attachmentID: b, to: "local-B.txt", in: local.library)
+    _ = try await local.store.pendingChanges()
+    let before = try await snapshot(local.library, local.namespace).publications.first { $0.metadata.attachmentID == b }
+    let eventCount = await local.transport.events().count
+
+    try await local.sync.sendPendingUntilSettled()
+
+    let after = try await snapshot(local.library, local.namespace).publications.first { $0.metadata.attachmentID == b }
+    #expect(after?.metadataShadowData == before?.metadataShadowData, "L=\(role.rawValue) B's base must stay as it was.")
+    #expect(after?.revision == before?.revision, "L=\(role.rawValue) B's row must stay as it was.")
+    #expect(after?.metadataAccepted == false, "L=\(role.rawValue) B's rename must stay pending.")
+    let positions = try await local.library.storedAttachmentReferencePositions(for: local.snipID)
+    #expect(positions == compactPositions(AttachmentMatrixMember.initial.map(\.id)), "L=\(role.rawValue)")
+    let events = await local.transport.events().dropFirst(eventCount)
+    #expect(metadataSends(of: .b, in: Array(events)) == 1, "L=\(role.rawValue) a held snip sends once.")
+    #expect(try await local.store.isSyncSettled() == false, "L=\(role.rawValue) a held snip isn't settled.")
+    let heldPlan = try await local.store.pendingChanges()
+    #expect(metadataSavePositions(in: heldPlan).isEmpty, "L=\(role.rawValue)")
+
+    try await local.sync.fetchRemote()
+
+    let fetchedPlan = try await local.store.pendingChanges()
+    #expect(metadataSavePositions(in: fetchedPlan) == [.b: 2],
+      "L=\(role.rawValue) after the fetch, B's rename goes at R's position.")
+  }
+
+  /// A conflict at B's own position carries no order, so R's rename merges and L's order write
+  /// goes again in the same send loop.
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testAConflictAtAnUnchangedPositionMergesWithoutWaiting(_ role: AttachmentMatrixRole) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = clients.devices(localRole: role)
+    try await renameAttachment(ofSnip: remote.snipID, attachmentID: AttachmentMatrixMember.b.id,
+      to: "remote-B.txt", in: remote.library)
+    try await remote.sync.sync()
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: local.snipID, in: local.library)
+
+    try await local.sync.sendPendingUntilSettled()
+
+    let settled = try await settlement(of: AttachmentMatrixMember.initial, in: clients)
+    #expect(settled.server == AttachmentMatrixMember.localOrder.map(\.id), "L=\(role.rawValue)")
+    let serverB = await clients.holder.server.fullSnapshot(for: metadataID(.b))
+    #expect(serverB?.encryptedFields["fileName"] == .string("remote-B.txt"), "L=\(role.rawValue)")
+    let next = try await local.store.pendingChanges()
+    #expect(next.operations.isEmpty, "L=\(role.rawValue)")
+  }
+
+  /// R removes C while L reorders. L saved C only to carry the order, so C waits for the fetch
+  /// that brings R's delete instead of returning under a new ID.
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testACompanionThatMeetsAnotherDevicesDeleteWaitsForTheDelete(_ role: AttachmentMatrixRole) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = clients.devices(localRole: role)
+    let c = AttachmentMatrixMember.c.id
+    try await keepAttachments([AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id], ofSnip: remote.snipID,
+      in: remote.library)
+    try await remote.sync.sendPendingUntilSettled()
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: local.snipID, in: local.library)
+
+    try await local.sync.sendPendingUntilSettled()
+
+    let held = try await snapshot(local.library, local.namespace).publications
+    let companion = held.first { $0.metadata.attachmentID == c }
+    #expect(companion?.isLocallyPresent == true && companion?.metadataAccepted == true,
+      "L=\(role.rawValue) C must keep its identity until the fetch.")
+    #expect(held.filter { $0.metadata.fileName == AttachmentMatrixMember.c.fileName }.count == 1,
+      "L=\(role.rawValue) C must not return under a new ID.")
+    #expect(try await local.store.isSyncSettled() == false, "L=\(role.rawValue)")
+    let heldPlan = try await local.store.pendingChanges()
+    #expect(metadataSavePositions(in: heldPlan).isEmpty, "L=\(role.rawValue)")
+
+    try await local.sync.fetchRemote()
+
+    let fetched = try await snapshot(local.library, local.namespace).publications
+    #expect(!fetched.contains { $0.metadata.attachmentID == c && $0.isLocallyPresent }, "L=\(role.rawValue)")
+    let fetchedPlan = try await local.store.pendingChanges()
+    #expect(metadataSavePositions(in: fetchedPlan) == [.b: 0, .a: 1],
+      "L=\(role.rawValue) the order write goes again without C.")
+  }
+
+  /// A held snip holds only its attachment metadata. Its text and other snips keep sending.
+  @Test func testAHeldOrderWriteLeavesTextAndOtherSnipsSending() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (holder, downloaded) = (clients.holder, clients.downloaded)
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    try await keepAttachments(AttachmentMatrixMember.remoteOrder.map(\.id), ofSnip: downloaded.snipID,
+      in: downloaded.library)
+    try await downloaded.sync.sync()
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: holder.snipID, in: holder.library)
+    try await holder.sync.sendPendingUntilSettled()
+    #expect(try await holder.store.isSyncSettled() == false, "The order write must be held.")
+    _ = try await holder.library.perform(.update(id: holder.snipID, content: "edited while held",
+      attachmentURLs: nil, expectedUpdatedAt: nil, now: Date(timeIntervalSince1970: 4)), sortedBy: .manual)
+    let added = try await holder.library.perform(.add(content: "unrelated", origin: .quickEntry, source: nil,
+      listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date(timeIntervalSince1970: 4)),
+      sortedBy: .manual)
+    guard case .add(.added(let otherSnipID)) = added.outcome else {
+      Issue.record("Expected a saved snip")
+      return
+    }
+    let eventCount = await holder.transport.events().count
+
+    try await holder.sync.sendPendingUntilSettled()
+
+    let sent = await holder.transport.events().dropFirst(eventCount).reduce(into: Set<CloudRecordID>()) { ids, event in
+      if case .sent(let batch) = event { ids.formUnion(batch) }
+    }
+    #expect(sent.contains(CloudRecordID.snip(holder.snipID, in: dataZone)), "The held snip's text must send.")
+    #expect(sent.contains(CloudRecordID.snip(otherSnipID, in: dataZone)), "Another snip must send.")
+    #expect(sent.isDisjoint(with: AttachmentMatrixMember.initial.map(metadataID)), "The order write must wait.")
+  }
+
+  /// P1 again, with the fake reporting only the first failing member of an atomic batch, as
+  /// CloudKit may. That one conflict still carries R's order, so L waits for the fetch.
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testConcurrentReordersKeepTheLastSendersOrderWhenOnlyOneFailureIsReported(
+    _ role: AttachmentMatrixRole
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = clients.devices(localRole: role)
+    await local.transport.reportOnlyFirstAtomicFailure()
+    await remote.transport.reportOnlyFirstAtomicFailure()
+    try await keepAttachments(AttachmentMatrixMember.remoteOrder.map(\.id), ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sync()
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: local.snipID, in: local.library)
+
+    try await local.sync.sendPendingUntilSettled()
+    try await settle(lastSender: local, other: remote, local: local, remote: remote)
+
+    let settled = try await settlement(of: AttachmentMatrixMember.initial, in: clients)
+    #expect(settled == .agreed(on: AttachmentMatrixMember.localOrder), "L=\(role.rawValue)")
+  }
+
   @Test(arguments: [false, true])
   func testSparseAttachmentRetryAfterPlanningKeepsMainRecoveryAndCanonicalPositions(
     acknowledgedBeforeRetry: Bool
@@ -7690,6 +7837,12 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
         ofSnip: client.snipID, in: client.library)
       _ = try await client.store.pendingChanges()
     }
+  }
+
+  private func metadataSends(of member: AttachmentMatrixMember, in events: [FakeCloudTransportEvent]) -> Int {
+    events.filter { event in
+      if case .sent(let ids) = event { ids.contains(metadataID(member)) } else { false }
+    }.count
   }
 
   /// The position each planned metadata save writes, by member.

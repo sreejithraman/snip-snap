@@ -562,6 +562,9 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let afterCommitHook: ApplyHook
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
+  /// SM33-F2A: snips whose attachment metadata saves wait for the next fetch to commit. Kept in
+  /// memory only: after a restart the first send may conflict once more and hold again.
+  private(set) var orderWritesAwaitingFetch: Set<UUID> = []
   private let mutationLease: SyncModeActiveMutationLease?
 
   package init(
@@ -652,14 +655,15 @@ extension CloudFullSyncPersistence {
 
   private func applyStagedWithinMutation(_ id: UUID) async throws {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
-    if let rawData = batch.rawBatchData,
-      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
-      let reason = Self.destructiveResetReason(raw.batch)
-    {
+    let staged = batch.rawBatchData.flatMap {
+      try? JSONDecoder().decode(RawStagedBatch.self, from: $0)
+    }
+    if let staged, let reason = Self.destructiveResetReason(staged.batch) {
       observedDestructiveReset = reason
     }
     do {
       _ = try await library.commitCloudFullBatch(batch, acknowledgedValues: .cloudKit)
+      try await updateOrderWritesAwaitingFetch(after: staged)
       try await clearRecoveredFailure(in: batch)
       try await afterCommitHook()
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
@@ -681,8 +685,31 @@ extension CloudFullSyncPersistence {
       )
       try await library.replaceStagedCloudFullBatch(replacement)
       _ = try await library.commitCloudFullBatch(replacement, acknowledgedValues: .cloudKit)
+      try await updateOrderWritesAwaitingFetch(after: raw)
       try await clearRecoveredFailure(in: replacement)
       try await afterCommitHook()
+    }
+  }
+
+  private func updateOrderWritesAwaitingFetch(after committed: RawStagedBatch?) async throws {
+    switch committed?.batch {
+    case .fetched?:
+      orderWritesAwaitingFetch = []
+    case .sent(let sent)?:
+      guard let outbound = committed?.outbound else { return }
+      var acknowledgedMetadataIDs: Set<CloudRecordID> = []
+      if sent.items.contains(where: { if case .unknownItem = $0 { true } else { false } }) {
+        acknowledgedMetadataIDs = Set(
+          try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey).publications
+            .filter { $0.isLocallyPresent && $0.metadataAccepted }
+            .map { CloudAttachmentRecordCodec.recordID($0.metadataIdentity) }
+        )
+      }
+      orderWritesAwaitingFetch.formUnion(CloudAttachmentOrderWrite.snipsAwaitingFetch(
+        after: sent, outbound: outbound, acknowledgedMetadataIDs: acknowledgedMetadataIDs
+      ))
+    case nil:
+      return
     }
   }
 

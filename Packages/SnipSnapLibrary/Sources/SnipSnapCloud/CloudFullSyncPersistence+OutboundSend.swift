@@ -26,6 +26,7 @@ extension CloudFullSyncPersistence {
   }
 
   package func isSyncSettled() async throws -> Bool {
+    guard orderWritesAwaitingFetch.isEmpty else { return false }
     let pending = try await pendingChanges()
     guard pending.operations.isEmpty, pending.zonesToSave.isEmpty else { return false }
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
@@ -274,7 +275,8 @@ extension CloudFullSyncPersistence {
         attachments,
         dataZone: dataZone,
         payloadZone: payloadZone,
-        blockedRecordIDs: failedFetchIDs
+        blockedRecordIDs: failedFetchIDs,
+        heldSnipIDs: orderWritesAwaitingFetch
       )
       if !attachmentPlan.invalidPublicationIDs.isEmpty
         || !attachmentPlan.invalidCleanupIdentities.isEmpty
@@ -323,13 +325,16 @@ extension CloudFullSyncPersistence {
     var invalidCleanupIdentities: Set<CloudTextStorageIdentity> = []
   }
 
-  /// - Parameter blockedRecordIDs: records a failed fetch blocks. Another member's block holds its
-  ///   snip's order write.
+  /// - Parameters:
+  ///   - blockedRecordIDs: records a failed fetch blocks. Another member's block holds its snip's
+  ///     order write.
+  ///   - heldSnipIDs: snips whose metadata saves wait for the next fetch.
   private static func attachmentOperations(
     _ snapshot: CloudAttachmentStorageSnapshot,
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID,
-    blockedRecordIDs: Set<CloudRecordID> = []
+    blockedRecordIDs: Set<CloudRecordID> = [],
+    heldSnipIDs: Set<UUID> = []
   ) -> AttachmentOperationPlan {
     let publications = snapshot.publications.sorted {
       $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString
@@ -357,6 +362,7 @@ extension CloudFullSyncPersistence {
       && publication.payloadAccepted
       && !publication.metadataAccepted
       && !isTerminalAttachmentFailure(publication.lastFailure)
+      && !heldSnipIDs.contains(publication.metadata.snipID)
     {
       do {
         metadataSaves.append((publication.metadata.snipID,
@@ -461,6 +467,8 @@ extension CloudFullSyncPersistence {
     return (saves + companions).filter { !waitingSnipIDs.contains($0.snipID) }.map { $0.draft }
   }
 
+  /// Every publication's metadata record counts too: whether an order write went out depends on
+  /// its snip's other members, which may have changed since the send was planned.
   static func plannedAttachmentOperationIDs(
     _ snapshot: CloudAttachmentStorageSnapshot,
     dataZone: CloudZoneID,
@@ -468,6 +476,7 @@ extension CloudFullSyncPersistence {
   ) -> Set<CloudRecordID> {
     Set(attachmentOperations(snapshot, dataZone: dataZone, payloadZone: payloadZone)
       .operations.map(\.id))
+      .union(snapshot.publications.map { CloudAttachmentRecordCodec.recordID($0.metadataIdentity) })
   }
 
   private static func isTerminalAttachmentFailure(
