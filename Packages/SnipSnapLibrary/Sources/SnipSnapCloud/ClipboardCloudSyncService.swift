@@ -295,6 +295,7 @@ package enum ClipboardBindingResetStep: Sendable {
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { @MainActor in
             try await self.requireAccount(for: generation)
+            try self.requireCurrentUnbinding(unbinding)
             try await transport.deleteAll()
         }
         if hadBinding { try await store.setAside() }
