@@ -128,6 +128,27 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRetryThroughTheSimulatedHandlerRunsOnlyTheAppRetry() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let retries = ApplicationCLIRetryCounter()
+        let otherSyncs = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let cloud = SimulatedCloudSyncHandler(
+            syncWhenPossible: { otherSyncs.record() },
+            retrySyncWhenPossible: { retries.record() },
+            scheduleSyncAfterLocalChange: { otherSyncs.record() }
+        )
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(retries.count, 1)
+        XCTAssertEqual(otherSyncs.count, 0)
+        XCTAssertEqual(receipt.status, .success)
+    }
+
+    @MainActor
     func testHideLeavesAnEditListFormOpen() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
         let coordinator = AppCoordinator(

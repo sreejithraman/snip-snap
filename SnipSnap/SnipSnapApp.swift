@@ -215,8 +215,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ))
         self.cliLifecycle = cliLifecycle
 #if DEBUG
-        let initializeSyncModeStore =
+        let usesSimulatedSyncSettings =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
+        let initializeSyncModeStore = usesSimulatedSyncSettings
 #else
         let initializeSyncModeStore = false
 #endif
@@ -249,7 +250,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 attachmentCacheRootURL: attachmentCacheRootURL,
                 sourceLibrary: library
             )
-        } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+        } else if usesSimulatedSyncSettings {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: syncModeRootURL,
                 syncModeStore: assembly.syncModeStore
@@ -406,17 +407,31 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             retrySyncWhenPossible: retryAction,
             scheduleSyncAfterLocalChange: scheduleAction
         )
-        cloudSyncHandler = productionCloudSyncHandler
-        model.setCloudSyncHandler(productionCloudSyncHandler)
 #if DEBUG
-        let uiTestAccountNoticeModel =
+        let simulatedCloudSyncHandler: SimulatedCloudSyncHandler? =
+            usesSimulatedSyncSettings && productionCloudSyncHandler == nil
+            ? SimulatedCloudSyncHandler(
+                syncWhenPossible: syncAction,
+                retrySyncWhenPossible: retryAction,
+                scheduleSyncAfterLocalChange: scheduleAction
+            )
+            : nil
+        let appCloudSyncHandler: (any OptionalCloudSyncHandling)? =
+            simulatedCloudSyncHandler ?? productionCloudSyncHandler
+        cloudSyncHandler = appCloudSyncHandler
+        model.setCloudSyncHandler(appCloudSyncHandler)
+        let uiTestAccountNoticeModel: AppleAccountNoticeModel? =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut"
             ? AppleAccountNoticeModel(
                 notice: .signedOut,
                 handler: UITestAppleAccountCacheHandler()
             )
-            : nil
+            : simulatedCloudSyncHandler.map {
+                AppleAccountNoticeModel(handler: $0, activeLibraryChangeAction: reloadActiveLibrary)
+            }
 #else
+        cloudSyncHandler = productionCloudSyncHandler
+        model.setCloudSyncHandler(productionCloudSyncHandler)
         let uiTestAccountNoticeModel: AppleAccountNoticeModel? = nil
 #endif
         if let uiTestAccountNoticeModel {
@@ -724,6 +739,36 @@ private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
         didResolve = true
     }
+}
+
+/// Stands in for the account handler that simulated sync settings lack, so Settings and the CLI
+/// reach the app's sync actions.
+actor SimulatedCloudSyncHandler: OptionalCloudSyncHandling {
+    private let syncAction: AppleAccountCacheCoordinatorHandler.SyncAction
+    private let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction
+    private let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction
+
+    init(
+        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
+    ) {
+        syncAction = syncWhenPossible
+        retryAction = retrySyncWhenPossible
+        scheduleAction = scheduleSyncAfterLocalChange
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { await syncAction() }
+    func retrySyncWhenPossible() async { await retryAction() }
+    func scheduleSyncAfterLocalChange() async { await scheduleAction() }
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.transferUnsupported
+    }
+    func clearDownloadedFiles() async throws {}
 }
 #endif
 

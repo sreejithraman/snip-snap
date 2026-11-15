@@ -845,8 +845,21 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       environment: ["SNIP_SNAP_UI_TEST_REMOVAL_PENDING": "1"]
     )
     let session = try XCTUnwrap(services.syncSession)
+    XCTAssertEqual(services.syncedContentSettings.state, .removalPending)
+    let receivedLaunchSync = expectation(description: "Scheduled launch sync publishes its result")
+    var launchSync: SnipSnapCloudSyncResult?
+    let observer = Task {
+      var iterator = session.automaticSyncResults.makeAsyncIterator()
+      launchSync = await iterator.next()
+      receivedLaunchSync.fulfill()
+    }
+    defer { observer.cancel() }
 
-    let launchSync = try await session.synchronize()
+    await session.scheduleAutomaticSync()
+    await fulfillment(of: [receivedLaunchSync], timeout: 5)
+    observer.cancel()
+    await observer.value
+
     XCTAssertEqual(launchSync, .oldSyncedContentRemovalPending)
     let laterSync = try await session.synchronize()
     XCTAssertEqual(laterSync, .oldSyncedContentRemovalPending)
@@ -855,6 +868,28 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(retry, .oldSyncedContentRemovalCompleted)
     let syncAfterRetry = try await session.synchronize()
     XCTAssertNotEqual(syncAfterRetry, .oldSyncedContentRemovalPending)
+  }
+
+  @MainActor
+  func testSimulatedServicesStartReadyWithoutTheRemovalPendingFlag() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SimulatedSettingsReady-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let original = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("original.store", isDirectory: false)
+    )
+    let assembly = SnipLibraryAssembly(
+      library: original,
+      syncModeRootURL: root,
+      initializeSyncModeStore: true
+    )
+    let services = SnipSnapCloudAppAssembly.simulatedServices(
+      rootURL: root,
+      syncModeStore: try XCTUnwrap(assembly.syncModeStore),
+      environment: [:]
+    )
+
+    XCTAssertEqual(services.syncedContentSettings.state, .ready)
   }
 
   @MainActor
