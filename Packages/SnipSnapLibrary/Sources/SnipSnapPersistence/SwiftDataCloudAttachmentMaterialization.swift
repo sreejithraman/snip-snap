@@ -11,10 +11,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
-      .filter {
-        $0.isLocallyPresent && $0.metadataAccepted
-          && $0.sourceRelativePath == nil
-      }
+      .filter { $0.lifecycle.materializesFromCloud }
     guard !publications.isEmpty else { return }
     let snipIDs = Array(Set(publications.map(\.snipID)))
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
