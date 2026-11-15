@@ -6,7 +6,8 @@ import XCTest
 
 /// A failed rollback can leave a transition stage that only reopen clears (SM23-L1, SM23-L2).
 /// Try Again finishes only a rollback this process couldn't commit, not work in flight (SM23-F1).
-/// Nor does it replay a full re-enable merge that this process is applying (SM23-F2).
+/// Nor does it replay a full re-enable merge that this process is applying (SM23-F2), or abort
+/// one whose candidate's files vanish (SM23-F3-D5).
 extension ICloudSyncModeCoordinatorTests {
     func testEnableTryAgainUnfreezesASourceLeftFrozenByAFailedRestore() async throws {
         let root = temporaryDirectory()
@@ -236,6 +237,75 @@ extension ICloudSyncModeCoordinatorTests {
         // return Setting Up too.
         let finished = try await coordinator.enableOrRetry()
         XCTAssertEqual(finished.state, .on)
+        try await assertModeChangeFinished(persistence, on: .iCloudSync, holding: texts)
+    }
+
+    /// SM23-F3-D5: the candidate's files vanish while a full re-enable merge is in flight. Try
+    /// Again from a second coordinator must not abort the transition under the live merge.
+    func testEnableTryAgainLeavesAFullMergeInFlightWhoseCandidateFilesVanish() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pause = HeldStepPause()
+        let probe = StoreOpenDiagnosticProbe()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            writeHook: { await pause.arrive(atHeldStep: $0 == .beforeFullReenablePlanApply) },
+            diagnostics: probe.recorder
+        )
+        let server = FakeCloudServer()
+        let texts = try await optOutAfterSyncing(persistence, server: server)
+        let inFlight = modeCoordinator(on: persistence, server: server)
+        let tryAgain = modeCoordinator(on: persistence, server: server)
+        await pause.arm()
+        let first = Task {
+            do {
+                let status = try await inFlight.enableOrRetry()
+                await pause.heldWorkFinished()
+                return status
+            } catch {
+                await pause.heldWorkFinished()
+                throw error
+            }
+        }
+        await pause.waitUntilPaused()
+        guard await pause.hasPaused else {
+            _ = await first.result
+            XCTFail("The enable finished without reaching its plan apply.")
+            return
+        }
+        // Nothing between the pause and the resume throws, so the held enable always resumes.
+        let held = try? await persistence.snapshot()
+        var removedCandidate = false
+        if let candidateID = held?.transition?.candidateStoreID,
+           let candidate = await persistence.store(id: candidateID) {
+            let candidateRoot = await persistence.storeURL(candidate)
+            removedCandidate = (try? FileManager.default.removeItem(at: candidateRoot)) != nil
+        }
+        let retried = await Task { try await tryAgain.enableOrRetry() }.result
+        let afterRetry = try? await persistence.snapshot()
+        let missingDuringRetry = probe.count(.missing(operation: "sync.setup"))
+        await pause.resume()
+        // The held merge then fails, because its candidate is gone. How it fails isn't pinned.
+        _ = await first.result
+
+        XCTAssertTrue(removedCandidate, "The candidate's files must be gone before Try Again.")
+        XCTAssertEqual(held?.transition?.phase, .sourceFrozen)
+        XCTAssertNotNil(held?.transition?.mergeIntent)
+        // Before SM23-F3-D5, these fail: Try Again aborts the transition under the live merge,
+        // records the missing candidate, and finishes a fresh setup.
+        XCTAssertEqual(missingDuringRetry, 0)
+        XCTAssertEqual(afterRetry?.transition, held?.transition)
+        // Try Again's sync adapter can't open the missing candidate, so it reports that rather
+        // than Setting Up.
+        XCTAssertThrowsError(try retried.get()) { error in
+            XCTAssertEqual(error as? SyncModePersistenceError, .missingStore)
+        }
+
+        // With no merge in flight, the next Try Again starts a fresh setup, once.
+        let finished = try await tryAgain.enableOrRetry()
+        XCTAssertEqual(finished.state, .on)
+        XCTAssertEqual(probe.count(.missing(operation: "sync.setup")), 1)
         try await assertModeChangeFinished(persistence, on: .iCloudSync, holding: texts)
     }
 
