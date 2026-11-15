@@ -83,6 +83,8 @@ package enum ClipboardBindingResetStep: Sendable {
     private let resetStep: @MainActor (ClipboardBindingResetStep) async throws -> Void
     private var binding: ClipboardCloudBinding?
     private var lifecycle = ClipboardCloudLifecycle.idle
+    /// The started account reset that hasn't set history aside yet, so nothing may bind. In memory only.
+    private var pendingSetAside: UUID?
 
     public convenience init(store: ClipboardHistoryStore,
                             containerIdentifier: String, syncRootURL: URL) {
@@ -127,8 +129,8 @@ package enum ClipboardBindingResetStep: Sendable {
     /// service stops and returns local history. If it stops holding during the run, the service
     /// stops the run, which throws `CancellationError`: at once when observable state it reads
     /// changes, otherwise at the run's next step. A sync for a new sync generation in the bound
-    /// account throws `syncGenerationChanged`; the caller sets history aside with
-    /// `resetAccountBinding()` before syncing again.
+    /// account, or while a started set-aside hasn't finished, throws `syncGenerationChanged`; the
+    /// caller sets history aside with `resetAccountBinding()` before syncing again.
     @discardableResult public func synchronize(
         generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
@@ -219,15 +221,21 @@ package enum ClipboardBindingResetStep: Sendable {
     /// Sets history aside when a binding exists, or when the caller includes unbound history
     /// because clipboard sync is on. Runs `settingAside` once, just before setting it aside. If
     /// `settingAside` throws, the reset stops with nothing set aside and the binding kept.
+    /// While a started set-aside hasn't archived the history, nothing binds, and a later call sets
+    /// the history aside even without a binding.
     public func resetAccountBinding(
         includingUnboundHistory: Bool = false,
         settingAside: @MainActor () async throws -> Void = {}
     ) async throws {
-        guard includingUnboundHistory || FileManager.default.fileExists(atPath: bindingURL.path) else { return }
+        guard includingUnboundHistory || pendingSetAside != nil
+            || FileManager.default.fileExists(atPath: bindingURL.path) else { return }
+        let setAside = UUID()
+        pendingSetAside = setAside
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         try await settingAside()
         try await store.setAside()
+        if pendingSetAside == setAside { pendingSetAside = nil }
         try await resetStep(.historyCleared)
         try removeBinding()
         try await resetStep(.bindingRemoved)
@@ -309,6 +317,7 @@ package enum ClipboardBindingResetStep: Sendable {
         lifecycle = .idle
     }
     private func bind(to generation: String) throws -> any ClipboardCloudTransport {
+        if pendingSetAside != nil { throw ClipboardCloudError.syncGenerationChanged }
         let stored = try (try? Data(contentsOf: bindingURL)).map { try JSONDecoder().decode(String.self, from: $0) }
         switch ClipboardStoredBinding(stored: stored, requested: generation) {
         case .unbound:
