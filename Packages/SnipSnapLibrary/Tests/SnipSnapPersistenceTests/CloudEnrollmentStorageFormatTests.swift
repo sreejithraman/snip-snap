@@ -10,7 +10,7 @@ import XCTest
 final class CloudEnrollmentStorageFormatTests: XCTestCase {
   private let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-format")
   private static let listID = "8D5F2C1E-3B7A-4E9C-9A61-0F2B7C4D5E6A"
-  private static let reference = #"{"kind":"list","domainID":"\#(listID)"}"#
+  private static let reference = #"{"kind":"list","domainID":"\#(CloudEnrollmentStorageFormatTests.listID)"}"#
   private static let freshInventory = #"{"observed":[],"canProveAbsence":true}"#
   private static let observedInventory =
     #"{"observed":[{"zoneName":"SnipSnap","ownerName":"owner","recordName":"list-record"}],"#
@@ -36,20 +36,25 @@ final class CloudEnrollmentStorageFormatTests: XCTestCase {
   // Active with pending zone creation is SM27-L1 and heals on read; see CloudFullSyncEnrollmentTests.
   private static let namespaceFixtures: [NamespaceFixture] = [
     NamespaceFixture(phase: .notEnrolled, revision: 0, zoneCreationPending: false, inventory: nil),
-    NamespaceFixture(phase: .notEnrolled, revision: 1, zoneCreationPending: false, inventory: freshInventory),
+    NamespaceFixture(phase: .notEnrolled, revision: 1, zoneCreationPending: false,
+      inventory: CloudEnrollmentStorageFormatTests.freshInventory),
     NamespaceFixture(phase: .remoteChecked, revision: 2, zoneCreationPending: false, inventory: nil),
-    NamespaceFixture(phase: .remoteChecked, revision: 3, zoneCreationPending: true, inventory: observedInventory),
+    NamespaceFixture(phase: .remoteChecked, revision: 3, zoneCreationPending: true,
+      inventory: CloudEnrollmentStorageFormatTests.observedInventory),
     NamespaceFixture(phase: .remoteCheckedMissingZone, revision: 4, zoneCreationPending: false, inventory: nil),
     NamespaceFixture(phase: .remoteCheckedMissingZone, revision: 5, zoneCreationPending: true, inventory: nil),
     NamespaceFixture(phase: .remoteCheckedMissingZone, revision: 5, zoneCreationPending: true,
-      inventory: observedInventory),
+      inventory: CloudEnrollmentStorageFormatTests.observedInventory),
     NamespaceFixture(phase: .seeding, revision: 6, zoneCreationPending: false, inventory: nil),
     NamespaceFixture(phase: .seeding, revision: 7, zoneCreationPending: true, inventory: nil),
-    NamespaceFixture(phase: .seeding, revision: 7, zoneCreationPending: true, inventory: freshInventory),
+    NamespaceFixture(phase: .seeding, revision: 7, zoneCreationPending: true,
+      inventory: CloudEnrollmentStorageFormatTests.freshInventory),
     NamespaceFixture(phase: .active, revision: 8, zoneCreationPending: false, inventory: nil),
-    NamespaceFixture(phase: .active, revision: 9, zoneCreationPending: false, inventory: observedInventory),
+    NamespaceFixture(phase: .active, revision: 9, zoneCreationPending: false,
+      inventory: CloudEnrollmentStorageFormatTests.observedInventory),
     NamespaceFixture(phase: .blocked, revision: 10, zoneCreationPending: false, inventory: nil),
-    NamespaceFixture(phase: .blocked, revision: 11, zoneCreationPending: true, inventory: freshInventory),
+    NamespaceFixture(phase: .blocked, revision: 11, zoneCreationPending: true,
+      inventory: CloudEnrollmentStorageFormatTests.freshInventory),
   ]
 
   private static func envelope(
@@ -275,7 +280,7 @@ final class CloudEnrollmentStorageFormatTests: XCTestCase {
   }
 
   private static func listUUID() throws -> UUID {
-    try XCTUnwrap(UUID(uuidString: listID))
+    try XCTUnwrap(UUID(uuidString: CloudEnrollmentStorageFormatTests.listID))
   }
 
   private static func canonical(_ data: Data) throws -> String {

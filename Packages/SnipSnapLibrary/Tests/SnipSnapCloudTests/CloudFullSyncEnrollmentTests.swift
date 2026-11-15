@@ -200,6 +200,77 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(outcome.settled)
   }
 
+  // SM27-H4: a saved data zone ends pending zone creation outside seeding too.
+  func testSavedDataZoneEndsPendingZoneCreationAfterTheRemoteCheck() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentZoneSaveChecked")
+    defer { store.remove() }
+    let zone = store.zone
+    try await store.apply(store.fetch(zones: [.failed(zone, .zoneMissing)]))
+    try await store.approveInbox()
+    try await store.apply(store.fetch(database: [.zoneDeleted(zone, reason: .deleted)]))
+    try await store.apply(store.fetch())
+    try await store.expect(.remoteChecked, pending: true, revision: 4, "an empty fetch after a missing zone")
+    let outbound = try await store.persistence.pendingChanges()
+    XCTAssertEqual(outbound.zonesToSave, [zone])
+
+    try await store.send(outbound, items: outbound.operations.map(CloudEnrollmentTestStore.saved),
+      database: [.zoneSaved(zone)])
+
+    let reopened = try store.reopened()
+    try await reopened.expect(.remoteChecked, pending: false, revision: 5, "a data zone save after the check")
+    let pending = try await reopened.persistence.pendingChanges()
+    XCTAssertEqual(pending, CloudOutboundBatch(operations: []))
+  }
+
+  // SM27-H4: the zone save ends pending creation even when a seed item must retry.
+  func testSavedDataZoneEndsPendingZoneCreationWhenASeedItemRetries() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentZoneSaveRetry")
+    defer { store.remove() }
+    let zone = store.zone
+    let inboxID = CloudRecordID.list(SnipList.inbox.id, in: zone)
+    try await store.apply(store.fetch(zones: [.failed(zone, .zoneMissing)]))
+    try await store.approveInbox()
+    let outbound = try await store.persistence.pendingChanges()
+    XCTAssertEqual(outbound.operations.map(\.id), [inboxID])
+    XCTAssertEqual(outbound.zonesToSave, [zone])
+
+    try await store.send(outbound, items: [.failed(inboxID, .retryable)], database: [.zoneSaved(zone)])
+
+    try await store.expect(.seeding, pending: false, revision: 3, "a zone save with a retryable seed item")
+    let retry = try await store.persistence.pendingChanges()
+    XCTAssertEqual(retry.operations.map(\.id), [inboxID])
+    XCTAssertTrue(retry.zonesToSave.isEmpty)
+    try await store.send(retry, items: retry.operations.map(CloudEnrollmentTestStore.saved))
+    try await store.expect(.active, pending: false, revision: 4, "the retried seed")
+  }
+
+  // SM27-H4: a drained send must stop resending a zone that CloudKit already saved.
+  func testDrainedSendStopsResendingASavedZoneOutsideSeeding() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentZoneSaveLoop")
+    defer { store.remove() }
+    let zone = store.zone
+    try await store.apply(store.fetch(zones: [.failed(zone, .zoneMissing)]))
+    try await store.approveInbox()
+    try await store.apply(store.fetch(database: [.zoneDeleted(zone, reason: .deleted)]))
+    // A committed incremental checkpoint lets the coordinator send without a first fetch.
+    try await store.persistence.saveEngineState(CloudEngineStateEnvelope(
+      namespace: store.namespace,
+      serialization: JSONEncoder().encode([CloudZoneID: Int]()),
+      requiresInitialFetch: false
+    ))
+    let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: store.namespace)
+    let coordinator = CloudFullSyncCoordinator(store: store.persistence, transport: transport)
+
+    _ = try await coordinator.sendPendingUntilSettled()
+
+    let sends = await transport.events().filter { event in
+      if case .sent = event { true } else { false }
+    }
+    XCTAssertEqual(sends.count, 1)
+    try await store.expect(.remoteCheckedMissingZone, pending: false, revision: 4,
+      "one send that saved the data zone")
+  }
+
   // SM27-L1: rows written by older builds in this state recover when read.
   func testStoredActiveNamespaceWithPendingZoneCreationHealsOnRead() async throws {
     let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentStoredActiveZone")
@@ -227,10 +298,26 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(namespaceState["phase"] as? String, "active")
     XCTAssertEqual(namespaceState["zoneCreationPending"] as? Bool, false)
   }
+
+  // SM27-Q1: no event leaves a namespace that has never fetched waiting to create its zone.
+  func testStoredNotEnrolledNamespaceWithPendingZoneCreationHealsOnRead() async throws {
+    let store = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentStoredUnenrolledZone")
+    defer { store.remove() }
+    let olderRow = #"{"storageVersion":1,"namespaceState":{"storageVersion":1,"revision":2,"#
+      + #""phase":"notEnrolled","zoneCreationPending":true},"references":[]}"#
+    try await store.library.insertFullEnrollmentRow(namespaceKey: store.namespace.namespaceKey.rawValue,
+      data: Data(olderRow.utf8))
+
+    try await store.expect(.notEnrolled, pending: false, revision: 2, "a stored unenrolled row")
+    let pending = try await store.persistence.pendingChanges()
+    XCTAssertEqual(pending, CloudOutboundBatch(operations: []))
+    try await store.apply(store.fetch(zones: [.fetched(store.zone)]))
+    try await store.expect(.remoteChecked, pending: false, revision: 3, "the first complete fetch")
+  }
 }
 
 /// One managed store with its full-record persistence, reopened on demand.
-struct CloudEnrollmentTestStore {
+struct CloudEnrollmentTestStore: Sendable {
   let root: URL
   let namespace: CloudSyncNamespace
   let zone: CloudZoneID
