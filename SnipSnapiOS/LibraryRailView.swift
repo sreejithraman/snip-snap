@@ -285,6 +285,7 @@ struct LibraryRailView: View {
             }
             .padding(.horizontal, Self.inset)
             .padding(.vertical, 12)
+            .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
         .scrollPosition($scrollPosition)
@@ -296,6 +297,7 @@ struct LibraryRailView: View {
                 Button("Next Page") { selectAdjacentPage(by: 1) }
                     .keyboardShortcut(.downArrow, modifiers: [])
             }
+            .disabled(isPageChangeBlocked)
             .frame(width: 0, height: 0)
             .opacity(0)
             .accessibilityHidden(true)
@@ -330,6 +332,11 @@ struct LibraryRailView: View {
                 stripDrag = nil
             }
         }
+    }
+
+    /// A sheet, search, or list edit owns the moment; switching pages under it would abandon that work.
+    private var isPageChangeBlocked: Bool {
+        sheet != nil || model.newListMoveRequest != nil || model.isSearchPresented || model.editingListID != nil
     }
 
     private func selectAdjacentPage(by offset: Int) {

@@ -596,6 +596,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         app.buttons["sidebar-width-toggle"].tap()
         waitForClipboardRowWidth(in: app, "Rail again") { $0 < 80 }
+
+        // iPad starts with names, so only a second relaunch shows the rail choice was saved.
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        waitForClipboardRowWidth(in: app, "Rail after relaunch") { $0 < 80 }
     }
 
     func testRailEdgeDragsResizeAndIgnoresVerticalDrags() throws {
