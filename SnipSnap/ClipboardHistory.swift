@@ -459,6 +459,7 @@ final class ClipboardHistory: ObservableObject {
         if case .capturing(let attempt) = capture {
             capture = .watching(handledChangeCount: attempt.handledChangeCount)
         }
+        dropWaitingCaptures()
         let previousClear = clearTask
         clearTask = Task { [weak self] in
             await previousClear?.value

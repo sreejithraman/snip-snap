@@ -1069,6 +1069,36 @@ final class ClipboardHistoryTests: XCTestCase {
         }
     }
 
+    func testClearDuringTheSetAsideDropsTheCopyWaitingForIt() async throws {
+        let older = clipboardEntry("first generation")
+        let copiedText = "copied before Clear History"
+        let gate = ClipboardBindingResetGate(holding: .historyCleared)
+        let fixture = try await makeHistoryAdoptingANewSyncGeneration(
+            syncing: [older], resetStep: { try await gate.reach($0) }
+        )
+        let history = fixture.history
+        let run = Task { await history.syncNow() }
+        let held = await gate.stepHeld()
+        XCTAssertTrue(held, "The set-aside never cleared the stored history")
+
+        writeText(copiedText, to: fixture.pasteboard)
+        history.poll()
+        history.clear()
+        gate.release()
+        await run.value
+        history.poll()
+        await history.flushPersistence()
+        history.stopSync()
+
+        XCTAssertFalse(history.entries.contains { $0.text == copiedText })
+        let stored = try await history.sharedStore.load()
+        XCTAssertFalse(stored.entries.contains { $0.text == copiedText })
+
+        await history.syncNow()
+        let uploaded = await fixture.secondCloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+    }
+
     func testAccountResetStillDropsACopyMadeDuringIt() async throws {
         let older = clipboardEntry("first generation")
         let copiedText = "copied during the account reset"
