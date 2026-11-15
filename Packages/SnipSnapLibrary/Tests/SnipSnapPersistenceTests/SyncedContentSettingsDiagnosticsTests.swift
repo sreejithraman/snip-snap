@@ -338,4 +338,79 @@ final class SyncedContentSettingsDiagnosticsTests: XCTestCase {
     await running.value
     XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
   }
+
+  @MainActor
+  func testTryAgainThatFinishesDeletingAfterAFailureLeavesNoIssue() async {
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { _ in }
+    )
+
+    await model.performExplicitSync {
+      let start = model.recordSyncStarted()
+      model.recordSyncFailure(.waitingForConnection)
+      model.recordSyncCompleted(start)
+    }
+
+    XCTAssertEqual(model.state, .deleted)
+    XCTAssertNil(model.finishDeletingIssue)
+
+    model.recordRemovalPending()
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertNil(model.finishDeletingIssue)
+  }
+
+  @MainActor
+  func testRepeatedFailureInOneTryAgainRecordsOnce() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+    let failure = AppDiagnosticEvent.failure(
+      operation: "sync.run", errorCode: "sync.waitingForConnection", visibility: .user
+    )
+
+    await model.performExplicitSync {
+      model.recordSyncFailure(.waitingForConnection)
+      model.recordSyncFailure(.waitingForConnection)
+    }
+    XCTAssertEqual(events.withLock { $0 }, [failure])
+
+    await model.performExplicitSync {
+      model.recordSyncFailure(.waitingForConnection)
+      model.recordSyncFailure(.waitingForConnection)
+    }
+    XCTAssertEqual(events.withLock { $0 }, [failure, failure])
+  }
+
+  @MainActor
+  func testRepeatedPendingRemovalInOneTryAgainRecordsOnce() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+    let pending = AppDiagnosticEvent.failure(
+      operation: "sync.delete", errorCode: "sync.someChangesPending", visibility: .user
+    )
+
+    await model.performExplicitSync {
+      model.recordRemovalPending()
+      model.recordRemovalPending()
+    }
+    XCTAssertEqual(events.withLock { $0 }, [pending])
+
+    await model.performExplicitSync {
+      model.recordRemovalPending()
+      model.recordRemovalPending()
+    }
+    XCTAssertEqual(events.withLock { $0 }, [pending, pending])
+  }
 }

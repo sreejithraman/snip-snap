@@ -116,6 +116,27 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRetryThatFinishesADeletionAfterAFailureReportsSuccess() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        // Like the Mac app's sync, the retry takes its start before any result arrives.
+        let cloud = ApplicationCLICloudEffects {
+            await settings.performExplicitSync {
+                let start = settings.recordSyncStarted()
+                settings.recordSyncFailure(.waitingForConnection)
+                settings.recordSyncCompleted(start)
+            }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(settings.state, .deleted)
+        XCTAssertEqual(receipt.status, .success)
+    }
+
+    @MainActor
     func testRetryThatTurnsSyncBackOnIgnoresAnEarlierFailedDeletionRetry() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
         await model.waitForInitialLoad()

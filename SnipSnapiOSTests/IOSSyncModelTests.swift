@@ -483,6 +483,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
             syncedContentSettings: settings,
             cloudSyncSession: cloudSession
         )
+        let recordedBeforeRetry = diagnostics.events.count
 
         await session.retrySyncWhenPossible()
 
@@ -490,7 +491,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(retryCount, 1)
         XCTAssertEqual(settings.state, .removalPending)
         XCTAssertEqual(settings.finishDeletingIssue, .appDataIssue)
-        XCTAssertEqual(diagnostics.events.filter { $0.operation == "sync.run" }, [
+        XCTAssertEqual(Array(diagnostics.events.dropFirst(recordedBeforeRetry)), [
             .failure(operation: "sync.run", errorCode: "sync.appDataIssue", visibility: .user)
         ])
     }
