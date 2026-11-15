@@ -2249,7 +2249,13 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(interruptedResult.state, .needsAttention)
         let unsettled = try await settling.snapshot()
         XCTAssertEqual(unsettled.transition?.phase, .candidateReady)
-        XCTAssertEqual(unsettled.transition?.captureAcceptedServerProvenance, true)
+        let unsettledManifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: root.appendingPathComponent("activation.json"))
+            ) as? [String: Any]
+        )
+        let unsettledTransition = try XCTUnwrap(unsettledManifest["transition"] as? [String: Any])
+        XCTAssertEqual(unsettledTransition["captureAcceptedServerProvenance"] as? Bool, true)
         XCTAssertEqual(unsettled.attentionReason, .terminalFetchFailure)
         let unsettledCandidate = try await settling.libraryForTransition(
             storeID: try XCTUnwrap(unsettled.transition?.candidateStoreID)

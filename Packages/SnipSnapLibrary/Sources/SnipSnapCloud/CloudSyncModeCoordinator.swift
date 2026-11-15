@@ -458,7 +458,7 @@ package actor ICloudSyncModeCoordinator {
 
         if transition.phase == .candidateReady {
             do {
-                let candidates = settlementCandidates(transition)
+                let candidates = transition.seedSettlementCandidates
                 let settlement = try await bridge.currentModeSeedSettlement(
                     candidates: candidates,
                     namespace: namespace.binding
@@ -569,7 +569,7 @@ package actor ICloudSyncModeCoordinator {
             }
         } catch {
             if let stored = try? await persistence.snapshot(),
-               stored.transition?.mergeIntent?.fullReenablePlanID != nil {
+               stored.transition?.hasDurableFullReenableIntent == true {
                 throw error
             }
             let retryable = isRetryableConnectivity(error)
@@ -827,7 +827,7 @@ package actor ICloudSyncModeCoordinator {
         }
         if [.firstSendStarted, .firstSendComplete].contains(transition.phase) {
             let modeAdapter = try? await adapter(storeID: transition.candidateStoreID)
-            let candidates = settlementCandidates(transition)
+            let candidates = transition.seedSettlementCandidates
             let settlement: SyncModeSeedSettlementProof?
             if let modeAdapter {
                 settlement = try? await modeAdapter.currentModeSeedSettlement(
@@ -852,22 +852,6 @@ package actor ICloudSyncModeCoordinator {
         } else if (try? await persistence.unfreezeBeforePointerSwap(reason: reason)) == nil {
             try? await persistence.unfreezeBeforePointerSwap(reason: reason)
         }
-    }
-
-    private func settlementCandidates(
-        _ transition: SyncModeTransition
-    ) -> [SyncModeSeedSettlementCandidate] {
-        let provenanceIDs = Set(transition.seedProvenance.map(\.candidateSnipID))
-        return transition.sendAttempt?.operations.compactMap { operation in
-            guard let reference = operation.reference,
-                  reference.kind == .snip,
-                  provenanceIDs.contains(reference.domainID)
-            else { return nil }
-            return SyncModeSeedSettlementCandidate(
-                snipID: reference.domainID,
-                acceptedRecordIdentity: operation.recordIdentity
-            )
-        } ?? []
     }
 
     private func statusUnchecked(

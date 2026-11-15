@@ -311,7 +311,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
-            cloudServices.syncedContentSettings.recordSyncStarted()
+            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
             do {
                 let result: SnipSnapCloudSyncResult
                 if retry {
@@ -365,12 +365,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordEnableCompleted()
                 case .oldSyncedContentRemovalPending:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(true)
+                    cloudServices.syncedContentSettings.recordRemovalPending()
                 case .oldSyncedContentRemovalCompleted:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(false)
+                    cloudServices.syncedContentSettings.recordRemovalCompleted(syncStart)
                 }
-                cloudServices.syncedContentSettings.recordSyncCompleted()
+                if result != .oldSyncedContentRemovalPending {
+                    cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
+                }
                 await model.clipboardHistory.syncNow()
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
