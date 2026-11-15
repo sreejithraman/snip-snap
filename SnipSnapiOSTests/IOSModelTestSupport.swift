@@ -500,3 +500,10 @@ actor ModelTestLibrary: SnipLibrary {
         }
     }
 }
+
+// DO NOT MERGE (W13 timeout proof): blocks the main thread so XCTest's timeout fails the test.
+final class W13HangProofTests: XCTestCase {
+    func testBlocksTheMainThreadPastTheAllowance() {
+        Thread.sleep(forTimeInterval: 600)
+    }
+}
