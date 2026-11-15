@@ -21,6 +21,38 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     }
   }
 
+  private enum PumpPhase {
+    case idle
+    case scheduled
+  }
+
+  /// Short initial retry for reader contention; persistent permission/disk
+  /// failures back off to one attempt per five seconds. Only an append resets it.
+  private struct Retry {
+    private(set) var attempts = 0
+    private var delay: TimeInterval = 0.05
+
+    /// Returns true at geometric milestones, which bound trace volume during a persistent denial.
+    mutating func deferred() -> Bool {
+      attempts += 1
+      return attempts.nonzeroBitCount == 1
+    }
+
+    mutating func nextDelay() -> TimeInterval {
+      defer { delay = min(5, delay * 2) }
+      return delay
+    }
+
+    mutating func appended() { delay = 0.05 }
+
+    /// Returns the deferred attempts this drain recovered from, if any.
+    mutating func recovered() -> Int? {
+      guard attempts > 0 else { return nil }
+      defer { attempts = 0 }
+      return attempts
+    }
+  }
+
   private let trace: RuntimeTrace.Span
   private let store: AppDiagnosticEventStore
   private let requiresReadableControls: Bool
@@ -34,19 +66,18 @@ final class AppDiagnosticWriter: @unchecked Sendable {
   private var pendingOccurrences = 0
   private static let occurrenceCapacity = 2_048
   private static let lossOccurrenceCapacity = 64
-  // Loss totals use lock; reporting cursors and retry attempts belong to queue.
+  // Loss totals and the pump phase use lock; reporting cursors and retry belong to queue.
   private var droppedOccurrences = 0
   private var uncertainOccurrences = 0
   private var reportedDropped = 0
   private var reportedUncertain = 0
-  private var retryAttempts = 0
-  private var scheduled = false
+  private var retry = Retry()
+  private var pumpPhase = PumpPhase.idle
   // Queue-owned batch; a busy store retains it for the next finite retry.
   // Together with pending, at most 2 * capacity + 6 envelopes and
   // 2 * occurrenceCapacity exact event times and 6 * lossOccurrenceCapacity
   // loss chunks are retained. Loss chunks compact an old prefix, never a tail.
   private var batch: [Submission] = []
-  private var retryDelay: TimeInterval = 0.05
 
   init(
     store: AppDiagnosticEventStore, capacity: Int = 128, requiresReadableControls: Bool = false,
@@ -85,13 +116,13 @@ final class AppDiagnosticWriter: @unchecked Sendable {
           accountForLoss(omitted)
         } else {
           accountForLoss(submission)
-          scheduleLocked()
+          requestPumpLocked()
           return
         }
       }
       pending.append(submission)
       pendingOccurrences += 1
-      scheduleLocked()
+      requestPumpLocked()
     }
   }
 
@@ -133,34 +164,53 @@ final class AppDiagnosticWriter: @unchecked Sendable {
   }
 
   private final class DrainRequest: @unchecked Sendable {
+    private enum State {
+      /// The timeout or cancellation can finish before the flush installs its continuation.
+      case waiting(CheckedContinuation<Bool, Never>?)
+      case finished(Bool)
+    }
     private let lock = NSLock()
-    private var result: Bool?
-    private var continuation: CheckedContinuation<Bool, Never>?
-    var isPending: Bool { lock.withLock { result == nil } }
+    private var state = State.waiting(nil)
+    var isPending: Bool {
+      lock.withLock {
+        guard case .waiting = state else { return false }
+        return true
+      }
+    }
     func install(_ continuation: CheckedContinuation<Bool, Never>) {
       let finished = lock.withLock { () -> Bool? in
-        if let result { return result }
-        self.continuation = continuation
+        if case .finished(let result) = state { return result }
+        state = .waiting(continuation)
         return nil
       }
       if let finished { continuation.resume(returning: finished) }
     }
     func finish(_ value: Bool) {
       let waiting = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
-        guard result == nil else { return nil }
-        result = value
-        let waiting = continuation
-        continuation = nil
-        return waiting
+        guard case .waiting(let continuation) = state else { return nil }
+        state = .finished(value)
+        return continuation
       }
       waiting?.resume(returning: value)
     }
   }
 
-  private func scheduleLocked() {
-    guard !scheduled else { return }
-    scheduled = true
+  /// Caller holds lock.
+  private func requestPumpLocked() {
+    guard case .idle = pumpPhase else { return }
+    pumpPhase = .scheduled
     queue.async { self.pump() }
+  }
+
+  /// Called on queue after a successful drain. Submissions that arrived meanwhile keep the pump.
+  private func settlePumpAfterDrain() {
+    lock.withLock {
+      if pending.isEmpty && losses.isEmpty {
+        pumpPhase = .idle
+      } else {
+        queue.async { self.pump() }
+      }
+    }
   }
 
   /// Caller holds lock. Each of three fixed categories keeps a bounded exact
@@ -200,10 +250,7 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     }
     try drainBatch(shouldContinue: shouldContinue)
     reportLossIfChanged()
-    if retryAttempts > 0 {
-      reportHealth(.writerRecovered)
-      retryAttempts = 0
-    }
+    if let attempts = retry.recovered() { reportHealth(.writerRecovered, retries: attempts) }
   }
 
   private func drainBatch(shouldContinue: () -> Bool) throws {
@@ -217,7 +264,7 @@ final class AppDiagnosticWriter: @unchecked Sendable {
         }
         attemptedAppend = true
         try store.appendThrowing(submission.event, occurrences: submission.occurrences)
-        retryDelay = 0.05
+        retry.appended()
         batch.removeFirst()
       } catch AppDiagnosticAccessError.busy {
         throw AppDiagnosticAccessError.busy
@@ -257,28 +304,17 @@ final class AppDiagnosticWriter: @unchecked Sendable {
   private func pump() {
     do {
       try drain()
-      lock.withLock {
-        if pending.isEmpty && losses.isEmpty {
-          scheduled = false
-        } else {
-          queue.async { self.pump() }
-        }
-      }
+      settlePumpAfterDrain()
     } catch {
-      // Short initial retry for reader contention; persistent permission/disk
-      // failures back off to one attempt per five seconds. Progress resets it.
       noteDeferredAttempt()
-      let delay = retryDelay
-      retryDelay = min(5, retryDelay * 2)
-      scheduleRetry(delay) { self.queue.async { self.pump() } }
+      scheduleRetry(retry.nextDelay()) { self.queue.async { self.pump() } }
     }
   }
 
   private func noteDeferredAttempt() {
-    retryAttempts += 1
+    let milestone = retry.deferred()
     reportLossIfChanged()
-    // Geometric milestones bound trace volume during a persistent denial.
-    if retryAttempts.nonzeroBitCount == 1 { reportHealth(.writerDeferred) }
+    if milestone { reportHealth(.writerDeferred, retries: retry.attempts) }
   }
 
   private func reportLossIfChanged() {
@@ -286,12 +322,12 @@ final class AppDiagnosticWriter: @unchecked Sendable {
     guard counts.0 != reportedDropped || counts.1 != reportedUncertain else { return }
     reportedDropped = counts.0
     reportedUncertain = counts.1
-    reportHealth(.writerLoss)
+    reportHealth(.writerLoss, retries: retry.attempts)
   }
 
-  private func reportHealth(_ phase: RuntimeTrace.Phase) {
+  private func reportHealth(_ phase: RuntimeTrace.Phase, retries: Int) {
     let counts = lock.withLock { (pending.count + losses.count, droppedOccurrences, uncertainOccurrences) }
-    trace.health(phase, queued: batch.count + counts.0, retries: retryAttempts,
+    trace.health(phase, queued: batch.count + counts.0, retries: retries,
       dropped: counts.1, uncertain: counts.2)
   }
 }

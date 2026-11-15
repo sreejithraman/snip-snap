@@ -39,12 +39,59 @@ package final class FileAccessBackgroundActivity: Sendable {
   }
 
   private final class Expiration: Sendable {
-    struct State: Sendable {
-      var expired = false
-      var admitted = false
-      var finished = false
+    private enum Phase: Sendable {
+      case requested
+      case granted
+      /// Foundation expired the request before it answered admission.
+      case denied
+      case expired
+      case ended(expired: Bool)
+
+      var isExpired: Bool {
+        switch self {
+        case .requested, .granted: false
+        case .denied, .expired: true
+        case .ended(let expired): expired
+        }
+      }
     }
-    let state = Mutex(State())
+
+    private let state = Mutex(Phase.requested)
+
+    var isExpired: Bool { state.withLock { $0.isExpired } }
+
+    /// Returns true only when expiry ends granted protection.
+    func expire() -> Bool {
+      state.withLock { phase in
+        switch phase {
+        case .requested:
+          phase = .denied
+          return false
+        case .granted:
+          phase = .expired
+          return true
+        case .denied, .expired, .ended:
+          return false
+        }
+      }
+    }
+
+    func resolveAdmission() -> Bool {
+      state.withLock { phase in
+        guard case .requested = phase else { return !phase.isExpired }
+        phase = .granted
+        return true
+      }
+    }
+
+    /// Returns true only for the first call.
+    func finish() -> Bool {
+      state.withLock { phase in
+        if case .ended = phase { return false }
+        phase = .ended(expired: phase.isExpired)
+        return true
+      }
+    }
   }
 
   private let expiration: Expiration
@@ -64,19 +111,10 @@ package final class FileAccessBackgroundActivity: Sendable {
     trace?.mark(.protectionRequested)
     let expiration = Expiration()
     let end = runner {
-      let admitted = expiration.state.withLock { state in
-        guard !state.expired, !state.finished else { return false }
-        state.expired = true
-        return state.admitted
-      }
-      if admitted { trace?.mark(.protectionExpired) }
+      if expiration.expire() { trace?.mark(.protectionExpired) }
     }
     let activity = FileAccessBackgroundActivity(expiration: expiration, end: end, trace: trace)
-    let admitted = expiration.state.withLock { state in
-      state.admitted = !state.expired
-      return state.admitted
-    }
-    trace?.mark(admitted ? .protectionGranted : .protectionDenied)
+    trace?.mark(expiration.resolveAdmission() ? .protectionGranted : .protectionDenied)
     do {
       try activity.check()
       return activity
@@ -89,16 +127,11 @@ package final class FileAccessBackgroundActivity: Sendable {
   deinit { finish() }
 
   package func check() throws {
-    if expiration.state.withLock({ $0.expired }) { throw CancellationError() }
+    if expiration.isExpired { throw CancellationError() }
   }
 
   package func finish() {
-    let shouldEnd = expiration.state.withLock { state in
-      guard !state.finished else { return false }
-      state.finished = true
-      return true
-    }
-    if shouldEnd {
+    if expiration.finish() {
       end()
       trace?.mark(.protectionEnded)
     }
