@@ -49,9 +49,23 @@ package enum CloudKitRetryPolicy {
 
 /// Owns retry timing for direct CloudKit work outside CKSyncEngine.
 package actor CloudKitOperationRetry {
+  private enum Backoff {
+    case ready
+    case coolingDown(consecutiveTransientFailures: Int, nextAttempt: ContinuousClock.Instant)
+
+    var consecutiveTransientFailures: Int {
+      guard case .coolingDown(let failures, _) = self else { return 0 }
+      return failures
+    }
+
+    var nextAttempt: ContinuousClock.Instant? {
+      guard case .coolingDown(_, let nextAttempt) = self else { return nil }
+      return nextAttempt
+    }
+  }
+
   private let now: @Sendable () -> ContinuousClock.Instant
-  private var nextAttempt: ContinuousClock.Instant?
-  private var consecutiveFailures = 0
+  private var backoff = Backoff.ready
   private let gate = AsyncOperationGate()
   private let sleep: @Sendable (Duration) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
@@ -80,24 +94,29 @@ package actor CloudKitOperationRetry {
     var attempt = 1
     while true {
       try Task.checkCancellation()
-      while let nextAttempt, nextAttempt > now() {
+      while let nextAttempt = backoff.nextAttempt, nextAttempt > now() {
         try await sleep(now().duration(to: nextAttempt))
       }
       try Task.checkCancellation()
       do {
         let value = try await operation()
-        consecutiveFailures = 0
+        backoff = .ready
         return value
       } catch {
         let transient = CloudKitRetryPolicy.isTransient(error)
-        if transient { consecutiveFailures = min(consecutiveFailures + 1, 7) }
-        let delay = CloudKitRetryPolicy.delay(after: error, attempt: consecutiveFailures)
+        let failures = transient
+          ? min(backoff.consecutiveTransientFailures + 1, 7)
+          : backoff.consecutiveTransientFailures
+        let delay = CloudKitRetryPolicy.delay(after: error, attempt: failures)
         if let delay {
           let deadline = now().advanced(by: delay)
-          nextAttempt = max(nextAttempt ?? deadline, deadline)
+          backoff = .coolingDown(
+            consecutiveTransientFailures: failures,
+            nextAttempt: max(backoff.nextAttempt ?? deadline, deadline)
+          )
         }
         CloudSyncDiagnostics.recordRetry(error, operation: operationName,
-          selectedDelay: delay, nextAttemptIn: nextAttempt.map { max(.zero, now().duration(to: $0)) },
+          selectedDelay: delay, nextAttemptIn: backoff.nextAttempt.map { max(.zero, now().duration(to: $0)) },
           diagnostics: diagnostics)
         guard transient, attempt < 3 else { throw error }
         attempt += 1
