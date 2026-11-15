@@ -85,6 +85,7 @@ package enum ClipboardBindingResetStep: Sendable {
     private let worker: ClipboardPayloadWorker
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
+    private let accountState: (any ICloudAccountStateSource)?
     private let retry: CloudKitOperationRetry
     private let resetStep: @MainActor (ClipboardBindingResetStep) async throws -> Void
     private var binding: ClipboardCloudBinding?
@@ -102,15 +103,20 @@ package enum ClipboardBindingResetStep: Sendable {
     }
     package init(store: ClipboardHistoryStore, syncRootURL: URL,
                  makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport,
+                 accountState: (any ICloudAccountStateSource)? = nil,
                  retry: CloudKitOperationRetry = CloudKitOperationRetry(),
                  resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in }) {
         self.store = store
         worker = ClipboardPayloadWorker(store: store, files: store.files)
         bindingURL = syncRootURL.appendingPathComponent("clipboard-account-binding.json")
         self.makeTransport = makeTransport
+        self.accountState = accountState
         self.retry = retry
         self.resetStep = resetStep
     }
+
+    /// Whether this service has an iCloud account source to check before binding or uploading.
+    public var checksAccount: Bool { accountState != nil }
 
     /// Call before disabling sync or responding to an account change. A sync call waiting for a
     /// stopped run ends with `CancellationError`.

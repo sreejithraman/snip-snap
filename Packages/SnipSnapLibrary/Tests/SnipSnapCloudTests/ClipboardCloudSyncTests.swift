@@ -77,24 +77,49 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     }
 }
 
+/// The device's current iCloud account, which a test can switch, and how often the service checked it.
+private final class ClipboardTestAccount: ICloudAccountStateSource {
+    private let account: Mutex<(state: ICloudAccountState, checks: Int)>
+
+    init(_ state: ICloudAccountState) {
+        account = Mutex((state: state, checks: 0))
+    }
+
+    var checks: Int { account.withLock { $0.checks } }
+
+    func switchTo(_ state: ICloudAccountState) {
+        account.withLock { $0.state = state }
+    }
+
+    func currentAccountState() async -> ICloudAccountState {
+        account.withLock { account in
+            account.checks += 1
+            return account.state
+        }
+    }
+}
+
 @MainActor private struct ClipboardClient {
     let root: URL
     let store: ClipboardHistoryStore
     let files: ClipboardFileStore
     let sync: ClipboardCloudSyncService
     init(_ cloud: ClipboardTestCloud, retry: CloudKitOperationRetry = CloudKitOperationRetry(),
-         resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in }) {
-        self.init(retry: retry, resetStep: resetStep, makeTransport: { _ in cloud })
+         resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in },
+         accountState: (any ICloudAccountStateSource)? = nil) {
+        self.init(retry: retry, resetStep: resetStep, accountState: accountState, makeTransport: { _ in cloud })
     }
     init(retry: CloudKitOperationRetry = CloudKitOperationRetry(),
          resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in },
+         accountState: (any ICloudAccountStateSource)? = nil,
          makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         files = ClipboardFileStore(rootURL: root.appendingPathComponent("ClipboardFiles"))
         store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"), fileStore: files)
-        sync = ClipboardCloudSyncService(store: store, syncRootURL: root,
-                                         makeTransport: makeTransport, retry: retry, resetStep: resetStep)
+        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: makeTransport,
+                                         accountState: accountState, retry: retry, resetStep: resetStep)
     }
+    var bindingURL: URL { root.appendingPathComponent("clipboard-account-binding.json") }
     /// A new service on the same root and store, as after the old one is discarded.
     init(reopening previous: ClipboardClient, _ cloud: ClipboardTestCloud) {
         self.init(reopening: previous, makeTransport: { _ in cloud })
@@ -457,6 +482,96 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         }
         let stored = try Data(contentsOf: client.root.appendingPathComponent("clipboard-account-binding.json"))
         #expect(try stored == JSONEncoder().encode(bound))
+    }
+    @Test func unboundHistoryNeverUploadsWhileTheDeviceIsOnAnotherAccount() async throws {
+        let cloud = ClipboardTestCloud()
+        let client = ClipboardClient(cloud, accountState: ClipboardTestAccount(.available(accountLineage: "account-B")))
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("copied under account A"))
+
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        }
+        #expect(try await cloud.fetch().entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
+    }
+    @Test func boundHistoryNeverUploadsWhileTheDeviceIsOnAnotherAccount() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let synced = entry("synced under account A")
+        try await client.store.insert(synced); try await client.run(scope: accountA)
+
+        account.switchTo(.available(accountLineage: "account-B"))
+        try await client.store.insert(entry("copied after the device switched accounts"))
+        await #expect(throws: ClipboardCloudError.accountChanged) { try await client.run(scope: accountA) }
+        #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
+        #expect(try Data(contentsOf: client.bindingURL) == JSONEncoder().encode(accountA))
+    }
+    @Test(arguments: [ICloudAccountState.temporarilyUnavailable, .noAccount, .restricted, .couldNotDetermine])
+    func unavailableAccountNeverBindsOrUploads(_ state: ICloudAccountState) async throws {
+        let cloud = ClipboardTestCloud()
+        let client = ClipboardClient(cloud, accountState: ClipboardTestAccount(state))
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("copied under account A"))
+
+        await #expect(throws: ClipboardCloudError.unavailable) {
+            try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        }
+        #expect(try await cloud.fetch().entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
+    }
+    @Test func accountSwitchBeforeTheSaveUploadsNothing() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        // The device signs in to account B after the run's fetch and before its save.
+        await cloud.observeFetches { account.switchTo(.available(accountLineage: "account-B")) }
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("copied under account A"))
+
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        }
+        #expect(await cloud.serial == 0)
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+    @Test func accountChecksPerRunAreBounded() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        // One check before binding, then one before each save attempt.
+        func checks(during run: () async throws -> Void) async rethrows -> Int {
+            let before = account.checks
+            try await run()
+            return account.checks - before
+        }
+
+        try await client.store.insert(entry("first"))
+        let oneSave = try await checks { try await client.run(scope: accountA) }
+        let nothingToUpload = try await checks { try await client.run(scope: accountA) }
+        try await client.store.insert(entry("second")); await cloud.setConflict()
+        let conflictThenSave = try await checks { try await client.run(scope: accountA) }
+
+        #expect(oneSave == 2)
+        #expect(nothingToUpload == 1)
+        #expect(conflictThenSave == 3)
+        #expect(await cloud.serial == 2)
+    }
+    @Test func matchingAccountSyncsAsBefore() async throws {
+        let cloud = ClipboardTestCloud()
+        let client = ClipboardClient(cloud, accountState: ClipboardTestAccount(.available(accountLineage: "account-A")))
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let clip = entry("copied under account A")
+        try await client.store.insert(clip); try await client.run(scope: accountA)
+
+        #expect(Set(try await cloud.fetch().entries.keys) == [clip.id])
+        #expect(try Data(contentsOf: client.bindingURL) == JSONEncoder().encode(accountA))
     }
     @Test func pinnedFilesTransferBytesAndUnpinnedReferencesStayLocal() async throws {
         let cloud = ClipboardTestCloud(); let a = ClipboardClient(cloud); let b = ClipboardClient(cloud)

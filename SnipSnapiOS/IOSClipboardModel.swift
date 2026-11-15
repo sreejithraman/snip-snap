@@ -20,6 +20,7 @@ final class IOSClipboardModel {
     private let imports: ShareClipboardImportStore
     private let settings: SyncedContentSettingsModel
     private let cloud: ClipboardCloudSyncService?
+    var cloudChecksAccount: Bool { cloud?.checksAccount == true }
     private let generation: @MainActor () async throws -> String?
     private let preferences: UserDefaults
     private let diagnostics: AppDiagnosticRecorder
