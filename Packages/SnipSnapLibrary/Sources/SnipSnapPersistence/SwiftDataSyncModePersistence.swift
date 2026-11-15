@@ -163,7 +163,9 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
 
 
 package enum SyncModeWritePoint: Equatable, Sendable {
+  /// A hook that throws here models process loss: the write never starts, and its reservation stays for reopen.
   case afterRevisionReserved
+  /// A hook that throws here fails the write after the library saved it, like a store error, so the reservation is released.
   case beforeReservationCleared
   case beforeStoreRetirement
 }
