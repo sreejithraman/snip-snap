@@ -1114,7 +1114,7 @@ final class ClipboardHistoryTests: XCTestCase {
             syncing: [clipboardEntry("first generation")], diagnostics: diagnostics.recorder
         )
         let history = fixture.history
-        _ = try await captureWhileSavesFail("copied while saves fail", in: fixture)
+        let copy = try await captureWhileSavesFail("copied while saves fail", in: fixture)
         await history.syncNow()
         let syncError = try XCTUnwrap(history.syncError)
         XCTAssertTrue(syncError.hasPrefix("Couldn’t sync clipboard history."))
@@ -1137,6 +1137,8 @@ final class ClipboardHistoryTests: XCTestCase {
 
         XCTAssertNil(history.syncError)
         XCTAssertEqual(try Data(contentsOf: fixture.bindingURL), try JSONEncoder().encode(fixture.secondGeneration))
+        let setAside = try await onlySetAsideHistory(in: fixture)
+        XCTAssertTrue(setAside.entries.contains { $0.id == copy.id })
     }
 
     func testCopyDuringTheSetAsideIsRecordedInTheNewHistory() async throws {
