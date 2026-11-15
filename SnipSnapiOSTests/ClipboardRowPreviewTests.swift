@@ -253,6 +253,71 @@ private struct ExpandableTextTransitionView: View {
     }
 }
 
+/// SwiftUI builds its iOS accessibility tree only while an assistive client is active, which a
+/// unit-test host lacks. UI-driving and snapshot tools turn on application accessibility
+/// through these libAccessibility switches; the tests do the same for one test at a time.
+@MainActor
+private enum ApplicationAccessibility {
+    private typealias Read = @convention(c) () -> Int32
+    private typealias Write = @convention(c) (Int32) -> Void
+    private static let libraryPath = "/usr/lib/libAccessibility.dylib"
+    private static let switches = [
+        (read: "_AXSApplicationAccessibilityEnabled", write: "_AXSApplicationAccessibilitySetEnabled", required: true),
+        (read: "_AXSAutomationEnabled", write: "_AXSSetAutomationEnabled", required: false),
+    ]
+
+    static var isEnabled: Bool {
+        guard let library = openLibrary(), let read: Read = symbol(switches[0].read, in: library) else { return false }
+        return read() != 0
+    }
+
+    /// Turns the switches on and restores their previous values when `test` tears down.
+    static func enable(for test: XCTestCase) throws {
+        guard let library = openLibrary() else {
+            throw TransitionTestFailure(description:
+                "\(libraryPath) did not load (\(dlerror().map { String(cString: $0) } ?? "no dlerror")), "
+                    + "so SwiftUI cannot expose its accessibility tree."
+            )
+        }
+        var previous: [(write: String, value: Int32)] = []
+        for flag in switches {
+            guard let read: Read = symbol(flag.read, in: library),
+                  let write: Write = symbol(flag.write, in: library) else {
+                if flag.required {
+                    throw TransitionTestFailure(description:
+                        "\(libraryPath) has no \(flag.read) or \(flag.write), so application accessibility cannot be enabled."
+                    )
+                }
+                continue
+            }
+            previous.append((write: flag.write, value: read()))
+            write(1)
+        }
+        let restore = previous
+        test.addTeardownBlock {
+            await MainActor.run {
+                guard let library = ApplicationAccessibility.openLibrary() else { return }
+                for flag in restore {
+                    if let write: Write = ApplicationAccessibility.symbol(flag.write, in: library) { write(flag.value) }
+                }
+            }
+        }
+    }
+
+    private static func openLibrary() -> UnsafeMutableRawPointer? {
+        let simulatorPath = ProcessInfo.processInfo.environment["IPHONE_SIMULATOR_ROOT"].map { $0 + libraryPath }
+        for path in [simulatorPath, libraryPath].compactMap({ $0 }) {
+            if let library = dlopen(path, RTLD_NOW) { return library }
+        }
+        return nil
+    }
+
+    private static func symbol<Function>(_ name: String, in library: UnsafeMutableRawPointer) -> Function? {
+        guard let address = dlsym(library, name) else { return nil }
+        return unsafeBitCast(address, to: Function.self)
+    }
+}
+
 @MainActor
 private func renderedPixels(of view: UIView) -> [UInt8] {
     let format = UIGraphicsImageRendererFormat()
@@ -282,14 +347,22 @@ private struct HostedExpandableText {
 
     /// Mounts the row, then expands and collapses it once to measure the full height and to
     /// check that a collapsed row renders the truncated preview again.
-    static func mount() async throws -> HostedExpandableText {
+    static func mount(for test: XCTestCase) async throws -> HostedExpandableText {
+        try ApplicationAccessibility.enable(for: test)
+        // UIKit loads its accessibility support after the switch flips; mount the row afterward.
+        try await Task.sleep(for: .milliseconds(300))
         let probe = ExpandableTextTransitionProbe()
         let window = try mountTransitionWindow(ExpandableTextTransitionView(probe: probe))
         let hostView = try XCTUnwrap(window.rootViewController?.view)
         let exposed = await TestReadiness.wait {
-            findButton(in: window, label: probe.content.accessibilityText) != nil && probe.height > 0
+            hostView.layoutIfNeeded()
+            return findButton(in: window, label: probe.content.accessibilityText) != nil && probe.height > 0
         }
-        XCTAssertTrue(exposed, "The hosted expandable text should expose its accessibility button.")
+        XCTAssertTrue(exposed, """
+            The hosted expandable text should expose its accessibility button \
+            (application accessibility on: \(ApplicationAccessibility.isEnabled), \
+            host elements: \(hostView.accessibilityElements?.count ?? hostView.accessibilityElementCount())).
+            """)
         try await Task.sleep(for: .milliseconds(300))
         // A clipped full text would drop this ellipsis, so the render comparison can see it.
         XCTAssertTrue(String(probe.content.presentation(lineLimit: 2).preview.characters).hasSuffix("…"))
@@ -512,7 +585,7 @@ final class SharedTransitionHostTests: XCTestCase {
     }
 
     func testExpandableTextCollapsedDuringExpansionSettlesCollapsed() async throws {
-        let text = try await HostedExpandableText.mount()
+        let text = try await HostedExpandableText.mount(for: self)
         defer { text.window.isHidden = true }
         let activations = text.probe.activations
 
@@ -534,7 +607,7 @@ final class SharedTransitionHostTests: XCTestCase {
     }
 
     func testExpandableTextExpandedDuringCollapseSettlesExpanded() async throws {
-        let text = try await HostedExpandableText.mount()
+        let text = try await HostedExpandableText.mount(for: self)
         defer { text.window.isHidden = true }
         try await text.activate()
         let expanded = await TestReadiness.wait { text.isExpanded }
@@ -558,7 +631,7 @@ final class SharedTransitionHostTests: XCTestCase {
     }
 
     func testExpandableTextContentChangeDuringExpansionResetsCollapsed() async throws {
-        let text = try await HostedExpandableText.mount()
+        let text = try await HostedExpandableText.mount(for: self)
         defer { text.window.isHidden = true }
         let activations = text.probe.activations
 
