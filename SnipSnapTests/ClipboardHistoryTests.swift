@@ -769,13 +769,8 @@ final class ClipboardHistoryTests: XCTestCase {
 
         XCTAssertNil(history.syncError)
         XCTAssertFalse(history.entries.contains { $0.id == older.id })
-        let setAside = try FileManager.default
-            .contentsOfDirectory(at: fixture.historyDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
-        XCTAssertEqual(setAside.count, 1)
-        let setAsideURL = try XCTUnwrap(setAside.first)
-        let setAsideHistory = try await ClipboardHistoryStore(url: setAsideURL).load()
-        XCTAssertEqual(setAsideHistory.entries.map(\.id), [older.id])
+        let setAside = try await onlySetAsideHistory(in: fixture)
+        XCTAssertEqual(setAside.entries.map(\.id), [older.id])
 
         let newer = try await capture("second generation", in: fixture)
         history.stopSync()
@@ -882,6 +877,45 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.bindingURL), try JSONEncoder().encode(fixture.secondGeneration))
         let uploaded = await fixture.secondCloud.uploadedEntryIDs
         XCTAssertEqual(uploaded, [])
+    }
+
+    func testWritesAdmittedBeforeTheSetAsideFinishFirstAndStayOutOfTheNewSyncGeneration() async throws {
+        let pinned = clipboardEntry("pinned before the set-aside")
+        let read = clipboardEntry("read before the set-aside")
+        let oldIDs: Set<UUID> = [pinned.id, read.id]
+        let fixture = try await makeHistoryAdoptingANewSyncGeneration(syncing: [pinned, read])
+        let history = fixture.history
+
+        // Each call takes its turn in the history queue before the next line runs, so the pin and
+        // the read are queued and unstarted when the set-aside takes its turn.
+        let pin = Task.immediate { await history.togglePinned(id: pinned.id) }
+        let snapshot = Task.immediate { try await history.checkedCLISnapshot() }
+        let reset = Task.immediate { await history.resetCloudAccount() }
+        await pin.value
+        let snapshotEntries = try await snapshot.value
+        await reset.value
+
+        XCTAssertEqual(Set(snapshotEntries.map(\.id)), oldIDs)
+        let setAside = try await onlySetAsideHistory(in: fixture)
+        XCTAssertEqual(Set(setAside.entries.map(\.id)), oldIDs)
+        XCTAssertEqual(setAside.entries.first { $0.id == pinned.id }?.isPinned, true)
+        XCTAssertFalse(history.entries.contains { oldIDs.contains($0.id) })
+        XCTAssertNil(history.syncError)
+        XCTAssertNil(history.persistenceError)
+
+        history.stopSync()
+        await history.syncNow()
+        await history.flushPersistence()
+        history.stopSync()
+
+        XCTAssertEqual(try Data(contentsOf: fixture.bindingURL), try JSONEncoder().encode(fixture.secondGeneration))
+        let uploaded = await fixture.secondCloud.uploadedEntryIDs
+        let uploadedTombstones = await fixture.secondCloud.uploadedTombstoneIDs
+        XCTAssertTrue(uploaded.isDisjoint(with: oldIDs))
+        XCTAssertTrue(uploadedTombstones.isDisjoint(with: oldIDs))
+        let stored = try await history.sharedStore.load()
+        XCTAssertFalse(stored.entries.contains { oldIDs.contains($0.id) })
+        XCTAssertNil(history.syncError)
     }
 
     func testAccountResetWithoutAClipboardBindingKeepsAnEditMadeDuringIt() async throws {
@@ -1278,6 +1312,16 @@ final class ClipboardHistoryTests: XCTestCase {
             secondGeneration: secondGeneration,
             secondCloud: secondCloud
         )
+    }
+
+    /// The history set aside beside the active one, which must be the only one.
+    private func onlySetAsideHistory(in fixture: ClipboardGenerationFixture) async throws -> ClipboardHistoryState {
+        let files = try FileManager.default
+            .contentsOfDirectory(at: fixture.historyDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        XCTAssertEqual(files.count, 1)
+        let file = try XCTUnwrap(files.first)
+        return try await ClipboardHistoryStore(url: file).load()
     }
 
     /// Copies `text` and returns the entry the history captured from it.
