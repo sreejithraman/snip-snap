@@ -170,6 +170,8 @@ package enum SyncModeWritePoint: Equatable, Sendable {
   case beforeStoreRetirement
   /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
   case beforeAccountLocalCopyMerge
+  /// Before a full re-enable applies its staged plan; a test can pause here.
+  case beforeFullReenablePlanApply
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -263,6 +265,9 @@ package actor SwiftDataSyncModePersistence {
 
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
   private var strandedRollback: SyncModeTransition?
+
+  /// The transition whose full re-enable merge this process is applying. Try Again skips it.
+  var fullReenableMergeInFlight: UUID?
 
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
@@ -425,6 +430,7 @@ package actor SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.transitionInProgress
       }
       if manifest.activeStoreID == transition.sourceStoreID,
+        fullReenableMergeInFlight != transition.id,
         !hasStoreFile(id: transition.candidateStoreID)
       {
         // Before the swap, the source still holds the library, so a fresh candidate loses

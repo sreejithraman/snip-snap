@@ -115,6 +115,11 @@ extension SwiftDataSyncModePersistence {
       plan.targetRevision == store(id: transition.candidateStoreID)?.revision,
       try plan.hasValidDigest()
     else { throw SyncModePersistenceError.invalidFreezeToken }
+    guard fullReenableMergeInFlight != transition.id else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    fullReenableMergeInFlight = transition.id
+    defer { if fullReenableMergeInFlight == transition.id { fullReenableMergeInFlight = nil } }
     let candidateSnapshot = SnipLibraryTransferSnapshot(
       revision: plan.targetRevision,
       snips: plan.snips,
@@ -151,6 +156,7 @@ extension SwiftDataSyncModePersistence {
     }
     try commit(intended)
     try crashHook(.beforeCandidateMergeDurability)
+    try await writeHook(.beforeFullReenablePlanApply)
     do {
       _ = try await libraryForTransition(storeID: transition.candidateStoreID)
         .applyCloudFullReenablePlan(plan, currentRevision: plan.targetRevision)
@@ -180,8 +186,11 @@ extension SwiftDataSyncModePersistence {
     guard let transition = manifest.transition,
       transition.phase == .sourceFrozen,
       let initialIntent = transition.mergeIntent,
-      initialIntent.fullReenablePlanID == transition.id
+      initialIntent.fullReenablePlanID == transition.id,
+      fullReenableMergeInFlight != transition.id
     else { return }
+    fullReenableMergeInFlight = transition.id
+    defer { if fullReenableMergeInFlight == transition.id { fullReenableMergeInFlight = nil } }
     var intent = initialIntent
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let proof = CloudFullReenableCommitProof(
@@ -244,6 +253,7 @@ extension SwiftDataSyncModePersistence {
       try resetFullReenableIntent(intent, reason: .storageFailure)
       throw SyncModePersistenceError.storageFailure
     }
+    try await writeHook(.beforeFullReenablePlanApply)
     do {
       _ = try await candidate.applyCloudFullReenablePlan(
         plan,
