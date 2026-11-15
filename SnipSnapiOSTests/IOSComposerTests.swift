@@ -320,6 +320,11 @@ final class IOSComposerTests: IOSModelTestCase {
                     XCTFail("Iteration \(iteration): cancelled paste left \(leaked.joined(separator: ", "))")
                     return
                 }
+                let entries = stagedEntries(in: staging)
+                guard entries.isEmpty else {
+                    XCTFail("Iteration \(iteration): cancelled paste left entries \(entries)")
+                    return
+                }
             case .failure(let error):
                 XCTFail("Iteration \(iteration): expected success or cancellation, got \(error)")
                 return
