@@ -107,14 +107,46 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
     model.recordRemovalPending(true)
 
-    model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     model.recordSyncFailure(.iCloudUnavailable)
     XCTAssertEqual(model.state, .removalPending)
 
-    model.recordSyncStarted()
-    model.recordSyncCompleted()
+    let laterStart = model.recordSyncStarted()
+    model.recordSyncCompleted(laterStart)
     XCTAssertEqual(model.state, .deleted)
     XCTAssertEqual(model.statusTitle, "Synced content deleted")
+  }
+
+  @MainActor
+  func testSyncStartedBeforeADeleteCannotFinishItsRemoval() async {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: { .removalPending })
+    model.recordSyncFailure(.iCloudUnavailable)
+    let olderStart = model.recordSyncStarted()
+
+    await model.deleteSyncedContent()
+    XCTAssertEqual(model.state, .removalPending)
+    model.recordSyncCompleted(olderStart)
+    XCTAssertEqual(model.state, .removalPending)
+
+    let laterStart = model.recordSyncStarted()
+    model.recordSyncCompleted(laterStart)
+    XCTAssertEqual(model.state, .deleted)
+  }
+
+  @MainActor
+  func testSyncStartedDuringOneRemovalCannotFinishALaterOne() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+    model.recordRemovalPending(true)
+    let earlierStart = model.recordSyncStarted()
+
+    model.recordSyncStopped(.iCloudAccountChanged)
+    model.recordEnableCompleted()
+    XCTAssertEqual(model.mode, .iCloudSync)
+    XCTAssertEqual(model.state, .ready)
+    model.recordRemovalPending(true)
+    model.recordSyncCompleted(earlierStart)
+
+    XCTAssertEqual(model.state, .removalPending)
   }
 
   @MainActor
@@ -150,7 +182,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
       disableAction: { _ in }
     )
     XCTAssertTrue(model.canSyncNow)
-    model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     XCTAssertFalse(model.canSyncNow)
     model.recordSyncFailure(.waitingForConnection)
     XCTAssertTrue(model.canSyncNow)
@@ -199,9 +231,9 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordEnableCompleted()
     XCTAssertTrue(model.canEnableClipboardSync)
 
-    model.recordSyncStarted()
+    let start = model.recordSyncStarted()
     XCTAssertTrue(model.canEnableClipboardSync)
-    model.recordSyncCompleted()
+    model.recordSyncCompleted(start)
     model.setDisableCompletionAction {
       XCTAssertEqual(model.mode, .iCloudSync)
       XCTAssertFalse(model.canEnableClipboardSync)
@@ -247,7 +279,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   func testRoutineSyncUsesSettingsStatusForProgressAndFailure() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
 
-    model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     XCTAssertEqual(model.state, .syncing)
     XCTAssertEqual(model.statusTitle, "Syncing with iCloud…")
 
@@ -259,7 +291,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
       "iCloud isn’t available right now. Sync will try again."
     )
 
-    model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
   }
@@ -268,20 +300,21 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   func testOnlyASettledSyncClearsAnOutstandingIssue() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
 
-    model.recordSyncStarted()
-    model.recordSyncCompleted()
+    let firstStart = model.recordSyncStarted()
+    model.recordSyncCompleted(firstStart)
     XCTAssertEqual(model.state, .ready)
 
     model.recordSyncFailure(.iCloudUnavailable)
-    model.recordSyncStarted()
+    let retryStart = model.recordSyncStarted()
     XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
-    model.recordSyncCompleted()
+    model.recordSyncCompleted(retryStart)
     XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
 
+    let storageStart = model.recordSyncStarted()
     model.recordSyncFailure(.iCloudStorageFull)
-    model.recordSyncCompleted()
+    model.recordSyncCompleted(storageStart)
     XCTAssertEqual(model.state, .failed(.iCloudStorageFull))
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
@@ -290,7 +323,8 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.state, .removalPending)
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .removalPending)
-    model.recordSyncCompleted()
+    let removalStart = model.recordSyncStarted()
+    model.recordSyncCompleted(removalStart)
     XCTAssertEqual(model.state, .deleted)
 
     model.recordSyncStopped(.iCloudDataReset)

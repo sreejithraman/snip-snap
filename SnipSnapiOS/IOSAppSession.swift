@@ -314,7 +314,7 @@ final class IOSAppSession {
         retryingUserRecoverableFailures: Bool = false
     ) async throws {
         guard let session else { return }
-        settings.recordSyncStarted()
+        let syncStart = settings.recordSyncStarted()
         do {
             let result: SnipSnapCloudSyncResult
             if retryingUserRecoverableFailures {
@@ -380,7 +380,7 @@ final class IOSAppSession {
                 return
             }
             if result != .oldSyncedContentRemovalPending {
-                settings.recordSyncCompleted()
+                settings.recordSyncCompleted(syncStart)
             }
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
