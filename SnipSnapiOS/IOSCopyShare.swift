@@ -379,6 +379,8 @@ final class IOSCopyShareCoordinator {
     }
 
     @ObservationIgnored private var copyRequest: CopyRequest?
+    /// The latest share tap. Share requests stay separate from copy requests.
+    @ObservationIgnored private var latestShareToken: UUID?
 
     private(set) var unavailableFilesNotice: IOSUnavailableFilesNotice?
     private(set) var shareRequest: IOSShareRequest?
@@ -479,11 +481,14 @@ final class IOSCopyShareCoordinator {
 
     func share(snips: [Snip], model: IOSAppModel) async {
         model.haptics.invalidatePendingFeedback()
+        let token = UUID()
+        latestShareToken = token
         let current = currentSnips(for: snips, model: model)
         guard !current.isEmpty else { return }
         let versions = model.copiedSnipVersions(ids: Set(current.map(\.id)))
         let preparation = await makePreparedPayload(snips: current, model: model, use: .export)
         guard let payload = preparation.payload, !Task.isCancelled else { return }
+        guard isCurrentShareRequest(token) else { return }
         guard requireAllFiles(
             in: payload,
             preparationErrorCode: preparation.failureCode,
@@ -566,6 +571,10 @@ final class IOSCopyShareCoordinator {
 
     private func isCurrentCopyRequest(_ token: UUID) -> Bool {
         copyRequest?.token == token
+    }
+
+    private func isCurrentShareRequest(_ token: UUID) -> Bool {
+        latestShareToken == token
     }
 
     private func makePreparedPayload(
