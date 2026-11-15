@@ -896,6 +896,26 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
     }
 
+    func testTextOnlyWriteReleasesEarlierFileLeaseWithoutPasteboardNotifications() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnipSnapPasteboardSilent-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.txt")
+        try Data("Lease".utf8).write(to: sourceURL)
+        let writer = IOSSystemPasteboard(
+            pasteboard: SilentItemProviderPasteboard(),
+            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
+        )
+        XCTAssertTrue(writer.write([.file(sourceURL)]))
+        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+
+        XCTAssertTrue(writer.write([.text("Text only")]))
+
+        XCTAssertNil(writer.activeLeaseDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+    }
+
     func testFailedFileWriteKeepsEarlierFileLease() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapPasteboardFailedWrite-\(UUID().uuidString)", isDirectory: true)
@@ -919,5 +939,16 @@ final class IOSSnipCopyTests: IOSModelTestCase {
             at: stagingRoot, includingPropertiesForKeys: nil
         )
         XCTAssertEqual(stagedDirectories.map(\.lastPathComponent), [leaseDirectory.lastPathComponent])
+    }
+}
+
+/// Never posts pasteboard notifications, so only `write` can release a lease.
+@MainActor
+private final class SilentItemProviderPasteboard: IOSItemProviderPasteboard {
+    let name = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
+    private(set) var changeCount = 0
+
+    func setItemProviders(_ itemProviders: [NSItemProvider], localOnly: Bool, expirationDate: Date?) {
+        changeCount += 1
     }
 }
