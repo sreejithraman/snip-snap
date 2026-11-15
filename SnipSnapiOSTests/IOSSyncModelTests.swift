@@ -292,8 +292,11 @@ final class IOSSyncModelTests: IOSModelTestCase {
             syncedContentSettings: settings,
             cloudSyncSession: cloudSession
         )
+        // The probe counts and pauses a call in one actor turn, so a counted call can resume.
         let olderSync = Task { await session.syncWhenPossible() }
-        await cloudSession.waitUntilCloudWorkStarts()
+        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 1 }) else {
+            return XCTFail("The older sync never reached the cloud session")
+        }
 
         await settings.deleteSyncedContent()
         XCTAssertEqual(settings.state, .removalPending)
@@ -302,7 +305,6 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .removalPending)
 
         let laterSync = Task { await session.syncWhenPossible() }
-        // The probe counts and pauses a call in one actor turn, so a counted call can resume.
         guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 2 }) else {
             return XCTFail("The later sync never reached the cloud session")
         }
@@ -416,7 +418,9 @@ final class IOSSyncModelTests: IOSModelTestCase {
         )
         let session = fixture.session
         let syncNow = Task { await session.retrySyncWhenPossible() }
-        await fixture.cloudSession.waitUntilCloudWorkStarts()
+        guard await TestReadiness.wait(until: { await fixture.cloudSession.retryCount() == 1 }) else {
+            return XCTFail("Sync Now never reached the cloud session")
+        }
         XCTAssertEqual(settings.state, .syncing)
 
         let delivered = await fixture.deliver(
