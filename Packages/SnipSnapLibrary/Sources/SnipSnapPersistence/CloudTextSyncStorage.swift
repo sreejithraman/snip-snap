@@ -32,6 +32,11 @@ package struct CloudTextStorageRecord: Equatable, Sendable {
   package let shadowData: Data?
   package let systemFields: Data?
   package let recoveryData: Data?
+
+  /// The row reached iCloud. Seeding reserves placeholder rows before any send.
+  package var hasServerState: Bool {
+    acceptedText != nil || shadowData != nil || systemFields != nil
+  }
 }
 
 package struct CloudTextRecordReservation: Equatable, Sendable {
@@ -51,6 +56,11 @@ package struct CloudTextStorageSnapshot: Equatable, Sendable {
   package let engineState: Data?
   package let stagedBatches: [CloudStagedBatchStorage]
   package let recoveryEvents: [CloudRecoveryEventStorage]
+
+  /// Snips whose row reached iCloud. A placeholder row seeding reserved before a send doesn't count.
+  package var sentSnipIDs: Set<UUID> {
+    Set(records.filter(\.hasServerState).map(\.snipID))
+  }
 }
 
 package enum CloudNamespaceBootstrapPhase: String, Codable, Equatable, Sendable {
