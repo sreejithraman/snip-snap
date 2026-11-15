@@ -33,6 +33,13 @@ crash, or a stall that `xcodebuild` ends by restarting the test host, keeps its
 result bundle and stack. A hang that reaches the job's time limit keeps only the
 log.
 
+The iOS CI job lists any `SimLaunchHost` crash reports after it boots the
+Simulator and again after the tests, with each report's time, exception, and
+faulting frame. The list goes in the job summary, and a failed job uploads the
+reports under `artifacts/simulator-crash-reports`. Hosted runners have crashed
+`SimLaunchHost` with `SIGBUS`, which shuts the Simulator down mid-run. The
+listing only records these crashes and never fails the job.
+
 Use `./scripts/test-diagnostic.sh /usr/bin/xcrun ...` for test-tool diagnostics.
 XCTest may print its environment after an invalid invocation. The wrapper
 excludes inherited credentials, keeps a fixed system `PATH`, and preserves only
