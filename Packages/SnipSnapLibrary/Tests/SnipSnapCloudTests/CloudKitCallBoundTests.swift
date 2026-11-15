@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 @testable import SnipSnapCloud
+import SnipSnapCore
 import Synchronization
 import XCTest
 
