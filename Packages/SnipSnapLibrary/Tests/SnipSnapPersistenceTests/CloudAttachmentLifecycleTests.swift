@@ -1,11 +1,40 @@
 import CryptoKit
 import Foundation
 import SnipSnapCore
+import SwiftData
 import XCTest
 
 @testable import SnipSnapPersistence
 
 final class CloudAttachmentLifecycleTests: XCTestCase {
+  func testAttachmentPositionTiesLoadInAttachmentIDOrderOnBothDevices() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+    let b = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
+    let c = try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000003"))
+    var loadedOrders: [[UUID]] = []
+    for name in ["first", "second"] {
+      let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent(name))
+      let snipID = try await addSnip(to: library)
+      let descendingAttachments = [c, b, a].map { id in
+        SnipAttachment(id: id, fileName: "\(id).txt", relativePath: "\(id).txt",
+          contentType: "public.plain-text", byteCount: 0)
+      }
+      try await library.insertAttachmentReferences(descendingAttachments,
+        positions: [a: 7, b: 7, c: 0], for: snipID)
+
+      let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
+
+      let snip = try XCTUnwrap(snapshot.snips.first(where: { $0.id == snipID }))
+      let order = snip.attachments.map(\.id)
+      XCTAssertEqual(order, [c, a, b], "Position sorts first; attachment ID resolves the tie.")
+      loadedOrders.append(order)
+    }
+    XCTAssertEqual(loadedOrders[0], loadedOrders[1])
+  }
+
   // MARK: Publication lifecycle
 
   func testReplayedPayloadAndMetadataAcceptanceChangesNothing() async throws {
@@ -1606,6 +1635,22 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
   private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudAttachmentLifecycleTests-\(UUID().uuidString)", isDirectory: true)
+  }
+}
+
+private extension SwiftDataSnipLibrary {
+  func insertAttachmentReferences(
+    _ attachments: [SnipAttachment],
+    positions: [UUID: Int],
+    for snipID: UUID
+  ) throws {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    for attachment in attachments {
+      context.insert(StoredAttachmentRecord(attachment))
+      context.insert(StoredSnipAttachmentReference(snipID: snipID, attachmentID: attachment.id,
+        position: try XCTUnwrap(positions[attachment.id])))
+    }
+    try context.save()
   }
 }
 

@@ -3130,6 +3130,77 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
   }
 
+  func testANewRemoteAttachmentCanPrecedeAnExistingDownloadedAttachment() async throws {
+    let first = try await makeAttachmentClient(fileNames: ["existing"])
+    defer { try? FileManager.default.removeItem(at: first.root) }
+    try await first.sync.sync()
+    try await first.sync.sync()
+    let second = try attachmentClient(root: first.root,
+      storeURL: first.root.appendingPathComponent("other.store"),
+      namespace: first.namespace, server: first.server, snipID: first.snipID)
+    try await second.sync.fetchRemote()
+    let local = try await first.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == first.snipID }))
+    let existingID = try XCTUnwrap(snip.attachments.first).id
+    let source = first.root.appendingPathComponent("new.txt")
+    try Data("new attachment".utf8).write(to: source)
+    let added = try await first.library.perform(.editAttachments(
+      snipID: first.snipID, content: snip.content,
+      edits: [.added(sourceURL: source), .existing(attachmentID: existingID)],
+      expectedUpdatedAt: snip.updatedAt, now: Date(timeIntervalSince1970: 2)
+    ), sortedBy: .manual)
+    let addedSnip = try XCTUnwrap(added.snapshot.snips.first(where: { $0.id == first.snipID }))
+    let newID = try XCTUnwrap(addedSnip.attachments.first(where: { $0.fileName == "new.txt" })).id
+    try await first.sync.sync()
+    try await first.sync.sync()
+
+    try await second.sync.fetchRemote()
+
+    let order = try await assertSettledAttachmentOrder([existingID, newID], between: first, and: second)
+    XCTAssertEqual(order, [newID, existingID])
+  }
+
+  func testRetryingAPartialAttachmentFetchPreservesTheServersSparsePositions() async throws {
+    let first = try await makeAttachmentClient(fileNames: ["a", "b"])
+    defer { try? FileManager.default.removeItem(at: first.root) }
+    try await first.sync.sync()
+    try await first.sync.sync()
+    let published = try await snapshot(first.library, first.namespace)
+    let a = try XCTUnwrap(published.publications.first(where: { $0.metadata.fileName == "a.txt" }))
+    let b = try XCTUnwrap(published.publications.first(where: { $0.metadata.fileName == "b.txt" }))
+    let receiver = try attachmentClient(root: first.root,
+      storeURL: first.root.appendingPathComponent("receiver.store"),
+      namespace: first.namespace, server: first.server, snipID: first.snipID)
+    await receiver.transport.failNextFetchedItem(
+      CloudAttachmentRecordCodec.recordID(a.metadataIdentity), failure: .retryable
+    )
+
+    try await receiver.sync.fetchRemote()
+
+    let partial = try await receiver.library.storedAttachmentReferencePositions(for: first.snipID)
+    XCTAssertEqual(partial, [b.metadata.attachmentID: 1], "A partial fetch must retain B's cloud coordinate.")
+
+    try await receiver.sync.fetchRemote()
+
+    let local = try await receiver.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == first.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), [a.metadata.attachmentID, b.metadata.attachmentID])
+    let positions = try await receiver.library.storedAttachmentReferencePositions(for: first.snipID)
+    XCTAssertEqual(positions, [a.metadata.attachmentID: 0, b.metadata.attachmentID: 1])
+    let next = try await receiver.store.pendingChanges()
+    XCTAssertFalse(next.operations.contains(where: { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
+    }), "Retrying a fetch must not create an attachment reorder.")
+    for (position, row) in [a, b].enumerated() {
+      let id = CloudAttachmentRecordCodec.recordID(row.metadataIdentity)
+      let remote = await first.server.fullSnapshot(for: id)
+      XCTAssertEqual(remote?.encryptedFields["position"], .int64(Int64(position)))
+      let saves = await first.server.acceptedOperationCount(for: id)
+      XCTAssertEqual(saves, 1)
+    }
+  }
+
   func testConcurrentAttachmentReordersPersistUniquePositionsAndAllowALaterRemoteReorder() async throws {
     let first = try await makeAttachmentClient(fileNames: ["a", "b", "c"])
     defer { try? FileManager.default.removeItem(at: first.root) }
@@ -3164,7 +3235,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     let attachmentIDs: Set<UUID> = [a, b, c]
     let settledOrder = try await assertSettledAttachmentOrder(attachmentIDs, between: first, and: second)
-    XCTAssertEqual(settledOrder, [b, c, a], "The local B must precede adopted C when their positions tie.")
+    XCTAssertEqual(settledOrder, [b, a, c], "D1 reaches iCloud last, so its whole order must win.")
     let latestOrder = settledOrder == [c, b, a] ? [b, c, a] : [c, b, a]
     try await keepAttachments(latestOrder, ofSnip: second.snipID, in: second.library)
     try await second.sync.sync()
@@ -3175,6 +3246,65 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     let afterRemoteReorder = try await assertSettledAttachmentOrder(attachmentIDs, between: first, and: second)
     XCTAssertEqual(afterRemoteReorder, latestOrder, "D2's later order must survive D1's fetch and reconcile.")
+  }
+
+  func testConcurrentDisjointAttachmentSwapsKeepTheLastDevicesWholeOrder() async throws {
+    let first = try await makeAttachmentClient(fileNames: ["a", "b", "c", "d"])
+    defer { try? FileManager.default.removeItem(at: first.root) }
+    try await first.sync.sync()
+    try await first.sync.sync()
+    let published = try await snapshot(first.library, first.namespace)
+    let order = published.publications.sorted { $0.metadata.position < $1.metadata.position }
+      .map(\.metadata.attachmentID)
+    XCTAssertEqual(order.count, 4)
+    let second = try attachmentClient(root: first.root,
+      storeURL: first.root.appendingPathComponent("other.store"),
+      namespace: first.namespace, server: first.server, snipID: first.snipID)
+    try await second.sync.fetchRemote()
+    let localOrder = [order[1], order[0], order[2], order[3]]
+    let remoteOrder = [order[0], order[1], order[3], order[2]]
+    try await keepAttachments(localOrder, ofSnip: first.snipID, in: first.library)
+    try await keepAttachments(remoteOrder, ofSnip: second.snipID, in: second.library)
+    try await second.sync.sync()
+
+    for _ in 0..<2 {
+      try await first.sync.sync()
+      try await second.sync.sync()
+    }
+
+    let settled = try await assertSettledAttachmentOrder(Set(order), between: first, and: second)
+    XCTAssertEqual(settled, localOrder, "Disjoint swaps still edit the same snip-level order field.")
+  }
+
+  func testALaterRemoteReorderRestoresTheCoordinatesOfAnUnadoptedSibling() async throws {
+    let first = try await makeAttachmentClient(fileNames: ["one", "two", "three"])
+    defer { try? FileManager.default.removeItem(at: first.root) }
+    let initial = try await first.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(initial.snips.first(where: { $0.id == first.snipID }))
+    let ids = snip.attachments.map(\.id).sorted { $0.uuidString < $1.uuidString }
+    XCTAssertEqual(ids.count, 3)
+    let c = ids[0]
+    let a = ids[1]
+    let b = ids[2]
+    try await keepAttachments([a, b, c], ofSnip: first.snipID, in: first.library)
+    try await first.sync.sync()
+    try await first.sync.sync()
+    let second = try attachmentClient(root: first.root,
+      storeURL: first.root.appendingPathComponent("other.store"),
+      namespace: first.namespace, server: first.server, snipID: first.snipID)
+    try await second.sync.fetchRemote()
+    // A mixed pending/adopted commit can leave these raw coordinates after publishing A0/B1/C2.
+    try await first.library.setStoredAttachmentReferencePositions([a: 0, b: 0, c: 1], for: first.snipID)
+    try await keepAttachments([b, a, c], ofSnip: second.snipID, in: second.library)
+    try await second.sync.sync()
+
+    for _ in 0..<2 {
+      try await first.sync.sync()
+      try await second.sync.sync()
+    }
+
+    let settled = try await assertSettledAttachmentOrder(Set(ids), between: first, and: second)
+    XCTAssertEqual(settled, [b, a, c], "Adoption must also restore the unchanged sibling's stored coordinate.")
   }
 
   func testARemoteRenameSurvivesRemovingALocalSiblingBeforeReconcile() async throws {
@@ -5992,6 +6122,17 @@ final class CloudAttachmentTransferTests: XCTestCase {
 }
 
 private extension SwiftDataSnipLibrary {
+  func setStoredAttachmentReferencePositions(_ positions: [UUID: Int], for snipID: UUID) throws {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> { $0.snipID == snipID }
+    ))
+    for reference in references {
+      reference.update(position: try XCTUnwrap(positions[reference.attachmentID]))
+    }
+    try context.save()
+  }
+
   func storedAttachmentReferencePositions(for snipID: UUID) throws -> [UUID: Int] {
     let context = Self.makeContext(container: try XCTUnwrap(container))
     let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
