@@ -24,7 +24,21 @@ package struct CloudTextStorageIdentity: Codable, Equatable, Hashable, Sendable 
   }
 }
 
-package struct CloudTextStorageRecord: Equatable, Sendable {
+/// A legacy text record row's iCloud fields. Seeding reserves placeholder rows before any send.
+package protocol CloudTextRecordServerFields {
+  var acceptedText: String? { get }
+  var shadowData: Data? { get }
+  var systemFields: Data? { get }
+}
+
+extension CloudTextRecordServerFields {
+  /// The row reached iCloud.
+  package var hasServerState: Bool {
+    acceptedText != nil || shadowData != nil || systemFields != nil
+  }
+}
+
+package struct CloudTextStorageRecord: CloudTextRecordServerFields, Equatable, Sendable {
   package let identity: CloudTextStorageIdentity
   package let snipID: UUID
   package let schemaVersion: Int
@@ -32,11 +46,6 @@ package struct CloudTextStorageRecord: Equatable, Sendable {
   package let shadowData: Data?
   package let systemFields: Data?
   package let recoveryData: Data?
-
-  /// The row reached iCloud. Seeding reserves placeholder rows before any send.
-  package var hasServerState: Bool {
-    acceptedText != nil || shadowData != nil || systemFields != nil
-  }
 }
 
 package struct CloudTextRecordReservation: Equatable, Sendable {
