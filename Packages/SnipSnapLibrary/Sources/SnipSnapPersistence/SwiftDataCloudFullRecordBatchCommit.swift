@@ -458,6 +458,9 @@ extension SwiftDataSnipLibrary {
       try materializeCloudAttachments(
         namespaceKey: batch.namespaceKey,
         adoptedBases: adoptedBases,
+        metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(
+          in: batch.attachmentTransitions
+        ),
         context: context
       )
       try lock.check()

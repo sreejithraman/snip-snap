@@ -6,6 +6,7 @@ extension SwiftDataSnipLibrary {
   package func materializeCloudAttachments(
     namespaceKey: String,
     adoptedBases: [UUID: CloudAttachmentMetadataValue],
+    metadataAcknowledgedAttachmentIDs: Set<UUID>,
     context: ModelContext
   ) throws {
     let allPublications = try Self.cloudAttachmentPublications(
@@ -17,8 +18,11 @@ extension SwiftDataSnipLibrary {
         || ($0.lifecycle.isLocallyPresent && $0.lifecycle.isMetadataAccepted
           && adoptedBases[$0.attachmentID] != nil)
     }
-    guard !publications.isEmpty else { return }
-    let snipIDs = Array(Set(publications.map(\.snipID)))
+    let metadataAcknowledgedSnipIDs = Set(allPublications.filter {
+      metadataAcknowledgedAttachmentIDs.contains($0.attachmentID)
+    }.map(\.snipID))
+    let snipIDs = Array(Set(publications.map(\.snipID)).union(metadataAcknowledgedSnipIDs))
+    guard !snipIDs.isEmpty else { return }
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
     let storedSnipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>(
       predicate: #Predicate<StoredSnipRecord> { snipIDs.contains($0.id) }
@@ -41,7 +45,9 @@ extension SwiftDataSnipLibrary {
     let presentRowsBySnip = Dictionary(
       grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
     )
-    var touchedSnipIDs = Set(publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID))
+    var touchedSnipIDs = metadataAcknowledgedSnipIDs.union(
+      publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID)
+    )
     let cacheEntries = Dictionary(uniqueKeysWithValues:
       try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
@@ -102,11 +108,13 @@ extension SwiftDataSnipLibrary {
         touchedSnipIDs.insert(publication.snipID)
       }
     }
-    // A snip adopts the fetched attachment order as a whole, compared over shared attachments,
-    // unless the local order changed or an edit there awaits acknowledgement.
+    // On fetches and metadata acknowledgements, a snip adopts its shared attachment order as a whole
+    // unless the local sequence changed or a previously published row is pending.
     let snipsAdoptingOrder = Set(touchedSnipIDs.filter { snipID in
       let presentRows = presentRowsBySnip[snipID] ?? []
-      guard !presentRows.contains(where: { $0.lifecycle.isPresentAwaitingMetadata }) else {
+      guard !presentRows.contains(where: {
+        $0.lifecycle.isPresentAwaitingMetadata && $0.lifecycle.hasPublishedMetadata
+      }) else {
         return false
       }
       let localOrder = localOrdersBySnip[snipID] ?? []

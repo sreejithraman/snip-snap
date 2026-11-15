@@ -383,6 +383,7 @@ extension SwiftDataSnipLibrary {
     try materializeCloudAttachments(
       namespaceKey: namespaceKey,
       adoptedBases: adoptedBases,
+      metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(in: transitions),
       context: context
     )
     try afterMutationBeforeSave()
@@ -393,6 +394,15 @@ extension SwiftDataSnipLibrary {
       if (try? lock.check()) == nil { break }
       CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
+  }
+
+  static func metadataAcknowledgedAttachmentIDs(
+    in transitions: [CloudAttachmentTransition]
+  ) -> Set<UUID> {
+    Set(transitions.compactMap { transition in
+      guard case .metadataAccepted(let attachmentID, _, _, _) = transition else { return nil }
+      return attachmentID
+    })
   }
 
 }
