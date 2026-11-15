@@ -138,7 +138,7 @@ extension SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.namespaceMismatch
     }
     if let isolation = manifest.accountIsolation {
-      try await resumeDeclaredAccountIsolation()
+      try? await resumeDeclaredAccountIsolation()
       return isolation
     }
     try beginStoreReplacement()
@@ -180,13 +180,12 @@ extension SwiftDataSyncModePersistence {
     try crashHook(.afterAccountIsolationPointerSwap)
   }
 
-  /// Finishes a declaration whose swap failed or was interrupted in this process. A busy
-  /// admission means a live isolation is finishing the swap, or a writer holds the store; the
-  /// next isolate or reconcile retries.
+  /// Finishes a declaration whose swap failed or was interrupted in this process. Isolate and
+  /// reconcile only report the isolation, so they ignore a failure: the account notice still
+  /// shows, and the next call retries. Keep and Remove need the swap, so they surface its
+  /// failure, including `transitionInProgress` while another writer holds the store.
   private func resumeDeclaredAccountIsolation() async throws {
-    guard case .declared(let isolation) = try manifest.accountIsolationPhase(),
-      writeAdmissionIsIdle()
-    else { return }
+    guard case .declared(let isolation) = try manifest.accountIsolationPhase() else { return }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
     try await completeAccountIsolation(isolation)
@@ -206,11 +205,12 @@ extension SwiftDataSyncModePersistence {
       try commit(intended)
       try crashHook(.afterAccountResolutionIntent)
     }
+    try await resumeDeclaredAccountIsolation()
     try await reconcileAccountIsolationResolution()
   }
 
   package func reconcileAccountIsolationResolution() async throws {
-    try await resumeDeclaredAccountIsolation()
+    try? await resumeDeclaredAccountIsolation()
     guard let isolation = manifest.accountIsolation,
       isolation.resolution != .undecided
     else { return }
