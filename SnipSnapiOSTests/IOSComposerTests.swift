@@ -710,7 +710,7 @@ final class IOSComposerTests: IOSModelTestCase {
             let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 view.isFirstResponder == expected
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: TestReadiness.timeout), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: TestReadiness.timeout), .completed, "\(expected): \(composerFocusDiagnostics(host, focused: focused))")
         }
         focused = false
         update(expectingFirstResponder: false)
@@ -729,7 +729,7 @@ final class IOSComposerTests: IOSModelTestCase {
         update(expectingFirstResponder: true)
         XCTAssertTrue(view.resignFirstResponder())
         let blurred = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !focused }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [blurred], timeout: TestReadiness.timeout), .completed, "User blur must still reach SwiftUI")
+        XCTAssertEqual(XCTWaiter.wait(for: [blurred], timeout: TestReadiness.timeout), .completed, "User blur must still reach SwiftUI. \(composerFocusDiagnostics(host, focused: focused))")
     }
 
     func testComposerKeepsCursorWhenLargePlainTextPasteBecomesAnAttachment() async throws {
@@ -1170,13 +1170,24 @@ final class IOSComposerTests: IOSModelTestCase {
                 guard let input = composer(in: host.view) else { return false }
                 return input !== previous && input.isFirstResponder
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: TestReadiness.timeout), .completed, "\(sizeClass)")
+            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: TestReadiness.timeout), .completed, "\(sizeClass): \(composerFocusDiagnostics(host, focused: focused))")
             let input = try XCTUnwrap(composer(in: host.view))
             XCTAssertEqual(input.text, "Fold draft")
             XCTAssertTrue(focused, "The layout change must not end the user's editing")
             previous = input
         }
     }
+}
+
+@MainActor
+func composerFocusDiagnostics(_ host: UIViewController, focused: Bool) -> String {
+    func composers(in view: UIView) -> [ComposerTextView] {
+        (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap { composers(in: $0) }
+    }
+    let states = composers(in: host.view).map {
+        "mounted=\($0.window != nil) firstResponder=\($0.isFirstResponder) canBecome=\($0.canBecomeFirstResponder)"
+    }
+    return "composers=\(states) binding=\(focused) keyWindow=\(host.view.window?.isKeyWindow ?? false)"
 }
 
 /// Mirrors `IOSAppRootView.appNavigation`: each size class owns its own composer.
