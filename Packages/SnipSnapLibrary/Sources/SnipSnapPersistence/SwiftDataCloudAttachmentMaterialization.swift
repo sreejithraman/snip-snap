@@ -52,14 +52,17 @@ extension SwiftDataSnipLibrary {
       )
       if let base = adoptedBases[publication.attachmentID],
         let stored = attachments[publication.attachmentID],
-        let reference = references[referenceID],
-        stored.fileName == base.fileName,
-        stored.contentType == base.contentType,
-        reference.position == base.position
+        let reference = references[referenceID]
       {
-        stored.fileName = publication.fileName
-        stored.contentType = publication.contentType
-        reference.update(position: publication.position)
+        if stored.fileName == base.fileName {
+          stored.fileName = publication.fileName
+        }
+        if stored.contentType == base.contentType {
+          stored.contentType = publication.contentType
+        }
+        if reference.position == base.position {
+          reference.update(position: publication.position)
+        }
       }
       guard publication.lifecycle.materializesFromCloud else { continue }
       let relativePath: String
