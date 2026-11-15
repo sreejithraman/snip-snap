@@ -28,8 +28,10 @@ Failed Mac and iOS app tests preserve evidence under ignored
 200 MiB of result bundles, plus bounded summary and test JSON. Larger bundles
 are omitted with a note. Successful runs still remove temporary DerivedData.
 Remove saved evidence when finished. CI uploads each failed test group's
-console output and its `artifacts/test-failures` evidence for seven days, so a
-crash or stall in CI keeps its result bundle and stack.
+console output and its `artifacts/test-failures` evidence for seven days. A
+crash, or a stall that `xcodebuild` ends by restarting the test host, keeps its
+result bundle and stack. A hang that reaches the job's time limit keeps only the
+log.
 
 Use `./scripts/test-diagnostic.sh /usr/bin/xcrun ...` for test-tool diagnostics.
 XCTest may print its environment after an invalid invocation. The wrapper
