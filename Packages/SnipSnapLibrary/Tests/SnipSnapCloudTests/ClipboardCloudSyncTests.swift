@@ -82,16 +82,18 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     let store: ClipboardHistoryStore
     let files: ClipboardFileStore
     let sync: ClipboardCloudSyncService
-    init(_ cloud: ClipboardTestCloud, retry: CloudKitOperationRetry = CloudKitOperationRetry()) {
-        self.init(retry: retry, makeTransport: { _ in cloud })
+    init(_ cloud: ClipboardTestCloud, retry: CloudKitOperationRetry = CloudKitOperationRetry(),
+         resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in }) {
+        self.init(retry: retry, resetStep: resetStep, makeTransport: { _ in cloud })
     }
     init(retry: CloudKitOperationRetry = CloudKitOperationRetry(),
+         resetStep: @escaping @MainActor (ClipboardBindingResetStep) async throws -> Void = { _ in },
          makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         files = ClipboardFileStore(rootURL: root.appendingPathComponent("ClipboardFiles"))
         store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"), fileStore: files)
         sync = ClipboardCloudSyncService(store: store, syncRootURL: root,
-                                         makeTransport: makeTransport, retry: retry)
+                                         makeTransport: makeTransport, retry: retry, resetStep: resetStep)
     }
     /// A new service on the same root and store, as after the old one is discarded.
     init(reopening previous: ClipboardClient, _ cloud: ClipboardTestCloud) {
@@ -956,6 +958,48 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         try await relaunched.sync.resetAccountBinding()
         #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
         #expect(try await relaunched.store.load().entries.isEmpty)
+
+        try await relaunched.run(scope: "account-generation-B")
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
+    @Test func newerResetKeepsTheMarkerWhenAnEarlierResetFinishes() async throws {
+        let gate = ClipboardRetrySleepGate()
+        let cloud = ClipboardTestCloud()
+        let client = ClipboardClient(cloud, resetStep: { step in
+            if step == .historyCleared { try await gate.wait() }
+        })
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let bindingB = try JSONEncoder().encode("account-generation-B")
+        let marker = try JSONEncoder().encode("clipboard-reset-pending")
+        let older = entry("never synced")
+        try await client.store.insert(older)
+        let first = Task { try await client.sync.resetAccountBinding(includingUnboundHistory: true) }
+
+        let held = await eventually { gate.isWaiting }
+        if !held { first.cancel() }
+        try #require(held, "The first reset never cleared history")
+        let newer = entry("copied during the first reset")
+        try await client.store.insert(newer)
+        await #expect(throws: ClipboardCloudError.busy) {
+            try await client.sync.resetAccountBinding(includingUnboundHistory: true)
+        }
+        gate.release()
+        try await first.value
+        #expect((try? Data(contentsOf: bindingURL)) == marker)
+
+        let relaunched = ClipboardClient(reopening: client, cloud)
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
+            try await relaunched.run(scope: "account-generation-B")
+        }
+        #expect(try await cloud.fetch().entries.isEmpty)
+        #expect((try? Data(contentsOf: bindingURL)) != bindingB)
+
+        try await relaunched.sync.resetAccountBinding()
+        #expect(Set(try await setAsideEntryIDs(in: client.root)) == [[older.id], [newer.id]])
+        #expect(try await relaunched.store.load().entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: bindingURL.path))
 
         try await relaunched.run(scope: "account-generation-B")
         #expect(try await cloud.fetch().entries.isEmpty)
