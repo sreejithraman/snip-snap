@@ -162,10 +162,10 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         }
         return local
       } catch {
-        guard publication.metadataAccepted else { throw error }
+        guard publication.payloadAccepted else { throw error }
       }
     }
-    guard publication.metadataAccepted else {
+    guard publication.payloadAccepted else {
       throw CloudAttachmentStorageError.missingPublication
     }
     guard publication.metadata.payloadIdentity.zoneName == payloadZone.name,
@@ -283,7 +283,7 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
         contentType: publication.metadata.contentType,
         byteCount: publication.metadata.byteCount,
         localURL: publication.localSourceURL,
-        allowsMissingLocalFile: publication.metadataAccepted
+        allowsMissingLocalFile: publication.payloadAccepted
       )
     }
     return unsupportedFiles(in: inputs, policy: policy)

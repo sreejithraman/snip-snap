@@ -102,13 +102,16 @@ package enum CloudAttachmentFailure: String, Codable, Equatable, Sendable {
   package var retriesManually: Bool {
     self != .updateRequired && self != .accessDenied
   }
+
+  /// Only Try Again clears this failure.
+  package var clearsOnManualRetryOnly: Bool { retriesManually && !retriesAutomatically }
 }
 
 package extension CloudAttachmentPublication {
   var transferState: CloudAttachmentTransferState {
     if let lastFailure { return .failed(lastFailure) }
     if !isLocallyPresent { return .waitingForDeletion }
-    if localSourceURL == nil, metadataAccepted { return .available }
+    if localSourceURL == nil, payloadAccepted { return .available }
     if !payloadAccepted { return .waitingForUpload }
     if !metadataAccepted { return .waitingForMetadata }
     return .available
