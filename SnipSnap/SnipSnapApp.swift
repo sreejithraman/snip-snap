@@ -353,7 +353,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                         issue = .iCloudAccountChanged
                     }
                     stopIssue = issue
-                    try await cliRequestStore.suspendActiveScope()
+                    do { try await cliRequestStore.suspendActiveScope() }
+                    catch { model.presentError(error) }
                     await model.clipboardHistory.resetCloudAccount()
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordSyncStopped(issue)
