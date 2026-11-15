@@ -75,8 +75,10 @@ extension SwiftDataSnipLibrary {
     ).mapValues { rows in
       rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
     }
-    let awaitingIDsBySnip = Dictionary(grouping: awaitingRows, by: \.snipID).mapValues {
-      Set($0.map(\.attachmentID))
+    // A row iCloud never held has no acknowledged base to mix, so it can't decide whether the
+    // snip's unacknowledged edit came back.
+    let publishedAwaitingIDsBySnip = Dictionary(grouping: awaitingRows, by: \.snipID).mapValues {
+      Set($0.filter(\.lifecycle.hasPublishedMetadata).map(\.attachmentID))
     }
     func removeCache(for attachmentID: UUID) {
       for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
@@ -364,7 +366,14 @@ extension SwiftDataSnipLibrary {
       }
     }
     let ownSaveIDs = Set(changes.adoptions.filter { $0.value.ownSave != nil }.keys)
-    changes.ownSaveSnipIDs = Set(awaitingIDsBySnip.filter { $0.value.isSubset(of: ownSaveIDs) }.keys)
+    for (snipID, published) in publishedAwaitingIDsBySnip {
+      let returned = published.intersection(ownSaveIDs)
+      if returned == published {
+        changes.ownSaveSnipIDs.insert(snipID)
+      } else if !returned.isEmpty {
+        changes.partlyReturnedSnipIDs.insert(snipID)
+      }
+    }
     return changes
   }
 

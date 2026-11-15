@@ -129,7 +129,8 @@ extension SwiftDataSnipLibrary {
         local: localOrder,
         arrived: members.map(\.attachmentID).filter { !localOrder.contains($0) },
         base: basePositions,
-        remote: remotePositions
+        remote: remotePositions,
+        remoteMayWin: !changes.partlyReturnedSnipIDs.contains(snipID)
       )
       // Stored positions are local order; publications and shadows hold the cloud coordinates.
       for (position, attachmentID) in order.enumerated() {

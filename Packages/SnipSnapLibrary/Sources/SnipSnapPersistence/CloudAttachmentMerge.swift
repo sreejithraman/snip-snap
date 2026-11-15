@@ -40,18 +40,21 @@ enum CloudAttachmentMerge {
   ///   - arrived: the members this commit inserted.
   ///   - base: acknowledged positions before this commit.
   ///   - remote: acknowledged positions after this commit.
+  ///   - remoteMayWin: false keeps the local order, as when only part of this device's own
+  ///     unacknowledged edit came back and the base can't be trusted.
   static func order(
     local: [UUID],
     arrived: [UUID],
     base: [UUID: Int],
-    remote: [UUID: Int]
+    remote: [UUID: Int],
+    remoteMayWin: Bool = true
   ) -> [UUID] {
     let shared = local.filter { base[$0] != nil && remote[$0] != nil }
     let sharedIDs = Set(shared)
     let baseOrder = sorted(shared, by: base)
     let remoteSequence = sorted((local + arrived).filter { remote[$0] != nil }, by: remote)
     let remoteOrder = remoteSequence.filter { sharedIDs.contains($0) }
-    if remoteOrder != baseOrder && shared == baseOrder {
+    if remoteMayWin && remoteOrder != baseOrder && shared == baseOrder {
       return inserting(local.filter { remote[$0] == nil }, at: local, into: remoteSequence)
     }
     return inserting(arrived, at: remoteSequence, into: local)
@@ -83,8 +86,11 @@ struct CloudAttachmentRemoteChanges {
   var adoptions: [UUID: CloudAttachmentAdoption] = [:]
   /// Snips that lost an attachment to another device's delete.
   var removedSnipIDs: Set<UUID> = []
-  /// Snips whose every unacknowledged row came back as this device's own save.
+  /// Snips whose every unacknowledged row that iCloud held came back as this device's own save.
   var ownSaveSnipIDs: Set<UUID> = []
+  /// Snips where only some of those rows came back, as when a fetch fails for one record. The
+  /// local order stands for this commit (SM33 D7).
+  var partlyReturnedSnipIDs: Set<UUID> = []
 
   /// The base for an adopted row's place in its snip's order. An own save counts only when the
   /// snip's whole unacknowledged edit came back: a record that matches one row by chance must
