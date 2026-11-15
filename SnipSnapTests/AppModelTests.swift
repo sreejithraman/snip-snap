@@ -182,6 +182,28 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testFailedCLISessionEndNamesItsOperationAndShowsTheError() async throws {
+        // A regular file where the store creates its directory makes every store call throw.
+        let blockedRoot = try storeURL().deletingLastPathComponent().appendingPathComponent("cli-root")
+        try Data().write(to: blockedRoot)
+        defer { try? FileManager.default.removeItem(at: blockedRoot) }
+        let probe = MacDiagnosticRecorderProbe()
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: []),
+            defaults: defaults(), diagnostics: probe.recorder)
+        await model.waitForInitialLoad()
+
+        await model.endCLIAppSession(SnipCLIAppLifecycle(
+            store: SnipCLIRequestStore(rootURL: blockedRoot),
+            instance: SnipCLIAppInstance(
+                pid: 1, launchDate: Date(timeIntervalSince1970: 0),
+                applicationURL: URL(fileURLWithPath: "/Applications/Snip Snap.app"))))
+
+        XCTAssertNotNil(model.presentedError)
+        XCTAssertEqual(probe.events.map(\.operation), ["cli.session_end"])
+    }
+
+    @MainActor
     func testDuplicateListErrorTitleResetsForOtherErrorsAndDismissal() throws {
         let library = try JSONSnipLibrary(fileURL: storeURL())
         let model = AppModel(library: library, defaults: defaults())
