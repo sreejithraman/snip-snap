@@ -117,6 +117,10 @@ run_tests
 assert_groups 1 1 1
 run_tests --mac-only
 assert_groups 1 1 0
+if /usr/bin/grep -q -- '-test-timeouts-enabled' "$SNIP_SNAP_TEST_CALLS"; then
+    print -u2 "Only the iOS app tests may set XCTest timeouts."
+    exit 1
+fi
 CI=false run_tests --mac-only
 /usr/bin/grep -Fx 'policyargs:tracked-input-policy.sh:--include-untracked' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 CI=true run_tests --mac-only
@@ -125,6 +129,7 @@ run_tests --ios-only
 assert_groups 0 0 1
 /usr/bin/grep -F -- '-only-testing:SnipSnapiOSTests test' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- '-parallel-testing-enabled NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+/usr/bin/grep -F -- '-test-timeouts-enabled YES -default-test-execution-time-allowance 180 ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 CI=true run_tests --ios-only
 /usr/bin/grep -Fx 'boot:iPhone 18 Pro' "$SNIP_SNAP_TEST_CALLS" >/dev/null
