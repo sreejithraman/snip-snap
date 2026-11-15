@@ -6,6 +6,7 @@ import XCTest
 
 /// A failed rollback can leave a transition stage that only reopen clears (SM23-L1, SM23-L2).
 /// Try Again finishes only a rollback this process couldn't commit, not work in flight (SM23-F1).
+/// Nor does it replay a full re-enable merge that this process is applying (SM23-F2).
 extension ICloudSyncModeCoordinatorTests {
     func testEnableTryAgainUnfreezesASourceLeftFrozenByAFailedRestore() async throws {
         let root = temporaryDirectory()
@@ -137,6 +138,64 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertTryAgainLeavesTheFreezeInFlight(for: .optOut)
     }
 
+    func testEnableTryAgainDoesNotReplayAFullMergeInFlight() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pause = HeldStepPause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            writeHook: { await pause.arrive(atHeldStep: $0 == .beforeFullReenablePlanApply) }
+        )
+        let server = FakeCloudServer()
+        let texts = try await optOutAfterSyncing(persistence, server: server)
+
+        // Before the SM23-F2 fix, Try Again takes the live intent for a leftover one: it replays
+        // the staged plan and finishes the enable, so the held merge can't finish.
+        try await assertTryAgainLeavesTheFullMergeInFlight(
+            on: persistence,
+            heldBy: pause,
+            server: server,
+            holding: texts
+        )
+    }
+
+    func testEnableTryAgainDoesNotReplayAFullMergeAnotherTryAgainResumed() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let server = FakeCloudServer()
+        let initial = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1
+        )
+        let texts = try await optOutAfterSyncing(initial, server: server)
+        let crash = CrashInjector(point: .beforeCandidateMergeDurability)
+        let crashing = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            crashHook: crash.hit
+        )
+        do {
+            _ = try await modeCoordinator(on: crashing, server: server).enableOrRetry()
+            XCTFail("The injected crash must end the enable.")
+        } catch CrashInjector.Failure.injected {}
+        let pause = HeldStepPause()
+        let reopened = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            writeHook: { await pause.arrive(atHeldStep: $0 == .beforeFullReenablePlanApply) }
+        )
+
+        // Before the SM23-F2 fix, both Try Agains reconcile the durable intent: the second
+        // replays the staged plan and finishes the enable, so the first can't finish its merge.
+        try await assertTryAgainLeavesTheFullMergeInFlight(
+            on: reopened,
+            heldBy: pause,
+            server: server,
+            holding: texts
+        )
+    }
+
     func testFailedCancelSetupKeepsTheLibraryForTheNextEnable() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -187,11 +246,12 @@ extension ICloudSyncModeCoordinatorTests {
     ) async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let pause = FrozenSourceReadPause()
+        let pause = HeldStepPause()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
             defaultSyncProtocol: .legacyTextV1,
-            readHook: { await pause.read(sourceFrozen: storedSourceIsFrozen(under: root)) }
+            // The first read made while the source is frozen is the final snapshot read.
+            readHook: { await pause.arrive(atHeldStep: storedSourceIsFrozen(under: root)) }
         )
         try await add("kept", to: persistence.activeLibrary())
         let server = FakeCloudServer()
@@ -201,6 +261,69 @@ extension ICloudSyncModeCoordinatorTests {
             let enabled = try await inFlight.enableOrRetry()
             XCTAssertEqual(enabled.state, .on, file: file, line: line)
         }
+
+        // Before the SM23-F1 fix, Try Again unfreezes the change in flight and starts its own
+        // merge.
+        let held = try await assertTryAgainWaits(
+            for: change,
+            heldBy: pause,
+            inFlight: inFlight,
+            tryAgain: tryAgain,
+            on: persistence,
+            file: file,
+            line: line
+        )
+
+        XCTAssertEqual(held?.transition?.phase, .sourceFrozen, file: file, line: line)
+        XCTAssertNotNil(held?.transition?.freezeToken, file: file, line: line)
+    }
+
+    /// Holds a full re-enable just before it applies its staged plan, with its merge intent
+    /// durable, while a second coordinator on the same persistence tries the enable again.
+    private func assertTryAgainLeavesTheFullMergeInFlight(
+        on persistence: SwiftDataSyncModePersistence,
+        heldBy pause: HeldStepPause,
+        server: FakeCloudServer,
+        holding texts: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let held = try await assertTryAgainWaits(
+            for: .enable,
+            heldBy: pause,
+            inFlight: modeCoordinator(on: persistence, server: server),
+            tryAgain: modeCoordinator(on: persistence, server: server),
+            on: persistence,
+            holding: texts,
+            file: file,
+            line: line
+        )
+
+        let transition = held?.transition
+        XCTAssertEqual(transition?.phase, .sourceFrozen, file: file, line: line)
+        XCTAssertNotNil(transition?.mergeIntent, file: file, line: line)
+        XCTAssertEqual(
+            transition?.mergeIntent?.fullReenablePlanID,
+            transition?.id,
+            file: file,
+            line: line
+        )
+    }
+
+    /// Holds `inFlight`'s `change` at the step `pause` holds, while `tryAgain` tries the same
+    /// change on the same persistence. No gate is shared. Try Again must wait and leave the
+    /// stored transition as it is. The held change must then finish holding exactly `texts`.
+    /// Returns the storage seen while the change was held.
+    private func assertTryAgainWaits(
+        for change: StrandedChange,
+        heldBy pause: HeldStepPause,
+        inFlight: ICloudSyncModeCoordinator,
+        tryAgain: ICloudSyncModeCoordinator,
+        on persistence: SwiftDataSyncModePersistence,
+        holding texts: [String] = ["kept"],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> SyncModeStorageSnapshot? {
         await pause.arm()
         let first = Task {
             do {
@@ -215,12 +338,8 @@ extension ICloudSyncModeCoordinatorTests {
         await pause.waitUntilPaused()
         guard await pause.hasPaused else {
             _ = try await first.value
-            XCTFail(
-                "\(change) finished without reaching its final snapshot read.",
-                file: file,
-                line: line
-            )
-            return
+            XCTFail("\(change) finished without reaching its held step.", file: file, line: line)
+            return nil
         }
         let held = try? await persistence.snapshot()
 
@@ -228,22 +347,38 @@ extension ICloudSyncModeCoordinatorTests {
         let afterRetry = try? await persistence.snapshot()
         await pause.resume()
 
-        XCTAssertEqual(held?.transition?.phase, .sourceFrozen, file: file, line: line)
-        XCTAssertNotNil(held?.transition?.freezeToken, file: file, line: line)
-        // Before the SM23-F1 fix, these fail: Try Again unfreezes the change in flight and
-        // starts its own merge.
         let waiting: ICloudSyncModeState = change == .enable ? .settingUp : .syncing
         XCTAssertEqual(try retried.get().state, waiting, file: file, line: line)
         XCTAssertEqual(afterRetry?.transition, held?.transition, file: file, line: line)
-        let finished = try await first.value
+        let finished = await first.result
         let done: ICloudSyncModeState = change == .enable ? .on : .off
-        XCTAssertEqual(finished.state, done, file: file, line: line)
+        XCTAssertEqual(try finished.get().state, done, file: file, line: line)
         try await assertModeChangeFinished(
             persistence,
             on: change == .enable ? .iCloudSync : .localOnly,
+            holding: texts,
             file: file,
             line: line
         )
+        return held
+    }
+
+    /// Syncs a snip, opts out, and adds a snip while off, so the next enable is a full
+    /// re-enable that applies a staged plan. Returns the texts that enable must end holding.
+    private func optOutAfterSyncing(
+        _ persistence: SwiftDataSyncModePersistence,
+        server: FakeCloudServer,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> [String] {
+        try await add("kept", to: persistence.activeLibrary())
+        let coordinator = modeCoordinator(on: persistence, server: server)
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on, file: file, line: line)
+        let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(optedOut.state, .off, file: file, line: line)
+        try await add("added while off", to: persistence.activeLibrary())
+        return ["kept", "added while off"]
     }
 
     /// Runs `change` until `failure` strands its transition, then frees the disk. The failure
@@ -382,9 +517,9 @@ private func requestModeChange(
     }
 }
 
-/// Once armed, holds the first library read made while the source is frozen, which is the
-/// final snapshot read, until `resume()`.
-private actor FrozenSourceReadPause {
+/// Once armed, holds the first arrival at the held step until `resume()`. Later arrivals pass,
+/// so a second change never waits on it.
+private actor HeldStepPause {
     private(set) var hasPaused = false
     private var isArmed = false
     private var heldWorkIsDone = false
@@ -396,8 +531,8 @@ private actor FrozenSourceReadPause {
         isArmed = true
     }
 
-    func read(sourceFrozen: Bool) async {
-        guard isArmed, sourceFrozen, !hasPaused else { return }
+    func arrive(atHeldStep isHeldStep: Bool) async {
+        guard isArmed, isHeldStep, !hasPaused else { return }
         hasPaused = true
         pauseWaiters.forEach { $0.resume() }
         pauseWaiters = []

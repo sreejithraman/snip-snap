@@ -151,6 +151,7 @@ extension SwiftDataSyncModePersistence {
     }
     try commit(intended)
     try crashHook(.beforeCandidateMergeDurability)
+    try await writeHook(.beforeFullReenablePlanApply)
     do {
       _ = try await libraryForTransition(storeID: transition.candidateStoreID)
         .applyCloudFullReenablePlan(plan, currentRevision: plan.targetRevision)
@@ -244,6 +245,7 @@ extension SwiftDataSyncModePersistence {
       try resetFullReenableIntent(intent, reason: .storageFailure)
       throw SyncModePersistenceError.storageFailure
     }
+    try await writeHook(.beforeFullReenablePlanApply)
     do {
       _ = try await candidate.applyCloudFullReenablePlan(
         plan,

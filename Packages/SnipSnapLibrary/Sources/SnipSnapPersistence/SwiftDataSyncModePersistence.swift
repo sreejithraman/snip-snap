@@ -170,6 +170,8 @@ package enum SyncModeWritePoint: Equatable, Sendable {
   case beforeStoreRetirement
   /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
   case beforeAccountLocalCopyMerge
+  /// Before a full re-enable applies its staged plan; a test can pause here.
+  case beforeFullReenablePlanApply
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
