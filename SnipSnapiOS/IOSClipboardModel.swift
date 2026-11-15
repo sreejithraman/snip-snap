@@ -232,12 +232,6 @@ final class IOSClipboardModel {
         syncPhase = next
     }
 
-    func deleteSyncedHistory() async throws {
-        guard let cloud, let generation = try await generation() else { return }
-        try await cloud.deleteSyncedHistory(generation: generation)
-        await load()
-    }
-
     func resetAccountBinding() async {
         do {
             try await setAsideHistory(includingUnboundHistory: syncEnabled)
