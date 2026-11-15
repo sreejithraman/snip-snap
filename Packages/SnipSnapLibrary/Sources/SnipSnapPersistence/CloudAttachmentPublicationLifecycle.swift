@@ -21,8 +21,11 @@ struct CloudAttachmentOwedCleanup {
 enum CloudAttachmentLocalRemoval {
   /// The publication stays until CloudKit accepts the delete of its published metadata.
   case awaitMetadataDeletion
-  /// Nothing references the payload yet, so the publication row goes with its work.
-  case discard(owedCleanup: CloudAttachmentOwedCleanup?, queuedUpload: String?)
+  /// The payload never reached CloudKit, so the publication row goes with its queued upload.
+  case discardPendingPayload(queuedUpload: String?)
+  /// The metadata isn't accepted, so the publication row goes and the accepted payload is owed a
+  /// cleanup. Metadata published before a pending local edit still names that payload in CloudKit.
+  case discardAcceptedPayload(owedCleanup: CloudAttachmentOwedCleanup)
 }
 
 /// One attachment's publication in one sync namespace.
@@ -44,11 +47,6 @@ struct CloudAttachmentPublicationLifecycle {
     case removed
   }
 
-  private struct ReplacedPayload {
-    let identity: CloudTextStorageIdentity
-    let shadowData: Data?
-  }
-
   private var upload: Upload
   private var presence: Presence
   private(set) var payloadIdentity: CloudTextStorageIdentity
@@ -56,7 +54,7 @@ struct CloudAttachmentPublicationLifecycle {
   private var metadataRecord: CloudAttachmentAcceptedRecord
   /// The payload a published attachment replaced. It is owed a cleanup once the new metadata
   /// publishes.
-  private var replacedPayload: ReplacedPayload?
+  private(set) var replacedPayload: CloudAttachmentOwedCleanup?
   /// Raw, so failure codes from newer builds survive a write.
   private var failure: String?
   private(set) var revision: UInt64
@@ -66,7 +64,7 @@ struct CloudAttachmentPublicationLifecycle {
     presence: Presence,
     payloadIdentity: CloudTextStorageIdentity,
     metadataRecord: CloudAttachmentAcceptedRecord,
-    replacedPayload: ReplacedPayload?,
+    replacedPayload: CloudAttachmentOwedCleanup?,
     failure: String?,
     revision: UInt64
   ) {
@@ -140,10 +138,6 @@ struct CloudAttachmentPublicationLifecycle {
 
   var metadataShadowData: Data? { metadataRecord.shadowData }
 
-  var replacedPayloadIdentity: CloudTextStorageIdentity? { replacedPayload?.identity }
-
-  var replacedPayloadShadowData: Data? { replacedPayload?.shadowData }
-
   var lastFailure: CloudAttachmentFailure? {
     failure.flatMap(CloudAttachmentFailure.init(rawValue:))
   }
@@ -194,8 +188,8 @@ struct CloudAttachmentPublicationLifecycle {
   }
 
   /// Queues new local bytes under a new payload identity. Returns the cleanup owed by an
-  /// accepted payload that no published metadata references. A published payload instead waits
-  /// as the replaced payload until the new metadata publishes.
+  /// accepted payload whose metadata isn't accepted. A published payload instead waits as the
+  /// replaced payload until the new metadata publishes.
   mutating func replacePayload(
     with identity: CloudTextStorageIdentity,
     queuedUpload: String
@@ -204,13 +198,10 @@ struct CloudAttachmentPublicationLifecycle {
     switch upload {
     case .payloadPending:
       break
-    case .metadataPending(let payload):
-      owedCleanup = CloudAttachmentOwedCleanup(
-        identity: payloadIdentity,
-        shadowData: payload.shadowData
-      )
-    case .published(let payload):
-      replacedPayload = ReplacedPayload(identity: payloadIdentity, shadowData: payload.shadowData)
+    case .metadataPending:
+      owedCleanup = payloadCleanup
+    case .published:
+      replacedPayload = payloadCleanup
     }
     payloadIdentity = identity
     upload = .payloadPending(queuedUpload: queuedUpload)
@@ -233,16 +224,10 @@ struct CloudAttachmentPublicationLifecycle {
     switch upload {
     case .published:
       return .awaitMetadataDeletion
-    case .metadataPending(let payload):
-      return .discard(
-        owedCleanup: CloudAttachmentOwedCleanup(
-          identity: payloadIdentity,
-          shadowData: payload.shadowData
-        ),
-        queuedUpload: nil
-      )
+    case .metadataPending:
+      return .discardAcceptedPayload(owedCleanup: payloadCleanup)
     case .payloadPending(let queuedUpload):
-      return .discard(owedCleanup: nil, queuedUpload: queuedUpload)
+      return .discardPendingPayload(queuedUpload: queuedUpload)
     }
   }
 
@@ -285,9 +270,7 @@ struct CloudAttachmentPublicationLifecycle {
     }
     upload = .published(payload: payload)
     metadataRecord = record
-    let owedCleanup = replacedPayload.map {
-      CloudAttachmentOwedCleanup(identity: $0.identity, shadowData: $0.shadowData)
-    }
+    let owedCleanup = replacedPayload
     replacedPayload = nil
     failure = nil
     revision += 1
@@ -385,9 +368,7 @@ struct CloudAttachmentPublicationLifecycle {
 
   /// Returns whether a failure that only a manual retry clears was cleared.
   mutating func clearManuallyRetryableFailure() -> Bool {
-    guard let lastFailure, lastFailure.retriesManually, !lastFailure.retriesAutomatically else {
-      return false
-    }
+    guard let lastFailure, lastFailure.clearsOnManualRetryOnly else { return false }
     failure = nil
     revision += 1
     return true
@@ -399,8 +380,8 @@ struct CloudAttachmentPublicationLifecycle {
 
   // MARK: Stored form
 
-  /// Drops two stored values: a queued upload beside an accepted payload, which older builds
-  /// left behind, and a payload record beside a pending payload, which no build writes.
+  /// Drops values no build writes outside their phase, and a queued upload beside an accepted
+  /// payload, which older builds left behind.
   fileprivate init(decoding row: StoredCloudAttachmentPublication) {
     let payload = CloudAttachmentAcceptedRecord(
       shadowData: row.payloadShadowData,
@@ -414,12 +395,12 @@ struct CloudAttachmentPublicationLifecycle {
     } else {
       upload = .metadataPending(payload: payload)
     }
-    let replacedPayload: ReplacedPayload?
+    let replacedPayload: CloudAttachmentOwedCleanup?
     if let zoneName = row.priorPayloadZoneName,
       let ownerName = row.priorPayloadOwnerName,
       let recordName = row.priorPayloadRecordName
     {
-      replacedPayload = ReplacedPayload(
+      replacedPayload = CloudAttachmentOwedCleanup(
         identity: CloudTextStorageIdentity(
           zoneName: zoneName,
           ownerName: ownerName,
@@ -446,49 +427,31 @@ struct CloudAttachmentPublicationLifecycle {
 
   /// Assigns only the fields that changed, so an unchanged lifecycle leaves the row clean.
   fileprivate func encode(into row: StoredCloudAttachmentPublication) {
+    func write<Value: Equatable>(
+      _ field: ReferenceWritableKeyPath<StoredCloudAttachmentPublication, Value>,
+      _ value: Value
+    ) {
+      if row[keyPath: field] != value { row[keyPath: field] = value }
+    }
     let payload = acceptedPayload
-    if row.isLocallyPresent != isLocallyPresent { row.isLocallyPresent = isLocallyPresent }
-    if row.sourceRelativePath != localSourceRelativePath {
-      row.sourceRelativePath = localSourceRelativePath
-    }
-    if row.uploadRelativePath != queuedUploadRelativePath {
-      row.uploadRelativePath = queuedUploadRelativePath
-    }
-    if row.payloadZoneName != payloadIdentity.zoneName {
-      row.payloadZoneName = payloadIdentity.zoneName
-    }
-    if row.payloadOwnerName != payloadIdentity.ownerName {
-      row.payloadOwnerName = payloadIdentity.ownerName
-    }
-    if row.payloadRecordName != payloadIdentity.recordName {
-      row.payloadRecordName = payloadIdentity.recordName
-    }
-    if row.payloadAccepted != isPayloadAccepted { row.payloadAccepted = isPayloadAccepted }
-    if row.payloadShadowData != payload?.shadowData { row.payloadShadowData = payload?.shadowData }
-    if row.payloadSystemFields != payload?.systemFields {
-      row.payloadSystemFields = payload?.systemFields
-    }
-    if row.metadataAccepted != isMetadataAccepted { row.metadataAccepted = isMetadataAccepted }
-    if row.metadataShadowData != metadataRecord.shadowData {
-      row.metadataShadowData = metadataRecord.shadowData
-    }
-    if row.metadataSystemFields != metadataRecord.systemFields {
-      row.metadataSystemFields = metadataRecord.systemFields
-    }
-    if row.priorPayloadZoneName != replacedPayload?.identity.zoneName {
-      row.priorPayloadZoneName = replacedPayload?.identity.zoneName
-    }
-    if row.priorPayloadOwnerName != replacedPayload?.identity.ownerName {
-      row.priorPayloadOwnerName = replacedPayload?.identity.ownerName
-    }
-    if row.priorPayloadRecordName != replacedPayload?.identity.recordName {
-      row.priorPayloadRecordName = replacedPayload?.identity.recordName
-    }
-    if row.priorPayloadShadowData != replacedPayload?.shadowData {
-      row.priorPayloadShadowData = replacedPayload?.shadowData
-    }
-    if row.lastFailure != failure { row.lastFailure = failure }
-    if row.revision != revision { row.revision = revision }
+    write(\.isLocallyPresent, isLocallyPresent)
+    write(\.sourceRelativePath, localSourceRelativePath)
+    write(\.uploadRelativePath, queuedUploadRelativePath)
+    write(\.payloadZoneName, payloadIdentity.zoneName)
+    write(\.payloadOwnerName, payloadIdentity.ownerName)
+    write(\.payloadRecordName, payloadIdentity.recordName)
+    write(\.payloadAccepted, isPayloadAccepted)
+    write(\.payloadShadowData, payload?.shadowData)
+    write(\.payloadSystemFields, payload?.systemFields)
+    write(\.metadataAccepted, isMetadataAccepted)
+    write(\.metadataShadowData, metadataRecord.shadowData)
+    write(\.metadataSystemFields, metadataRecord.systemFields)
+    write(\.priorPayloadZoneName, replacedPayload?.identity.zoneName)
+    write(\.priorPayloadOwnerName, replacedPayload?.identity.ownerName)
+    write(\.priorPayloadRecordName, replacedPayload?.identity.recordName)
+    write(\.priorPayloadShadowData, replacedPayload?.shadowData)
+    write(\.lastFailure, failure)
+    write(\.revision, revision)
   }
 }
 
@@ -535,7 +498,8 @@ struct CloudAttachmentCleanupQueue {
   /// shadow and its first blocker.
   mutating func queue(_ cleanup: CloudAttachmentOwedCleanup, blockedBy attachmentID: UUID? = nil) {
     if let current = rows[cleanup.identity] {
-      current.merge(shadowData: cleanup.shadowData, blockedByAttachmentID: attachmentID)
+      if current.shadowData == nil { current.shadowData = cleanup.shadowData }
+      if current.blockedByAttachmentID == nil { current.blockedByAttachmentID = attachmentID }
       return
     }
     let row = StoredCloudAttachmentCleanup(
@@ -568,7 +532,9 @@ struct CloudAttachmentCleanupQueue {
     guard let row = rows[identity], row.revision == expectedRevision else {
       throw CloudAttachmentStorageError.staleTransition
     }
-    row.recordConflict(shadowData: shadowData)
+    row.shadowData = shadowData
+    row.lastFailure = nil
+    row.revision += 1
   }
 
   func recordFailure(
@@ -579,14 +545,17 @@ struct CloudAttachmentCleanupQueue {
     guard let row = rows[identity], row.revision == expectedRevision else {
       throw CloudAttachmentStorageError.staleTransition
     }
-    row.recordFailure(failure)
+    row.lastFailure = failure.rawValue
+    row.revision += 1
   }
 
   /// A replacement that gets a new identity keeps blocking every cleanup that waited for it,
-  /// whether stored by an earlier save or queued earlier in this one.
+  /// whether stored by an earlier save or queued earlier in this one. The revision stays, as a
+  /// merge keeps it when it sets a blocker, so a delete planned from this revision still applies.
   func remapBlockers(from attachmentID: UUID, to replacementID: UUID) {
-    for (identity, row) in rows where !acceptedIdentities.contains(identity) {
-      row.remapBlocker(from: attachmentID, to: replacementID)
+    for (identity, row) in rows
+    where !acceptedIdentities.contains(identity) && row.blockedByAttachmentID == attachmentID {
+      row.blockedByAttachmentID = replacementID
     }
   }
 }
@@ -604,33 +573,10 @@ extension StoredCloudAttachmentCleanup {
   /// Returns whether a failure that only a manual retry clears was cleared.
   func clearManuallyRetryableFailure() -> Bool {
     guard let failure = lastFailure.flatMap(CloudAttachmentFailure.init(rawValue:)),
-      failure.retriesManually,
-      !failure.retriesAutomatically
+      failure.clearsOnManualRetryOnly
     else { return false }
     lastFailure = nil
     revision += 1
     return true
-  }
-
-  fileprivate func merge(shadowData: Data?, blockedByAttachmentID: UUID?) {
-    if self.shadowData == nil { self.shadowData = shadowData }
-    if self.blockedByAttachmentID == nil { self.blockedByAttachmentID = blockedByAttachmentID }
-  }
-
-  fileprivate func recordConflict(shadowData: Data) {
-    self.shadowData = shadowData
-    lastFailure = nil
-    revision += 1
-  }
-
-  fileprivate func recordFailure(_ failure: CloudAttachmentFailure) {
-    lastFailure = failure.rawValue
-    revision += 1
-  }
-
-  /// Keeps the revision, as a merge does when it sets a blocker, so a delete planned from this
-  /// revision still applies.
-  fileprivate func remapBlocker(from attachmentID: UUID, to replacementID: UUID) {
-    if blockedByAttachmentID == attachmentID { blockedByAttachmentID = replacementID }
   }
 }

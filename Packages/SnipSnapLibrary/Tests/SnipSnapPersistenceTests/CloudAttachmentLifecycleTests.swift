@@ -411,6 +411,41 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertNil(republished.priorPayloadShadowData)
   }
 
+  // Before its first metadata publish, no metadata names an accepted payload, so new bytes queue
+  // the old payload's cleanup at once instead of keeping it as the replaced payload.
+  func testChangedBytesBeforeTheMetadataPublishesQueueTheOldPayloadCleanupAtOnce() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let oldPayload = pending.metadata.payloadIdentity
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("old-payload-shadow".utf8),
+      systemFields: Data("old-payload-fields".utf8)
+    )])
+    let acceptedStorage = try await attachmentStorage(fixture.library)
+    let accepted = try XCTUnwrap(acceptedStorage.publications.first)
+    XCTAssertTrue(accepted.payloadAccepted)
+    XCTAssertFalse(accepted.metadataAccepted)
+    let durableFile = try XCTUnwrap(accepted.localSourceURL)
+    try Data("bytes changed before the metadata published".utf8).write(to: durableFile)
+
+    try await reconcile(fixture.library)
+
+    let changedStorage = try await attachmentStorage(fixture.library)
+    let changed = try XCTUnwrap(changedStorage.publications.first)
+    XCTAssertNotEqual(changed.metadata.payloadIdentity, oldPayload)
+    XCTAssertFalse(changed.payloadAccepted)
+    XCTAssertNotNil(changed.sourceURL, "The new bytes must queue an upload.")
+    XCTAssertNil(changed.priorPayloadIdentity, "Only published metadata defers the cleanup.")
+    XCTAssertEqual(changedStorage.cleanups.map(\.identity), [oldPayload])
+    let cleanup = try XCTUnwrap(changedStorage.cleanups.first)
+    XCTAssertEqual(cleanup.shadowData, Data("old-payload-shadow".utf8))
+    XCTAssertNil(cleanup.blockedByAttachmentID)
+    XCTAssertNil(cleanup.lastFailure)
+  }
+
   // MARK: Cache install
 
   func testCacheInstallSaveFailureDiscardsTheStagedFileAndLeavesNoCacheEntry() async throws {
@@ -811,6 +846,75 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     do {
       try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
       XCTFail("iCloud data reset recovery must not replace bytes another attachment references.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let afterRecovery = try await attachmentStorage(library)
+    XCTAssertEqual(afterRecovery, before)
+  }
+
+  // Guard for the DC1 fix: on a case-insensitive volume, a stored path that differs only in
+  // letter case names the same file. The check compares strings, so it refuses on any volume.
+  func testDurableCopyRefusesADestinationReferencedInAnotherLetterCase() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("downloaded bytes that must not replace a differently cased reference".utf8)
+    let metadata = try await makeDownloadedAttachment(
+      in: library,
+      fileName: "shared.txt",
+      bytes: bytes
+    )
+    let destinationPath = "\(metadata.attachmentID.uuidString)/\(metadata.fileName)"
+    let referencePath = destinationPath.uppercased()
+    XCTAssertNotEqual(referencePath, destinationPath)
+    let referencedBytes = Data("bytes another attachment owns".utf8)
+    let referencingID = UUID()
+    _ = try await library.perform(
+      .restore(snips: [Snip(
+        content: "references the durable destination in another letter case",
+        origin: .quickEntry,
+        attachments: [SnipAttachment(
+          id: referencingID,
+          fileName: metadata.fileName,
+          relativePath: referencePath,
+          contentType: "text/plain",
+          byteCount: Int64(referencedBytes.count)
+        )]
+      )]),
+      sortedBy: .manual
+    )
+    let referencing = try await storedAttachment(library, referencingID)
+    XCTAssertEqual(referencing.attachment.relativePath, referencePath)
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    try FileManager.default.createDirectory(
+      at: durableURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try referencedBytes.write(to: durableURL)
+    let before = try await attachmentStorage(library)
+
+    do {
+      _ = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace,
+        attachmentID: metadata.attachmentID
+      )
+      XCTFail("The durable copy must not replace a differently cased reference.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let downloaded = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
+
+    do {
+      try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+      XCTFail("iCloud data reset recovery must not replace a differently cased reference.")
     } catch {
       XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
     }

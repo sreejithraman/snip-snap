@@ -227,8 +227,8 @@ extension SwiftDataSnipLibrary {
     )
     if FileManager.default.fileExists(atPath: destination.path) {
       let values = try destination.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-      if values.isRegularFile == true,
-        Int64(values.fileSize ?? -1) == expectedByteCount,
+      guard values.isRegularFile == true else { throw SnipLibraryError.attachmentCopyFailed }
+      if Int64(values.fileSize ?? -1) == expectedByteCount,
         try AttachmentFileIO.digest(at: destination) == expectedSHA256
       {
         return .reused(relativePath: relativePath)
@@ -236,11 +236,9 @@ extension SwiftDataSnipLibrary {
       // A copy killed midway leaves a partial file. A file that a stored attachment references
       // holds that attachment's bytes, so only an unreferenced one is replaced. A case-insensitive
       // volume resolves paths that differ only in case to the same file.
-      guard values.isRegularFile == true,
-        !storedAttachments.contains(where: {
-          $0.relativePath.compare(relativePath, options: .caseInsensitive) == .orderedSame
-        })
-      else { throw SnipLibraryError.attachmentCopyFailed }
+      guard !storedAttachments.contains(where: {
+        $0.relativePath.compare(relativePath, options: .caseInsensitive) == .orderedSame
+      }) else { throw SnipLibraryError.attachmentCopyFailed }
       try FileManager.default.removeItem(at: destination)
     }
     let directory = destination.deletingLastPathComponent()

@@ -193,8 +193,7 @@ extension SwiftDataSnipLibrary {
         switch row.lifecycle.removeLocally() {
         case .awaitMetadataDeletion:
           break
-        case .discard(let owedCleanup, let queuedUpload):
-          if let owedCleanup { cleanupQueue.queue(owedCleanup) }
+        case .discardPendingPayload(let queuedUpload):
           if let upload = try queuedUpload.map({
             try Self.validatedChild(
               relativePath: $0,
@@ -203,6 +202,9 @@ extension SwiftDataSnipLibrary {
           }) {
             uploadFilesToRemove.append(upload)
           }
+          context.delete(row)
+        case .discardAcceptedPayload(let owedCleanup):
+          cleanupQueue.queue(owedCleanup)
           context.delete(row)
         }
       }
@@ -255,8 +257,8 @@ extension SwiftDataSnipLibrary {
           payloadShadowData: lifecycle.payloadShadowData,
           metadataAccepted: lifecycle.isMetadataAccepted,
           metadataShadowData: lifecycle.metadataShadowData,
-          priorPayloadIdentity: lifecycle.replacedPayloadIdentity,
-          priorPayloadShadowData: lifecycle.replacedPayloadShadowData,
+          priorPayloadIdentity: lifecycle.replacedPayload?.identity,
+          priorPayloadShadowData: lifecycle.replacedPayload?.shadowData,
           lastFailure: lifecycle.lastFailure,
           revision: lifecycle.revision
         )
@@ -380,11 +382,9 @@ extension SwiftDataSnipLibrary {
     afterSave: @Sendable () -> Void = {}
   ) throws -> URL {
     let namespaceKey = namespaceKey.rawValue
-    var step = CloudAttachmentCacheInstallStep.validating
     defer {
-      finishCloudAttachmentCacheInstall(
-        step,
-        stagedFile: download.fileURL,
+      cloudAttachmentFiles.discardStagedFileIfSafe(
+        download.fileURL,
         namespaceKey: namespaceKey
       )
     }
@@ -393,7 +393,8 @@ extension SwiftDataSnipLibrary {
       download.field == expectedField
     else { throw CloudAttachmentStorageError.invalidMetadata }
     let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
+    var step = CloudAttachmentCacheInstallStep.validating
+    defer { finishCloudAttachmentCacheInstall(step, lock: lock) }
     let context = Self.makeContext(container: container)
     var filesToRemoveAfterCommit: [URL] = []
     guard let publication = try Self.cloudAttachmentPublications(
@@ -428,7 +429,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       relativePath: relativePath
     )
-    step = .moved(destination: destination, lock: lock)
+    step = .moved(destination: destination)
     let key = StoredCloudAttachmentCacheEntry.key(
       namespaceKey: namespaceKey,
       attachmentID: attachmentID
@@ -487,33 +488,27 @@ extension SwiftDataSnipLibrary {
     try afterMutationBeforeSave()
     try lock.check()
     try context.save()
-    step = .committed(
-      destination: destination,
-      lock: lock,
-      supersededFiles: filesToRemoveAfterCommit
-    )
+    step = .committed(destination: destination, supersededFiles: filesToRemoveAfterCommit)
     afterSave()
     return destination
   }
 
   private func finishCloudAttachmentCacheInstall(
     _ step: CloudAttachmentCacheInstallStep,
-    stagedFile: URL,
-    namespaceKey: String
+    lock: SnipStoreFileLock
   ) {
     switch step {
     case .validating:
       break
-    case .moved(let destination, _):
+    case .moved(let destination):
       CloudAttachmentCacheFiles.remove(destination)
-    case .committed(let destination, let lock, let supersededFiles):
+    case .committed(let destination, let supersededFiles):
       for url in supersededFiles where url != destination {
         // The transaction committed; leave remaining cleanup for the next sweep.
         if (try? lock.check()) == nil { break }
         CloudAttachmentCacheFiles.remove(url)
       }
     }
-    cloudAttachmentFiles.discardStagedFileIfSafe(stagedFile, namespaceKey: namespaceKey)
   }
 
   package func clearCloudAttachmentCache(namespaceKey: CloudSyncNamespaceKey) throws {
@@ -766,11 +761,10 @@ extension StoredCloudAttachmentPublication {
   }
 }
 
-/// Where a cache install stands when it exits. Each step past validation holds the store lock,
-/// so its cleanup runs under that lock.
+/// Where a cache install stands when it exits.
 private enum CloudAttachmentCacheInstallStep {
   case validating
   /// The file sits at its cache destination, but no saved row names it yet.
-  case moved(destination: URL, lock: SnipStoreFileLock)
-  case committed(destination: URL, lock: SnipStoreFileLock, supersededFiles: [URL])
+  case moved(destination: URL)
+  case committed(destination: URL, supersededFiles: [URL])
 }
