@@ -8,12 +8,6 @@ private enum FileImportTarget {
     case edit(UUID)
 }
 
-struct PendingEditAttachmentImport: Identifiable {
-    let id = UUID()
-    let snipID: UUID
-    let urls: [URL]
-}
-
 @MainActor
 enum StandaloneFileImporter {
     static func makePanel() -> NSOpenPanel {
@@ -49,7 +43,6 @@ struct ContentView: View {
     @State private var newListMovingIDs: Set<UUID> = []
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
-    @State private var pendingEditAttachmentImport: PendingEditAttachmentImport?
     @State private var showingClearClipboard = false
     @State private var showingRecoveryReview = false
     @State private var inlineEntryHeights: [UUID: CGFloat] = [:]
@@ -127,8 +120,12 @@ struct ContentView: View {
             if isPresented { presentStandaloneFileImporter() }
         }
         .onReceive(fileDropController.fileDrops) { urls in
-            guard !panelDialogs.isPresented, model.editingID == nil else { return }
-            _ = attachDroppedFiles(urls)
+            guard !panelDialogs.isPresented else { return }
+            if let session = model.inlineEditSessionID {
+                model.addInlineEditAttachments(urls, to: session)
+            } else {
+                _ = attachDroppedFiles(urls)
+            }
         }
     }
 
@@ -195,9 +192,7 @@ struct ContentView: View {
             coordinator.openSettingsAction = { openSettings() }
             cacheComposerDraft(for: model.activeListID)
             if model.hasActiveQuery { model.enterSearch() }
-            focusedTarget = model.isSearchExpanded
-                ? .search
-                : (model.isShowingClipboard ? .clipboard : .list)
+            focusedTarget = model.restingFocusTarget
             commandNumberPicker.startMonitoring(onPick: pickCommandNumber)
             commandNumberPicker.setEnabled(hasCommandNumberFocus)
         }
@@ -411,17 +406,12 @@ struct ContentView: View {
 
     private func handleFileImport(_ urls: [URL], target: FileImportTarget) {
         switch target {
-        case .edit(let snipID) where snipID == model.editingID:
-            pendingEditAttachmentImport = PendingEditAttachmentImport(
-                snipID: snipID,
-                urls: urls
-            )
+        case .edit(let session):
+            model.addInlineEditAttachments(urls, to: session)
         case .composer(let listID, let scope) where scope == model.composerDraftScope:
             model.addDraftAttachments(urls, to: listID)
             cacheComposerDraft(for: listID)
         case .composer:
-            break
-        case .edit:
             break
         }
     }
@@ -542,7 +532,7 @@ struct ContentView: View {
             await Task.yield()
             guard !model.isSearchExpanded, model.editingID == nil else { return }
             guard focus != .inlineEntry || !model.isShowingClipboard else { return }
-            focusedTarget = focus ?? (model.isShowingClipboard ? .clipboard : .list)
+            focusedTarget = focus ?? model.restingFocusTarget
         }
     }
 
@@ -604,12 +594,12 @@ struct ContentView: View {
         } else if case .list(let listID) = page {
             if model.filteredSnips(in: listID).isEmpty {
                 ZStack {
-                    savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+                    savedSnipList(for: listID, isInteractive: isInteractive)
                     emptyState
                         .allowsHitTesting(false)
                 }
             } else {
-                savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+                savedSnipList(for: listID, isInteractive: isInteractive)
             }
         }
     }
@@ -624,37 +614,32 @@ struct ContentView: View {
         } else {
             switch page {
             case .list(let listID):
-                savedSnipList(for: listID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+                savedSnipList(for: listID, isInteractive: isInteractive)
             case .clipboard:
-                savedSnipList(for: model.activeListID, isInteractive: isInteractive, ownsSharedEvents: page == selectedPage)
+                savedSnipList(for: model.activeListID, isInteractive: isInteractive)
             }
         }
     }
 
     private func savedSnipList(
         for listID: UUID,
-        isInteractive: Bool,
-        ownsSharedEvents: Bool
+        isInteractive: Bool
     ) -> some View {
         SnipListView(
             model: model,
             displayedListID: listID,
             isInteractive: isInteractive,
-            ownsSharedEvents: ownsSharedEvents,
             dragSessionController: dragSessionController,
-            fileDropController: fileDropController,
-            panelDialogs: panelDialogs,
             commandNumberPicker: commandNumberPicker,
             focusedTarget: $focusedTarget,
             moveSelectionToNewList: { ids in
                 newListMovingIDs = ids
                 showingNewList = true
             },
-            requestFileImport: { snipID in
-                fileImportTarget = .edit(snipID)
+            requestFileImport: { sessionID in
+                fileImportTarget = .edit(sessionID)
                 showingFileImporter = true
             },
-            pendingEditAttachmentImport: $pendingEditAttachmentImport,
             captureScreenAreaForEdit: captureScreenAreaForEdit,
             bottomContentInset: model.isSearchExpanded ? 0 : inlineEntryHeight(for: listID),
             clipboardEntries: model.clipboardSearchMatches,

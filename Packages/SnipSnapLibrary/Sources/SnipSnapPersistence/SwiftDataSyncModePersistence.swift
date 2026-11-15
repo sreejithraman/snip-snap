@@ -126,7 +126,7 @@ package actor SyncModeActiveMutationLease {
       try await persistence.finishActiveMutation(reservation)
       return value
     } catch {
-      // A failed clear leaves a durable reservation that reopen can clear conservatively.
+      // A failed clear leaves the store release-failed; this retry or the next admission clears it.
       try? await persistence.finishActiveMutation(reservation)
       throw error
     }
@@ -239,20 +239,7 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
-  enum WriteAdmission: Equatable {
-    case exclusive
-    case modeChange
-    case cloud(SyncModeActiveMutationLease.Purpose)
-  }
-  var writeAdmission: WriteAdmission?
-  var writeAdmissionInProgress: Bool { writeAdmission != nil }
-  struct ActiveMutationWaiter {
-    let id: UUID
-    let storeID: UUID
-    let admission: WriteAdmission
-    let continuation: CheckedContinuation<SyncModeWriteReservation, any Error>
-  }
-  var activeMutationWaiters: [ActiveMutationWaiter] = []
+  var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
@@ -356,8 +343,7 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.namespaceMismatch
     }
     if let isolation = manifest.accountIsolation { return isolation }
-    guard manifest.writeReservation == nil, !writeAdmissionInProgress,
-      let active = store(id: manifest.activeStoreID),
+    guard let active = store(id: manifest.activeStoreID),
       active.kind == .iCloudSync,
       let namespace = active.namespace
     else { throw SyncModePersistenceError.transitionInProgress }
@@ -368,8 +354,8 @@ package actor SwiftDataSyncModePersistence {
       else { throw SyncModePersistenceError.transitionInProgress }
     }
 
-    writeAdmission = .modeChange
-    defer { releaseWriteAdmission() }
+    try beginStoreReplacement()
+    defer { finishStoreReplacement() }
     let replacement = Self.newStore(
       kind: .localOnly,
       namespace: nil,
@@ -544,9 +530,7 @@ package actor SwiftDataSyncModePersistence {
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) throws -> SyncModeTransition {
-    guard manifest.writeReservation == nil, !writeAdmissionInProgress,
-      manifest.accountIsolation == nil
-    else {
+    guard writeAdmissionIsIdle(), manifest.accountIsolation == nil else {
       throw SyncModePersistenceError.transitionInProgress
     }
     if let transition = manifest.transition {
@@ -725,8 +709,7 @@ package actor SwiftDataSyncModePersistence {
     namespace: ICloudSyncNamespaceBinding?
   ) async throws {
     guard manifest.transition == nil,
-      manifest.writeReservation == nil,
-      !writeAdmissionInProgress,
+      writeAdmissionIsIdle(),
       let current = store(id: manifest.activeStoreID)
     else { throw SyncModePersistenceError.transitionInProgress }
     if current.namespace == namespace,
@@ -734,8 +717,8 @@ package actor SwiftDataSyncModePersistence {
     {
       return
     }
-    writeAdmission = .modeChange
-    defer { releaseWriteAdmission() }
+    try beginStoreReplacement()
+    defer { finishStoreReplacement() }
     let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
     var candidate = Self.newStore(
       kind: kind,
@@ -804,16 +787,14 @@ package actor SwiftDataSyncModePersistence {
       else { return nil }
     }
     guard manifest.transition == nil,
-      manifest.writeReservation == nil,
-      !writeAdmissionInProgress,
       let current = store(id: manifest.activeStoreID),
       current.kind == .iCloudSync
     else {
       if store(id: manifest.activeStoreID)?.kind == .localOnly { return nil }
       throw SyncModePersistenceError.transitionInProgress
     }
-    writeAdmission = .modeChange
-    defer { releaseWriteAdmission() }
+    try beginStoreReplacement()
+    defer { finishStoreReplacement() }
     let original = manifest
     var candidate = Self.newStore(
       kind: .localOnly,

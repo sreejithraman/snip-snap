@@ -275,13 +275,15 @@ final class AppModelCLITests: StoreBackedTestCase {
             sortedBy: .chronological
         )
         let snip = try XCTUnwrap(added.snapshot.snips.first)
-        model.editingID = snip.id
+        await model.reload()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
         do {
             _ = try await model.handleCLIRequest(SnipCLIRequest(action: .deleteSnip(
                 id: snip.id, expectedRevision: SnipCLIItemRevision.token(snip: snip))))
             XCTFail("CLI deletion should preserve the active editor")
         } catch SnipCLIRequestError.editingInProgress {}
-        model.editingID = nil
+        model.cancelEditing()
         let changed = try await library.perform(
             .update(id: snip.id, content: "Newer", attachmentURLs: nil,
                     expectedUpdatedAt: snip.updatedAt, now: Date().addingTimeInterval(1)),
