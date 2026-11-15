@@ -19,7 +19,7 @@ enum AppDiagnosticLine {
         "error", "bytes", "retry_after", "next_attempt", "scope", "environment", "phase",
         "reason", "pending_uploads", "pending_downloads", "pending_events", "blocked_records",
         "write_reason",
-      ]
+      ] + AppDiagnosticTermination.fieldKeys
     case "attachment_download":
       requiredKeys = ["stage", "outcome"]
       optionalKeys = ["error", "bytes"]
@@ -71,6 +71,13 @@ enum AppDiagnosticLine {
       guard values["operation"] == "library.write_admission",
         AppDiagnosticWriteReason(rawValue: reason) != nil
       else { return nil }
+    }
+    for key in AppDiagnosticTermination.fieldKeys {
+      if let value = values[key] {
+        guard values["operation"] == "app.termination",
+          AppDiagnosticTermination.isValid(key: key, value: value)
+        else { return nil }
+      }
     }
     guard let outcome = values["outcome"] else { return nil }
     if fields[1] == "attachment_download" {

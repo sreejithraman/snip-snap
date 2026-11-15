@@ -143,6 +143,55 @@ final class CloudPendingSnapshotTests: XCTestCase {
     XCTAssertTrue(queue.current.zonesToSave.isEmpty)
   }
 
+  func testSuppliedRecordsBelongToOneSendCycle() {
+    let zone = CloudZoneID(name: "data", ownerName: "owner")
+    let id = CloudRecordID(zone: zone, name: "record")
+    let desired = CloudOutboundBatch(operations: [.delete(id, base: nil)])
+    let suppliesOutsideTheNextCycle: [(String, (inout CloudRecordOutboundQueue) -> Void)] = [
+      ("with no open cycle", { queue in
+        queue.recordSupplied([id])
+      }),
+      ("in a finished cycle", { queue in
+        queue.beginCycle()
+        let sentID = UUID()
+        _ = queue.finishCycle(sentID)
+        queue.recordSupplied([id])
+        queue.confirm(CloudSentBatch(id: sentID, items: [], engineState: nil))
+      }),
+      ("in a replaced cycle", { queue in
+        queue.beginCycle()
+        queue.recordSupplied([id])
+      }),
+    ]
+    for (timing, supply) in suppliesOutsideTheNextCycle {
+      var queue = CloudRecordOutboundQueue()
+      _ = queue.schedule(desired)
+      supply(&queue)
+      queue.beginCycle()
+      _ = queue.schedule(CloudOutboundBatch(operations: []))
+      XCTAssertEqual(queue.cycle?.operations(pendingIDs: [id]), [], "Supplied \(timing)")
+      XCTAssertEqual(queue.pendingOperationCount, 0, "Supplied \(timing)")
+    }
+  }
+
+  func testScheduledSnapshotKeepsEachRecordsFirstPositionAndLastOperation() {
+    let zone = CloudZoneID(name: "data", ownerName: "owner")
+    let x = CloudRecordID(zone: zone, name: "x")
+    let y = CloudRecordID(zone: zone, name: "y")
+    let snipID = UUID()
+    let original = CloudRecordDraft.text(id: x, snipID: snipID, text: "original")
+    let edited = CloudRecordDraft.text(id: x, snipID: snipID, text: "edited")
+    let expected = CloudOutboundBatch(operations: [.save(edited), .delete(y, base: nil)], zonesToSave: [zone])
+    var queue = CloudRecordOutboundQueue()
+    XCTAssertEqual(queue.schedule(CloudOutboundBatch(
+      operations: [.save(original), .delete(y, base: nil), .delete(x, base: nil), .save(edited)],
+      zonesToSave: [zone])), expected)
+    XCTAssertEqual(queue.current, expected)
+    queue.beginCycle()
+    XCTAssertEqual(queue.cycle?.outbound, expected)
+    XCTAssertEqual(queue.pendingOperationCount, 2)
+  }
+
   private struct Fixture {
     let root: URL
     let zone: CloudZoneID

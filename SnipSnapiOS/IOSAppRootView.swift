@@ -508,12 +508,15 @@ struct IOSAppRootView: View {
                 HStack(spacing: 0) {
                     LibraryRailView(model: model, sheet: $sheet, deleteList: deleteList)
                         .ignoresSafeArea(.keyboard)
+                        // Its resize handle straddles the card's leading edge.
+                        .zIndex(1)
                     regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
                         .librarySearchable(model: model)
                         .sideButtonsWhereVerticalBar()
                         .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
                         .mask { railCardShape.ignoresSafeArea() }
                 }
+                .librarySidebarContainer()
                 .background(Color(.secondarySystemBackground).ignoresSafeArea())
             }
         }
