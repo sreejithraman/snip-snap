@@ -260,8 +260,9 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
     commands == expected_commands
   upload = job.fetch('steps').find { |step| step.fetch('uses', '').start_with?('actions/upload-artifact@') }
   abort "#{group} must preserve failed and interrupted output" unless upload && upload['if'] == 'failure() || cancelled()'
-  abort "#{group} must upload only its task-owned output" unless
-    upload.fetch('with').fetch('path') == "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log"
+  abort "#{group} must upload only its task-owned log and failure evidence" unless
+    upload.fetch('with').fetch('path') ==
+      "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log\nartifacts/test-failures/#{group}.*\n"
   abort "#{group} must bound artifact retention" unless upload.fetch('with')['retention-days'] == 7
   Dir.mktmpdir('snipsnap-ci-output') do |root|
     Dir.mkdir(File.join(root, 'scripts'))
