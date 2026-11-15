@@ -105,7 +105,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
   func testSuccessfulSyncFinishesARemovalWhoseCompletionReportWasLost() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
-    model.recordRemovalPending(true)
+    model.recordRemovalPending()
 
     _ = model.recordSyncStarted()
     model.recordSyncFailure(.iCloudUnavailable)
@@ -136,17 +136,81 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
   func testSyncStartedDuringOneRemovalCannotFinishALaterOne() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
-    model.recordRemovalPending(true)
+    model.recordRemovalPending()
     let earlierStart = model.recordSyncStarted()
 
     model.recordSyncStopped(.iCloudAccountChanged)
     model.recordEnableCompleted()
     XCTAssertEqual(model.mode, .iCloudSync)
     XCTAssertEqual(model.state, .ready)
-    model.recordRemovalPending(true)
+    model.recordRemovalPending()
     model.recordSyncCompleted(earlierStart)
 
     XCTAssertEqual(model.state, .removalPending)
+  }
+
+  @MainActor
+  func testRemovalReportFromASyncStartedBeforeADeleteCannotFinishIt() async {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: { .removalPending })
+    model.recordSyncFailure(.iCloudUnavailable)
+    let olderStart = model.recordSyncStarted()
+
+    await model.deleteSyncedContent()
+    XCTAssertEqual(model.state, .removalPending)
+    model.recordRemovalCompleted(olderStart)
+    XCTAssertEqual(model.state, .removalPending)
+
+    let laterStart = model.recordSyncStarted()
+    model.recordRemovalCompleted(laterStart)
+    XCTAssertEqual(model.state, .deleted)
+  }
+
+  @MainActor
+  func testRemovalReportDuringADeleteLeavesTheOutcomeToTheDelete() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: {
+        await gate.wait()
+        return .removalPending
+      }
+    )
+
+    let delete = Task { @MainActor in await model.deleteSyncedContent() }
+    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
+      return XCTFail("The delete never reached its action")
+    }
+    let start = model.recordSyncStarted()
+    model.recordRemovalCompleted(start)
+    XCTAssertEqual(model.state, .deleting)
+
+    gate.open()
+    await delete.value
+    XCTAssertEqual(model.state, .removalPending)
+  }
+
+  @MainActor
+  func testRemovalReportShowsDeletedWhenSettingsShowedNoRemoval() {
+    let syncing = SyncedContentSettingsModel(mode: .iCloudSync)
+    let syncingStart = syncing.recordSyncStarted()
+    XCTAssertEqual(syncing.state, .syncing)
+    syncing.recordRemovalCompleted(syncingStart)
+    XCTAssertEqual(syncing.state, .deleted)
+
+    let ready = SyncedContentSettingsModel(mode: .iCloudSync)
+    let readyStart = ready.recordSyncStarted()
+    ready.recordOutstandingSyncRecovered()
+    XCTAssertEqual(ready.state, .ready)
+    ready.recordRemovalCompleted(readyStart)
+    XCTAssertEqual(ready.state, .deleted)
+
+    let failed = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .failed(.iCloudUnavailable)
+    )
+    let failedStart = failed.recordSyncStarted()
+    failed.recordRemovalCompleted(failedStart)
+    XCTAssertEqual(failed.state, .deleted)
   }
 
   @MainActor
@@ -319,7 +383,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
 
-    model.recordRemovalPending(true)
+    model.recordRemovalPending()
     XCTAssertEqual(model.state, .removalPending)
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .removalPending)
@@ -651,6 +715,16 @@ final class SyncedContentActionGate {
 
   func waitUntilSuspended() async {
     while continuation == nil { await Task.yield() }
+  }
+
+  /// Returns false if the action doesn't reach `wait()` within `limit`.
+  func waitUntilSuspended(within limit: Duration) async -> Bool {
+    let deadline = ContinuousClock.now + limit
+    while continuation == nil {
+      guard ContinuousClock.now < deadline else { return false }
+      await Task.yield()
+    }
+    return true
   }
 
   func open() {

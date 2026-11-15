@@ -343,9 +343,9 @@ final class IOSAppSession {
                 let active = try await session.iosActiveLibrary()
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 if case .oldSyncedContentRemovalPending = result {
-                    settings.recordRemovalPending(true)
+                    settings.recordRemovalPending()
                 } else if case .oldSyncedContentRemovalCompleted = result {
-                    settings.recordRemovalPending(false)
+                    settings.recordRemovalCompleted(syncStart)
                 }
             case .libraryReplacedWithSyncIssue(let issue):
                 let active = try await session.iosActiveLibrary()

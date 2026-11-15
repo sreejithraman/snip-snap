@@ -261,7 +261,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
 
     func testSyncWithoutAPendingRemovalReportShowsTheDeletionFinished() async {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        settings.recordRemovalPending(true)
+        settings.recordRemovalPending()
         let session = IOSAppSession(
             library: ModelTestLibrary(),
             syncedContentSettings: settings,

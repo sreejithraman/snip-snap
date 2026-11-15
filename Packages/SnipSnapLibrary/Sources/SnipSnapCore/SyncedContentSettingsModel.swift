@@ -182,8 +182,8 @@ public enum SyncedContentDeleteOutcome: Equatable, Sendable {
   case removalPending
 }
 
-/// What Settings showed when a sync request started. A finished request passes it to
-/// `SyncedContentSettingsModel.recordSyncCompleted(_:)`.
+/// What Settings showed when a sync request started. A request can finish only a removal
+/// that was already pending then. A removal that began later may still be running.
 public struct SyncedContentSyncStart: Sendable {
   fileprivate let pendingRemoval: Int?
 }
@@ -416,12 +416,23 @@ public final class SyncedContentSettingsModel {
     }
   }
 
-  public func recordRemovalPending(_ pending: Bool) {
+  public func recordRemovalPending() {
+    guard mode == .iCloudSync, state != .removalPending else { return }
+    enterRemovalPending()
+  }
+
+  /// Records that a sync request reported Delete Synced Content's removal finished. It
+  /// finishes the removal `start` saw, or one Settings didn't know about. A running delete
+  /// reports its own outcome.
+  public func recordRemovalCompleted(_ start: SyncedContentSyncStart) {
     guard mode == .iCloudSync else { return }
-    if !pending {
+    switch state {
+    case .deleting:
+      break
+    case .removalPending where start.pendingRemoval != removalID:
+      break
+    default:
       status.state = .deleted
-    } else if state != .removalPending {
-      enterRemovalPending()
     }
   }
 
@@ -446,10 +457,9 @@ public final class SyncedContentSettingsModel {
   }
 
   /// Records that a normal sync request finished and didn't report a pending removal.
-  /// Request results report an incomplete Delete Synced Content as pending, so a removal
-  /// that was already pending at `start` has finished, even if its report was lost. A
-  /// removal that began after `start` may still be running. Automatic sync engine results
-  /// don't carry removal progress.
+  /// Request results report an incomplete Delete Synced Content as pending, so this also
+  /// finishes the removal `start` saw, even if its report was lost. Automatic sync engine
+  /// results don't carry removal progress.
   public func recordSyncCompleted(_ start: SyncedContentSyncStart) {
     guard mode == .iCloudSync else { return }
     switch state {

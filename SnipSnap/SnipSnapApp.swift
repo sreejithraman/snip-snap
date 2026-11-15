@@ -365,10 +365,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordEnableCompleted()
                 case .oldSyncedContentRemovalPending:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(true)
+                    cloudServices.syncedContentSettings.recordRemovalPending()
                 case .oldSyncedContentRemovalCompleted:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(false)
+                    cloudServices.syncedContentSettings.recordRemovalCompleted(syncStart)
                 }
                 if result != .oldSyncedContentRemovalPending {
                     cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
