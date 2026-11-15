@@ -838,7 +838,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     let stored = try await fixture.stored()
     XCTAssertEqual(stored.quarantines.count, 2)
     XCTAssertEqual(stored.quarantines.filter { $0.key.hasPrefix("resolved-") }.map(\.payload), [original.payload])
-    let unresolved = await fixture.store.unresolvedCorruptShadows(stored.quarantines)
+    let unresolved = await fixture.store.corruptShadowRecovery(in: stored).unresolvedArchives
     XCTAssertEqual(unresolved.map(\.payload), [changed.shadowData])
     let issue = try await fixture.store.unresolvedSyncIssue()
     let resetNeeded = try await fixture.store.prepareManualRetry()
