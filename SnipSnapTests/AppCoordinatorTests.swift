@@ -2141,3 +2141,353 @@ private struct MountedAccessibility {
         return value
     }
 }
+
+@MainActor
+extension MountedAccessibility {
+    func value(of element: AXUIElement) -> String? {
+        (Self.attribute(kAXValueAttribute, of: element) as? String)
+            ?? (Self.attribute(kAXValueDescriptionAttribute, of: element) as? String)
+    }
+}
+
+// MARK: - Shared menu and expandable-text transitions
+
+@MainActor
+private func waitForTransition(
+    within timeout: Duration = .seconds(10), until condition: () -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+        guard ContinuousClock.now < deadline else { return false }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return true
+}
+
+@MainActor
+private func mountTransitionPanel<Content: View>(_ content: Content) async throws -> SnipSnapPanel {
+    let controller = NSHostingController(rootView: content.frame(maxWidth: .infinity, maxHeight: .infinity))
+    controller.sizingOptions = []
+    let panel = SnipSnapPanel.make(contentViewController: controller, frameAutosaveName: nil)
+    panel.makeKeyAndOrderFront(nil)
+    try await Task.sleep(for: .milliseconds(100))
+    return panel
+}
+
+@MainActor
+private final class GlassMenuTransitionProbe: ObservableObject {
+    @Published var isPresented = false
+    var dismissesWhenMounted = false
+    var reopensWhenClosingStarts = false
+    var dismissesWhenSourceLosesFocus = false
+    private(set) var interactiveValues: [Bool] = []
+    private(set) var mounts = 0
+    private(set) var unmounts = 0
+    private(set) var sourceFocusCalls: [Bool] = []
+
+    var isMounted: Bool { mounts > unmounts }
+    var isInteractive: Bool { isMounted && interactiveValues.last == true }
+    var everInteractive: Bool { interactiveValues.contains(true) }
+    /// The source regains focus exactly when its presentation finishes.
+    var finishCount: Int { sourceFocusCalls.filter { $0 }.count }
+
+    func recordMount() {
+        mounts += 1
+        if dismissesWhenMounted {
+            dismissesWhenMounted = false
+            isPresented = false
+        }
+    }
+
+    func recordUnmount() { unmounts += 1 }
+
+    func recordInteractive(_ interactive: Bool) {
+        let wasInteractive = interactiveValues.last == true
+        interactiveValues.append(interactive)
+        if wasInteractive, !interactive, reopensWhenClosingStarts {
+            reopensWhenClosingStarts = false
+            isPresented = true
+        }
+    }
+
+    func recordSourceFocus(_ focused: Bool) {
+        sourceFocusCalls.append(focused)
+        if !focused, dismissesWhenSourceLosesFocus {
+            dismissesWhenSourceLosesFocus = false
+            isPresented = false
+        }
+    }
+}
+
+private struct GlassMenuTransitionView: View {
+    @ObservedObject var probe: GlassMenuTransitionProbe
+
+    var body: some View {
+        VStack {
+            Spacer()
+            Color.clear
+                .frame(width: 44, height: 44)
+                .glassMenu(
+                    isPresented: $probe.isPresented, label: "Transition probe",
+                    identifier: "transition-probe-menu",
+                    sizeProbe: AnyView(Color.clear.frame(width: 200, height: 120)),
+                    sourceFocus: { probe.recordSourceFocus($0) }
+                ) { isInteractive in
+                    GlassMenuTransitionContent(isInteractive: isInteractive, probe: probe)
+                }
+                .padding(.bottom, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassMenuHost()
+    }
+}
+
+private struct GlassMenuTransitionContent: View {
+    let isInteractive: Bool
+    let probe: GlassMenuTransitionProbe
+
+    var body: some View {
+        Color.clear
+            .frame(width: 200, height: 120)
+            .onAppear { probe.recordMount() }
+            .onDisappear { probe.recordUnmount() }
+            .onChange(of: isInteractive, initial: true) { _, interactive in
+                probe.recordInteractive(interactive)
+            }
+    }
+}
+
+@MainActor
+private final class ExpandableTextTransitionProbe: ObservableObject {
+    nonisolated static let identifier = "expandable-transition-probe"
+    nonisolated static func longText(_ name: String) -> String {
+        (1...12).map { "\(name) line \($0) of a long snip" }.joined(separator: "\n")
+    }
+
+    @Published var content = SnipTextContent.literal(ExpandableTextTransitionProbe.longText("First"))
+    private(set) var activations = 0
+    var height: CGFloat = 0
+
+    func activate() -> Bool {
+        activations += 1
+        return true
+    }
+}
+
+private struct ExpandableTextTransitionView: View {
+    @ObservedObject var probe: ExpandableTextTransitionProbe
+
+    var body: some View {
+        ExpandableSnipText(
+            content: probe.content, lineLimit: 2,
+            accessibilityIdentifier: ExpandableTextTransitionProbe.identifier,
+            onActivate: { _ in probe.activate() }
+        )
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.height = $0 }
+        .frame(width: 300)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+@MainActor
+private struct HostedExpandableText {
+    let probe: ExpandableTextTransitionProbe
+    let panel: SnipSnapPanel
+    let accessibility: MountedAccessibility
+    let collapsedHeight: CGFloat
+
+    static func mount() async throws -> HostedExpandableText {
+        let probe = ExpandableTextTransitionProbe()
+        let panel = try await mountTransitionPanel(ExpandableTextTransitionView(probe: probe))
+        let accessibility = try MountedAccessibility(root: try XCTUnwrap(panel.contentView))
+        _ = try await accessibility.button(identifier: ExpandableTextTransitionProbe.identifier)
+        _ = await waitForTransition { probe.height > 0 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThan(probe.height, 0)
+        return HostedExpandableText(
+            probe: probe, panel: panel, accessibility: accessibility, collapsedHeight: probe.height
+        )
+    }
+
+    func activate() async throws {
+        let button = try await accessibility.button(identifier: ExpandableTextTransitionProbe.identifier)
+        XCTAssertTrue(accessibility.press(button), "The expandable text should accept an accessibility press.")
+    }
+
+    func value() async throws -> String? {
+        let button = try await accessibility.button(identifier: ExpandableTextTransitionProbe.identifier)
+        return accessibility.value(of: button)
+    }
+
+    func isCollapsed() async throws -> Bool {
+        try await value() == "Collapsed" && abs(probe.height - collapsedHeight) <= 1
+    }
+
+    func isExpanded() async throws -> Bool {
+        try await value() == "Expanded" && probe.height > collapsedHeight * 2
+    }
+
+    func waitUntil(_ condition: () async throws -> Bool) async throws -> Bool {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while try await !condition() {
+            guard ContinuousClock.now < deadline else { return false }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+}
+
+@MainActor
+final class SharedTransitionHostTests: XCTestCase {
+    private let settleTime: Duration = .milliseconds(500)
+    private let interruptionDelay: Duration = .milliseconds(30)
+
+    func testGlassMenuOpensInteractiveThenClosesAndFinishesOnce() async throws {
+        let probe = GlassMenuTransitionProbe()
+        let panel = try await mountTransitionPanel(GlassMenuTransitionView(probe: probe))
+        defer { panel.orderOut(nil) }
+
+        probe.isPresented = true
+        let opened = await waitForTransition { probe.isInteractive }
+        XCTAssertTrue(opened, "The menu should become interactive once it opens.")
+        XCTAssertEqual(probe.finishCount, 0)
+
+        probe.isPresented = false
+        let closed = await waitForTransition { !probe.isMounted && probe.finishCount > 0 }
+        XCTAssertTrue(closed, "The menu should unmount and finish after it closes.")
+        try await Task.sleep(for: settleTime)
+        XCTAssertFalse(probe.isMounted)
+        XCTAssertEqual(probe.interactiveValues.last, false)
+        XCTAssertEqual(probe.finishCount, 1)
+    }
+
+    func testGlassMenuClosedWhileOpeningNeverBecomesInteractive() async throws {
+        let probe = GlassMenuTransitionProbe()
+        let panel = try await mountTransitionPanel(GlassMenuTransitionView(probe: probe))
+        defer { panel.orderOut(nil) }
+
+        probe.dismissesWhenMounted = true
+        probe.isPresented = true
+        let closed = await waitForTransition { probe.mounts > 0 && !probe.isMounted && probe.finishCount > 0 }
+        XCTAssertTrue(closed, "A menu closed while opening should unmount and finish.")
+        try await Task.sleep(for: settleTime)
+        XCTAssertFalse(probe.isPresented)
+        XCTAssertFalse(probe.isMounted)
+        XCTAssertFalse(probe.everInteractive, "A menu closed while opening must not become interactive.")
+        XCTAssertEqual(probe.finishCount, 1)
+    }
+
+    func testGlassMenuReopenedWhileClosingEndsOpenWithoutFinishing() async throws {
+        let probe = GlassMenuTransitionProbe()
+        let panel = try await mountTransitionPanel(GlassMenuTransitionView(probe: probe))
+        defer { panel.orderOut(nil) }
+
+        probe.isPresented = true
+        let opened = await waitForTransition { probe.isInteractive }
+        XCTAssertTrue(opened)
+
+        probe.reopensWhenClosingStarts = true
+        probe.isPresented = false
+        let reopened = await waitForTransition { !probe.reopensWhenClosingStarts && probe.isInteractive }
+        XCTAssertTrue(reopened, "A menu reopened while closing should end open and interactive.")
+        try await Task.sleep(for: settleTime)
+        XCTAssertTrue(probe.isPresented)
+        XCTAssertTrue(probe.isInteractive)
+        XCTAssertEqual(probe.finishCount, 0, "The interrupted close must not finish the presentation.")
+    }
+
+    func testGlassMenuRapidTogglesEndClosed() async throws {
+        let probe = GlassMenuTransitionProbe()
+        let panel = try await mountTransitionPanel(GlassMenuTransitionView(probe: probe))
+        defer { panel.orderOut(nil) }
+
+        for presented in [true, false, true, false] {
+            probe.isPresented = presented
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let closed = await waitForTransition { !probe.isMounted && probe.finishCount > 0 }
+        XCTAssertTrue(closed, "The last request was a close, so the menu should end closed.")
+        let finishes = probe.finishCount
+        try await Task.sleep(for: settleTime)
+        XCTAssertFalse(probe.isPresented)
+        XCTAssertFalse(probe.isMounted)
+        XCTAssertFalse(probe.isInteractive)
+        XCTAssertEqual(probe.finishCount, finishes, "Stale completions must not finish again.")
+    }
+
+    func testGlassMenuDismissedAsItStartsPresentingStillFinishes() async throws {
+        let probe = GlassMenuTransitionProbe()
+        let panel = try await mountTransitionPanel(GlassMenuTransitionView(probe: probe))
+        defer { panel.orderOut(nil) }
+
+        // The source hands focus away in the same update that claims the host.
+        // Dismissing there lands before the surface ever sees the presentation.
+        probe.dismissesWhenSourceLosesFocus = true
+        probe.isPresented = true
+        let finished = await waitForTransition(within: .seconds(5)) { probe.finishCount > 0 }
+        XCTAssertTrue(finished, "A dismissed presentation must release the host and return source focus.")
+        try await Task.sleep(for: settleTime)
+        XCTAssertFalse(probe.isPresented)
+        XCTAssertFalse(probe.isMounted)
+        XCTAssertFalse(probe.everInteractive)
+        XCTAssertEqual(probe.finishCount, 1)
+    }
+
+    func testExpandableTextCollapsedDuringExpansionSettlesCollapsed() async throws {
+        let text = try await HostedExpandableText.mount()
+        defer { text.panel.orderOut(nil) }
+        let startsCollapsed = try await text.isCollapsed()
+        XCTAssertTrue(startsCollapsed)
+
+        try await text.activate()
+        try await Task.sleep(for: interruptionDelay)
+        try await text.activate()
+
+        let collapsed = try await text.waitUntil { try await text.isCollapsed() }
+        XCTAssertTrue(collapsed, "Collapsing mid-expansion should settle collapsed.")
+        try await Task.sleep(for: settleTime)
+        let staysCollapsed = try await text.isCollapsed()
+        XCTAssertTrue(staysCollapsed)
+        XCTAssertEqual(text.probe.activations, 2)
+    }
+
+    func testExpandableTextExpandedDuringCollapseSettlesExpanded() async throws {
+        let text = try await HostedExpandableText.mount()
+        defer { text.panel.orderOut(nil) }
+        try await text.activate()
+        let expanded = try await text.waitUntil { try await text.isExpanded() }
+        XCTAssertTrue(expanded)
+        try await Task.sleep(for: settleTime)
+        let expandedHeight = text.probe.height
+
+        try await text.activate()
+        try await Task.sleep(for: interruptionDelay)
+        try await text.activate()
+
+        let reexpanded = try await text.waitUntil {
+            try await text.isExpanded() && abs(text.probe.height - expandedHeight) <= 1
+        }
+        XCTAssertTrue(reexpanded, "Expanding mid-collapse should settle at the full height.")
+        try await Task.sleep(for: settleTime)
+        let staysExpanded = try await text.isExpanded()
+        XCTAssertTrue(staysExpanded)
+        XCTAssertEqual(text.probe.height, expandedHeight, accuracy: 1)
+        XCTAssertEqual(text.probe.activations, 3)
+    }
+
+    func testExpandableTextContentChangeDuringExpansionResetsCollapsed() async throws {
+        let text = try await HostedExpandableText.mount()
+        defer { text.panel.orderOut(nil) }
+
+        try await text.activate()
+        try await Task.sleep(for: interruptionDelay)
+        text.probe.content = .literal(ExpandableTextTransitionProbe.longText("Second"))
+
+        let collapsed = try await text.waitUntil { try await text.isCollapsed() }
+        XCTAssertTrue(collapsed, "New content should reset the text to collapsed.")
+        try await Task.sleep(for: settleTime)
+        let staysCollapsed = try await text.isCollapsed()
+        XCTAssertTrue(staysCollapsed)
+        XCTAssertEqual(text.probe.activations, 1)
+    }
+}
