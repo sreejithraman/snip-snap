@@ -314,14 +314,6 @@ package actor CloudCollectionCoordinator {
     case removingOldContent
     case removed
     case completed
-
-    init(_ deletionState: CloudCollectionDeletionState, oldZonesStaged: Bool) {
-      switch deletionState {
-      case .none: self = .notDeleting
-      case .pending: self = oldZonesStaged ? .removingOldContent : .removed
-      case .completed: self = .completed
-      }
-    }
   }
 
   private let cloudScope: String
@@ -771,25 +763,26 @@ package actor CloudCollectionCoordinator {
     _ deletionState: CloudCollectionDeletionState,
     in namespace: CloudSyncNamespace
   ) async throws -> DeletionProgress {
-    guard deletionState == .pending else {
-      return DeletionProgress(deletionState, oldZonesStaged: false)
+    switch deletionState {
+    case .none:
+      return .notDeleting
+    case .completed:
+      return .completed
+    case .pending:
+      let staged = try await localStore.state().cleanupZones
+      return staged.isSubset(of: namespace.zones.union(reservedZones))
+        ? .removed
+        : .removingOldContent
     }
-    let staged = try await localStore.state().cleanupZones
-    return DeletionProgress(
-      deletionState,
-      oldZonesStaged: !staged.isSubset(of: namespace.zones.union(reservedZones))
-    )
   }
 
-  /// A failed zone cleanup leaves the old zones staged.
+  /// A failed zone cleanup leaves a pending deletion's old zones staged.
   private func cleanupFailureStatus(
     _ error: any Error,
     _ namespace: CloudSyncNamespace,
     deletionState: CloudCollectionDeletionState
   ) throws -> CloudCollectionStatus {
-    guard DeletionProgress(deletionState, oldZonesStaged: true) == .removingOldContent else {
-      throw error
-    }
+    guard deletionState == .pending else { throw error }
     return .oldSyncedContentRemovalPending(namespace)
   }
 
