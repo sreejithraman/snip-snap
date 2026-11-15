@@ -193,8 +193,7 @@ final class CloudSyncSessionTests: XCTestCase {
     XCTAssertEqual(events, ["sync", "retry", "retry", "schedule", "sync"])
   }
 
-  /// Sync-mode Try Again treats a transition stage it finds at its start as left over by an
-  /// earlier operation. That holds only while mode operations run one at a time.
+  /// The session runs mode operations one at a time through its gate.
   func testDisableAndCancelSetupWaitForAnEnableInFlight() async throws {
     let probe = SessionWorkProbe()
     let session = SnipSnapCloudSyncSession(

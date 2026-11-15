@@ -1,4 +1,5 @@
 import SnipSnapCore
+import Synchronization
 import XCTest
 
 final class SyncedContentSettingsModelTests: XCTestCase {
@@ -187,6 +188,54 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     gate.open()
     await delete.value
     XCTAssertEqual(model.state, .removalPending)
+  }
+
+  @MainActor
+  func testPendingReportDuringADeleteLeavesTheOutcomeToTheDelete() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: {
+        await gate.wait()
+        return .removalPending
+      },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+
+    let delete = Task { @MainActor in await model.deleteSyncedContent() }
+    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
+      return XCTFail("The delete never reached its action")
+    }
+    model.recordRemovalPending()
+    XCTAssertEqual(model.state, .deleting)
+
+    gate.open()
+    await delete.value
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.delete"])
+  }
+
+  @MainActor
+  func testPendingReportDuringACompletedDeleteEndsDeleted() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      deleteAction: {
+        await gate.wait()
+        return .completed
+      }
+    )
+
+    let delete = Task { @MainActor in await model.deleteSyncedContent() }
+    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
+      return XCTFail("The delete never reached its action")
+    }
+    model.recordRemovalPending()
+    gate.open()
+    await delete.value
+
+    XCTAssertEqual(model.state, .deleted)
   }
 
   @MainActor

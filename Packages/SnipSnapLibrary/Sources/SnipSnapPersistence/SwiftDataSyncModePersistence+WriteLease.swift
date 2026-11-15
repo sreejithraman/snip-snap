@@ -143,8 +143,7 @@ extension SwiftDataSyncModePersistence {
       }
       if let transition = manifest.transition,
         transition.sourceStoreID == activeID,
-        [.sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-          .firstSendComplete].contains(transition.phase)
+        transition.freezesSource
       { throw blockedContentWrite(reason: .modeChange) }
     }
     return try reserveRevision(for: request, queue: queue)
