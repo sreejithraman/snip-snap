@@ -2,6 +2,7 @@ import Foundation
 import SnipSnapCore
 
 public actor ClipboardHistoryStore {
+    private static let setAsidePrefix = "clipboard-quarantine-"
     public nonisolated let url: URL
     public nonisolated let files: ClipboardFileStore
     public init(url: URL, fileStore: ClipboardFileStore? = nil) {
@@ -11,7 +12,10 @@ public actor ClipboardHistoryStore {
 
     public func load() throws -> ClipboardHistoryState {
         guard FileManager.default.fileExists(atPath: url.path) else { return ClipboardHistoryState() }
-        let data = try Data(contentsOf: url)
+        return try Self.decodeHistory(Data(contentsOf: url))
+    }
+
+    private static func decodeHistory(_ data: Data) throws -> ClipboardHistoryState {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let value = try decoder.singleValueContainer()
@@ -30,6 +34,17 @@ public actor ClipboardHistoryStore {
         return ClipboardHistoryState(entries: try decoder.decode([ClipboardEntry].self, from: data))
     }
 
+    /// Copies the history beside itself, then empties it, in one step, so no other store write
+    /// lands between the copy and the empty save.
+    public func setAside() throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            let copy = url.deletingLastPathComponent()
+                .appendingPathComponent("\(Self.setAsidePrefix)\(UUID().uuidString).json")
+            try FileManager.default.copyItem(at: url, to: copy)
+        }
+        try save(ClipboardHistoryState())
+    }
+
     public func save(_ state: ClipboardHistoryState) throws {
         let previous = try? load()
         if previous == state { return }
@@ -45,10 +60,17 @@ public actor ClipboardHistoryStore {
         var retained = Set(current.entries.flatMap(\.ownedFiles).map(\.relativePath))
         let directory = url.deletingLastPathComponent()
         guard let backups = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-        for backup in backups where backup.lastPathComponent.hasPrefix("clipboard-quarantine-") {
-            guard let data = try? Data(contentsOf: backup),
-                  let state = try? JSONDecoder().decode(ClipboardHistoryState.self, from: data) else { return }
-            retained.formUnion(state.entries.flatMap(\.ownedFiles).map(\.relativePath))
+        for backup in backups where backup.lastPathComponent.hasPrefix(Self.setAsidePrefix) {
+            guard let data = try? Data(contentsOf: backup) else { return }
+            if let state = try? Self.decodeHistory(data) {
+                retained.formUnion(state.entries.flatMap(\.ownedFiles).map(\.relativePath))
+                continue
+            }
+            // An undecodable copy keeps every file whose path appears in its text.
+            for path in previous.entries.flatMap(\.ownedFiles).map(\.relativePath)
+            where !retained.contains(path) && Self.text(data, mentions: path) {
+                retained.insert(path)
+            }
         }
         for file in previous.entries.flatMap(\.ownedFiles) where !retained.contains(file.relativePath) {
             guard let target = try? files.url(for: file) else { continue }
@@ -58,6 +80,12 @@ public actor ClipboardHistoryStore {
                 try? FileManager.default.removeItem(at: parent)
             }
         }
+    }
+
+    private static func text(_ data: Data, mentions path: String) -> Bool {
+        var forms = [Data(path.utf8)]
+        if let quoted = try? JSONEncoder().encode(path) { forms.append(quoted.dropFirst().dropLast()) }
+        return forms.contains { !$0.isEmpty && data.range(of: $0) != nil }
     }
 
     @discardableResult public func merge(_ remote: ClipboardHistoryState) throws -> ClipboardHistoryState {

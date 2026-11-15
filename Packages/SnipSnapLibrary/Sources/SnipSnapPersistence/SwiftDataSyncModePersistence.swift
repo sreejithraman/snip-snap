@@ -168,6 +168,8 @@ package enum SyncModeWritePoint: Equatable, Sendable {
   /// A hook that throws here fails the write after the library saved it, like a store error, so the reservation is released.
   case beforeReservationCleared
   case beforeStoreRetirement
+  /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
+  case beforeAccountLocalCopyMerge
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -228,6 +230,15 @@ package actor SwiftDataSyncModePersistence {
         forKey: .writeReservation
       )
     }
+
+    mutating func updateTransition(
+      orThrow missing: SyncModePersistenceError = .transitionInProgress,
+      _ event: (inout SyncModeTransition) throws -> Void
+    ) throws {
+      guard var current = transition else { throw missing }
+      try event(&current)
+      transition = current
+    }
   }
 
   let rootURL: URL
@@ -242,8 +253,17 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+
+  /// Reconciles of an account-isolation choice take turns, so a background status never runs a
+  /// second Keep merge.
+  let accountIsolationTurns = AsyncOperationGate()
+
   var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
+
+  /// The transition a rollback left when its commit failed. Try Again finishes only this one.
+  private var strandedRollback: SyncModeTransition?
+
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
   var nextManagedReadAttempt: UInt64 = 0
@@ -340,168 +360,28 @@ package actor SwiftDataSyncModePersistence {
     )
   }
 
-  package func isolateActiveCloudStore(
-    reason: ICloudAccountIsolationReason,
-    expectedStoreID: UUID? = nil
-  ) async throws -> ICloudAccountIsolation {
-    guard expectedStoreID == nil || manifest.activeStoreID == expectedStoreID else {
-      throw SyncModePersistenceError.namespaceMismatch
-    }
-    if let isolation = manifest.accountIsolation { return isolation }
-    guard let active = store(id: manifest.activeStoreID),
-      active.kind == .iCloudSync,
-      let namespace = active.namespace
-    else { throw SyncModePersistenceError.transitionInProgress }
-    if let transition = manifest.transition {
-      guard transition.sourceStoreID == active.id,
-        transition.targetKind == .localOnly,
-        transition.phase != .pointerSwapped
-      else { throw SyncModePersistenceError.transitionInProgress }
-    }
-
-    try beginStoreReplacement()
-    defer { finishStoreReplacement() }
-    let replacement = Self.newStore(
-      kind: .localOnly,
-      namespace: nil,
-      syncProtocol: active.syncProtocol
-    )
-    let isolation = ICloudAccountIsolation(
-      id: UUID(),
-      storeID: active.id,
-      replacementStoreID: replacement.id,
-      namespace: namespace,
-      reason: reason
-    )
-    var declared = manifest
-    if let transition = declared.transition {
-      declared.stores[try storeIndex(id: transition.candidateStoreID)].lifecycle = .deleting
-      declared.transition = nil
-    }
-    declared.stores.append(replacement)
-    declared.accountIsolation = isolation
-    declared.attentionReason = reason == .signedOut ? .accountSignedOut : .accountChanged
-    try commit(declared)
-    try crashHook(.afterAccountIsolationManifest)
-
-    let replacementRoot = storeURL(replacement)
-    try crashHook(.beforeAccountIsolationDurability)
-    _ = try SwiftDataSnipLibrary(
-      storeURL: replacementRoot.appendingPathComponent("snips.store", isDirectory: false),
-      attachmentCacheRootURL: Self.cacheRootURL(
-        base: attachmentCacheRootURL,
-        storeID: replacement.id
-      )
-    )
-    try DurableFile.syncDirectory(replacementRoot)
-    try DurableFile.syncDirectory(replacementRoot.deletingLastPathComponent())
-    try crashHook(.afterAccountIsolationDurability)
-
-    let isolatedLibrary = try libraryForTransition(storeID: active.id)
-    try await writeHook(.beforeStoreRetirement)
-    try await isolatedLibrary.markReadOnlyRecovery()
-
-    var isolated = manifest
-    isolated.activeStoreID = replacement.id
-    isolated.stores[try storeIndex(id: replacement.id)].lifecycle = .ready
-    isolated.stores[try storeIndex(id: active.id)].lifecycle = .isolated
-    try crashHook(.beforeAccountIsolationPointerSwap)
-    try commit(isolated)
-    try crashHook(.afterAccountIsolationPointerSwap)
-    return isolation
-  }
-
-  package func resolveAccountIsolation(
-    _ choice: ICloudAccountIsolationChoice
-  ) async throws {
-    guard var isolation = manifest.accountIsolation else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    let requested: ICloudAccountIsolationResolution = choice == .keepLocalCopy
-      ? .keepingLocalCopy : .removing
-    guard isolation.resolution == .undecided || isolation.resolution == requested else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    if isolation.resolution == .undecided {
-      isolation.resolution = requested
-      var intended = manifest
-      intended.accountIsolation = isolation
-      try commit(intended)
-      try crashHook(.afterAccountResolutionIntent)
-    }
-    try await reconcileAccountIsolationResolution()
-  }
-
-  package func reconcileAccountIsolationResolution() async throws {
-    guard let isolation = manifest.accountIsolation,
-      isolation.resolution != .undecided
-    else { return }
-    if isolation.resolution == .keepingLocalCopy {
-      let sourceStore = try storeForIsolation(id: isolation.storeID)
-      let sourceLibrary = try libraryForTransition(storeID: sourceStore.id)
-      try await sourceLibrary.prepareCloudAttachmentsForLocalCopy(
-        namespaceKey: isolation.namespace.namespaceKey
-      )
-      let source = try await sourceLibrary.transferSnapshot(revision: sourceStore.revision)
-      let target = try libraryForTransition(storeID: manifest.activeStoreID)
-      _ = try await target.mergeTransferSnapshot(source, transitionID: isolation.id)
-      try crashHook(.afterAccountLocalCopyMerge)
-    }
-    try finishAccountIsolationResolution(isolation)
-  }
-
-  private func finishAccountIsolationResolution(
-    _ isolation: ICloudAccountIsolation
-  ) throws {
-    guard manifest.accountIsolation == isolation,
-      isolation.resolution != .undecided,
-      isolation.storeID != manifest.activeStoreID
-    else { throw SyncModePersistenceError.transitionInProgress }
-    let roots = try Self.validatedStoreRoots(manifest.stores, rootURL: rootURL)
-    guard roots[isolation.storeID] != nil,
-      let isolatedStore = store(id: isolation.storeID)
-    else {
-      throw SyncModePersistenceError.invalidManifest
-    }
-    var deleting = manifest
-    deleting.stores[try storeIndex(id: isolation.storeID)].lifecycle = .deleting
-    let activeIndex = try storeIndex(id: manifest.activeStoreID)
-    deleting.stores[activeIndex].revision += 1
-    if isolation.resolution == .keepingLocalCopy {
-      deleting.stores[activeIndex].quarantinedNamespace = isolation.namespace
-    }
-    deleting.accountIsolation = nil
-    deleting.attentionReason = nil
-    try crashHook(.beforeAccountIsolationRemovalCommit)
-    try commit(deleting)
-    try crashHook(.afterAccountIsolationRemovalCommit)
-    do {
-      try removeStoreFiles(isolatedStore)
-    } catch {
-      try? recordAttention(.storageFailure)
-      throw error
-    }
-    try crashHook(.afterAccountIsolationRootRemoval)
-    var removed = manifest
-    removed.stores.removeAll { $0.id == isolation.storeID }
-    try commit(removed)
-  }
-
-  private func storeForIsolation(id: UUID) throws -> SyncModeStore {
-    guard let value = store(id: id), value.lifecycle == .isolated else {
-      throw SyncModePersistenceError.missingStore
-    }
-    return value
-  }
-
   /// The only library later app assembly should retain.
   package func libraryForTransition(storeID: UUID) throws -> SwiftDataSnipLibrary {
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
-    guard store.lifecycle != .creating else { throw SyncModePersistenceError.missingStore }
+    guard store.lifecycle != .creating, store.lifecycle != .deleting else {
+      throw SyncModePersistenceError.missingStore
+    }
+    let fileURL = storeFileURL(store)
+    // A mode change's inactive candidate before the swap, and its retired source after it, must
+    // have their files, so an empty recreate never stands in for either. The active store keeps
+    // open-or-create so the app stays usable, though that can't protect a swapped-in candidate
+    // whose files vanish. Recovery, isolated, and other inactive stores are exempt: recreating
+    // them can't replace user data, and refusing them would strand the user.
+    let isModeChangeStore = manifest.transition.map {
+      [$0.sourceStoreID, $0.candidateStoreID].contains(store.id)
+    } ?? false
+    guard store.id == manifest.activeStoreID || !isModeChangeStore
+      || FileManager.default.fileExists(atPath: fileURL.path)
+    else { throw SyncModePersistenceError.missingStore }
     return try SwiftDataSnipLibrary(
-      storeURL: storeURL(store).appendingPathComponent("snips.store"),
+      storeURL: fileURL,
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
@@ -544,7 +424,28 @@ package actor SwiftDataSyncModePersistence {
       guard transition.targetKind == targetKind, transition.namespace == namespace else {
         throw SyncModePersistenceError.transitionInProgress
       }
-      return transition
+      if manifest.activeStoreID == transition.sourceStoreID,
+        !hasStoreFile(id: transition.candidateStoreID)
+      {
+        // Before the swap, the source still holds the library, so a fresh candidate loses
+        // nothing.
+        try abortUnactivatedCandidate(reason: nil)
+        let operation: StaticString = transition.targetKind == .iCloudSync
+          ? "sync.setup" : "sync.disable"
+        diagnostics.record(.missing(operation: operation))
+      } else {
+        // Finish only a rollback this process couldn't commit, so another operation's work in
+        // flight is never undone.
+        guard transition == strandedRollback else { return transition }
+        if transition.phase == .candidateDeclared {
+          try abortUnactivatedCandidate(reason: nil)
+        } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
+          try unfreezeBeforePointerSwap()
+          return try currentTransition()
+        } else {
+          return transition
+        }
+      }
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
       throw SyncModePersistenceError.namespaceMismatch
@@ -592,7 +493,7 @@ package actor SwiftDataSyncModePersistence {
       try crashHook(.afterCandidateDurability)
       var ready = manifest
       ready.stores[try storeIndex(id: candidate.id)].lifecycle = .ready
-      ready.transition?.phase = .candidateReady
+      try ready.updateTransition { try $0.markCandidateReady() }
       try commit(ready)
       return try currentTransition()
     } catch {
@@ -602,25 +503,18 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func recordPreparationComplete() throws {
-    guard manifest.transition?.phase == .candidateReady else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
     var next = manifest
-    next.transition?.phase = .remoteFetched
+    try next.updateTransition { try $0.recordPreparationComplete() }
     next.attentionReason = nil
     try commit(next)
   }
 
   package func retryRemoteFetch() throws {
-    guard let transition = manifest.transition,
-      transition.phase == .remoteFetched,
-      transition.sourceStoreID == manifest.activeStoreID,
-      transition.freezeToken == nil,
-      !transition.freezeSnapshotTaken,
-      transition.mergeIntent == nil
-    else { throw SyncModePersistenceError.transitionInProgress }
     var next = manifest
-    next.transition?.phase = .candidateReady
+    try next.updateTransition { try $0.retryRemoteFetch() }
+    guard manifest.transition?.sourceStoreID == manifest.activeStoreID else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
     if next.attentionReason == .enrollmentBlocked {
       next.attentionReason = nil
     }
@@ -628,15 +522,17 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func swapPointer() throws {
-    guard let transition = manifest.transition, transition.phase == .firstSendComplete,
+    var next = manifest
+    try next.updateTransition { try $0.swapPointer() }
+    guard let transition = manifest.transition,
       store(id: transition.candidateStoreID)?.lifecycle == .ready
     else { throw SyncModePersistenceError.transitionInProgress }
+    guard hasStoreFile(id: transition.candidateStoreID) else {
+      throw SyncModePersistenceError.missingStore
+    }
     try crashHook(.beforePointerSwap)
-    var next = manifest
     next.activeStoreID = transition.candidateStoreID
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
-    next.transition?.phase = .pointerSwapped
-    next.transition?.freezeToken = nil
     try commit(next)
     try crashHook(.afterPointerSwap)
   }
@@ -658,23 +554,12 @@ package actor SwiftDataSyncModePersistence {
   package func unfreezeBeforePointerSwap(reason: ICloudSyncAttentionReason? = nil) throws {
     guard let transition = manifest.transition,
       transition.sourceStoreID == manifest.activeStoreID,
-      [
-        .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-        .firstSendComplete,
-      ].contains(transition.phase)
+      transition.freezesSource
     else { return }
     var next = manifest
-    if next.transition?.mergeIntent != nil {
-      Self.absorbMergeIntent(&next.transition!)
-      next.transition?.phase = .candidateReady
-    } else {
-      next.transition?.phase = .remoteFetched
-    }
-    next.transition?.freezeToken = nil
-    next.transition?.freezeSnapshotTaken = false
-    next.transition?.approvedSnipIDs = []
+    try next.updateTransition { try $0.unfreeze() }
     next.attentionReason = reason
-    try commit(next)
+    try commitRollback(next)
   }
   package func recordAttention(_ reason: ICloudSyncAttentionReason) throws {
     var next = manifest
@@ -764,7 +649,6 @@ package actor SwiftDataSyncModePersistence {
     } catch {
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
-        try? await currentLibrary.removeRecoveryQuarantineCompleteMarker()
       }
       var restored = manifest
       restored.stores.removeAll { $0.id == candidate.id }
@@ -906,17 +790,33 @@ package actor SwiftDataSyncModePersistence {
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
     guard let transition = manifest.transition, manifest.activeStoreID == transition.sourceStoreID else { return }
     var next = manifest
-    if let candidate = store(id: transition.candidateStoreID) {
-      do {
-        try removeStoreFiles(candidate)
-        next.stores.removeAll { $0.id == transition.candidateStoreID }
-      } catch {
-        next.stores[try storeIndex(id: candidate.id)].lifecycle = .deleting
-      }
+    if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
+      next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
     next.attentionReason = reason
-    try commit(next)
+    // Commit before removing any files. A candidate whose files are gone but whose manifest
+    // entry survives a failed commit is reopened empty by the next enable.
+    try commitRollback(next)
+    guard let candidate = store(id: transition.candidateStoreID) else { return }
+    do {
+      try removeStoreFiles(candidate)
+      var removed = manifest
+      removed.stores.removeAll { $0.id == candidate.id }
+      try commit(removed)
+    } catch {
+      // The candidate stays deleting, for reopen or a later cleanup to finish.
+    }
+  }
+
+  private func commitRollback(_ next: Manifest) throws {
+    do {
+      try commit(next)
+    } catch {
+      strandedRollback = manifest.transition
+      throw error
+    }
+    strandedRollback = nil
   }
 
   func store(id: UUID) -> SyncModeStore? {
@@ -932,6 +832,15 @@ package actor SwiftDataSyncModePersistence {
 
   func storeURL(_ store: SyncModeStore) -> URL {
     rootURL.appendingPathComponent(store.relativeRoot, isDirectory: true)
+  }
+
+  func storeFileURL(_ store: SyncModeStore) -> URL {
+    storeURL(store).appendingPathComponent("snips.store", isDirectory: false)
+  }
+
+  private func hasStoreFile(id: UUID) -> Bool {
+    guard let listed = store(id: id) else { return false }
+    return FileManager.default.fileExists(atPath: storeFileURL(listed).path)
   }
 
   nonisolated static func cacheRootURL(base: URL?, storeID: UUID) -> URL? {
@@ -971,7 +880,7 @@ package actor SwiftDataSyncModePersistence {
       id: id,
       kind: kind,
       namespace: namespace,
-      relativeRoot: "stores/\(kind.rawValue)-\(id.uuidString.lowercased())",
+      relativeRoot: canonicalRelativeRoot(kind: kind, id: id),
       syncProtocol: syncProtocol,
       revision: 0,
       lifecycle: .creating

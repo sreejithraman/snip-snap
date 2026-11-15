@@ -1,5 +1,19 @@
+import SnipSnapCore
 import XCTest
 @testable import SnipSnapiOS
+
+final class LibraryRailArrowKeyTests: XCTestCase {
+    func testArrowKeysStepThroughPagesAndStopAtTheEnds() {
+        let work = UUID()
+        let pages: [LibraryPage] = [.clipboard, .list(SnipList.inboxID), .list(work)]
+        XCTAssertEqual(pages.page(1, from: .clipboard), .list(SnipList.inboxID))
+        XCTAssertEqual(pages.page(1, from: .list(SnipList.inboxID)), .list(work))
+        XCTAssertEqual(pages.page(-1, from: .list(SnipList.inboxID)), .clipboard)
+        XCTAssertNil(pages.page(1, from: .list(work)))
+        XCTAssertNil(pages.page(-1, from: .clipboard))
+        XCTAssertNil(pages.page(1, from: .list(UUID())))
+    }
+}
 
 final class LibrarySidebarSizingTests: XCTestCase {
     private let flat = LibrarySidebarSizing(containerWidth: 1000, hingeEdge: nil)
@@ -95,6 +109,25 @@ final class LibrarySidebarSizingTests: XCTestCase {
         let outside = CGRect(x: 800, y: 0, width: 40, height: 900)
         XCTAssertNil(LibrarySidebarSizing(containerWidth: 800, divisions: [outside]).hingeEdge)
         XCTAssertNil(LibrarySidebarSizing(containerWidth: 800, divisions: []).hingeEdge)
+    }
+
+    func testIPadStartsWithNamesInAWiderColumnThanThePhone() {
+        XCTAssertFalse(LibrarySidebarDefaults.phone.showsNames)
+        XCTAssertTrue(LibrarySidebarDefaults.pad.showsNames)
+        func maximum(_ defaults: LibrarySidebarDefaults, width: CGFloat) -> CGFloat {
+            LibrarySidebarSizing(containerWidth: width, hingeEdge: nil, flatMaximumWidth: defaults.flatMaximumWidth)
+                .maximumExpandedWidth
+        }
+        // 11" iPad portrait and landscape, then 13" portrait and landscape.
+        XCTAssertEqual(maximum(.pad, width: 834), 333.6, accuracy: 0.01)
+        XCTAssertEqual(maximum(.pad, width: 1210), 360)
+        XCTAssertEqual(maximum(.pad, width: 1032), 360)
+        XCTAssertEqual(maximum(.pad, width: 1376), 360)
+        // The open Duo keeps its cap.
+        XCTAssertEqual(maximum(.phone, width: 951), 320)
+        let padDefault = LibrarySidebarSizing(containerWidth: 1210, hingeEdge: nil, flatMaximumWidth: 360)
+            .width(isExpanded: true, expandedWidth: LibrarySidebarDefaults.pad.expandedWidth)
+        XCTAssertEqual(padDefault, 300)
     }
 
     func testExpandedWidthRoundTripsAndRejectsJunk() {

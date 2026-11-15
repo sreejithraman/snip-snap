@@ -170,7 +170,8 @@ public enum SnipSnapCloudAppAssembly {
   @MainActor
   public static func simulatedServices(
     rootURL: URL,
-    syncModeStore: SnipSyncModeStore?
+    syncModeStore: SnipSyncModeStore?,
+    environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> SnipSnapCloudAppServices {
     guard let syncModeStore else {
       return SnipSnapCloudAppServices(
@@ -178,16 +179,17 @@ public enum SnipSnapCloudAppAssembly {
         syncSession: nil
       )
     }
+    let simulateRemovalPending = environment["SNIP_SNAP_UI_TEST_REMOVAL_PENDING"] == "1"
     let reset = SimulatedCloudCollectionReset(
       rootURL: rootURL,
       persistence: syncModeStore.persistence,
-      simulateEncryptedDataReset: ProcessInfo.processInfo.environment[
-        "SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"
-      ] == "1"
+      simulateEncryptedDataReset: environment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] == "1",
+      simulateRemovalPending: simulateRemovalPending
     )
     let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await reset.synchronize() },
+      retry: { try await reset.retrySynchronization() },
       scheduleAutomaticSync: {
         automaticResults.continuation.yield(try await reset.synchronize())
       },
@@ -206,6 +208,8 @@ public enum SnipSnapCloudAppAssembly {
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
         mode: .iCloudSync,
+        // Automatic launch syncs don't report removal progress, so start where a request would.
+        initialState: simulateRemovalPending ? .removalPending : .ready,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
         disableAction: { choice in try await session.disableICloudSync(choice) },

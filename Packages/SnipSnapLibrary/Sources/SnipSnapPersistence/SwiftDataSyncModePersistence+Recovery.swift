@@ -11,13 +11,7 @@ extension SwiftDataSyncModePersistence {
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
     value.writeReservation = nil
-    if let isolation = value.accountIsolation,
-      value.activeStoreID == isolation.storeID,
-      let sourceIndex = value.stores.firstIndex(where: { $0.id == isolation.storeID }),
-      let replacementIndex = value.stores.firstIndex(where: {
-        $0.id == isolation.replacementStoreID
-      })
-    {
+    if case .declared(let isolation) = try value.accountIsolationPhase() {
       guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
         throw SyncModePersistenceError.invalidManifest
       }
@@ -28,9 +22,7 @@ extension SwiftDataSyncModePersistence {
           storeID: isolation.replacementStoreID
         )
       )
-      value.stores[replacementIndex].lifecycle = .ready
-      value.stores[sourceIndex].lifecycle = .isolated
-      value.activeStoreID = isolation.replacementStoreID
+      try value.swapToIsolationReplacement()
     }
     if let activeIndex = value.stores.firstIndex(where: { $0.id == value.activeStoreID }),
       value.stores[activeIndex].lifecycle == .creating
@@ -50,18 +42,9 @@ extension SwiftDataSyncModePersistence {
     if let active = value.stores.first(where: { $0.id == value.activeStoreID }),
       let root = storeRoots[active.id]
     {
-      let marker = SwiftDataSnipLibrary.readOnlyRecoveryMarkerURL(
-        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
-      )
-      if FileManager.default.fileExists(atPath: marker.path) {
-        try FileManager.default.removeItem(at: marker)
-      }
-      let quarantineMarker = SwiftDataSnipLibrary.recoveryQuarantineCompleteMarkerURL(
-        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
-      )
-      if FileManager.default.fileExists(atPath: quarantineMarker.path) {
-        try FileManager.default.removeItem(at: quarantineMarker)
-      }
+      try SwiftDataSnipLibrary.StoreRetirementMarkers(
+        storeURL: root.appendingPathComponent("snips.store", isDirectory: false)
+      ).restore()
     }
     let removable = value.stores.filter {
       $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting)
@@ -85,27 +68,7 @@ extension SwiftDataSyncModePersistence {
         value.attentionReason = .storageFailure
       }
     }
-    if var transition = value.transition,
-      [
-        SyncModeTransitionPhase.sourceFrozen, .recordsMerged, .enrollmentApproved,
-        .firstSendStarted, .firstSendComplete,
-      ].contains(transition.phase)
-    {
-      if transition.phase == .sourceFrozen,
-        transition.mergeIntent?.fullReenablePlanID != nil
-      {
-        value.transition = transition
-        return
-      }
-      absorbMergeIntent(&transition)
-      value.transition = transition
-      value.transition?.supersededApprovedSnipIDs.formUnion(transition.approvedSnipIDs)
-      value.transition?.captureAcceptedServerProvenance = true
-      value.transition?.phase = .candidateReady
-      value.transition?.freezeToken = nil
-      value.transition?.freezeSnapshotTaken = false
-      value.transition?.approvedSnipIDs = []
-    }
+    value.transition?.interruptByReopen()
   }
 
   static func validatedStoreRoots(
@@ -136,17 +99,11 @@ extension SwiftDataSyncModePersistence {
   }
 
   static func canonicalRelativeRoot(for store: SyncModeStore) -> String {
-    "stores/\(store.kind.rawValue)-\(store.id.uuidString.lowercased())"
+    canonicalRelativeRoot(kind: store.kind, id: store.id)
   }
 
-  static func absorbMergeIntent(_ transition: inout SyncModeTransition) {
-    guard let intent = transition.mergeIntent else { return }
-    transition.seedProvenance = intent.seedProvenance
-    transition.seededListIDs = intent.seededListIDs
-    transition.supersededApprovedSnipIDs.formUnion(intent.approvedSnipIDs)
-    transition.pendingSettlementSnipIDs = []
-    transition.sendAttempt = nil
-    transition.mergeIntent = nil
+  static func canonicalRelativeRoot(kind: SyncModeStoreKind, id: UUID) -> String {
+    "stores/\(kind.rawValue)-\(id.uuidString.lowercased())"
   }
 
   static func validate(_ value: Manifest) throws {
@@ -186,21 +143,15 @@ extension SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.invalidManifest
       }
       if let intent = transition.mergeIntent {
-        guard transition.phase == .sourceFrozen,
-          transition.freezeSnapshotTaken,
-          transition.freezeToken?.revision == intent.sourceRevision,
+        guard transition.freezeToken?.revision == intent.sourceRevision,
           intent.planDigest.count == 32,
           intent.approvedSnipIDs.isSubset(of: Set(intent.seedProvenance.map(\.candidateSnipID))),
           (intent.fullReenablePlanID.map { $0 == transition.id } ?? true)
         else { throw SyncModePersistenceError.invalidManifest }
       }
       if let attempt = transition.sendAttempt {
-        let operationIDs = Set(attempt.operations.compactMap {
-          $0.reference?.kind == .snip ? $0.reference?.domainID : nil
-        })
         let operationIdentities = Set(attempt.operations.map(\.recordIdentity))
         guard attempt.namespace == transition.namespace,
-          transition.pendingSettlementSnipIDs == operationIDs,
           operationIdentities.count == attempt.operations.count,
           attempt.operations.allSatisfy({ operation in
             attempt.namespace.zones.contains(
@@ -211,31 +162,9 @@ extension SwiftDataSyncModePersistence {
             )
           })
         else { throw SyncModePersistenceError.invalidManifest }
-      } else if !transition.pendingSettlementSnipIDs.isEmpty {
-        throw SyncModePersistenceError.invalidManifest
       }
     }
-    if let isolation = value.accountIsolation {
-      guard value.transition == nil,
-        let source = value.stores.first(where: { $0.id == isolation.storeID }),
-        let replacement = value.stores.first(where: {
-          $0.id == isolation.replacementStoreID
-        }),
-        source.kind == .iCloudSync,
-        source.namespace == isolation.namespace,
-        replacement.kind == .localOnly,
-        replacement.namespace == nil
-      else { throw SyncModePersistenceError.invalidManifest }
-      let declared = value.activeStoreID == source.id
-        && source.lifecycle == .ready
-        && replacement.lifecycle == .creating
-      let isolated = value.activeStoreID == replacement.id
-        && source.lifecycle == .isolated
-        && replacement.lifecycle == .ready
-      guard declared || isolated else { throw SyncModePersistenceError.invalidManifest }
-    } else if value.stores.contains(where: { $0.lifecycle == .isolated }) {
-      throw SyncModePersistenceError.invalidManifest
-    }
+    _ = try value.accountIsolationPhase()
   }
 
   static func write(

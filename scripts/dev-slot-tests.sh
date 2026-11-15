@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="${0:A:h}"
 unset SNIP_SNAP_DEV_SLOT
 unset SNIP_SNAP_DERIVED_DATA
+unset SNIP_SNAP_UI_TEST_SYNC_SETTINGS
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 
@@ -140,6 +141,16 @@ grep -F -- "DEVELOPMENT_TEAM=" "$test_dir/build-args" >/dev/null
 grep -F -- "CODE_SIGN_ENTITLEMENTS=" "$test_dir/build-args" >/dev/null
 grep -F -- "SNIP_SNAP_APP_GROUP_IDENTIFIER=" "$test_dir/build-args" >/dev/null
 grep -F -- "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=" "$test_dir/build-args" >/dev/null
+
+SNIP_SNAP_UI_TEST_SYNC_SETTINGS=1 \
+    PATH="$test_dir/bin:$PATH" \
+    SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/simulated-build-args" \
+    SNIP_SNAP_DEV_STATE_DIR="$test_dir/state" \
+    SNIP_SNAP_DEV_WORKTREE="$test_dir/worktree-e" \
+    SNIP_SNAP_DEV_SLOT=2 \
+    "$script_dir/build.sh" >/dev/null
+grep -F -- "SNIP_SNAP_DEV_STORE_PATH=$test_dir/state/data/simulated-slot-2/items.json" \
+    "$test_dir/simulated-build-args" >/dev/null
 
 print -r -- '#!/bin/zsh
 if [[ "$*" == *-showBuildSettings* ]]; then

@@ -41,13 +41,47 @@ private final class IOSClipboardGenerationGate {
     }
 }
 
-/// Holds the first upload until the test resumes it; a cancelled run then uploads nothing.
+/// The saved-snips namespace key the app passes as the clipboard generation, for a new sync
+/// generation in one account.
+private func clipboardSyncGeneration(account: String = "account-A") -> String {
+    let generation = UUID()
+    let value = generation.uuidString.lowercased()
+    let namespace = ICloudSyncNamespaceBinding(
+        scope: "private",
+        accountLineage: account,
+        generation: generation,
+        zones: [
+            ICloudSyncZoneBinding(name: "snips-\(value)", ownerName: "_defaultOwner"),
+            ICloudSyncZoneBinding(name: "payloads-\(value)", ownerName: "_defaultOwner"),
+        ]
+    )
+    return SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)!.rawValue
+}
+
+/// The sync generation the app reports; a test changes it to adopt a new one.
+@MainActor
+private final class IOSClipboardSyncGenerationSource {
+    var current: String
+
+    init(_ current: String) {
+        self.current = current
+    }
+
+    func generation() async -> String? { current }
+}
+
+/// Holds the first upload, if asked, until the test resumes it; a cancelled run then uploads nothing.
 private actor IOSClipboardHeldUploadCloud: ClipboardCloudTransport {
     private var snapshot = ClipboardCloudSnapshot()
-    private var holdsNextSave = true
+    private var holdsNextSave: Bool
     private var heldSave: CheckedContinuation<Void, Never>?
 
+    init(holdsFirstUpload: Bool = true) {
+        holdsNextSave = holdsFirstUpload
+    }
+
     var uploadedEntryIDs: Set<UUID> { Set(snapshot.entries.keys) }
+    var uploadedTombstoneIDs: Set<UUID> { Set(snapshot.tombstones.keys) }
 
     /// Waits for the upload to be held. On timeout it stops holding, so no later upload hangs.
     func uploadHeld(within timeout: Duration = .seconds(5)) async -> Bool {
@@ -199,6 +233,184 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(model.syncErrorMessage)
         finishDelete.finish()
         await deleting.value
+    }
+
+    func testClipboardSyncSetsAsideHistoryAndFollowsANewSyncGeneration() async throws {
+        let firstGeneration = clipboardSyncGeneration()
+        let secondGeneration = clipboardSyncGeneration()
+        let firstCloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let secondCloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        let source = IOSClipboardSyncGenerationSource(firstGeneration)
+        var madeStore: ClipboardHistoryStore?
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: preferences,
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRootURL in
+                madeStore = store
+                return ClipboardCloudSyncService(store: store, syncRootURL: syncRootURL,
+                                                 makeTransport: { $0 == firstGeneration ? firstCloud : secondCloud })
+            }
+        )
+        let store = try XCTUnwrap(madeStore)
+        let older = textEntry("first generation")
+        _ = try await store.insert(older)
+        await model.synchronize()
+        let firstUpload = await firstCloud.uploadedEntryIDs
+        XCTAssertEqual(firstUpload, [older.id])
+
+        source.current = secondGeneration
+        await model.synchronize()
+
+        XCTAssertNil(model.syncErrorMessage)
+        XCTAssertFalse(model.entries.contains { $0.id == older.id })
+        let setAside = try FileManager.default
+            .contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        XCTAssertEqual(setAside.count, 1)
+        let setAsideURL = try XCTUnwrap(setAside.first)
+        let setAsideHistory = try await ClipboardHistoryStore(url: setAsideURL).load()
+        XCTAssertEqual(setAsideHistory.entries.map(\.id), [older.id])
+
+        let newer = textEntry("second generation")
+        _ = try await store.insert(newer)
+        await model.synchronize()
+
+        let secondUpload = await secondCloud.uploadedEntryIDs
+        XCTAssertEqual(secondUpload, [newer.id])
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
+    func testAccountResetSetsAsideUnboundClipboardHistoryWhileClipboardSyncIsOn() async throws {
+        let older = textEntry("never synced")
+        let unbound = try await makeUnboundClipboardModel(holding: [older], syncEnabled: true)
+        let model = unbound.model
+
+        await model.resetAccountBinding()
+        unbound.source.current = clipboardSyncGeneration(account: "account-B")
+        await model.synchronize()
+
+        let uploaded = await unbound.cloud.uploadedEntryIDs
+        let uploadedTombstones = await unbound.cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(model.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.root)
+        XCTAssertEqual(setAside.map { $0.entries.map(\.id) }, [[older.id]])
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
+    func testFailedAccountResetKeepsUnboundClipboardHistoryOutOfTheNextAccount() async throws {
+        let older = textEntry("never synced")
+        let unbound = try await makeUnboundClipboardModel(holding: [older], syncEnabled: true)
+        let model = unbound.model
+        let fileManager = FileManager.default
+        let historyFolder = unbound.root.path
+        // A read-only history folder makes the set-aside copy fail before anything changes.
+        try fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: historyFolder)
+        defer { try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder) }
+
+        await model.resetAccountBinding()
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder)
+
+        let resetError = try XCTUnwrap(model.syncErrorMessage)
+        XCTAssertTrue(resetError.hasPrefix("Couldn’t update clipboard history for this account."))
+        unbound.source.current = clipboardSyncGeneration(account: "account-B")
+        await model.synchronize()
+
+        let uploaded = await unbound.cloud.uploadedEntryIDs
+        let uploadedTombstones = await unbound.cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(model.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.root)
+        XCTAssertEqual(setAside.map { $0.entries.map(\.id) }, [[older.id]])
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
+    func testFailedAccountResetKeepsUnboundClipboardHistoryOutOfTheNextAccountAfterARelaunch() async throws {
+        let older = textEntry("never synced")
+        let unbound = try await makeUnboundClipboardModel(holding: [older], syncEnabled: true)
+        let fileManager = FileManager.default
+        let historyFolder = unbound.root.path
+        let syncRoot = unbound.root.appendingPathComponent("SyncMode", isDirectory: true)
+        // Main sync has made its folder, so only the history folder is read-only.
+        try fileManager.createDirectory(at: syncRoot, withIntermediateDirectories: true)
+        // A read-only history folder makes the set-aside copy fail before anything changes.
+        try fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: historyFolder)
+        defer { try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder) }
+
+        await unbound.model.resetAccountBinding()
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder)
+        XCTAssertNotNil(unbound.model.syncErrorMessage)
+
+        let accountB = clipboardSyncGeneration(account: "account-B")
+        let source = unbound.source
+        let cloud = unbound.cloud
+        source.current = accountB
+        let relaunched = IOSClipboardModel(
+            rootURL: unbound.root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: unbound.preferences,
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRootURL in
+                ClipboardCloudSyncService(store: store, syncRootURL: syncRootURL, makeTransport: { _ in cloud })
+            }
+        )
+        await relaunched.synchronize()
+
+        let uploaded = await cloud.uploadedEntryIDs
+        let uploadedTombstones = await cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(relaunched.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.root)
+        XCTAssertEqual(setAside.map { $0.entries.map(\.id) }, [[older.id]])
+        let binding = try Data(contentsOf: syncRoot.appendingPathComponent("clipboard-account-binding.json"))
+        XCTAssertEqual(binding, try JSONEncoder().encode(accountB))
+        XCTAssertNil(relaunched.syncErrorMessage)
+    }
+
+    func testAccountResetKeepsUnboundClipboardHistoryWhileClipboardSyncIsOff() async throws {
+        let kept = textEntry("kept while sync is off")
+        let unbound = try await makeUnboundClipboardModel(holding: [kept], syncEnabled: false)
+        let model = unbound.model
+
+        await model.resetAccountBinding()
+
+        XCTAssertEqual(model.entries.map(\.id), [kept.id])
+        let setAside = try await setAsideHistories(in: unbound.root)
+        XCTAssertEqual(setAside.count, 0)
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
+    func testAccountResetKeepsUnboundClipboardHistoryUntilTheUserTurnsClipboardSyncOn() async throws {
+        let kept = textEntry("kept while sync is off")
+        let unbound = try await makeUnboundClipboardModel(holding: [kept], syncEnabled: false)
+        let model = unbound.model
+
+        await model.resetAccountBinding()
+        unbound.source.current = clipboardSyncGeneration(account: "account-B")
+        await model.synchronize()
+        let uploadedWhileOff = await unbound.cloud.uploadedEntryIDs
+        XCTAssertEqual(uploadedWhileOff, [])
+        XCTAssertEqual(model.entries.map(\.id), [kept.id])
+
+        // The toggle in SnipSnapiOS/SyncedContentSettingsView.swift opens the "Sync clipboard history?"
+        // confirmation first; its button calls setSyncEnabled(true), which syncs.
+        await model.setSyncEnabled(true)
+
+        let uploaded = await unbound.cloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [kept.id])
+        XCTAssertEqual(model.entries.map(\.id), [kept.id])
+        XCTAssertNil(model.syncErrorMessage)
     }
 
     func testOverlappingClipboardSyncsStartOneRun() async throws {
@@ -489,6 +701,55 @@ final class IOSClipboardModelTests: IOSModelTestCase {
             ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("stays local".utf8))
         ])]))
         return (model, service, cloud)
+    }
+
+    /// A model holding `entries` with no clipboard binding, and clipboard sync on or off. Every
+    /// sync generation uploads to the returned cloud.
+    private func makeUnboundClipboardModel(
+        holding entries: [ClipboardEntry], syncEnabled: Bool
+    ) async throws -> (
+        model: IOSClipboardModel, root: URL, cloud: IOSClipboardHeldUploadCloud,
+        source: IOSClipboardSyncGenerationSource, preferences: UserDefaults
+    ) {
+        let cloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(syncEnabled, forKey: "syncClipboardHistory")
+        let source = IOSClipboardSyncGenerationSource(clipboardSyncGeneration())
+        var madeStore: ClipboardHistoryStore?
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: preferences,
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRootURL in
+                madeStore = store
+                return ClipboardCloudSyncService(store: store, syncRootURL: syncRootURL, makeTransport: { _ in cloud })
+            }
+        )
+        let store = try XCTUnwrap(madeStore)
+        for entry in entries { _ = try await store.insert(entry) }
+        await model.load()
+        XCTAssertEqual(Set(model.entries.map(\.id)), Set(entries.map(\.id)))
+        return (model, root, cloud, source, preferences)
+    }
+
+    /// Every history set aside in `root`. Each set-aside keeps its own file.
+    private func setAsideHistories(in root: URL) async throws -> [ClipboardHistoryState] {
+        let files = try FileManager.default
+            .contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        var histories: [ClipboardHistoryState] = []
+        for file in files { histories.append(try await ClipboardHistoryStore(url: file).load()) }
+        return histories
+    }
+
+    private func textEntry(_ text: String) -> ClipboardEntry {
+        ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data(text.utf8))
+        ])])
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {

@@ -404,6 +404,53 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(callCount, 1)
     }
 
+    /// Without an injected action, the handler syncs through the coordinator itself, so that
+    /// sync waits for a mode operation holding the shared gate.
+    func testAccountHandlerFallbackSyncWaitsForTheOperationGate() async throws {
+        let gate = AsyncOperationGate()
+        let fallbackStarts = SyncActionCallCount()
+        let unusedURL = FileManager.default.temporaryDirectory
+        let handler = AppleAccountCacheCoordinatorHandler(
+            persistence: {
+                await fallbackStarts.record()
+                return nil
+            },
+            controlTransport: FakeCloudControlTransport(server: FakeCloudServer()),
+            accountStateSource: InjectedICloudAccountStateSource(state: .noAccount),
+            makeSyncCoordinator: { persistence, namespace, descriptor in
+                makeInjectedSyncCoordinator(
+                    persistence: persistence,
+                    namespace: namespace,
+                    descriptor: descriptor
+                )
+            },
+            makeAttachmentCoordinator: { _, _, _ in
+                AttachmentTransferProbe(preparedURL: unusedURL)
+            },
+            operationGate: gate
+        )
+        let lease = HeldLease()
+        let modeOperation = Task { try await gate.withLease { await lease.hold() } }
+        await lease.waitUntilHeld()
+
+        let syncWaits = expectation(description: "The fallback sync waits for the lease")
+        syncWaits.isInverted = true
+        let sync = Task {
+            await handler.syncWhenPossible()
+            syncWaits.fulfill()
+        }
+        await fulfillment(of: [syncWaits], timeout: 0.05)
+        let startsWhileHeld = await fallbackStarts.value()
+        await lease.release()
+
+        try await modeOperation.value
+        await sync.value
+        let startsAfterRelease = await fallbackStarts.value()
+        // Before the SM23-F1 fix, the fallback runs while the lease is held.
+        XCTAssertEqual(startsWhileHeld, 0)
+        XCTAssertEqual(startsAfterRelease, 1)
+    }
+
     func testGeneratedCollectionRolesDriveEveryAttachmentActionWithoutZoneGuessing() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -551,6 +598,66 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(secondNotice)
         let finalCreatedGenerations = await syncProbe.generations()
         XCTAssertEqual(finalCreatedGenerations, [first.generation, second.generation])
+    }
+
+    func testResolvedIsolationRebuildsTheSyncCoordinatorForTheNextStore() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let ownerName = CloudCollectionAssembly.productionControlID.zone.ownerName
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: ownerName)
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
+        let binding = ICloudSyncNamespaceBinding(
+            scope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            generation: namespace.generation,
+            zones: Set(namespace.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        try await persistence.activateEmptyCollection(namespace: binding)
+        let control = FakeCloudControlTransport(server: FakeCloudServer())
+        await control.seedControl(descriptor)
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let syncProbe = SyncCoordinatorConstructionProbe()
+        let handler = AppleAccountCacheCoordinatorHandler(
+            persistence: { persistence },
+            controlTransport: control,
+            accountStateSource: account,
+            makeSyncCoordinator: { persistence, resolvedNamespace, resolvedDescriptor in
+                await syncProbe.record(resolvedNamespace.generation)
+                return makeInjectedSyncCoordinator(
+                    persistence: persistence,
+                    namespace: resolvedNamespace,
+                    descriptor: resolvedDescriptor
+                )
+            },
+            makeAttachmentCoordinator: { _, _, _ in
+                AttachmentTransferProbe(preparedURL: root.appendingPathComponent("unused"))
+            }
+        )
+
+        let firstNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertNil(firstNotice)
+        await account.setState(.noAccount)
+        let signedOutNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertEqual(signedOutNotice, .signedOut)
+        try await handler.resolveAppleAccountCache(.remove)
+        let resolvedGenerations = await syncProbe.generations()
+        XCTAssertEqual(resolvedGenerations, [descriptor.generation])
+
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        try await persistence.activateEmptyCollection(namespace: binding)
+        let returnedNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertNil(returnedNotice)
+        let finalGenerations = await syncProbe.generations()
+        XCTAssertEqual(
+            finalGenerations,
+            [descriptor.generation, descriptor.generation],
+            "The next iCloud store needs its own sync coordinator."
+        )
     }
 
     func testTemporaryAccountFailurePausesWithoutReclassifyingTheCache() async throws {
@@ -1022,6 +1129,313 @@ extension ICloudSyncModeCoordinatorTests {
         }
     }
 
+    func testFailedIsolationSwapFinishesOnTheNextAccountRefresh() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swapFault = AccountIsolationSwapFault()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            manifestWriter: swapFault.write,
+            writeHook: swapFault.arm
+        )
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.refreshAccountState()
+            XCTFail("The full disk must fail the isolation's pointer swap")
+        } catch SyncModePersistenceError.storageFailure {}
+
+        let signedOut = try await coordinator.refreshAccountState()
+        XCTAssertEqual(signedOut.state, .needsAttention)
+        XCTAssertEqual(signedOut.attentionReason, .accountSignedOut)
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        XCTAssertNotNil(isolated.accountIsolation)
+        let hidden = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertTrue(hidden.snips.isEmpty, "The prior account's work must stay hidden")
+
+        let kept = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+        XCTAssertEqual(kept.state, .off)
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testStatusStillReportsAnIsolationWhoseSwapKeepsFailing() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swapFault = AccountIsolationSwapFault()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            manifestWriter: swapFault.write,
+            writeHook: swapFault.arm
+        )
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.refreshAccountState()
+            XCTFail("The full disk must fail the isolation's pointer swap")
+        } catch SyncModePersistenceError.storageFailure {}
+
+        swapFault.failNextSwap()
+        do {
+            let status = try await coordinator.status()
+            XCTAssertEqual(status.state, .needsAttention)
+            XCTAssertEqual(status.attentionReason, .accountSignedOut)
+        } catch {
+            XCTFail("Status must still report an isolation whose swap fails again: \(error)")
+        }
+        let declared = try await persistence.snapshot()
+        XCTAssertEqual(declared.activeStore.kind, .iCloudSync)
+
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Keep Local Copy must report the failed swap")
+        } catch {
+            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+        }
+
+        let finished = try await coordinator.refreshAccountState()
+        XCTAssertEqual(finished.state, .needsAttention)
+        XCTAssertEqual(finished.attentionReason, .accountSignedOut)
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolated.accountIsolation?.resolution, .undecided)
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        let hidden = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertTrue(hidden.snips.isEmpty, "The prior account's work must stay hidden")
+
+        let kept = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+        XCTAssertEqual(kept.state, .off)
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testStatusStillReportsTheIsolationAfterAKeepWhoseSwapFails() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swapFault = AccountIsolationSwapFault()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            manifestWriter: swapFault.write,
+            writeHook: swapFault.arm
+        )
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.refreshAccountState()
+            XCTFail("The full disk must fail the isolation's pointer swap")
+        } catch SyncModePersistenceError.storageFailure {}
+
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Keep Local Copy must report the failed swap")
+        } catch {
+            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+        }
+
+        swapFault.failNextSwap()
+        do {
+            let status = try await coordinator.status()
+            XCTAssertEqual(status.state, .needsAttention)
+            XCTAssertEqual(status.attentionReason, .accountSignedOut)
+        } catch {
+            XCTFail("Status must still report the isolation after a failed Keep: \(error)")
+        }
+
+        let finished = try await coordinator.status()
+        XCTAssertEqual(finished.state, .needsAttention)
+        XCTAssertEqual(finished.attentionReason, .accountSignedOut)
+        let storage = try await persistence.snapshot()
+        XCTAssertEqual(storage.accountIsolation?.resolution, .undecided)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let hidden = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertTrue(hidden.snips.isEmpty, "The prior account's work must stay hidden")
+    }
+
+    func testInterruptedIsolationFinishesWithoutRelaunch() async throws {
+        let points: [SyncModeCrashPoint] = [
+            .afterAccountIsolationManifest,
+            .beforeAccountIsolationDurability,
+            .afterAccountIsolationDurability,
+            .beforeAccountIsolationPointerSwap,
+        ]
+        for point in points {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let crash = CrashInjector(point: point)
+            let persistence = try SwiftDataSyncModePersistence(
+                rootURL: root,
+                crashHook: crash.hit
+            )
+            let namespace = makeNamespace()
+            let account = InjectedICloudAccountStateSource(
+                state: .available(accountLineage: namespace.accountLineage)
+            )
+            let coordinator = ICloudSyncModeCoordinator(
+                persistence: persistence,
+                namespace: namespace,
+                textZone: textZone(namespace),
+                makeTransport: {
+                    FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+                },
+                accountStateSource: account
+            )
+            _ = try await coordinator.enableOrRetry()
+            try await add("hidden without relaunch", to: persistence.activeLibrary())
+            await account.setState(.noAccount)
+            do {
+                _ = try await coordinator.refreshAccountState()
+                XCTFail("Expected interruption at \(point)")
+            } catch is CrashInjector.Failure {}
+
+            _ = try await coordinator.refreshAccountState()
+            let storage = try await persistence.snapshot()
+            XCTAssertEqual(storage.activeStore.kind, .localOnly, "point: \(point)")
+            XCTAssertNotNil(storage.accountIsolation, "point: \(point)")
+            let library = try await persistence.activeLibrary()
+            let visible = await library.snapshot(sortedBy: .chronological)
+            XCTAssertTrue(visible.snips.isEmpty, "point: \(point)")
+
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+            let reopenedStorage = try await reopened.snapshot()
+            XCTAssertEqual(reopenedStorage.activeStore.id, storage.activeStore.id, "point: \(point)")
+            XCTAssertEqual(
+                reopenedStorage.accountIsolation,
+                storage.accountIsolation,
+                "point: \(point)"
+            )
+        }
+    }
+
+    func testReopenFinishesAChoiceAnOlderBuildStoredBeforeItsSwap() async throws {
+        let cases: [(name: String, storedChoice: ICloudAccountIsolationResolution, visible: [String])] = [
+            ("Keep", .keepingLocalCopy, ["prior account work"]),
+            ("Remove", .removing, []),
+        ]
+        for (name, storedChoice, expectedVisible) in cases {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let crash = CrashInjector(point: .beforeAccountIsolationPointerSwap)
+            let persistence = try SwiftDataSyncModePersistence(
+                rootURL: root,
+                crashHook: crash.hit
+            )
+            let namespace = makeNamespace()
+            let account = InjectedICloudAccountStateSource(
+                state: .available(accountLineage: namespace.accountLineage)
+            )
+            let coordinator = ICloudSyncModeCoordinator(
+                persistence: persistence,
+                namespace: namespace,
+                textZone: textZone(namespace),
+                makeTransport: {
+                    FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+                },
+                accountStateSource: account
+            )
+            _ = try await coordinator.enableOrRetry()
+            try await add("prior account work", to: persistence.activeLibrary())
+            await account.setState(.noAccount)
+            do {
+                _ = try await coordinator.refreshAccountState()
+                XCTFail("Expected interruption before the pointer swap, case: \(name)")
+            } catch is CrashInjector.Failure {}
+
+            try mutateManifest(at: root.appendingPathComponent("activation.json")) { manifest in
+                var isolation = try XCTUnwrap(manifest["accountIsolation"] as? [String: Any])
+                XCTAssertEqual(
+                    isolation["resolution"] as? String,
+                    ICloudAccountIsolationResolution.undecided.rawValue,
+                    "case: \(name)"
+                )
+                isolation["resolution"] = storedChoice.rawValue
+                manifest["accountIsolation"] = isolation
+            }
+
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+            let resumed = ICloudSyncModeCoordinator(
+                persistence: reopened,
+                namespace: namespace,
+                textZone: textZone(namespace),
+                makeTransport: {
+                    FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+                },
+                accountStateSource: account
+            )
+            let status: ICloudSyncModeStatus
+            do {
+                status = try await resumed.status()
+            } catch {
+                XCTFail("Status must finish the stored choice, case: \(name): \(error)")
+                continue
+            }
+            XCTAssertEqual(status.state, .off, "case: \(name)")
+            let storage = try await reopened.snapshot()
+            XCTAssertNil(storage.accountIsolation, "case: \(name)")
+            XCTAssertEqual(storage.activeStore.kind, .localOnly, "case: \(name)")
+            XCTAssertEqual(
+                storage.activeStore.quarantinedNamespace,
+                storedChoice == .keepingLocalCopy ? testBinding() : nil,
+                "case: \(name)"
+            )
+            let library = try await reopened.activeLibrary()
+            let visible = await library.snapshot(sortedBy: .chronological)
+            XCTAssertEqual(visible.snips.map(\.content), expectedVisible, "case: \(name)")
+        }
+    }
+
     func testKeepLocalCopyCrashPointsReplayWithoutDuplicateData() async throws {
         let points: [SyncModeCrashPoint] = [
             .afterAccountResolutionIntent,
@@ -1083,6 +1497,118 @@ extension ICloudSyncModeCoordinatorTests {
             let visible = await library.snapshot(sortedBy: .chronological)
             XCTAssertEqual(visible.snips.map(\.content), ["one isolated snip"], "point: \(point)")
         }
+    }
+
+    func testBackgroundStatusWaitsForTheUsersKeepMerge() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mergePause = AccountLocalCopyMergePause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The user's Keep must reach its merge")
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must finish its own merge: \(error)")
+        }
+        do {
+            _ = try await background.value
+        } catch {
+            XCTFail("A background status must not fail beside the user's Keep: \(error)")
+        }
+        XCTAssertEqual(mergePause.hits, 1, "Only the user's Keep may run the merge")
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testUsersKeepReportsItsOwnTurnAfterABackgroundMergeFails() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let crash = CrashInjector(point: .afterAccountResolutionIntent)
+        let mergePause = AccountLocalCopyMergePause(failsOnRelease: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: crash.hit,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Expected the injected interruption after the stored choice")
+        } catch is CrashInjector.Failure {}
+
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The background reconcile must reach its merge")
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            _ = try await background.value
+            XCTFail("The background status must report its failed merge")
+        } catch {
+            XCTAssertTrue(error is AccountLocalCopyMergePause.Failure, "\(error)")
+        }
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must make its own attempt after the failed one: \(error)")
+        }
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
     }
 
     func testInterruptedRemovalFinishesWhenTheOriginalAccountReturns() async throws {
@@ -1424,6 +1950,33 @@ private actor SyncActionCallCount {
     func value() -> Int { count }
 }
 
+/// Keeps a gate's lease from inside `withLease` until `release()`.
+private actor HeldLease {
+    private var isHeld = false
+    private var isReleased = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        isHeld = true
+        heldWaiters.forEach { $0.resume() }
+        heldWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHeld() async {
+        if isHeld { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
 private actor AttachmentTransferProbe: CloudAttachmentTransferring {
     struct Configuration: Equatable, Sendable {
         let namespace: CloudSyncNamespace
@@ -1482,4 +2035,191 @@ private func makeInjectedSyncCoordinator(
             state: .available(accountLineage: namespace.accountLineage)
         )
     )
+}
+
+extension ICloudSyncModeCoordinatorTests {
+    func testSameAccountReturnFinishesItsDownloadBeforeAUsersRemove() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await startSameAccountReturnPausedInItsDownload(root: root)
+        let coordinator = fixture.coordinator
+        let removeEnded = TaskEndMark()
+        let remove = Task {
+            defer { removeEnded.set() }
+            return try await coordinator.resolveAccountIsolation(.remove)
+        }
+        // Bounded: the Remove must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let removeStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .removing
+        }
+        if !removeStored { XCTFail("The user's Remove must be stored during the download") }
+        let removeEndedEarly = await removeEnded.wait(within: .seconds(2))
+        XCTAssertFalse(removeEndedEarly, "The user's Remove must wait for the download's turn")
+        fixture.fetchPause.release()
+
+        do {
+            let returned = try await fixture.returning.value
+            XCTAssertEqual(returned.state, .off)
+        } catch {
+            XCTFail("The same-account return must finish beside the user's Remove: \(error)")
+        }
+        do {
+            _ = try await remove.value
+        } catch {
+            XCTFail("The user's Remove must finish after the download: \(error)")
+        }
+        let storage = try await fixture.persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.isolatedRoot.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.isolatedCacheRoot.path))
+        let visible = await (try await fixture.persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertFalse(visible.snips.map(\.content).contains("prior account work"))
+    }
+
+    func testUsersKeepWaitsForTheSameAccountReturnsDownload() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await startSameAccountReturnPausedInItsDownload(root: root)
+        let coordinator = fixture.coordinator
+        let keepEnded = TaskEndMark()
+        let keep = Task {
+            defer { keepEnded.set() }
+            return try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+        }
+        // Bounded: the Keep must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let keepStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .keepingLocalCopy
+        }
+        if !keepStored { XCTFail("The user's Keep must be stored during the download") }
+        let keepEndedEarly = await keepEnded.wait(within: .seconds(2))
+        XCTAssertFalse(keepEndedEarly, "The user's Keep must wait for the download's turn")
+        fixture.fetchPause.release()
+
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must wait for the download, then finish: \(error)")
+        }
+        do {
+            let returned = try await fixture.returning.value
+            XCTAssertEqual(returned.state, .off)
+        } catch {
+            XCTFail("The same-account return must finish its Keep: \(error)")
+        }
+        let storage = try await fixture.persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await fixture.persistence.activeLibrary())
+            .snapshot(sortedBy: .manual)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+        let keptURL = try XCTUnwrap(visible.attachmentURLs[fixture.attachmentID])
+        XCTAssertEqual(try Data(contentsOf: keptURL), fixture.bytes)
+    }
+
+    /// Isolates an iCloud cache whose only attachment's bytes now exist only in CloudKit, then
+    /// brings the same account back. Returns with that refresh held in its download.
+    private func startSameAccountReturnPausedInItsDownload(
+        root: URL
+    ) async throws -> SameAccountReturn {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let cacheRoot = root.appendingPathComponent("AppGroup/Library/Caches/CloudAttachments")
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: cacheRoot
+        )
+        let sourceURL = root.appendingPathComponent("prior-account-attachment.txt")
+        let bytes = Data("prior account attachment".utf8)
+        try bytes.write(to: sourceURL)
+        let library = try await persistence.activeLibrary()
+        let added = try await library.perform(
+            .add(
+                content: "prior account work",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account-a",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let fetchPause = AssetFetchPause()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                PausingAssetFetchTransport(
+                    inner: FakeCloudRecordTransport(server: server, namespace: namespace),
+                    pause: fetchPause
+                )
+            },
+            accountStateSource: account
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let cloudStore = try await persistence.snapshot().activeStore
+        let uploaded = await (try await persistence.activeLibrary()).snapshot(sortedBy: .manual)
+        try FileManager.default.removeItem(at: XCTUnwrap(uploaded.attachmentURLs[attachmentID]))
+
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolated.accountIsolation?.storeID, cloudStore.id)
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        let isolatedRoot = root.appendingPathComponent(cloudStore.relativeRoot, isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: isolatedRoot.path))
+        let isolatedCacheRoot = try XCTUnwrap(
+            SwiftDataSyncModePersistence.cacheRootURL(base: cacheRoot, storeID: cloudStore.id)
+        )
+
+        fetchPause.arm()
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        let returning = Task { try await coordinator.refreshAccountState() }
+        let paused = await fetchPause.waitUntilPaused(within: .seconds(5))
+        if !paused { XCTFail("The same-account return must reach its attachment download") }
+        return SameAccountReturn(
+            persistence: persistence,
+            coordinator: coordinator,
+            fetchPause: fetchPause,
+            returning: returning,
+            attachmentID: attachmentID,
+            bytes: bytes,
+            isolatedRoot: isolatedRoot,
+            isolatedCacheRoot: isolatedCacheRoot
+        )
+    }
+}
+
+private struct SameAccountReturn: Sendable {
+    let persistence: SwiftDataSyncModePersistence
+    let coordinator: ICloudSyncModeCoordinator
+    let fetchPause: AssetFetchPause
+    let returning: Task<ICloudSyncModeStatus, any Error>
+    let attachmentID: UUID
+    let bytes: Data
+    let isolatedRoot: URL
+    let isolatedCacheRoot: URL
 }

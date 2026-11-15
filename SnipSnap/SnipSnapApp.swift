@@ -215,8 +215,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ))
         self.cliLifecycle = cliLifecycle
 #if DEBUG
-        let initializeSyncModeStore =
+        let usesSimulatedSyncSettings =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1"
+        let initializeSyncModeStore = usesSimulatedSyncSettings
 #else
         let initializeSyncModeStore = false
 #endif
@@ -249,7 +250,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 attachmentCacheRootURL: attachmentCacheRootURL,
                 sourceLibrary: library
             )
-        } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
+        } else if usesSimulatedSyncSettings {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(
                 rootURL: syncModeRootURL,
                 syncModeStore: assembly.syncModeStore
@@ -311,7 +312,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
-            cloudServices.syncedContentSettings.recordSyncStarted()
+            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
+            var stopIssue: SyncedContentSyncIssue?
             do {
                 let result: SnipSnapCloudSyncResult
                 if retry {
@@ -342,9 +344,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     try await reloadActiveLibrary()
                     break
                 case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-                    try await cliRequestStore.suspendActiveScope()
-                    await model.clipboardHistory.resetCloudAccount()
-                    try await reloadActiveLibrary()
                     let issue: SyncedContentSyncIssue
                     switch result {
                     case .iCloudDataReset:
@@ -354,6 +353,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     default:
                         issue = .iCloudAccountChanged
                     }
+                    stopIssue = issue
+                    await model.suspendCLIActiveScope(in: cliRequestStore)
+                    await model.clipboardHistory.resetCloudAccount()
+                    try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordSyncStopped(issue)
                 case .syncIssue(let issue):
                     cloudServices.syncedContentSettings.recordSyncFailure(issue)
@@ -365,17 +368,20 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordEnableCompleted()
                 case .oldSyncedContentRemovalPending:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(true)
+                    cloudServices.syncedContentSettings.recordRemovalPending()
                 case .oldSyncedContentRemovalCompleted:
                     try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending(false)
+                    cloudServices.syncedContentSettings.recordRemovalCompleted(syncStart)
                 }
-                cloudServices.syncedContentSettings.recordSyncCompleted()
+                if result != .oldSyncedContentRemovalPending {
+                    cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
+                }
                 await model.clipboardHistory.syncNow()
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
                     SnipSnapCloudSyncIssueMapper.issue(for: error)
                 )
+                if let stopIssue { cloudServices.syncedContentSettings.recordSyncStopped(stopIssue) }
             }
         }
         let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
@@ -401,17 +407,31 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             retrySyncWhenPossible: retryAction,
             scheduleSyncAfterLocalChange: scheduleAction
         )
-        cloudSyncHandler = productionCloudSyncHandler
-        model.setCloudSyncHandler(productionCloudSyncHandler)
 #if DEBUG
-        let uiTestAccountNoticeModel =
+        let simulatedCloudSyncHandler: SimulatedCloudSyncHandler? =
+            usesSimulatedSyncSettings && productionCloudSyncHandler == nil
+            ? SimulatedCloudSyncHandler(
+                syncWhenPossible: syncAction,
+                retrySyncWhenPossible: retryAction,
+                scheduleSyncAfterLocalChange: scheduleAction
+            )
+            : nil
+        let appCloudSyncHandler: (any OptionalCloudSyncHandling)? =
+            simulatedCloudSyncHandler ?? productionCloudSyncHandler
+        cloudSyncHandler = appCloudSyncHandler
+        model.setCloudSyncHandler(appCloudSyncHandler)
+        let uiTestAccountNoticeModel: AppleAccountNoticeModel? =
             ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut"
             ? AppleAccountNoticeModel(
                 notice: .signedOut,
                 handler: UITestAppleAccountCacheHandler()
             )
-            : nil
+            : simulatedCloudSyncHandler.map {
+                AppleAccountNoticeModel(handler: $0, activeLibraryChangeAction: reloadActiveLibrary)
+            }
 #else
+        cloudSyncHandler = productionCloudSyncHandler
+        model.setCloudSyncHandler(productionCloudSyncHandler)
         let uiTestAccountNoticeModel: AppleAccountNoticeModel? = nil
 #endif
         if let uiTestAccountNoticeModel {
@@ -596,8 +616,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         case .libraryReplacedAndSyncScheduled:
             await reloadActiveLibrary()
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-            do { try await cliRequests.suspendActiveScope() }
-            catch { model.presentError(error) }
+            await model.suspendCLIActiveScope(in: cliRequests)
             await model.clipboardHistory.resetCloudAccount()
             await reloadActiveLibrary()
             let issue: SyncedContentSyncIssue
@@ -638,8 +657,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         cliCleanupTask = nil
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [self] in
-            do { try await cliLifecycle.stop() }
-            catch { model.presentError(error) }
+            await model.endCLIAppSession(cliLifecycle)
             model.flushComposerDrafts()
             await model.clipboardHistory.flushPersistence()
             sender.reply(toApplicationShouldTerminate: true)
@@ -720,6 +738,36 @@ private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
         didResolve = true
     }
+}
+
+/// Stands in for the account handler that simulated sync settings lack, so Settings and the CLI
+/// reach the app's sync actions.
+actor SimulatedCloudSyncHandler: OptionalCloudSyncHandling {
+    private let syncAction: AppleAccountCacheCoordinatorHandler.SyncAction
+    private let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction
+    private let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction
+
+    init(
+        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
+    ) {
+        syncAction = syncWhenPossible
+        retryAction = retrySyncWhenPossible
+        scheduleAction = scheduleSyncAfterLocalChange
+    }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { await syncAction() }
+    func retrySyncWhenPossible() async { await retryAction() }
+    func scheduleSyncAfterLocalChange() async { await scheduleAction() }
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.transferUnsupported
+    }
+    func clearDownloadedFiles() async throws {}
 }
 #endif
 

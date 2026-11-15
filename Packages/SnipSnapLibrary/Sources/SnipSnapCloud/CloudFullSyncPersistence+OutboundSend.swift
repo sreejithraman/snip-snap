@@ -6,7 +6,7 @@ extension CloudFullSyncPersistence {
   package func outboundAdmission() async throws -> CloudRecordOutboundAdmission {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
-    let archivedIDs = Set(unresolvedCorruptShadows(stored.quarantines).map { Self.recordID($0.identity) })
+    let archivedIDs = corruptShadowRecovery(in: stored).blockedRecordIDs
     return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery).union(archivedIDs),
       blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
   }
@@ -40,7 +40,7 @@ extension CloudFullSyncPersistence {
     var issues = recovery.map(Self.storedSyncIssue(for:))
     if stored.namespaceState.phase == .blocked
       || !stored.conflicts.isEmpty
-      || hasUnresolvedQuarantines(stored.quarantines)
+      || corruptShadowRecovery(in: stored).needsAttention
     {
       issues.append(.appDataIssue)
     }
@@ -56,7 +56,6 @@ extension CloudFullSyncPersistence {
 
   private func prepareManualRetryWithinMutation() async throws -> Bool {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let corruptShadows = unresolvedCorruptShadows(stored.quarantines)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let keys = Set(recovery.compactMap { event -> String? in
       guard event.kind == .terminalFetch || event.kind == .terminalSend,
@@ -75,7 +74,7 @@ extension CloudFullSyncPersistence {
     // full inventory before allowing newly created local content to enroll.
     return stored.namespaceState.phase == .remoteChecked
       || !stored.deferredEntities.isEmpty
-      || !corruptShadows.isEmpty
+      || corruptShadowRecovery(in: stored).needsRecovery
       || recovery.contains(where: Self.hasFailedFetchRecords)
   }
 
@@ -154,7 +153,7 @@ extension CloudFullSyncPersistence {
     let snips = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0) })
     let lists = Dictionary(uniqueKeysWithValues: local.lists.map { ($0.id, $0) })
     let conflicted = Set(stored.conflicts.map(\.reference))
-    let archivedReferences = Set(unresolvedCorruptShadows(stored.quarantines).map(\.reference))
+    let archivedReferences = corruptShadowRecovery(in: stored).blockedReferences
     var eligible = stored.enrolledEntities
     if stored.namespaceState.phase == .active {
       eligible.formUnion(local.lists.map {
@@ -366,7 +365,6 @@ extension CloudFullSyncPersistence {
       }
     }
     for publication in publications where !publication.isLocallyPresent
-      && publication.metadataAccepted
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {
@@ -379,7 +377,10 @@ extension CloudFullSyncPersistence {
         plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
       }
     }
+    let namedPayloads = Set(publications.map(\.metadata.payloadIdentity))
+      .union(publications.compactMap(\.priorPayloadIdentity))
     for cleanup in snapshot.cleanups where !isTerminalAttachmentFailure(cleanup.lastFailure) {
+      guard !namedPayloads.contains(cleanup.identity) else { continue }
       if let blockedByAttachmentID = cleanup.blockedByAttachmentID,
         let replacement = publicationByID[blockedByAttachmentID],
         !replacement.metadataAccepted

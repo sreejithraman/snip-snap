@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import SnipSnapPersistence
 
 @MainActor
 extension AppModel {
@@ -189,6 +190,18 @@ extension AppModel {
             return SnipCLIReceipt(request: request, status: .success,
                                   message: "Deleted list; its snips moved to Inbox.")
         }
+    }
+
+    /// Suspends the CLI's access to the active scope before an iCloud stop. A failure is shown and recorded, and the stop goes on.
+    func suspendCLIActiveScope(in store: SnipCLIRequestStore) async {
+        do { try await store.suspendActiveScope() }
+        catch { presentError(error, operation: "cli.scope_suspend") }
+    }
+
+    /// Ends the CLI's app session at quit. A failure is shown and recorded, and quitting goes on.
+    func endCLIAppSession(_ lifecycle: SnipCLIAppLifecycle) async {
+        do { try await lifecycle.stop() }
+        catch { presentError(error, operation: "cli.session_end") }
     }
 
     func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {

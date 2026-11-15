@@ -6,12 +6,10 @@ import UniformTypeIdentifiers
 import XCTest
 @testable import SnipSnapiOS
 
-/// Opening or closing an iPhone Duo, or resizing iPad Split View, swaps the compact and regular
-/// library trees. These tests host the real root view and swap its size class. They run against
-/// the rail here and against the sidebar in `IOSFoldContinuitySidebarTests`.
+/// Opening or closing an iPhone Duo, or resizing an iPad window, swaps the compact and regular
+/// library trees. These tests host the real root view and swap its size class.
 @MainActor
-class IOSFoldContinuityTests: IOSModelTestCase {
-    class var regularLayout: RegularLibraryLayout { .rail }
+final class IOSFoldContinuityTests: IOSModelTestCase {
 
     func testDraftTextAndAttachmentSurviveSizeClassSwaps() async throws {
         let storage = makeComposerStorage()
@@ -490,10 +488,6 @@ class IOSFoldContinuityTests: IOSModelTestCase {
     }
 }
 
-final class IOSFoldContinuitySidebarTests: IOSFoldContinuityTests {
-    override class var regularLayout: RegularLibraryLayout { .sidebar }
-}
-
 /// Stands in for creating the snip, and holds the save until the test finishes it.
 @MainActor
 private final class SaveGate {
@@ -534,16 +528,12 @@ private final class RootHarness {
     let session: IOSAppSession
     private let host: UIHostingController<IOSAppRootView>
     private let window: UIWindow
-    private let layout: RegularLibraryLayout
     private let storage: CompactComposerStorage
 
     init(test: IOSFoldContinuityTests, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
         session = IOSAppSession(library: library)
-        layout = type(of: test).regularLayout
         self.storage = storage
-        host = UIHostingController(rootView: IOSAppRootView(
-            session: session, composerStorage: storage, regularLayout: layout
-        ))
+        host = UIHostingController(rootView: IOSAppRootView(session: session, composerStorage: storage))
         host.traitOverrides.horizontalSizeClass = .compact
         window = try makeWindow(host)
         test.addTeardownBlock { @MainActor [self] in await close() }
@@ -598,15 +588,9 @@ private final class RootHarness {
     }
 
     var isRegular: Bool {
-        switch layout {
-        case .sidebar:
-            first(UISplitViewController.self, in: host) != nil
-        case .rail:
-            // The compact tree pages lists through `ListPagePanObserver`; the rail has none.
-            first(UISplitViewController.self, in: host) == nil
-                && first(UINavigationController.self, in: host) != nil
-                && allViews(ListPagePanObserver.AttachmentView.self).isEmpty
-        }
+        // The compact tree pages lists through `ListPagePanObserver`; the rail has none.
+        first(UINavigationController.self, in: host) != nil
+            && allViews(ListPagePanObserver.AttachmentView.self).isEmpty
     }
 
     /// A controller the root presents, such as a system picker, or one anywhere inside a presented container,

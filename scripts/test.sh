@@ -104,6 +104,8 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         CODE_SIGNING_ALLOWED=NO \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
         -parallel-testing-enabled NO \
+        -test-timeouts-enabled YES \
+        -default-test-execution-time-allowance 180 \
         -only-testing:SnipSnapiOSTests \
         test; then
         :

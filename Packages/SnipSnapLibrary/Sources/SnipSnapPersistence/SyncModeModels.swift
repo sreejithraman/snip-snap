@@ -66,6 +66,32 @@ public struct ICloudSyncNamespaceBinding: Codable, Equatable, Sendable {
     }
     return CloudSyncNamespaceKey(rawValue: data.base64EncodedString())
   }
+
+  /// The inverse of `namespaceKey`. Returns nil for any string `namespaceKey` doesn't produce.
+  package init?(namespaceKey: CloudSyncNamespaceKey) {
+    guard var remaining = Data(base64Encoded: namespaceKey.rawValue) else { return nil }
+    func readField() -> String? {
+      guard remaining.count >= 8 else { return nil }
+      let count = remaining.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+      remaining = remaining.dropFirst(8)
+      guard count <= UInt64(remaining.count) else { return nil }
+      let field = remaining.prefix(Int(count))
+      remaining = remaining.dropFirst(Int(count))
+      return String(bytes: field, encoding: .utf8)
+    }
+    guard readField() == "snipsnap-cloud-namespace-v1",
+      let scope = readField(),
+      let accountLineage = readField(),
+      let generation = readField().flatMap(UUID.init(uuidString:))
+    else { return nil }
+    var zones: Set<ICloudSyncZoneBinding> = []
+    while !remaining.isEmpty {
+      guard let ownerName = readField(), let name = readField() else { return nil }
+      zones.insert(ICloudSyncZoneBinding(name: name, ownerName: ownerName))
+    }
+    self.init(scope: scope, accountLineage: accountLineage, generation: generation, zones: zones)
+    guard self.namespaceKey == namespaceKey else { return nil }
+  }
 }
 
 package enum SyncModeStoreKind: String, Codable, Equatable, Sendable {
@@ -400,108 +426,6 @@ package struct SyncModeMergeIntent: Codable, Equatable, Sendable {
     seedProvenance = try values.decode([SyncModeSeedProvenance].self, forKey: .seedProvenance)
     seededListIDs = try values.decode(Set<UUID>.self, forKey: .seededListIDs)
     fullReenablePlanID = try values.decodeIfPresent(UUID.self, forKey: .fullReenablePlanID)
-  }
-}
-
-package struct SyncModeTransition: Codable, Equatable, Sendable {
-  package let id: UUID
-  package let sourceStoreID: UUID
-  package let candidateStoreID: UUID
-  package let targetKind: SyncModeStoreKind
-  package let namespace: ICloudSyncNamespaceBinding?
-  package let syncProtocol: SyncModeSyncProtocol
-  package var phase: SyncModeTransitionPhase
-  package var freezeToken: SyncModeFreezeToken?
-  package var freezeSnapshotTaken: Bool
-  package var approvedSnipIDs: Set<UUID>
-  package var pendingSettlementSnipIDs: Set<UUID>
-  package var sendAttempt: SyncModeSendAttempt?
-  package var supersededApprovedSnipIDs: Set<UUID>
-  package var seedProvenance: [SyncModeSeedProvenance]
-  package var serverAcceptedSeedSnipIDs: Set<UUID>
-  package var captureAcceptedServerProvenance: Bool
-  package var seededListIDs: Set<UUID>
-  package var mergeIntent: SyncModeMergeIntent?
-
-  package init(
-    id: UUID,
-    sourceStoreID: UUID,
-    candidateStoreID: UUID,
-    targetKind: SyncModeStoreKind,
-    namespace: ICloudSyncNamespaceBinding?,
-    syncProtocol: SyncModeSyncProtocol,
-    phase: SyncModeTransitionPhase = .candidateDeclared,
-    freezeToken: SyncModeFreezeToken? = nil,
-    freezeSnapshotTaken: Bool = false,
-    approvedSnipIDs: Set<UUID> = [],
-    pendingSettlementSnipIDs: Set<UUID> = [],
-    sendAttempt: SyncModeSendAttempt? = nil,
-    supersededApprovedSnipIDs: Set<UUID> = [],
-    seedProvenance: [SyncModeSeedProvenance] = [],
-    serverAcceptedSeedSnipIDs: Set<UUID> = [],
-    captureAcceptedServerProvenance: Bool = false,
-    seededListIDs: Set<UUID> = [],
-    mergeIntent: SyncModeMergeIntent? = nil
-  ) {
-    self.id = id
-    self.sourceStoreID = sourceStoreID
-    self.candidateStoreID = candidateStoreID
-    self.targetKind = targetKind
-    self.namespace = namespace
-    self.syncProtocol = syncProtocol
-    self.phase = phase
-    self.freezeToken = freezeToken
-    self.freezeSnapshotTaken = freezeSnapshotTaken
-    self.approvedSnipIDs = approvedSnipIDs
-    self.pendingSettlementSnipIDs = pendingSettlementSnipIDs
-    self.sendAttempt = sendAttempt
-    self.supersededApprovedSnipIDs = supersededApprovedSnipIDs
-    self.seedProvenance = seedProvenance
-    self.serverAcceptedSeedSnipIDs = serverAcceptedSeedSnipIDs
-    self.captureAcceptedServerProvenance = captureAcceptedServerProvenance
-    self.seededListIDs = seededListIDs
-    self.mergeIntent = mergeIntent
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case id, sourceStoreID, candidateStoreID, targetKind, namespace, syncProtocol, phase
-    case freezeToken, freezeSnapshotTaken, approvedSnipIDs, pendingSettlementSnipIDs
-    case sendAttempt, supersededApprovedSnipIDs, seedProvenance, serverAcceptedSeedSnipIDs
-    case captureAcceptedServerProvenance, seededListIDs, mergeIntent
-  }
-
-  package init(from decoder: any Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    id = try values.decode(UUID.self, forKey: .id)
-    sourceStoreID = try values.decode(UUID.self, forKey: .sourceStoreID)
-    candidateStoreID = try values.decode(UUID.self, forKey: .candidateStoreID)
-    targetKind = try values.decode(SyncModeStoreKind.self, forKey: .targetKind)
-    namespace = try values.decodeIfPresent(ICloudSyncNamespaceBinding.self, forKey: .namespace)
-    syncProtocol = try values.decodeIfPresent(
-      SyncModeSyncProtocol.self,
-      forKey: .syncProtocol
-    ) ?? .legacyTextV1
-    phase = try values.decode(SyncModeTransitionPhase.self, forKey: .phase)
-    freezeToken = try values.decodeIfPresent(SyncModeFreezeToken.self, forKey: .freezeToken)
-    freezeSnapshotTaken = try values.decode(Bool.self, forKey: .freezeSnapshotTaken)
-    approvedSnipIDs = try values.decode(Set<UUID>.self, forKey: .approvedSnipIDs)
-    pendingSettlementSnipIDs = try values.decode(Set<UUID>.self, forKey: .pendingSettlementSnipIDs)
-    sendAttempt = try values.decodeIfPresent(SyncModeSendAttempt.self, forKey: .sendAttempt)
-    supersededApprovedSnipIDs = try values.decode(
-      Set<UUID>.self,
-      forKey: .supersededApprovedSnipIDs
-    )
-    seedProvenance = try values.decode([SyncModeSeedProvenance].self, forKey: .seedProvenance)
-    serverAcceptedSeedSnipIDs = try values.decode(
-      Set<UUID>.self,
-      forKey: .serverAcceptedSeedSnipIDs
-    )
-    captureAcceptedServerProvenance = try values.decode(
-      Bool.self,
-      forKey: .captureAcceptedServerProvenance
-    )
-    seededListIDs = try values.decode(Set<UUID>.self, forKey: .seededListIDs)
-    mergeIntent = try values.decodeIfPresent(SyncModeMergeIntent.self, forKey: .mergeIntent)
   }
 }
 

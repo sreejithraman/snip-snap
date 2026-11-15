@@ -289,6 +289,13 @@ private enum ClipboardSyncPhase: Equatable {
     case syncing(id: UUID)
 }
 
+/// A set-aside is queued or running. Captures wait for the history that follows it, and
+/// retired history takes no edit.
+private enum ClipboardHistoryHandoff: Equatable {
+    case none
+    case settingAside(id: UUID, isRetired: Bool, captures: [ClipboardEntry])
+}
+
 /// Stays scheduled through the run it starts, so requests made meanwhile are absorbed.
 private enum ClipboardSyncRequest {
     case idle(lastRequestedAt: Date)
@@ -335,6 +342,10 @@ final class ClipboardHistory: ObservableObject {
     let sharedStore: ClipboardHistoryStore
     let ownedFileStore: ClipboardFileStore
     private var state = ClipboardHistoryState()
+    private var handoff = ClipboardHistoryHandoff.none
+    private var isHistoryRetired: Bool {
+        if case .settingAside(_, let isRetired, _) = handoff { isRetired } else { false }
+    }
     var onChange: (() -> Void)?
     private let captureReader: ClipboardCaptureReader
     private var capture: ClipboardCapture {
@@ -448,11 +459,13 @@ final class ClipboardHistory: ObservableObject {
         if case .capturing(let attempt) = capture {
             capture = .watching(handledChangeCount: attempt.handledChangeCount)
         }
+        dropWaitingCaptures()
         let previousClear = clearTask
         clearTask = Task { [weak self] in
             await previousClear?.value
             guard let self else { return }
             await initialLoadTask?.value
+            guard !isHistoryRetired else { return }
             state.clearUnpinned()
             entries = state.entries
             persist(
@@ -526,10 +539,21 @@ final class ClipboardHistory: ObservableObject {
             await flushPersistence()
             guard syncPhase == run, let generation = try await syncGeneration?(),
                   syncPhase == run else { return }
-            let updated = try await cloudService.synchronize(
-                generation: generation,
-                isEnabled: { [self] in syncIsActive }
-            )
+            func synchronizeHistory() async throws -> ClipboardHistoryState {
+                try await cloudService.synchronize(
+                    generation: generation,
+                    isEnabled: { [self] in syncIsActive }
+                )
+            }
+            let updated: ClipboardHistoryState
+            do {
+                updated = try await synchronizeHistory()
+            } catch ClipboardCloudError.syncGenerationChanged {
+                // Set-aside history never uploads into the new sync generation.
+                try await setAsideCloudHistory()
+                guard syncPhase == run else { return }
+                updated = try await synchronizeHistory()
+            }
             guard syncPhase == run else { return }
             state.merge(updated)
             entries = state.entries
@@ -566,15 +590,14 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func resetCloudAccount() async {
-        cloudService?.stop()
         let token = beginSuppression()
         defer { endSuppression(token) }
-        await flushPersistence()
+        // Copies still waiting belong to the account being left, and base never recorded them.
+        dropWaitingCaptures()
+        let includingUnboundHistory = clipboardSyncEnabled
+        stopSync()
         do {
-            try await cloudService?.resetAccountBinding()
-            state = try await sharedStore.load()
-            entries = state.entries
-            syncError = nil
+            try await setAsideCloudHistory(includingUnboundHistory: includingUnboundHistory)
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
@@ -585,12 +608,62 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
-    func deleteSyncedHistory() async throws {
-        guard let cloudService, let generation = try await syncGeneration?() else { return }
-        await flushPersistence()
-        try await cloudService.deleteSyncedHistory(generation: generation)
-        state = try await sharedStore.load()
-        entries = state.entries
+    private func setAsideCloudHistory(includingUnboundHistory: Bool = false) async throws {
+        cloudService?.stop()
+        let id = UUID()
+        if case .settingAside(_, let isRetired, let captures) = handoff {
+            handoff = .settingAside(id: id, isRetired: isRetired, captures: captures)
+        } else {
+            handoff = .settingAside(id: id, isRetired: false, captures: [])
+        }
+        try await queueHistoryWrite { [self] in
+            let outcome: Result<Void, any Error>
+            do {
+                try await resetBindingAndReloadHistory(includingUnboundHistory: includingUnboundHistory)
+                outcome = .success(())
+            } catch {
+                outcome = .failure(error)
+            }
+            await endSetAside(id)
+            try outcome.get()
+        }.value
+    }
+
+    private func resetBindingAndReloadHistory(includingUnboundHistory: Bool) async throws {
+        do {
+            try await cloudService?.resetAccountBinding(includingUnboundHistory: includingUnboundHistory, settingAside: {
+                // A failed save can leave entries only in memory, and the set-aside archives the disk file.
+                do { _ = try await sharedStore.merge(state) }
+                // An unreadable history file can't take a merge, so it's set aside as-is, as before.
+                catch is DecodingError {}
+                if case .settingAside(let current, _, let captures) = handoff {
+                    handoff = .settingAside(id: current, isRetired: true, captures: captures)
+                }
+                state = ClipboardHistoryState()
+                entries = []
+            })
+        } catch {
+            // A reset that failed before removing the binding still blocks the new generation.
+            if isHistoryRetired, let kept = try? await sharedStore.load() {
+                state = kept
+                entries = state.entries
+            }
+            throw error
+        }
+        if isHistoryRetired {
+            state = try await sharedStore.load()
+            entries = state.entries
+        }
+        syncError = nil
+    }
+
+    /// Saves the waiting captures inside the link, so a set-aside queued behind it sets them aside with this history.
+    private func endSetAside(_ id: UUID) async {
+        guard case .settingAside(let current, _, let captures) = handoff else { return }
+        handoff = current == id ? .none : .settingAside(id: current, isRetired: false, captures: [])
+        guard !captures.isEmpty else { return }
+        for waiting in captures { addToMemory(waiting) }
+        await save()
     }
 
     func setPaused(_ paused: Bool) {
@@ -720,7 +793,7 @@ final class ClipboardHistory: ObservableObject {
         }
         guard snapshot.byteCount >= Self.backgroundProcessingThreshold else {
             capture = .watching(handledChangeCount: changeCount)
-            insert(ClipboardEntry(
+            admitCapture(ClipboardEntry(
                 sourceApplication: sourceApplication,
                 items: snapshot.items,
                 plainText: snapshot.plainText
@@ -755,47 +828,89 @@ final class ClipboardHistory: ObservableObject {
         guard case .capturing(let attempt) = capture, attempt.id == id else { return }
         capture = .watching(handledChangeCount: attempt.changeCount)
         guard pasteboard.changeCount == attempt.changeCount else { return }
-        insert(entry)
+        admitCapture(entry)
+    }
+
+    private func dropWaitingCaptures() {
+        guard case .settingAside(let id, let isRetired, _) = handoff else { return }
+        handoff = .settingAside(id: id, isRetired: isRetired, captures: [])
+    }
+
+    private func admitCapture(_ entry: ClipboardEntry) {
+        guard case .settingAside(let id, let isRetired, var captures) = handoff else {
+            insert(entry)
+            return
+        }
+        captures.append(entry)
+        handoff = .settingAside(id: id, isRetired: isRetired, captures: captures)
     }
 
     private func insert(_ entry: ClipboardEntry) {
+        guard addToMemory(entry) else { return }
+        persist()
+    }
+
+    /// Adds `entry` to the history in memory unless that history is retired, and returns whether it did.
+    @discardableResult
+    private func addToMemory(_ entry: ClipboardEntry) -> Bool {
+        guard !isHistoryRetired else { return false }
         state.insert(entry)
         entries = state.entries
         if let inserted = entries.first(where: { $0.hasSamePayload(as: entry) }), inserted.isSyncEligible {
             pendingUploadIDs.insert(inserted.id)
         }
-        persist()
+        return true
+    }
+
+    private nonisolated static var saveFailureMessage: String {
+        String(localized: "Couldn’t save clipboard history. Try again.")
     }
 
     private func persist(
-        errorMessage: String = String(localized: "Couldn’t save clipboard history. Try again."),
+        errorMessage: String = ClipboardHistory.saveFailureMessage,
         operation: StaticString = "clipboard.persist"
     ) {
-        let loadTask = initialLoadTask
-        let previousTask = persistenceScheduleTask
-        persistenceScheduleTask = Task { [weak self, sharedStore] in
-            await loadTask?.value
-            await previousTask?.value
-            guard let self else { return }
-            do {
-                let persisted = try await sharedStore.merge(state)
-                state.merge(persisted)
-                entries = state.entries
-                onChange?()
-            } catch {
-                diagnostics.record(.failure(
-                    operation: operation,
-                    error: error,
-                    visibility: .user
-                ))
-                persistenceError = errorMessage
-            }
+        queueHistoryWrite { [self] in await save(errorMessage: errorMessage, operation: operation) }
+    }
+
+    private func save(
+        errorMessage: String = ClipboardHistory.saveFailureMessage,
+        operation: StaticString = "clipboard.persist"
+    ) async {
+        do {
+            let persisted = try await sharedStore.merge(state)
+            state.merge(persisted)
+            entries = state.entries
+            onChange?()
+        } catch {
+            diagnostics.record(.failure(
+                operation: operation,
+                error: error,
+                visibility: .user
+            ))
+            persistenceError = errorMessage
         }
+    }
+
+    /// Runs `write` after every earlier history write, so no two overlap. A write must not await
+    /// another queued write.
+    @discardableResult
+    private func queueHistoryWrite<Value: Sendable>(
+        _ write: @escaping @MainActor () async throws -> Value
+    ) -> Task<Value, any Error> {
+        let earlierWrites = [clearTask, initialLoadTask, captureAttemptTask, persistenceScheduleTask]
+        let link = Task {
+            for earlier in earlierWrites { await earlier?.value }
+            return try await write()
+        }
+        persistenceScheduleTask = Task { _ = await link.result }
+        return link
     }
 
 
 
     func delete(id: UUID) {
+        guard !isHistoryRetired else { return }
         state.delete(id: id)
         entries = state.entries
         persist(
@@ -805,13 +920,14 @@ final class ClipboardHistory: ObservableObject {
     }
 
     func togglePinned(id: UUID) async {
-        await flushPersistence()
         do {
-            let updated = try await sharedStore.togglePinned(id: id)
-            state.merge(updated)
-            entries = state.entries
-            pendingUploadIDs.insert(id)
-            onChange?()
+            try await queueHistoryWrite { [self] in
+                let updated = try await sharedStore.togglePinned(id: id)
+                state.merge(updated)
+                entries = state.entries
+                pendingUploadIDs.insert(id)
+                onChange?()
+            }.value
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.pin",
@@ -843,12 +959,13 @@ final class ClipboardHistory: ObservableObject {
     /// CLI reads include the initial load and every pending capture/write. Retry
     /// any failed queued persistence before returning a durable snapshot.
     func checkedCLISnapshot() async throws -> [ClipboardEntry] {
-        await flushPersistence()
-        let loaded = try await sharedStore.merge(state)
-        state.merge(loaded)
-        entries = state.entries
-        persistenceError = nil
-        return entries
+        try await queueHistoryWrite { [self] in
+            let loaded = try await sharedStore.merge(state)
+            state.merge(loaded)
+            entries = state.entries
+            persistenceError = nil
+            return entries
+        }.value
     }
 
     func checkedCLIEntry(id: UUID, revision: String) async throws -> ClipboardEntry {
@@ -865,18 +982,23 @@ final class ClipboardHistory: ObservableObject {
             }
             setPaused(paused)
         case .restore(let id, let revision):
-            let entry = try await sharedStore.checkedCLIEntry(id: id, revision: revision)
-            state.merge(ClipboardHistoryState(entries: [entry]))
-            guard restore(entry) else { throw SnipCLIClipboardError.copyFailed }
+            let restored = try await queueHistoryWrite { [self] in
+                let entry = try await sharedStore.checkedCLIEntry(id: id, revision: revision)
+                state.merge(ClipboardHistoryState(entries: [entry]))
+                return restore(entry)
+            }.value
+            guard restored else { throw SnipCLIClipboardError.copyFailed }
             do { _ = try await checkedCLISnapshot() }
             catch { throw SnipCLIOutcomeUncertain() }
         case .setPinned, .delete, .clear:
-            let updated = try await sharedStore.performCLI(action, isPaused: isPaused)
-            state.merge(updated)
-            entries = state.entries
-            persistenceError = nil
-            if case .setPinned(let id, _, _) = action { pendingUploadIDs.insert(id) }
-            onChange?()
+            try await queueHistoryWrite { [self] in
+                let updated = try await sharedStore.performCLI(action, isPaused: isPaused)
+                state.merge(updated)
+                entries = state.entries
+                persistenceError = nil
+                if case .setPinned(let id, _, _) = action { pendingUploadIDs.insert(id) }
+                onChange?()
+            }.value
         default:
             throw SnipLibraryError.invalidCommand
         }
