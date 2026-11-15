@@ -92,6 +92,53 @@ final class IOSShareImportTests: IOSModelTestCase {
         XCTAssertEqual(foregroundCallCount, 3)
     }
 
+    func testTriggersDuringOneImportCoalesceIntoOneTrailingPass() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let imports = QueuedImportSummaryProbe(summaries: [
+            ShareImportSummary(imported: 0, failed: 0),
+            ShareImportSummary(imported: 0, failed: 1)
+        ])
+        let coordinator = IOSShareImportCoordinator(
+            model: model, importOperation: { await imports.run() }
+        )
+
+        let launch = Task { await coordinator.importPendingAndReload() }
+        await imports.waitUntilFirstImportStarts()
+        let foreground = Task { await coordinator.importPendingAndReload() }
+        let shareNotification = Task { await coordinator.importPendingAndReload() }
+        await Task.yield()
+        await imports.finishFirstImport()
+
+        await shareNotification.value
+        let passesWhenLastTriggerReturns = await imports.callCount()
+        XCTAssertEqual(passesWhenLastTriggerReturns, 2)
+        XCTAssertEqual(
+            model.errorMessage,
+            "Some shared items couldn’t be added. Snip Snap will try again when you reopen the app.",
+            "Callers return only after the trailing pass reports its failures."
+        )
+        await foreground.value
+        await launch.value
+        let passes = await imports.callCount()
+        XCTAssertEqual(passes, 2)
+    }
+
+    func testTriggerBeforeTheFirstPassStartsJoinsThatPass() async {
+        let model = IOSAppModel(library: ModelTestLibrary())
+        let probe = ImportCallProbe()
+        let coordinator = IOSShareImportCoordinator(
+            model: model, importOperation: { await probe.run() }
+        )
+
+        let launch = Task { await coordinator.importPendingAndReload() }
+        let foreground = Task { await coordinator.importPendingAndReload() }
+        await launch.value
+        await foreground.value
+
+        let passes = await probe.callCount()
+        XCTAssertEqual(passes, 1)
+    }
+
     func testTriggerDuringImportTailQueuesOneTrailingPassForANewerRequest() async {
         let library = ModelTestLibrary()
         let model = IOSAppModel(library: library)

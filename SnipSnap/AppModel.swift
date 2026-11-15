@@ -27,17 +27,28 @@ final class AppModel: ObservableObject {
     @Published var activeListID: UUID
     @Published private(set) var isShowingClipboard = false
     @Published var clipboardViewOptions = ClipboardViewOptions()
-    @Published private(set) var isSearchExpanded = false
-    @Published private var storedQuery = ""
+    private enum SearchMode: Equatable {
+        case closed
+        case open(query: String)
+    }
+
+    @Published private var searchMode = SearchMode.closed
+    var isSearchExpanded: Bool { searchMode != .closed }
     var query: String {
-        get { storedQuery }
+        get {
+            guard case .open(let query) = searchMode else { return "" }
+            return query
+        }
         set {
-            guard editingID == nil || newValue == storedQuery else { return }
-            storedQuery = newValue
-            if isSearchExpanded && !hasActiveQuery {
+            guard editingID == nil || newValue == query else { return }
+            switch searchMode {
+            case .open:
+                searchMode = .open(query: newValue)
+                if hasActiveQuery { reconcileSelection() } else { selection = [] }
+            case .closed:
+                guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 selection = []
-            } else {
-                reconcileSelection()
+                searchMode = .open(query: newValue)
             }
         }
     }
@@ -257,19 +268,24 @@ final class AppModel: ObservableObject {
     func endCLIMutation() { cliMutationInProgress = false }
 
     func enterSearch() {
-        guard editingID == nil, !isSearchExpanded else { return }
+        guard editingID == nil, searchMode == .closed else { return }
         selection = []
-        isSearchExpanded = true
+        searchMode = .open(query: "")
     }
 
     func exitSearch() {
-        guard editingID == nil else { return }
-        query = ""
-        isSearchExpanded = false
+        guard editingID == nil, searchMode != .closed else { return }
+        selection = []
+        searchMode = .closed
     }
 
     var restingFocusTarget: PanelFocusTarget {
         isSearchExpanded ? .search : (isShowingClipboard ? .clipboard : .list)
+    }
+
+    var focusTargetAfterInlineEdit: PanelFocusTarget {
+        guard isSearchExpanded else { return restingFocusTarget }
+        return filteredSnips.isEmpty && clipboardSearchMatches.isEmpty ? .search : .list
     }
 
     var hasActiveQuery: Bool {
@@ -924,6 +940,13 @@ final class AppModel: ObservableObject {
     }
 
     func selectList(_ list: SnipList, preservingSelection: Bool = false) {
+        exitSearch()
+        showListPage(list, preservingSelection: preservingSelection)
+    }
+
+    /// Changes the page without closing search, so a search selection moved
+    /// to a new list stays on its results.
+    private func showListPage(_ list: SnipList, preservingSelection: Bool) {
         guard editingID == nil else { return }
         activeListID = list.id
         defaults.set(list.id.uuidString, forKey: Self.activeListDefaultsKey)
@@ -933,6 +956,7 @@ final class AppModel: ObservableObject {
 
     func showClipboard() {
         guard editingID == nil else { return }
+        exitSearch()
         isShowingClipboard = true
         selection = []
     }
@@ -1075,7 +1099,7 @@ final class AppModel: ObservableObject {
                 return .failure(error)
             case .success(let list):
                 let selectedMovingIDs = selection.intersection(movingIDs)
-                selectList(list, preservingSelection: !movingIDs.isEmpty)
+                showListPage(list, preservingSelection: !movingIDs.isEmpty)
                 guard !movingIDs.isEmpty else { return .success(()) }
                 let orderedIDs = snips.filter { movingIDs.contains($0.id) }.map(\.id)
                 guard !orderedIDs.isEmpty else { return nil }
