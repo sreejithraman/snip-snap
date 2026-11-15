@@ -1,0 +1,572 @@
+import Foundation
+import SnipSnapCore
+import SwiftData
+import Testing
+import XCTest
+
+@testable import SnipSnapCloud
+@testable import SnipSnapPersistence
+
+private extension SwiftDataSnipLibrary {
+  func storedAttachmentReferencePositions(for snipID: UUID) throws -> [UUID: Int] {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> { $0.snipID == snipID }
+    ))
+    return Dictionary(uniqueKeysWithValues: references.map { ($0.attachmentID, $0.position) })
+  }
+}
+
+private struct AttachmentClient {
+  let root: URL
+  let storeURL: URL
+  let namespace: CloudSyncNamespace
+  let server: FakeCloudServer
+  let snipID: UUID
+  let library: SwiftDataSnipLibrary
+  let store: CloudFullSyncPersistence
+  let transport: FakeCloudRecordTransport
+  let sync: CloudFullSyncCoordinator
+}
+
+private struct LocalAttachmentSeed {
+  let root: URL
+  let storeURL: URL
+  let library: SwiftDataSnipLibrary
+  let namespace: CloudSyncNamespace
+  let snipID: UUID
+}
+
+fileprivate protocol AttachmentTransferTestSupport {}
+
+fileprivate extension AttachmentTransferTestSupport {
+  /// One client with one snip whose attachments come from local files, enrolled but not synced.
+  func makeAttachmentClient(fileNames: [String]) async throws -> AttachmentClient {
+    let seed = try await makeLocalAttachmentSeed(names: fileNames)
+    let client = attachmentClient(
+      root: seed.root,
+      storeURL: seed.storeURL,
+      library: seed.library,
+      namespace: seed.namespace,
+      server: FakeCloudServer(),
+      snipID: seed.snipID
+    )
+    try await client.store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: seed.snipID),
+    ])
+    return client
+  }
+
+  func attachmentClient(
+    root: URL,
+    storeURL: URL,
+    namespace: CloudSyncNamespace,
+    server: FakeCloudServer,
+    snipID: UUID
+  ) throws -> AttachmentClient {
+    attachmentClient(
+      root: root,
+      storeURL: storeURL,
+      library: try SwiftDataSnipLibrary(storeURL: storeURL),
+      namespace: namespace,
+      server: server,
+      snipID: snipID
+    )
+  }
+
+  func attachmentClient(
+    root: URL,
+    storeURL: URL,
+    library: SwiftDataSnipLibrary,
+    namespace: CloudSyncNamespace,
+    server: FakeCloudServer,
+    snipID: UUID
+  ) -> AttachmentClient {
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
+    )
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
+    return AttachmentClient(
+      root: root,
+      storeURL: storeURL,
+      namespace: namespace,
+      server: server,
+      snipID: snipID,
+      library: library,
+      store: store,
+      transport: transport,
+      sync: CloudFullSyncCoordinator(store: store, transport: transport, fetchScope: .zones([dataZone]))
+    )
+  }
+
+  /// Edits the snip so it keeps only these attachments, in this order, as the editor does.
+  func keepAttachments(
+    _ attachmentIDs: [UUID],
+    ofSnip snipID: UUID,
+    in library: SwiftDataSnipLibrary
+  ) async throws {
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == snipID }), "The snip must exist.")
+    _ = try await library.perform(
+      .editAttachments(
+        snipID: snipID,
+        content: snip.content,
+        edits: attachmentIDs.map { SnipAttachmentEdit.existing(attachmentID: $0) },
+        expectedUpdatedAt: snip.updatedAt,
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+  }
+
+  /// Renames an attachment, defaulting to the first, as a whole-library replace does.
+  func renameAttachment(
+    ofSnip snipID: UUID,
+    attachmentID: UUID? = nil,
+    to fileName: String,
+    in library: SwiftDataSnipLibrary
+  ) async throws {
+    var snips = try await library.checkedSnapshot(sortedBy: .manual).snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == snipID }), "The snip must exist.")
+    let attachmentIndex: Int
+    if let attachmentID {
+      attachmentIndex = try XCTUnwrap(snips[index].attachments.firstIndex(where: { $0.id == attachmentID }))
+    } else {
+      attachmentIndex = 0
+    }
+    snips[index].attachments[attachmentIndex].fileName = fileName
+    _ = try await library.perform(.replaceAll(snips), sortedBy: .manual)
+  }
+
+  func makeLocalAttachmentSeed(names: [String]) async throws -> LocalAttachmentSeed {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let sources = try names.map { name in
+      let url = root.appendingPathComponent("\(name).txt")
+      try Data("\(name) payload".utf8).write(to: url)
+      return url
+    }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let added = try await library.perform(
+      .add(
+        content: "attachment fixture",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: sources,
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    return LocalAttachmentSeed(
+      root: root,
+      storeURL: storeURL,
+      library: library,
+      namespace: namespaceValue(),
+      snipID: try XCTUnwrap(added.snapshot.snips.first?.id, "The fixture must save its snip.")
+    )
+  }
+
+  func namespaceValue() -> CloudSyncNamespace {
+    CloudSyncNamespace(
+      cloudScope: "private",
+      accountLineage: "account",
+      generation: UUID(),
+      zones: [
+        CloudZoneID(name: "data", ownerName: "owner"),
+        CloudZoneID(name: "payload", ownerName: "owner"),
+      ]
+    )
+  }
+
+  func temporaryDirectory() -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudAttachmentTransferTests-\(UUID().uuidString)", isDirectory: true)
+  }
+}
+
+private enum AttachmentMatrixMember: UInt8, CaseIterable, Sendable {
+  case a = 3, b = 1, c = 2, n = 4, m = 5
+
+  var id: UUID {
+    UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, rawValue))
+  }
+
+  var fileName: String {
+    switch self {
+    case .a: "A.txt"
+    case .b: "B.txt"
+    case .c: "C.txt"
+    case .n: "N.txt"
+    case .m: "M.txt"
+    }
+  }
+
+  static let initial: [Self] = [.a, .b, .c]
+  static let localOrder: [Self] = [.b, .a, .c]
+  static let remoteOrder: [Self] = [.c, .a, .b]
+}
+
+private enum AttachmentMatrixRole: String, CaseIterable, Sendable {
+  case holder = "H", downloaded = "D"
+}
+
+private enum AttachmentMatrixLocal: String, CaseIterable, Sendable {
+  case rename, reorder
+  case addRecorded = "add-recorded"
+  case removeRecorded = "remove-A-recorded"
+}
+
+private enum AttachmentMatrixRemote: String, CaseIterable, Sendable {
+  case rename, reorder, add
+  case remove = "remove-C"
+}
+
+/// When each device sends relative to its fetches.
+private enum AttachmentMatrixSequence: String, CaseIterable, Sendable {
+  /// R syncs, then L sends without a fetch, so L reaches iCloud last.
+  case localSendsLast = "P"
+  /// L syncs, then R sends without a fetch, so R reaches iCloud last.
+  case remoteSendsLast = "Q"
+}
+
+/// SM33-F2A's partial-acceptance cells: the last sender doesn't fetch first, so iCloud can reject
+/// part of its send. Same oracle and log line as on the F2A branch.
+private struct AttachmentMatrixCell: Sendable, CustomStringConvertible {
+  let role: AttachmentMatrixRole
+  let sequence: AttachmentMatrixSequence
+  let local: AttachmentMatrixLocal
+  let remote: AttachmentMatrixRemote
+
+  var description: String {
+    "L=\(role.rawValue) seq=\(sequence.rawValue) local=\(local.rawValue) remote=\(remote.rawValue)"
+  }
+
+  static let partialAcceptance = AttachmentMatrixRole.allCases.flatMap { role in
+    AttachmentMatrixSequence.allCases.flatMap { sequence in
+      AttachmentMatrixLocal.allCases.flatMap { local in
+        AttachmentMatrixRemote.allCases.map { remote in
+          Self(role: role, sequence: sequence, local: local, remote: remote)
+        }
+      }
+    }
+  }
+
+  static let partialAcceptanceHolderCells = partialAcceptance.filter { $0.role == .holder }
+  static let partialAcceptanceDownloadedCells = partialAcceptance.filter { $0.role == .downloaded }
+
+  var remoteReachesICloudLast: Bool { sequence == .remoteSendsLast }
+
+  var expectedNames: [UUID: String] {
+    var names = Dictionary(uniqueKeysWithValues: AttachmentMatrixMember.initial.map { ($0.id, $0.fileName) })
+    if local == .removeRecorded { names.removeValue(forKey: AttachmentMatrixMember.a.id) }
+    if remote == .remove { names.removeValue(forKey: AttachmentMatrixMember.c.id) }
+    if local == .addRecorded { names[AttachmentMatrixMember.n.id] = AttachmentMatrixMember.n.fileName }
+    if remote == .add { names[AttachmentMatrixMember.m.id] = AttachmentMatrixMember.m.fileName }
+    let localName = local == .rename ? "local-B.txt" : nil
+    let remoteName = remote == .rename ? "remote-B.txt" : nil
+    if let name = remoteReachesICloudLast ? remoteName ?? localName : localName ?? remoteName {
+      names[AttachmentMatrixMember.b.id] = name
+    }
+    return names
+  }
+
+  var expectedSharedOrder: [UUID] {
+    let localOrder = local == .reorder ? AttachmentMatrixMember.localOrder : nil
+    let remoteOrder = remote == .reorder ? AttachmentMatrixMember.remoteOrder : nil
+    let winner = remoteReachesICloudLast ? remoteOrder ?? localOrder : localOrder ?? remoteOrder
+    return shared(winner ?? AttachmentMatrixMember.initial)
+  }
+
+  /// The relative orders of the shared attachments that some device chose: the starting order,
+  /// L's, and R's.
+  var chosenSharedOrders: [[UUID]] {
+    [
+      AttachmentMatrixMember.initial,
+      local == .reorder ? AttachmentMatrixMember.localOrder : AttachmentMatrixMember.initial,
+      remote == .reorder ? AttachmentMatrixMember.remoteOrder : AttachmentMatrixMember.initial,
+    ].map(shared)
+  }
+
+  private func shared(_ order: [AttachmentMatrixMember]) -> [UUID] {
+    order.map(\.id).filter { expectedNames[$0] != nil }
+  }
+}
+
+private struct AttachmentEditClients {
+  let holder: AttachmentClient
+  let downloaded: AttachmentClient
+
+  func devices(localRole role: AttachmentMatrixRole) -> (local: AttachmentClient, remote: AttachmentClient) {
+    role == .holder ? (holder, downloaded) : (downloaded, holder)
+  }
+}
+
+fileprivate extension AttachmentTransferTestSupport {
+  func makeAttachmentEditClients(attachmentCount: Int = 3) async throws -> AttachmentEditClients {
+    let members = Array(AttachmentMatrixMember.initial.prefix(attachmentCount))
+    let holder = try await makeAttachmentClient(fileNames: members.map { String($0.fileName.dropLast(4)) })
+    var snips = try await holder.library.checkedSnapshot(sortedBy: .manual).snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == holder.snipID }))
+    snips[index].attachments = zip(members, snips[index].attachments).map { member, attachment in
+      SnipAttachment(id: member.id, fileName: member.fileName, relativePath: attachment.relativePath,
+        contentType: "public.plain-text", byteCount: attachment.byteCount)
+    }
+    _ = try await holder.library.perform(.replaceAll(snips), sortedBy: .manual)
+    try await holder.sync.sync()
+    try await holder.sync.sync()
+    let downloaded = try attachmentClient(root: holder.root,
+      storeURL: holder.root.appendingPathComponent("downloaded.store"),
+      namespace: holder.namespace, server: holder.server, snipID: holder.snipID)
+    try await downloaded.sync.fetchRemote()
+    let downloads = CloudAttachmentTransferCoordinator(library: downloaded.library,
+      namespace: holder.namespace, payloadZone: CloudZoneID(name: "payload", ownerName: "owner"),
+      transport: downloaded.transport, maximumCacheBytes: 1_024)
+    for member in members { _ = try await downloads.download(attachmentID: member.id) }
+    return AttachmentEditClients(holder: holder, downloaded: downloaded)
+  }
+
+  func appendAttachment(_ member: AttachmentMatrixMember, to client: AttachmentClient) async throws {
+    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == client.snipID }))
+    let source = client.root.appendingPathComponent(member.fileName)
+    try Data("\(member.fileName) payload".utf8).write(to: source)
+    let update = try await client.library.perform(.editAttachments(
+      snipID: client.snipID, content: snip.content,
+      edits: snip.attachments.map { .existing(attachmentID: $0.id) } + [.added(sourceURL: source)],
+      expectedUpdatedAt: snip.updatedAt, now: Date(timeIntervalSince1970: 3)
+    ), sortedBy: .manual)
+    var snips = update.snapshot.snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == client.snipID }))
+    let addedIndex = try XCTUnwrap(snips[index].attachments.firstIndex(where: { $0.fileName == member.fileName }))
+    let added = snips[index].attachments[addedIndex]
+    snips[index].attachments[addedIndex] = SnipAttachment(id: member.id, fileName: member.fileName,
+      relativePath: added.relativePath, contentType: "public.plain-text", byteCount: added.byteCount)
+    _ = try await client.library.perform(.replaceAll(snips), sortedBy: .manual)
+  }
+}
+
+@Suite(.serialized)
+private struct AttachmentPartialAcceptanceMatrixTests: AttachmentTransferTestSupport {
+  @Test(arguments: AttachmentMatrixCell.partialAcceptanceHolderCells)
+  func testPartiallyAcceptedAttachmentEditMatrixWithLocalFiles(_ cell: AttachmentMatrixCell) async {
+    await run(cell)
+  }
+
+  @Test(arguments: AttachmentMatrixCell.partialAcceptanceDownloadedCells)
+  func testPartiallyAcceptedAttachmentEditMatrixWithDownloadsOnly(_ cell: AttachmentMatrixCell) async {
+    await run(cell)
+  }
+
+  private func run(_ cell: AttachmentMatrixCell) async {
+    var log = "result=FAIL server=[] H=[] D=[]"
+    defer { print("MATRIX role=\(cell) \(log)") }
+    do {
+      let clients = try await makeAttachmentEditClients()
+      defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+      let (local, remote) = clients.devices(localRole: cell.role)
+      var stepFailures: [String] = []
+      switch cell.sequence {
+      case .localSendsLast:
+        try await applyLocal(cell.local, to: local)
+        _ = try await local.store.pendingChanges()
+        try await applyRemote(cell.remote, to: remote)
+        try await remote.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "R syncs", in: clients)
+        try await local.sync.sendPendingUntilSettled()
+        stepFailures += await unchosenSharedOrder(cell, after: "L sends without a fetch", in: clients)
+        try await local.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "L syncs", in: clients)
+        try await remote.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "R syncs again", in: clients)
+      case .remoteSendsLast:
+        try await applyLocal(cell.local, to: local)
+        try await local.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "L syncs", in: clients)
+        try await applyRemote(cell.remote, to: remote)
+        try await remote.sync.sendPendingUntilSettled()
+        stepFailures += await unchosenSharedOrder(cell, after: "R sends without a fetch", in: clients)
+        try await remote.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "R syncs", in: clients)
+        try await local.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "L syncs again", in: clients)
+      }
+      for pass in 1...2 {
+        try await local.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "pass \(pass) L syncs", in: clients)
+        try await remote.sync.sync()
+        stepFailures += await unchosenSharedOrder(cell, after: "pass \(pass) R syncs", in: clients)
+      }
+      log = try await checkInvariants(cell, clients: clients, stepFailures: stepFailures)
+    } catch {
+      Issue.record("\(cell) threw: \(error)")
+      log += " error=\(String(reflecting: String(describing: error)))"
+    }
+  }
+
+  private func applyLocal(_ change: AttachmentMatrixLocal, to client: AttachmentClient) async throws {
+    switch change {
+    case .rename:
+      try await renameAttachment(ofSnip: client.snipID, attachmentID: AttachmentMatrixMember.b.id,
+        to: "local-B.txt", in: client.library)
+    case .reorder:
+      try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: client.snipID, in: client.library)
+    case .addRecorded:
+      try await appendAttachment(.n, to: client)
+      _ = try await client.store.pendingChanges()
+    case .removeRecorded:
+      try await keepAttachments([AttachmentMatrixMember.b.id, AttachmentMatrixMember.c.id],
+        ofSnip: client.snipID, in: client.library)
+      _ = try await client.store.pendingChanges()
+    }
+  }
+
+  private func applyRemote(_ change: AttachmentMatrixRemote, to client: AttachmentClient) async throws {
+    switch change {
+    case .rename:
+      try await renameAttachment(ofSnip: client.snipID, attachmentID: AttachmentMatrixMember.b.id,
+        to: "remote-B.txt", in: client.library)
+    case .reorder:
+      try await keepAttachments(AttachmentMatrixMember.remoteOrder.map(\.id), ofSnip: client.snipID, in: client.library)
+    case .add:
+      try await appendAttachment(.m, to: client)
+    case .remove:
+      try await keepAttachments([AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id],
+        ofSnip: client.snipID, in: client.library)
+      _ = try await client.store.pendingChanges()
+    }
+  }
+
+  private func metadataID(_ member: AttachmentMatrixMember) -> CloudRecordID {
+    CloudAttachmentRecordCodec.recordID(CloudTextStorageIdentity(zoneName: "data", ownerName: "owner",
+      recordName: "a-\(member.id.uuidString.lowercased())"))
+  }
+
+  /// After every step, iCloud's relative order of the shared attachments must be one a device
+  /// chose. Returns the failure, if any.
+  private func unchosenSharedOrder(
+    _ cell: AttachmentMatrixCell,
+    after step: String,
+    in clients: AttachmentEditClients
+  ) async -> [String] {
+    var positions: [UUID: Int] = [:]
+    for member in AttachmentMatrixMember.initial where cell.expectedNames[member.id] != nil {
+      let record = await clients.holder.server.fullSnapshot(for: metadataID(member))
+      if case .int64(let position)? = record?.encryptedFields["position"] { positions[member.id] = Int(position) }
+    }
+    let order = sorted(positions)
+    let chosen = cell.chosenSharedOrders.map { $0.filter { positions[$0] != nil } }
+    guard !chosen.contains(order) else { return [] }
+    let failure = "after \(step), iCloud's shared order \(labels(order)) is one no device chose"
+    Issue.record("\(cell) \(failure)")
+    return [failure]
+  }
+
+  private func sorted(_ positions: [UUID: Int]) -> [UUID] {
+    positions.keys.sorted {
+      (positions[$0, default: 0], $0.uuidString) < (positions[$1, default: 0], $1.uuidString)
+    }
+  }
+
+  private func labels(_ order: [UUID]) -> String {
+    order.map { id in
+      AttachmentMatrixMember.allCases.first { $0.id == id }.map { String($0.fileName.prefix(1)) } ?? id.uuidString
+    }.joined()
+  }
+
+  private func checkInvariants(
+    _ cell: AttachmentMatrixCell,
+    clients: AttachmentEditClients,
+    stepFailures: [String]
+  ) async throws -> String {
+    let expectedNames = cell.expectedNames
+    let expectedIDs = Set(expectedNames.keys)
+    let expectedTypes = expectedNames.mapValues { _ in "public.plain-text" }
+    let sharedIDs = Set(AttachmentMatrixMember.initial.map(\.id)).intersection(expectedIDs)
+    let types = await clients.holder.server.storedRecordTypes(in: CloudZoneID(name: "data", ownerName: "owner"))
+    var failures = stepFailures
+    func check(_ condition: Bool, _ message: String) {
+      #expect(condition, "\(cell) \(message)")
+      if !condition { failures.append(message) }
+    }
+    check(types.filter { $0 == CloudAttachmentRecordCodec.metadataRecordType }.count == expectedIDs.count,
+      "server membership count")
+    var serverPositions: [UUID: Int] = [:]
+    var serverNames: [UUID: String] = [:]
+    var serverTypes: [UUID: String] = [:]
+    for member in AttachmentMatrixMember.allCases {
+      let record = await clients.holder.server.fullSnapshot(for: metadataID(member))
+      if expectedNames[member.id] == nil {
+        check(record == nil, "absent server member \(member.fileName)")
+        continue
+      }
+      check(record != nil, "server has member \(member.fileName)")
+      guard let present = record else { continue }
+      if case .int64(let position)? = present.encryptedFields["position"] {
+        serverPositions[member.id] = Int(position)
+      } else { check(false, "server has position for \(member.fileName)") }
+      if case .string(let name)? = present.encryptedFields["fileName"] { serverNames[member.id] = name }
+      if case .string(let type)? = present.encryptedFields["contentType"] { serverTypes[member.id] = type }
+    }
+    check(serverNames == expectedNames, "server names follow field winners")
+    check(serverTypes == expectedTypes, "server types")
+    let serverOrder = sorted(serverPositions)
+    let serverSharedOrder = serverOrder.filter { sharedIDs.contains($0) }
+    check(serverSharedOrder == cell.expectedSharedOrder, "server shared order follows the winner")
+    var deviceLogs: [String] = []
+    for (role, client) in [("H", clients.holder), ("D", clients.downloaded)] {
+      let snapshot = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = snapshot.snips.first(where: { $0.id == client.snipID })
+      check(snip != nil, "\(role) has snip")
+      let attachments = snip?.attachments ?? []
+      let order = attachments.map(\.id)
+      check(Set(order) == expectedIDs && order.count == expectedIDs.count, "\(role) membership")
+      check(order == serverOrder, "\(role) agrees with server order")
+      let sharedOrder = order.filter { sharedIDs.contains($0) }
+      check(sharedOrder == cell.expectedSharedOrder, "\(role) shared order follows the winner")
+      let names = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.fileName }
+      let contentTypes = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.contentType ?? "<nil>" }
+      check(names == expectedNames, "\(role) names follow the winner")
+      check(names == serverNames, "\(role) agrees with server names")
+      check(contentTypes == expectedTypes && contentTypes == serverTypes, "\(role) types")
+      let positions = try await client.library.storedAttachmentReferencePositions(for: client.snipID)
+      check(Set(positions.keys) == expectedIDs, "\(role) stored membership")
+      check(positions.values.sorted() == Array(0..<expectedIDs.count), "\(role) positions are a permutation")
+      check(positions == serverPositions, "\(role) stored positions agree with server")
+      deviceLogs.append("\(role)=\(format(order: order, positions: positions, names: names, types: contentTypes))")
+    }
+    for (role, client) in [("H", clients.holder), ("D", clients.downloaded)] {
+      let next = try await client.store.pendingChanges()
+      check(!next.operations.contains(where: { operation in
+        guard case .save(let draft) = operation else { return false }
+        return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
+      }), "\(role) quiet after settlement")
+    }
+    let result = failures.isEmpty ? "PASS" : "FAIL"
+    let server = format(order: serverOrder, positions: serverPositions, names: serverNames, types: serverTypes)
+    return "result=\(result) server=\(server) \(deviceLogs.joined(separator: " ")) failures=\(String(reflecting: failures.joined(separator: "; ")))"
+  }
+
+  private func format(order: [UUID], positions: [UUID: Int], names: [UUID: String], types: [UUID: String]) -> String {
+    let extraIDs = Set(positions.keys).union(names.keys).subtracting(order).sorted { $0.uuidString < $1.uuidString }
+    let entries = (order + extraIDs).map { id in
+      let member = AttachmentMatrixMember.allCases.first { $0.id == id }
+      let label = member.map { String($0.fileName.prefix(1)) } ?? id.uuidString
+      let position = positions[id].map(String.init) ?? "missing"
+      let name = String(reflecting: names[id] ?? "<missing>")
+      return "\(label):\(position):\(name):\(types[id] ?? "<missing>")"
+    }
+    return "[\(entries.joined(separator: ","))]"
+  }
+}
