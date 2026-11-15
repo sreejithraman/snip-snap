@@ -63,6 +63,9 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
+  /// Keeps the sent records' accepted bases in the source, but never replaces a base it already
+  /// holds: that one is an ancestor of both sides, while a sent record can be a merge result the
+  /// source never held.
   func promoteAcceptedFullRetryBases(
     transition: SyncModeTransition,
     candidate: SwiftDataSnipLibrary
@@ -78,11 +81,15 @@ extension SwiftDataSyncModePersistence {
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
     )
     let source = try libraryForTransition(storeID: transition.sourceStoreID)
+    let held = try await source.dormantCloudBases()
+      .filter { $0.namespaceKey == namespaceKey.rawValue }
+    let kept = Set(held.map(\.reference))
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     var bases: [CloudDormantBase] = []
     for operation in attempt.operations where operation.kind == .save {
       guard let reference = operation.reference,
+        !kept.contains(reference),
         let entity = accepted[reference],
         entity.identity == operation.recordIdentity
       else { continue }
@@ -103,6 +110,7 @@ extension SwiftDataSyncModePersistence {
         payload: payload
       ))
     }
+    guard !bases.isEmpty else { return }
     let crashHook = self.crashHook
     try await source.storeDormantCloudBases(
       namespaceKey: namespaceKey,
