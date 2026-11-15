@@ -192,6 +192,7 @@ struct LibraryRailView: View {
     @Environment(\.librarySidebarSizing) private var sizing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.glassMenuPresentation) private var glassMenuPresentation
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
     @State private var stripDrag: StripDrag?
@@ -334,9 +335,10 @@ struct LibraryRailView: View {
         }
     }
 
-    /// A sheet, search, or list edit owns the moment; switching pages under it would abandon that work.
+    /// A sheet, menu, search, or list edit owns the moment; switching pages under it would abandon that work.
     private var isPageChangeBlocked: Bool {
-        sheet != nil || model.newListMoveRequest != nil || model.isSearchPresented || model.editingListID != nil
+        sheet != nil || glassMenuPresentation?.isPresented == true || model.newListMoveRequest != nil
+            || model.isSearchPresented || model.editingListID != nil
     }
 
     private func selectAdjacentPage(by offset: Int) {
