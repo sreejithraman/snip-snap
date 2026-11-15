@@ -119,32 +119,16 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
 
     package func pendingChanges() async throws -> CloudOutboundBatch {
         var snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
-        if snapshot.namespaceState.phase == .seeding {
-            let liveSnipIDs = Set(snapshot.snips.map(\.id))
-            let remainingApproved = snapshot.namespaceState.approvedSnipIDs
-                .intersection(liveSnipIDs)
-            if remainingApproved != snapshot.namespaceState.approvedSnipIDs {
-                let linkedSnipIDs = Set(snapshot.records.map(\.snipID))
-                let seedFinished = remainingApproved.isEmpty
-                    && !snapshot.namespaceState.zoneCreationPending
-                let phase: CloudNamespaceBootstrapPhase = seedFinished ? .active : .seeding
-                let excluded = remainingApproved.isEmpty
-                    ? snapshot.namespaceState.excludedSnipIDs.union(
-                        liveSnipIDs.subtracting(linkedSnipIDs)
-                    )
-                    : snapshot.namespaceState.excludedSnipIDs
-                try await library.transitionCloudTextNamespace(
-                    namespaceKey: namespaceKey,
-                    expectedPhase: .seeding,
-                    value: CloudNamespaceStateStorage(
-                        phase: phase,
-                        approvedSnipIDs: remainingApproved,
-                        excludedSnipIDs: excluded,
-                        zoneCreationPending: snapshot.namespaceState.zoneCreationPending
-                    )
-                )
-                snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
-            }
+        if let pruned = snapshot.namespaceState.pruningDeletedSeeds(
+            liveSnipIDs: Set(snapshot.snips.map(\.id)),
+            linkedSnipIDs: Set(snapshot.records.map(\.snipID))
+        ) {
+            try await library.transitionCloudTextNamespace(
+                namespaceKey: namespaceKey,
+                expectedPhase: .seeding,
+                value: pruned
+            )
+            snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         }
         var eligibleSnipIDs: Set<UUID>
         switch snapshot.namespaceState.phase {
@@ -220,25 +204,17 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
 
     package func approveSeeding(snipIDs: Set<UUID>) async throws {
         let snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
-        guard snapshot.namespaceState.phase == .remoteChecked
-                || snapshot.namespaceState.phase == .remoteCheckedMissingZone
-        else {
+        let localIDs = Set(snapshot.snips.map(\.id))
+        guard let next = snapshot.namespaceState.approvingSeed(snipIDs, localSnipIDs: localIDs) else {
             throw CloudNamespaceEnrollmentError.remoteFetchRequired
         }
-        let localIDs = Set(snapshot.snips.map(\.id))
         guard snipIDs.isSubset(of: localIDs) else {
             throw CloudNamespaceEnrollmentError.invalidSeedSelection
         }
         try await library.transitionCloudTextNamespace(
             namespaceKey: namespaceKey,
             expectedPhase: snapshot.namespaceState.phase,
-            value: CloudNamespaceStateStorage(
-                phase: snipIDs.isEmpty
-                    && snapshot.namespaceState.phase == .remoteChecked ? .active : .seeding,
-                approvedSnipIDs: snipIDs,
-                excludedSnipIDs: localIDs.subtracting(snipIDs),
-                zoneCreationPending: snapshot.namespaceState.phase == .remoteCheckedMissingZone
-            )
+            value: next
         )
     }
 
@@ -262,38 +238,30 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 liveSnipIDs: localIDs,
                 deletionRecoveryData: try Self.encode(.modeRetryDeletion)
             )
-            guard snapshot.namespaceState.approvedSnipIDs != snipIDs else { return }
+            guard let next = snapshot.namespaceState.replacingSeedApproval(with: snipIDs) else {
+                return
+            }
             try await library.transitionCloudTextNamespace(
                 namespaceKey: namespaceKey,
                 expectedPhase: .seeding,
-                value: CloudNamespaceStateStorage(
-                    phase: snipIDs.isEmpty ? .active : .seeding,
-                    approvedSnipIDs: snipIDs,
-                    excludedSnipIDs: snapshot.namespaceState.excludedSnipIDs
-                        .subtracting(snipIDs)
-                )
+                value: next
             )
             return
         }
-        guard snapshot.namespaceState.phase == .active else {
-            throw CloudNamespaceEnrollmentError.remoteFetchRequired
-        }
         let localIDs = Set(snapshot.snips.map(\.id))
         let linkedIDs = Set(snapshot.records.map(\.snipID))
-        let unlinkedIDs = localIDs.subtracting(linkedIDs)
+        guard let next = snapshot.namespaceState.approvingActiveAdditions(
+            snipIDs, unlinkedSnipIDs: localIDs.subtracting(linkedIDs)
+        ) else {
+            throw CloudNamespaceEnrollmentError.remoteFetchRequired
+        }
         guard snipIDs.isSubset(of: localIDs) else {
             throw CloudNamespaceEnrollmentError.invalidSeedSelection
         }
-        let approvedIDs = snipIDs.intersection(unlinkedIDs)
         try await library.transitionCloudTextNamespace(
             namespaceKey: namespaceKey,
             expectedPhase: .active,
-            value: CloudNamespaceStateStorage(
-                phase: approvedIDs.isEmpty ? .active : .seeding,
-                approvedSnipIDs: approvedIDs,
-                excludedSnipIDs: snapshot.namespaceState.excludedSnipIDs
-                    .union(unlinkedIDs.subtracting(approvedIDs))
-            )
+            value: next
         )
     }
 
