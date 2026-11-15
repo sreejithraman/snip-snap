@@ -91,6 +91,9 @@ print -r -- '#!/bin/zsh
 print -r -- "boot:$*" >> "$SNIP_SNAP_TEST_CALLS"
 print -r -- STUB-SIMULATOR' > "$fixture/scripts/ci-boot-ios-simulator.sh"
 /bin/chmod +x "$fixture/scripts/ci-boot-ios-simulator.sh"
+print -r -- '#!/bin/zsh
+print -r -- "crash-reports:$*" >> "$SNIP_SNAP_TEST_CALLS"' > "$fixture/scripts/ci-simulator-crash-reports.sh"
+/bin/chmod +x "$fixture/scripts/ci-simulator-crash-reports.sh"
 
 export SNIP_SNAP_TEST_CALLS="$test_root/calls"
 export PATH="$test_root/bin:$PATH"
@@ -133,6 +136,7 @@ assert_groups 0 0 1
 /usr/bin/grep -F -- 'CODE_SIGNING_ALLOWED=NO' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 CI=true run_tests --ios-only
 /usr/bin/grep -Fx 'boot:iPhone 18 Pro' "$SNIP_SNAP_TEST_CALLS" >/dev/null
+/usr/bin/grep -Fx 'crash-reports:after-boot' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 /usr/bin/grep -F -- '-destination platform=iOS Simulator,id=STUB-SIMULATOR ' "$SNIP_SNAP_TEST_CALLS" >/dev/null
 assert_destination_without_boot() {
     if /usr/bin/grep -q '^boot:' "$SNIP_SNAP_TEST_CALLS"; then
@@ -256,18 +260,25 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
   commands = job.fetch('steps').map { |step| step['run'] }.compact
   expected_commands = []
   expected_commands << 'xcodebuild -downloadComponent MetalToolchain' if group == 'ios'
-  expected_commands << <<~SH
+  test_command = <<~SH
     set -o pipefail
     mkdir -p "$RUNNER_TEMP/snip-snap-ci"
     ./scripts/test.sh --#{group}-only 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/#{group}-tests.log"
   SH
+  expected_commands << test_command
+  expected_commands << './scripts/ci-simulator-crash-reports.sh after-tests' if group == 'ios'
   abort "#{group} must install its tools and run its test group without a second build" unless
     commands == expected_commands
+  if group == 'ios'
+    listing = job.fetch('steps').find { |step| step['run'] == expected_commands.last }
+    abort 'ios must list Simulator crash reports even after a failure' unless listing['if'] == 'always()'
+  end
   upload = job.fetch('steps').find { |step| step.fetch('uses', '').start_with?('actions/upload-artifact@') }
   abort "#{group} must preserve failed and interrupted output" unless upload && upload['if'] == 'failure() || cancelled()'
+  crash_reports = group == 'ios' ? "artifacts/simulator-crash-reports/\n" : ''
   abort "#{group} must upload only its task-owned log and failure evidence" unless
     upload.fetch('with').fetch('path') ==
-      "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log\nartifacts/test-failures/#{group}.*\n"
+      "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log\nartifacts/test-failures/#{group}.*\n#{crash_reports}"
   abort "#{group} must bound artifact retention" unless upload.fetch('with')['retention-days'] == 7
   evidence_script = File.read(File.join(File.dirname(ARGV.fetch(0)), '../../scripts/test-failure-evidence.sh'))
   abort "#{group} upload must match the evidence directory name" unless
@@ -277,7 +288,7 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
     File.write(File.join(root, 'scripts/test.sh'), "#!/bin/bash\necho test-output\necho test-error >&2\nexit 37\n")
     File.chmod(0755, File.join(root, 'scripts/test.sh'))
     system({ 'RUNNER_TEMP' => root }, '/bin/bash', '--noprofile', '--norc', '-e', '-c',
-           commands.last, chdir: root, out: File::NULL, err: File::NULL)
+           test_command, chdir: root, out: File::NULL, err: File::NULL)
     abort "#{group} logging hid the test status" unless $?.exitstatus == 37
     output = File.read(File.join(root, 'snip-snap-ci', "#{group}-tests.log"))
     abort "#{group} logging lost output" unless output == "test-output\ntest-error\n"

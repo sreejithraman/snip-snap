@@ -60,6 +60,7 @@ if [[ "$run_common_tests" == YES ]]; then
     "$script_dir/ios-test-selection-tests.sh"
     "$script_dir/ios-simulator-policy-tests.sh"
     "$script_dir/ci-boot-ios-simulator-tests.sh"
+    "$script_dir/ci-simulator-crash-reports-tests.sh"
 
     swift test --package-path "$repo_dir/Packages/SnipSnapLibrary"
 fi
@@ -94,6 +95,7 @@ fi
 if [[ "$run_ios_app_tests" == YES ]]; then
     if [[ "${CI:-}" == true && -z "${SNIP_SNAP_IOS_TEST_DESTINATION:-}" ]]; then
         ios_test_destination="platform=iOS Simulator,id=$("$script_dir/ci-boot-ios-simulator.sh" "$ios_test_device")"
+        "$script_dir/ci-simulator-crash-reports.sh" after-boot
     fi
     if xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
