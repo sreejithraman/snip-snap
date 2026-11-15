@@ -122,7 +122,7 @@ final class SnipCLIApplicationHandler {
                 guard syncedContentSettings.canEnable else { throw cliApplicationError(syncedContentSettings.detail) }
                 await syncedContentSettings.enableICloudSync()
             } else {
-                guard syncedContentSettings.canSyncNow, let cloudSyncHandler else {
+                guard syncedContentSettings.canSyncNow || syncedContentSettings.canFinishDeleting, let cloudSyncHandler else {
                     throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
                 }
                 await cloudSyncHandler.retrySyncWhenPossible()

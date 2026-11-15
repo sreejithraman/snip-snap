@@ -98,9 +98,38 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.statusTitle, "Deletion incomplete")
     XCTAssertEqual(
       model.detail,
-      "Sync will retry the deletion. This device keeps a recovery copy."
+      "Some synced content is still in iCloud. This device keeps a recovery copy."
     )
     XCTAssertFalse(model.canDelete)
+  }
+
+  @MainActor
+  func testTryAgainFinishesDeletingOnlyWhenARemovalIsIncomplete() {
+    XCTAssertTrue(
+      SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending).canFinishDeleting
+    )
+    let otherStates: [SyncedContentSettingsState] = [
+      .ready, .syncing, .disabling, .deleting, .deleted, .failed(.retryingSoon), .enabling(),
+    ]
+    for state in otherStates {
+      XCTAssertFalse(
+        SyncedContentSettingsModel(mode: .iCloudSync, initialState: state).canFinishDeleting,
+        "iCloud sync in \(state)"
+      )
+    }
+    for state in otherStates + [.removalPending] {
+      XCTAssertFalse(
+        SyncedContentSettingsModel(mode: .localOnly, initialState: state).canFinishDeleting,
+        "Local-only in \(state)"
+      )
+    }
+  }
+
+  @MainActor
+  func testTryAgainStaysOfferedWhileItsRetryRuns() async {
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+
+    await settings.performExplicitSync { XCTAssertTrue(settings.canFinishDeleting) }
   }
 
   @MainActor

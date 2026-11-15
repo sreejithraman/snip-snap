@@ -47,7 +47,7 @@ struct SyncedContentSettingsView: View {
                         syncMessage
                             .padding(.leading, settingsIconWidth + 12)
                     }
-                    if model.canRetryFailedSync, let retryAction {
+                    if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
                         Button {
                             guard !isRetryingSync, !isRetryingClipboardSync else { return }
                             isRetryingSync = true
