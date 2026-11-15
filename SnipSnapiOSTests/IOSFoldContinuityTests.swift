@@ -183,7 +183,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         ))
         let window = try makeWindow(host)
         defer { window.isHidden = true }
-        host.view.addSubview(blocker)
+        window.addSubview(blocker)
         XCTAssertTrue(blocker.becomeFirstResponder())
 
         focused = true
@@ -528,13 +528,30 @@ private final class RootHarness {
     let session: IOSAppSession
     private let host: UIHostingController<IOSAppRootView>
     private let window: UIWindow
+    private let storage: CompactComposerStorage
 
     init(test: IOSFoldContinuityTests, storage: CompactComposerStorage, library: ModelTestLibrary = ModelTestLibrary()) throws {
         session = IOSAppSession(library: library)
+        self.storage = storage
         host = UIHostingController(rootView: IOSAppRootView(session: session, composerStorage: storage))
         host.traitOverrides.horizontalSizeClass = .compact
         window = try makeWindow(host)
-        test.addTeardownBlock { [window] in await MainActor.run { window.isHidden = true } }
+        test.addTeardownBlock { @MainActor [self] in await close() }
+    }
+
+    /// Ends this test's presentations and takes its view tree out of the window, then keeps the views
+    /// alive briefly so work already queued for them runs before they're freed.
+    private func close() async {
+        // Clear SwiftUI's requests first, so a test that failed mid-presentation isn't presented again.
+        storage.dismissAttachmentPicker()
+        storage.dismissAttachmentPreview()
+        if host.presentedViewController != nil {
+            host.dismiss(animated: false)
+            await expect("presentations end before teardown") { host.presentedViewController == nil }
+        }
+        window.isHidden = true
+        window.rootViewController = nil
+        try? await Task.sleep(for: .milliseconds(100))
     }
 
     func swap(to sizeClass: UIUserInterfaceSizeClass, file: StaticString = #filePath, line: UInt = #line) async {
