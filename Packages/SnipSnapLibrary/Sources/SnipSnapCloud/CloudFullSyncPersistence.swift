@@ -642,10 +642,10 @@ extension CloudFullSyncPersistence {
 
   /// Recovery starts only with a fresh engine that has no token, never during a fetch.
   package func prepareInitialFetch() async throws {
-    if try await needsCorruptShadowRecovery() {
-      _ = try await mutate { try await self.prepareCorruptShadowRecovery() }
+    try await mutate {
+      try await self.prepareCorruptShadowRecovery()
+      try await self.clearEngineStateWithinMutation()
     }
-    try await clearEngineState()
   }
 
   private func clearEngineStateWithinMutation() async throws {

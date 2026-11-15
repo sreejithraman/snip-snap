@@ -13,16 +13,15 @@ extension CloudFullSyncPersistence {
   }
 
   /// Moves every unresolved archive to recovering, before a fresh engine starts, including
-  /// after a crash during recovery. Rechecks the current archives under the mutation lease
-  /// before saving candidates.
-  func prepareCorruptShadowRecovery() async throws -> Bool {
+  /// after a crash during recovery. Runs under the mutation lease, so it reads the current
+  /// archives before saving candidates. With none, it writes nothing.
+  func prepareCorruptShadowRecovery() async throws {
     let snapshot = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let archives = corruptShadowRecovery(in: snapshot).unresolvedArchives
     let candidates = try archives.map { value in
       CloudCorruptShadowRecoveryCandidate(archive: value, accepted: try acceptedCorruptShadow(value))
     }
     try await library.beginCorruptCloudShadowRecovery(namespaceKey: namespaceKey, candidates: candidates)
-    return !archives.isEmpty
   }
 
   /// A recovery row is valid only for a canonical record in this metadata zone.

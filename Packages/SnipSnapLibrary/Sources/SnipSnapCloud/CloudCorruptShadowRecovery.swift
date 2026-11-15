@@ -12,7 +12,8 @@ struct CloudCorruptShadowRecovery: Sendable {
     case archived
     /// The archive and its exact attempt wait for a clean first fetch.
     case recovering
-    /// Only the resolution marker remains.
+    /// Only the resolution marker remains. Kept so the marker reads as resolved, not as a
+    /// row that needs attention.
     case resolved
   }
 
