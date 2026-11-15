@@ -603,4 +603,50 @@ final class ListPageTransitionTests: XCTestCase {
         }
     }
 
+    func testNewerEdgeCreationRequestCancelsTheEarlierOne() async {
+        var request = ListEdgeCreationRequest()
+        let first = CancellationProbe()
+        let second = CancellationProbe()
+        let firstID = UUID()
+        let secondID = UUID()
+
+        let firstTask = Task { @MainActor in first.record() }
+        request.begin(firstID, task: firstTask)
+        XCTAssertTrue(request.isCurrent(firstID))
+
+        let secondTask = Task { @MainActor in second.record() }
+        request.begin(secondID, task: secondTask)
+        XCTAssertFalse(request.isCurrent(firstID))
+        XCTAssertTrue(request.isCurrent(secondID))
+        await firstTask.value
+        await secondTask.value
+        XCTAssertEqual(first.sawCancellation, true)
+        XCTAssertEqual(second.sawCancellation, false)
+
+        request.finish(firstID)
+        XCTAssertTrue(request.isCurrent(secondID), "A stale request's finish must not end the newer one")
+        request.finish(secondID)
+        XCTAssertFalse(request.isCurrent(secondID))
+    }
+
+    func testCancellingEdgeCreationRequestCancelsItsTask() async {
+        var request = ListEdgeCreationRequest()
+        let probe = CancellationProbe()
+        let id = UUID()
+        let task = Task { @MainActor in probe.record() }
+        request.begin(id, task: task)
+
+        request.cancel()
+        XCTAssertFalse(request.isCurrent(id))
+        await task.value
+        XCTAssertEqual(probe.sawCancellation, true)
+    }
+
+}
+
+@MainActor
+private final class CancellationProbe {
+    private(set) var sawCancellation: Bool?
+
+    func record() { sawCancellation = Task.isCancelled }
 }

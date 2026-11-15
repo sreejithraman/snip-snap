@@ -39,6 +39,16 @@ private enum ListSelectorItem: Identifiable {
 }
 
 struct ListSelector: View {
+    private enum CreationPresentation: Equatable {
+        case idle
+        case presenting(UUID)
+
+        var isPresenting: Bool {
+            if case .presenting = self { return true }
+            return false
+        }
+    }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.layoutDirection) private var layoutDirection
@@ -46,8 +56,7 @@ struct ListSelector: View {
     @Environment(\.self) private var environment
     @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 16
     @GestureState private var gestureIsActive = false
-    @State private var presentingCreation = false
-    @State private var creationRequest = UUID()
+    @State private var creation = CreationPresentation.idle
     @AccessibilityFocusState private var focusedTabID: String?
 
     let model: IOSAppModel
@@ -61,7 +70,7 @@ struct ListSelector: View {
     let pageFrame: ListPageFrame
 
     private func openListManagement() {
-        guard !model.isManagingLists, !motion.isDragging, !presentingCreation, sheet == nil else { return }
+        guard !model.isManagingLists, !motion.isDragging, !creation.isPresenting, sheet == nil else { return }
         motion.interrupt()
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         model.haptics.emit(.selection, for: model.haptics.beginInteraction())
@@ -111,7 +120,7 @@ struct ListSelector: View {
             .opacity(model.isManagingLists ? 0 : 1)
             .allowsHitTesting(!model.isManagingLists)
             .onChange(of: presentation.hoveringAdd ? items.count : presentation.nearest) { _, destination in
-                guard motion.isSelectorDragging, !presentingCreation, sheet == nil else { return }
+                guard motion.isSelectorDragging, !creation.isPresenting, sheet == nil else { return }
                 model.haptics.emit(destination == items.count ? .snap : .selection, for: model.haptics.beginInteraction())
             }
             .onChange(of: gestureIsActive) { _, active in
@@ -146,15 +155,15 @@ struct ListSelector: View {
             if destination == nil { resetCreation() }
         }
         .onChange(of: model.lastSelectedListID) { _, _ in
-            if presentingCreation { resetCreation() }
+            if creation.isPresenting { resetCreation() }
         }
         .onChange(of: model.selectedPage) { _, _ in
             model.isManagingLists = false
-            if presentingCreation { resetCreation() }
+            if creation.isPresenting { resetCreation() }
         }
         .onChange(of: model.isSearchPresented) { _, isPresented in
             if isPresented { model.isManagingLists = false }
-            if isPresented && presentingCreation { resetCreation() }
+            if isPresented && creation.isPresenting { resetCreation() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -209,7 +218,7 @@ struct ListSelector: View {
         let settlesWithoutTravel = reduceMotion && motion.transition?.settlement != nil
             && motion.transition?.settlement?.createsList != true
         let progress = directPresentation?.addProgress ?? (settlesWithoutTravel ? 0
-            : presentingCreation ? 1 : max(geometry.pullProgress(at: position), creationProgress))
+            : creation.isPresenting ? 1 : max(geometry.pullProgress(at: position), creationProgress))
         let hoveringAdd = directPresentation == nil && progress >= 1
         let resistedCursor = geometry.resisted(position)
         let pull = min(1, max(0, (progress - 0.2) / 0.8))
@@ -275,7 +284,7 @@ struct ListSelector: View {
                 state = true
             }
             .onChanged { value in
-                guard !model.isManagingLists, !presentingCreation, sheet == nil else { return }
+                guard !model.isManagingLists, !creation.isPresenting, sheet == nil else { return }
                 motion.updateDrag(
                     translation: value.translation,
                     selectedPage: model.selectedPage,
@@ -287,7 +296,7 @@ struct ListSelector: View {
                 )
             }
             .onEnded { value in
-                guard !model.isManagingLists, !presentingCreation, sheet == nil else {
+                guard !model.isManagingLists, !creation.isPresenting, sheet == nil else {
                     motion.interrupt()
                     return
                 }
@@ -427,7 +436,7 @@ struct ListSelector: View {
                 }
                 .offset(x: targetOffset)
                 .allowsHitTesting(visibleWidth > 0)
-                .disabled(presentingCreation || motion.isDragging || motion.isEnteringNewList
+                .disabled(creation.isPresenting || motion.isDragging || motion.isEnteringNewList
                           || motion.isCreatingFromEdge)
             }
         }
@@ -448,7 +457,7 @@ struct ListSelector: View {
     }
 
     private func beginCreation() {
-        guard !model.isManagingLists, !presentingCreation, sheet == nil, !model.isSearchPresented else { return }
+        guard !model.isManagingLists, !creation.isPresenting, sheet == nil, !model.isSearchPresented else { return }
         let sourcePage = model.selectedPage
         let sourcePages = model.pages
         if model.newListID != nil {
@@ -463,15 +472,14 @@ struct ListSelector: View {
             return
         }
         let request = UUID()
-        creationRequest = request
         withAnimation(animation, completionCriteria: .logicallyComplete) {
-            presentingCreation = true
+            creation = .presenting(request)
         } completion: {
-            guard presentingCreation, creationRequest == request,
+            guard creation == .presenting(request),
                   model.selectedPage == sourcePage,
                   sheet == nil, !model.isSearchPresented else { return }
             Task {
-                guard presentingCreation, creationRequest == request,
+                guard creation == .presenting(request),
                       model.selectedPage == sourcePage,
                       sheet == nil, !model.isSearchPresented else { return }
                 await createList(sourcePage, sourcePages)
@@ -481,8 +489,7 @@ struct ListSelector: View {
     }
 
     private func resetCreation() {
-        creationRequest = UUID()
-        withAnimation(animation) { presentingCreation = false }
+        withAnimation(animation) { creation = .idle }
     }
 }
 
