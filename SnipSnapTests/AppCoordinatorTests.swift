@@ -127,6 +127,33 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         withExtendedLifetime(coordinator) {}
     }
 
+    @MainActor
+    func testFailedShortcutChangeRestoresThePreviousChord() throws {
+        let suiteName = "Snip SnapShortcutRollbackTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let previous = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_I, keyLabel: "I")
+        let occupied = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_O, keyLabel: "O")
+        try requireAvailableChords(previous, occupied)
+        let settings = ShortcutSettings(defaults: defaults)
+        settings.save(try settings.candidate(setting: .keyChord(previous), for: .togglePanel))
+        let coordinator = AppCoordinator(
+            model: AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults),
+            shortcutSettings: settings,
+            isAccessibilityTrusted: { true }
+        )
+        coordinator.start()
+        XCTAssertFalse(previous.isAvailableToRegister)
+        var occupant: EventHotKeyRef? = try XCTUnwrap(occupied.hold())
+        defer { releaseHeldChord(&occupant) }
+
+        XCTAssertThrowsError(try coordinator.setShortcut(.keyChord(occupied), for: .togglePanel))
+
+        XCTAssertFalse(previous.isAvailableToRegister, "A failed change must restore the previous chord")
+        XCTAssertEqual(settings.configuration.togglePanel, .keyChord(previous))
+        withExtendedLifetime(coordinator) {}
+    }
+
     func testPendingErrorsWaitForAUsablePanel() {
         XCTAssertTrue(AppCoordinator.shouldPresentPendingError(
             isVisible: true,

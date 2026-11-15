@@ -315,6 +315,52 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertEqual(actions, [.toggleClipboard])
     }
 
+    @MainActor
+    func testRegisteringAgainReplacesThePreviousShortcuts() throws {
+        let first = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_J, keyLabel: "J")
+        let second = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_L, keyLabel: "L")
+        try requireAvailableChords(first, second)
+        let manager = GlobalHotKeyManager { _ in }
+        defer { manager.unregister() }
+        var configuration = GlobalShortcutConfiguration.snipSnapDefaults
+
+        configuration.set(.keyChord(first), for: .togglePanel)
+        try manager.register(configuration: configuration)
+        configuration.set(.keyChord(second), for: .togglePanel)
+        try manager.register(configuration: configuration)
+
+        XCTAssertTrue(first.isAvailableToRegister, "Registering again must release the previous chords")
+        XCTAssertFalse(second.isAvailableToRegister)
+        manager.unregister()
+        XCTAssertTrue(second.isAvailableToRegister)
+    }
+
+    @MainActor
+    func testFailedRegistrationReleasesTheShortcutsItAlreadyTook() throws {
+        let taken = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_U, keyLabel: "U")
+        let occupied = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_Y, keyLabel: "Y")
+        try requireAvailableChords(taken, occupied)
+        let manager = GlobalHotKeyManager { _ in }
+        defer { manager.unregister() }
+        var configuration = GlobalShortcutConfiguration.snipSnapDefaults
+        configuration.set(.keyChord(taken), for: .togglePanel)
+        configuration.set(.keyChord(occupied), for: .toggleClipboard)
+        var occupant: EventHotKeyRef? = try XCTUnwrap(occupied.hold())
+        defer { releaseHeldChord(&occupant) }
+
+        XCTAssertThrowsError(try manager.register(configuration: configuration))
+        XCTAssertTrue(taken.isAvailableToRegister, "A failed registration must release chords it already took")
+
+        releaseHeldChord(&occupant)
+        try manager.register(configuration: configuration)
+        XCTAssertFalse(taken.isAvailableToRegister)
+        XCTAssertFalse(occupied.isAvailableToRegister)
+
+        manager.unregister()
+        XCTAssertTrue(taken.isAvailableToRegister)
+        XCTAssertTrue(occupied.isAvailableToRegister)
+    }
+
     func testKeyReleaseBetweenShiftTapsCancelsDoubleShift() {
         let left = DoubleShiftGesture(side: .left, modifier: .none)
         var router = DoubleShiftRouter(gestures: [left])
@@ -868,4 +914,37 @@ private func keyEvent(
         isARepeat: false,
         keyCode: keyCode
     )!
+}
+
+extension ShortcutKeyChord {
+    static func globalShortcutTestChord(keyCode: Int, keyLabel: String) -> ShortcutKeyChord {
+        ShortcutKeyChord(keyCode: keyCode, modifiers: controlKey | optionKey | cmdKey, keyLabel: keyLabel)
+    }
+
+    var isAvailableToRegister: Bool {
+        var reference = hold()
+        defer { releaseHeldChord(&reference) }
+        return reference != nil
+    }
+
+    func hold() -> EventHotKeyRef? {
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            keyCode, modifiers,
+            EventHotKeyID(signature: 0x54455354, id: 1),
+            GetApplicationEventTarget(), 0, &reference
+        )
+        return status == noErr ? reference : nil
+    }
+}
+
+func requireAvailableChords(_ chords: ShortcutKeyChord...) throws {
+    guard chords.allSatisfy(\.isAvailableToRegister) else {
+        throw XCTSkip("The OS could not provide the integration test's chords")
+    }
+}
+
+func releaseHeldChord(_ reference: inout EventHotKeyRef?) {
+    if let reference { UnregisterEventHotKey(reference) }
+    reference = nil
 }
