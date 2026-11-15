@@ -312,10 +312,6 @@ extension SwiftDataSyncModePersistence {
       try finishActiveMutation(reservation)
       return value
     } catch {
-      guard error is SnipLibraryError || error is SyncModePersistenceError || error is CancellationError else {
-        // Test crash hooks model process loss. Leave the durable reservation for reopen.
-        throw error
-      }
       try? finishActiveMutation(reservation)
       throw error
     }
@@ -355,9 +351,6 @@ extension SwiftDataSyncModePersistence {
       try finishActiveMutation(reservation)
       return result
     } catch {
-      guard error is SnipLibraryError || error is SyncModePersistenceError else {
-        throw error
-      }
       try? finishActiveMutation(reservation)
       throw error
     }
