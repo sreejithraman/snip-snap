@@ -190,67 +190,6 @@ extension CloudFullBatchPlanner {
     return relevant.allSatisfy(\.isRetryable) ? .retryableSend : .terminalSend
   }
 
-  static func nextNamespaceState(
-    current: CloudFullNamespaceState,
-    batch: CloudSyncBatch,
-    dataZone: CloudZoneID,
-    ownedZones: Set<CloudZoneID>,
-    attachmentOperationIDs: Set<CloudRecordID>,
-    initialFetchInventory: CloudFullFetchInventory?
-  ) -> CloudFullNamespaceState {
-    var phase = current.phase
-    var zoneCreationPending = current.zoneCreationPending
-    switch batch {
-    case .fetched(let fetched):
-      if fetched.databaseEvents.contains(where: isDestructiveReset) {
-        phase = .blocked
-        zoneCreationPending = false
-      } else if hasMissingZone(fetched, ownedZones: ownedZones) {
-        if current.phase == .active || current.phase == .blocked {
-          phase = .blocked
-        } else {
-          phase = .remoteCheckedMissingZone
-        }
-      } else if fetchRecoveryKind(fetched) == nil {
-        if current.phase != .active && current.phase != .seeding && current.phase != .blocked {
-          phase = fetched.items.contains(where: {
-            if case .record = $0 { true } else { false }
-          }) ? .active : .remoteChecked
-        }
-      }
-    case .sent(let sent):
-      if sent.databaseEvents.contains(where: isDestructiveReset) {
-        phase = .blocked
-        zoneCreationPending = false
-      } else if hasMissingZone(sent, ownedZones: ownedZones, attachmentOperationIDs: attachmentOperationIDs) {
-        if current.phase == .seeding {
-          zoneCreationPending = true
-        } else {
-          phase = .blocked
-        }
-      } else if current.phase == .seeding {
-        let hasIncomplete = sent.items.contains { item in
-          if case .failed(_, let failure) = item { failure.isRetryable }
-          else { false }
-        }
-        if !hasIncomplete {
-          if !zoneCreationPending || sent.databaseEvents.contains(where: { event in
-            if case .zoneSaved(let zone) = event { zone == dataZone } else { false }
-          }) {
-            phase = .active
-            zoneCreationPending = false
-          }
-        }
-      }
-    }
-    return CloudFullNamespaceState(
-      revision: current.revision + 1,
-      phase: phase,
-      zoneCreationPending: zoneCreationPending,
-      initialFetchInventory: initialFetchInventory
-    )
-  }
-
   static func isDestructiveReset(_ event: CloudDatabaseEvent) -> Bool {
     switch event {
     case .zoneDeleted(_, reason: .purged), .zoneDeleted(_, reason: .encryptedDataReset): true

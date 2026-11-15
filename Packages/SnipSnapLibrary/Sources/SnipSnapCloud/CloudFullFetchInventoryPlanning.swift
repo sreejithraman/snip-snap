@@ -10,21 +10,20 @@ extension CloudFullFetchInventory {
   ) -> CloudFullFetchInventory? {
     guard case .fetched(let fetched) = batch else { return current }
     guard fetched.isInitialFetch else { return nil }
-    let prior = current ?? CloudFullFetchInventory(canProveAbsence: startsWithoutToken)
-    var observed = prior.observed
-    for item in fetched.items {
+    let observations = fetched.items.compactMap { item -> CloudFullFetchObservation? in
       switch item {
       case .record(let snapshot) where snapshot.id.zone == dataZone:
-        observed.insert(CloudFullSyncPersistence.storageIdentity(snapshot.id))
+        return .present(CloudFullSyncPersistence.storageIdentity(snapshot.id))
       case .deleted(let id) where id.zone == dataZone:
-        observed.remove(CloudFullSyncPersistence.storageIdentity(id))
-      default: break
+        return .absent(CloudFullSyncPersistence.storageIdentity(id))
+      default:
+        return nil
       }
     }
-    return CloudFullFetchInventory(
-      observed: observed,
-      canProveAbsence: prior.canProveAbsence
-        && CloudSyncIssueError.issue(in: batch) == nil
+    let attempt = current ?? CloudFullFetchInventory.started(tokenless: startsWithoutToken)
+    return attempt.observing(
+      observations,
+      isClean: CloudSyncIssueError.issue(in: batch) == nil
         && !CloudSyncIssueError.blocksOutbound(in: batch)
     )
   }

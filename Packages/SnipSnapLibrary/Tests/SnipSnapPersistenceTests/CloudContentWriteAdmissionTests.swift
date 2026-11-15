@@ -6,6 +6,11 @@ import SnipSnapCore
 
 final class CloudContentWriteAdmissionTests: XCTestCase {
   private let namespace = "content-admission-namespace"
+  /// One fetch past a fresh namespace: records make it active, a reset blocks it.
+  private static let activeState = CloudFullNamespaceState.notEnrolled
+    .committingFetch(.complete(hasRecords: true), inventory: nil)
+  private static let blockedState = CloudFullNamespaceState.notEnrolled
+    .committingFetch(.destructiveReset, inventory: nil)
 
   func testMalformedStagedEvidenceRefusesEditsAndImportsBeforeAndAfterReopen() async throws {
     let id = UUID()
@@ -119,7 +124,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
         let raw = try rawBatch(id: id, kind: kind, reason: reason)
         for inputs in [[], [try recovery(id: id, kind: .retryableFetch)]] {
           let batch = fullBatch(id: id, inputs: inputs,
-            state: CloudFullNamespaceState(revision: 1, phase: .active), raw: raw)
+            state: Self.activeState, raw: raw)
           var payload = try json(JSONEncoder().encode(batch))
           if inputs.isEmpty { payload.removeValue(forKey: "recoveryInputs") }
           try await verify(.staged(id, try wrapped(JSONSerialization.data(withJSONObject: payload))),
@@ -127,7 +132,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
         }
       }
     }
-    let blocked = fullBatch(id: id, state: CloudFullNamespaceState(revision: 1, phase: .blocked))
+    let blocked = fullBatch(id: id, state: Self.blockedState)
     try await verify(.staged(id, try wrapped(JSONEncoder().encode(blocked))),
       error: .modeTransitionInProgress, label: "blocked namespace without recovery or raw data")
     let disagreement = try fullBatch(id: id, inputs: [recovery(id: id, kind: .destructiveReset)],
@@ -157,7 +162,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       try await verify(.staged(id, try wrapped(JSONEncoder().encode(fullBatch(id: id, raw: raw)))),
         error: .invalidStore, label: label)
     }
-    let state = CloudFullNamespaceState(revision: 1, phase: .active)
+    let state = Self.activeState
     let unknownState = try changed(JSONEncoder().encode(state), key: "storageVersion", value: 2)
     let batch = try changed(JSONEncoder().encode(fullBatch(id: id)), key: "nextNamespaceState", value: json(unknownState))
     try await verify(.staged(id, try wrapped(batch)), error: .invalidStore, label: "unknown namespace state version")
@@ -166,7 +171,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
   func testNonresetRawAndOlderRawlessFullCommitsRemainWritable() async throws {
     let id = UUID()
     for kind in ["fetched", "sent"] {
-      let batch = fullBatch(id: id, state: CloudFullNamespaceState(revision: 1, phase: .active),
+      let batch = fullBatch(id: id, state: Self.activeState,
         raw: try rawBatch(id: id, kind: kind, reason: "deleted"))
       try await verify(.staged(id, try wrapped(JSONEncoder().encode(batch))), error: nil,
         label: "nonreset raw \(kind)")
@@ -211,12 +216,12 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
   func testCommittedBlockedNamespaceKeepsWriteRefusalAfterResetInputIsConsumed() async throws {
     let id = UUID()
     for family in ["fetched", "sent"] {
-      let batch = fullBatch(id: id, state: CloudFullNamespaceState(revision: 1, phase: .blocked),
+      let batch = fullBatch(id: id, state: Self.blockedState,
         raw: try rawBatch(id: id, kind: family, reason: "purged"))
       try await verify(.committed(batch), error: .modeTransitionInProgress,
         label: "committed \(family) reset without recovery or result delivery")
     }
-    let active = fullBatch(id: id, state: CloudFullNamespaceState(revision: 1, phase: .active))
+    let active = fullBatch(id: id, state: Self.activeState)
     try await verify(.committed(active), error: nil, label: "committed active namespace")
     let legacy = try JSONEncoder().encode(Set<CloudEntityReference>())
     try await verify(.enrollment(legacy), error: nil, label: "legacy enrollment set")
