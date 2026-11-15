@@ -9,73 +9,81 @@ protocol GlobalHotKeyManaging: AnyObject {
 
 @MainActor
 final class GlobalHotKeyManager: GlobalHotKeyManaging {
-    private var eventHandler: EventHandlerRef?
-    private var hotKeys: [EventHotKeyRef] = []
-    private var localMonitor: Any?
-    private var globalMonitor: Any?
-    private var doubleShiftRouter = DoubleShiftRouter(gestures: [])
-    private var doubleShiftActions: [DoubleShiftGesture: GlobalHotKeyAction] = [:]
+    private enum Registration {
+        case unregistered
+        case installing(GlobalHotKeyResources)
+        case registered(GlobalHotKeyResources)
+        case rolledBack
+    }
+
+    private var registration = Registration.unregistered
     private let handler: (GlobalHotKeyAction) -> Void
-    private var isRegistered = false
 
     init(handler: @escaping (GlobalHotKeyAction) -> Void) {
         self.handler = handler
     }
 
     func register(configuration: GlobalShortcutConfiguration) throws {
+        unregister()
+        let resources = GlobalHotKeyResources()
+        registration = .installing(resources)
         do {
-            try installEventHandler()
+            try resources.installEventHandler(for: self)
             for action in GlobalHotKeyAction.allCases {
-                switch configuration.trigger(for: action) {
-                case .doubleShift(let side):
-                    doubleShiftActions[
-                        DoubleShiftGesture(side: side, modifier: .none)
-                    ] = action
-                case .commandDoubleShift(let side):
-                    doubleShiftActions[
-                        DoubleShiftGesture(side: side, modifier: .command)
-                    ] = action
-                case .keyChord(let chord):
-                    try register(chord: chord, action: action)
-                }
+                try resources.add(configuration.trigger(for: action), for: action)
             }
-            if !doubleShiftActions.isEmpty {
-                doubleShiftRouter = DoubleShiftRouter(gestures: doubleShiftActions.keys)
-                installDoubleShiftMonitors()
-            }
-            isRegistered = true
+            resources.installDoubleShiftMonitors(for: self)
+            registration = .registered(resources)
         } catch {
-            unregister()
+            resources.release()
+            registration = .rolledBack
             throw error
         }
     }
 
     fileprivate func receive(_ action: GlobalHotKeyAction) {
-        guard isRegistered, !ShortcutRecordingState.isActive else { return }
+        guard case .registered = registration, !ShortcutRecordingState.isActive else { return }
         handler(action)
     }
 
     func unregister() {
-        isRegistered = false
-        hotKeys.forEach { UnregisterEventHotKey($0) }
-        hotKeys = []
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
+        switch registration {
+        case .installing(let resources), .registered(let resources):
+            resources.release()
+        case .unregistered, .rolledBack:
+            break
         }
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
-        }
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
-        }
-        doubleShiftActions = [:]
-        doubleShiftRouter = DoubleShiftRouter(gestures: [])
+        registration = .unregistered
     }
 
-    private func installEventHandler() throws {
+    func receiveForDoubleShift(_ event: NSEvent) {
+        guard case .registered(let resources) = registration else { return }
+        guard !ShortcutRecordingState.isActive else {
+            resources.cancelDoubleShift()
+            return
+        }
+        if let action = resources.doubleShiftAction(for: event) {
+            handler(action)
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            unregister()
+        }
+    }
+}
+
+@MainActor
+private final class GlobalHotKeyResources {
+    private var eventHandler: EventHandlerRef?
+    private var hotKeys: [EventHotKeyRef] = []
+    private var localMonitor: Any?
+    private var globalMonitor: Any?
+    private var doubleShiftActions: [DoubleShiftGesture: GlobalHotKeyAction] = [:]
+    private var doubleShiftRouter = DoubleShiftRouter(gestures: [])
+
+    func installEventHandler(for manager: GlobalHotKeyManager) throws {
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -85,11 +93,22 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
             snipSnapGlobalHotKeyHandler,
             1,
             &eventType,
-            Unmanaged.passUnretained(self).toOpaque(),
+            Unmanaged.passUnretained(manager).toOpaque(),
             &eventHandler
         )
         guard status == noErr else {
             throw GlobalHotKeyError.eventHandler(status)
+        }
+    }
+
+    func add(_ trigger: ShortcutTrigger, for action: GlobalHotKeyAction) throws {
+        switch trigger {
+        case .doubleShift(let side):
+            doubleShiftActions[DoubleShiftGesture(side: side, modifier: .none)] = action
+        case .commandDoubleShift(let side):
+            doubleShiftActions[DoubleShiftGesture(side: side, modifier: .command)] = action
+        case .keyChord(let chord):
+            try register(chord: chord, action: action)
         }
     }
 
@@ -113,38 +132,48 @@ final class GlobalHotKeyManager: GlobalHotKeyManaging {
         hotKeys.append(reference)
     }
 
-    private func installDoubleShiftMonitors() {
+    func installDoubleShiftMonitors(for manager: GlobalHotKeyManager) {
+        guard !doubleShiftActions.isEmpty else { return }
+        doubleShiftRouter = DoubleShiftRouter(gestures: doubleShiftActions.keys)
         localMonitor = NSEvent.addLocalMonitorForEvents(
             matching: DoubleShiftRouter.eventMask
-        ) { [weak self] event in
+        ) { [weak manager] event in
             MainActor.assumeIsolated {
-                self?.receiveForDoubleShift(event)
+                manager?.receiveForDoubleShift(event)
             }
             return event
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: DoubleShiftRouter.eventMask
-        ) { [weak self] event in
+        ) { [weak manager] event in
             MainActor.assumeIsolated {
-                self?.receiveForDoubleShift(event)
+                manager?.receiveForDoubleShift(event)
             }
         }
     }
 
-    func receiveForDoubleShift(_ event: NSEvent) {
-        guard !ShortcutRecordingState.isActive else {
-            doubleShiftRouter.cancel()
-            return
-        }
-        if let gesture = doubleShiftRouter.receive(event),
-           let action = doubleShiftActions[gesture] {
-            handler(action)
-        }
+    func doubleShiftAction(for event: NSEvent) -> GlobalHotKeyAction? {
+        doubleShiftRouter.receive(event).flatMap { doubleShiftActions[$0] }
     }
 
-    deinit {
-        MainActor.assumeIsolated {
-            unregister()
+    func cancelDoubleShift() {
+        doubleShiftRouter.cancel()
+    }
+
+    func release() {
+        hotKeys.forEach { UnregisterEventHotKey($0) }
+        hotKeys = []
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
+        }
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+            self.globalMonitor = nil
         }
     }
 }
