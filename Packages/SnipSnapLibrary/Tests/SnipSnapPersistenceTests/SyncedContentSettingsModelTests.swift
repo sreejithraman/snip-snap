@@ -103,6 +103,21 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testSuccessfulSyncFinishesARemovalWhoseCompletionReportWasLost() {
+    let model = SyncedContentSettingsModel(mode: .iCloudSync)
+    model.recordRemovalPending(true)
+
+    model.recordSyncStarted()
+    model.recordSyncFailure(.iCloudUnavailable)
+    XCTAssertEqual(model.state, .removalPending)
+
+    model.recordSyncStarted()
+    model.recordSyncCompleted()
+    XCTAssertEqual(model.state, .deleted)
+    XCTAssertEqual(model.statusTitle, "Synced content deleted")
+  }
+
+  @MainActor
   func testExplicitEnableSwitchesModeOnlyAfterLibraryReplacement() async {
     let calls = DeleteEventRecorder()
     let model = SyncedContentSettingsModel(

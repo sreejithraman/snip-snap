@@ -259,6 +259,120 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .failed(.retryingSoon))
     }
 
+    func testSyncWithoutAPendingRemovalReportShowsTheDeletionFinished() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        settings.recordRemovalPending(true)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .syncScheduled,
+                activeLibrary: ModelTestLibrary()
+            )
+        )
+
+        await session.syncWhenPossible()
+
+        XCTAssertEqual(settings.state, .deleted)
+    }
+
+    func testManualPendingRemovalResultKeepsDeletionIncomplete() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: IOSCloudSyncSessionProbe(
+                result: .oldSyncedContentRemovalPending,
+                activeLibrary: ModelTestLibrary()
+            )
+        )
+
+        await session.syncWhenPossible()
+        XCTAssertEqual(settings.state, .removalPending)
+
+        await session.syncWhenPossible()
+        XCTAssertEqual(settings.state, .removalPending)
+    }
+
+    func testAutomaticPendingRemovalResultKeepsDeletionIncomplete() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let fixture = AutomaticSyncFixture(settings: settings)
+
+        let delivered = await fixture.deliver(
+            [.oldSyncedContentRemovalPending],
+            then: .libraryReplacedWithSyncIssue(.someChangesPending)
+        )
+
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(settings.state, .removalPending)
+    }
+
+    func testAutomaticSyncIssueKeepsDeletionIncomplete() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let fixture = AutomaticSyncFixture(settings: settings)
+
+        let delivered = await fixture.deliver(
+            [.syncIssue(.retryingSoon)],
+            then: .libraryReplacedWithSyncIssue(.someChangesPending)
+        )
+
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(settings.state, .removalPending)
+    }
+
+    /// Sync engine results never carry Delete Synced Content progress, so they can't show
+    /// that a removal finished.
+    func testSyncEngineResultsKeepDeletionIncomplete() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let fixture = AutomaticSyncFixture(settings: settings)
+
+        let delivered = await fixture.deliver(
+            [.syncScheduled, .contentUpdated, .syncCompleted],
+            then: .libraryReplacedWithSyncIssue(.someChangesPending)
+        )
+
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(settings.state, .removalPending)
+    }
+
+    func testAutomaticResultsDuringSyncNowKeepItRunning() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        let fixture = AutomaticSyncFixture(
+            settings: settings,
+            manualResult: .syncScheduled,
+            pausesCloudWork: true
+        )
+        let session = fixture.session
+        let syncNow = Task { await session.retrySyncWhenPossible() }
+        await fixture.cloudSession.waitUntilCloudWorkStarts()
+        XCTAssertEqual(settings.state, .syncing)
+
+        let delivered = await fixture.deliver(
+            [.syncScheduled, .contentUpdated],
+            then: .libraryReplacedAndSyncScheduled
+        )
+
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(settings.state, .syncing)
+        await fixture.cloudSession.resumeCloudWork()
+        await syncNow.value
+        XCTAssertEqual(settings.state, .ready)
+    }
+
+    func testAutomaticRemovalReportKeepsAnOutstandingIssue() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        settings.recordSyncFailure(.iCloudStorageFull)
+        let fixture = AutomaticSyncFixture(settings: settings)
+
+        let delivered = await fixture.deliver(
+            [.oldSyncedContentRemovalCompleted],
+            then: .libraryReplacedAndSyncScheduled
+        )
+
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(settings.state, .failed(.iCloudStorageFull))
+    }
+
     func testIOSDelayedCancelDoesNotClearNewerBackupPreview() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSImportCancelTests-\(UUID().uuidString)", isDirectory: true)
@@ -781,6 +895,50 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == current.id }).isDone)
     }
 
+}
+
+/// An iOS session whose automatic sync results the test yields.
+@MainActor
+private struct AutomaticSyncFixture {
+    private static let markerContent = "Marker library"
+
+    let session: IOSAppSession
+    let cloudSession: IOSCloudSyncSessionProbe
+    private let automatic: AsyncStream<SnipSnapCloudSyncResult>.Continuation
+
+    init(
+        settings: SyncedContentSettingsModel,
+        manualResult: SnipSnapCloudSyncResult = .noChange,
+        pausesCloudWork: Bool = false
+    ) {
+        let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+        cloudSession = IOSCloudSyncSessionProbe(
+            result: manualResult,
+            activeLibrary: ModelTestLibrary(
+                snips: [Snip(content: Self.markerContent, origin: .quickEntry)]
+            ),
+            pausesCloudWork: pausesCloudWork,
+            automaticSyncResults: automatic.stream
+        )
+        session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+        self.automatic = automatic.continuation
+    }
+
+    /// Yields `results`, then `marker`, a library replacement that must leave the Settings
+    /// state under test alone. Its snips appearing shows the stream handled every result first.
+    func deliver(
+        _ results: [SnipSnapCloudSyncResult],
+        then marker: SnipSnapCloudSyncResult
+    ) async -> Bool {
+        for result in results + [marker] { automatic.yield(result) }
+        return await TestReadiness.wait {
+            session.model.snips.map(\.content) == [Self.markerContent]
+        }
+    }
 }
 
 private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
