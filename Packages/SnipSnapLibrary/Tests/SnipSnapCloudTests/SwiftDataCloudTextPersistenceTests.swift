@@ -1933,7 +1933,10 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [first, second])
     }
 
-    func testSeedingModeMergeWithoutPendingZoneCreationActivatesOnAnEmptyApproval() async throws {
+    // SM27-F1 H5: like seed pruning, an empty re-merge that finishes seeding must exclude every
+    // live snip without a sent record, so snips the merge did not approve stay off iCloud. The
+    // placeholder rows seeding reserves before a send do not count as sent.
+    func testSeedingModeMergeWithoutPendingZoneCreationExcludesUnlinkedSnipsOnAnEmptyApproval() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
@@ -1944,20 +1947,62 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         let second = try await addSnip("second approval", to: library)
         try await markRemoteChecked(bridge)
         try await bridge.approveSeeding(snipIDs: [first])
+        _ = try await bridge.pendingChanges()
 
         try await bridge.approveModeMerge(snipIDs: [second])
+        _ = try await bridge.pendingChanges()
         var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [second])
         XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
         XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        XCTAssertEqual(Set(stored.records.map(\.snipID)), [first, second])
+        XCTAssertTrue(stored.records.allSatisfy { $0.acceptedText == nil }, "neither row was sent")
 
         try await bridge.approveModeMerge(snipIDs: [])
         stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
-        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [first, second])
         XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        let pending = try await bridge.pendingChanges()
+        XCTAssertTrue(pending.operations.isEmpty, "the empty merge uploads neither unapproved snip")
+    }
+
+    // SM27-F1 H5: a seed iCloud accepted stays linked when an empty re-merge finishes seeding, so
+    // only the snip with a placeholder row is excluded.
+    func testSeedingModeMergeEmptyApprovalKeepsADeliveredSeedLinked() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let first = try await addSnip("delivered seed", to: library)
+        let second = try await addSnip("approved but never sent", to: library)
+        try await markRemoteChecked(bridge)
+        try await bridge.approveSeeding(snipIDs: [first])
+        guard case .save(let draft) = try await bridge.pendingChanges().operations.first else {
+            return XCTFail("Expected the approved seed.")
+        }
+        let accepted = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft))
+        let sent = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(sent))
+        try await bridge.applyStaged(sent.id)
+
+        try await bridge.approveModeMerge(snipIDs: [second])
+        _ = try await bridge.pendingChanges()
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [second])
+        XCTAssertEqual(Set(stored.records.map(\.snipID)), [first, second])
+
+        try await bridge.approveModeMerge(snipIDs: [])
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [second], "the sent seed stays linked")
+        let pending = try await bridge.pendingChanges()
+        XCTAssertTrue(pending.operations.isEmpty, "the other snip stays local")
     }
 
     // SM27-H3: a snip excluded at the first seed and approved by a later merge keeps syncing.

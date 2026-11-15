@@ -111,8 +111,9 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(blockedPending, CloudOutboundBatch(operations: []))
   }
 
-  /// Approval from `.blocked` returns to seeding today. Callers check for attention first.
-  func testResetsBlockEnrollmentAndApprovalKeepsTheBlockedZoneFlag() async throws {
+  // SM27-F1 H1: only recovery clears a block, so approval must leave a blocked namespace
+  // blocked and unable to send.
+  func testResetsBlockEnrollmentAndApprovalLeavesItBlocked() async throws {
     let fetchReset = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentFetchReset")
     defer { fetchReset.remove() }
     let zone = fetchReset.zone
@@ -125,7 +126,7 @@ extension CloudFullSyncPersistenceTests {
     let reopened = try fetchReset.reopened()
     try await reopened.expect(.blocked, pending: false, revision: 4, "reopen after a purge")
     try await reopened.approveInbox()
-    try await reopened.expect(.seeding, pending: false, revision: 5, "approval after a purge")
+    try await reopened.expect(.blocked, pending: false, revision: 5, "approval after a purge")
 
     let sendReset = try CloudEnrollmentTestStore(namespace: makeNamespace(), name: "EnrollmentSendReset")
     defer { sendReset.remove() }
@@ -146,7 +147,52 @@ extension CloudFullSyncPersistenceTests {
     let carriedReopened = try carried.reopened()
     try await carriedReopened.expect(.blocked, pending: true, revision: 4, "reopen with the blocked flag")
     try await carriedReopened.approveInbox()
-    try await carriedReopened.expect(.seeding, pending: true, revision: 5, "approval keeps the blocked flag")
+    try await carriedReopened.expect(.blocked, pending: true, revision: 5, "approval with the blocked flag")
+
+    for (blocked, label) in [
+      (reopened, "approval after a purge"), (carriedReopened, "approval with the blocked flag"),
+    ] {
+      let evidence = try await blocked.persistence.enrollmentEvidence()
+      let pending = try await blocked.persistence.pendingChanges()
+      XCTAssertTrue(evidence.blocksSending, label)
+      XCTAssertEqual(pending, CloudOutboundBatch(operations: []), label)
+    }
+  }
+
+  // SM27-F1 R8: while zone creation is pending, only a data-zone record proves the data zone
+  // exists, so a fetch with only payload-zone records must keep the zone creation.
+  func testPayloadZoneRecordsAfterAMissingDataZoneKeepPendingZoneCreation() async throws {
+    let dataZone = CloudZoneID(name: "SnipSnap", ownerName: "owner")
+    let payloadZone = CloudZoneID(name: "SnipSnapPayloads", ownerName: "owner")
+    let namespace = CloudSyncNamespace(cloudScope: "private", accountLineage: "account",
+      generation: UUID(), zones: [dataZone, payloadZone])
+    let store = try CloudEnrollmentTestStore(namespace: namespace, name: "EnrollmentPayloadOnly",
+      payloadZone: payloadZone)
+    defer { store.remove() }
+    try await store.apply(store.fetch(zones: [.failed(dataZone, .zoneMissing)]))
+    try await store.approveInbox()
+    try await store.apply(store.fetch(database: [.zoneDeleted(dataZone, reason: .deleted)]))
+    try await store.expect(.remoteCheckedMissingZone, pending: true, revision: 3, "a missing zone while seeding")
+
+    let payload = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: CloudRecordDraft(
+      id: CloudRecordID(zone: payloadZone, name: "unclaimed-payload"),
+      recordType: CloudAttachmentRecordCodec.payloadRecordType,
+      schemaVersion: CloudAttachmentRecordCodec.schemaVersion,
+      routingFields: [:],
+      encryptedFields: [:]
+    )))
+    try await store.apply(store.fetch([.record(payload)]))
+
+    try await store.expect(.remoteChecked, pending: true, revision: 4, "a fetch with only payload-zone records")
+    let reopened = try store.reopened()
+    try await reopened.expect(.remoteChecked, pending: true, revision: 4, "reopen after the payload-zone fetch")
+    try await reopened.approveInbox()
+    try await reopened.expect(.seeding, pending: true, revision: 5, "approval after the payload-zone fetch")
+    let outbound = try await reopened.persistence.pendingChanges()
+    XCTAssertEqual(outbound.zonesToSave, [dataZone])
+    try await reopened.send(outbound, items: outbound.operations.map(CloudEnrollmentTestStore.saved),
+      database: [.zoneSaved(dataZone)])
+    try await reopened.expect(.active, pending: false, revision: 6, "the seed send that saved the data zone")
   }
 
   // SM27-L1: an active namespace must not keep asking to create its zone.
@@ -316,31 +362,37 @@ extension CloudFullSyncPersistenceTests {
   }
 }
 
-/// One managed store with its full-record persistence, reopened on demand.
+/// One managed store with its full-record persistence, reopened on demand. The namespace holds
+/// the data zone and, when given, the payload zone.
 struct CloudEnrollmentTestStore: Sendable {
   let root: URL
   let namespace: CloudSyncNamespace
   let zone: CloudZoneID
+  let payloadZone: CloudZoneID?
   let library: SwiftDataSnipLibrary
   let persistence: CloudFullSyncPersistence
 
-  init(namespace: CloudSyncNamespace, name: String) throws {
+  init(namespace: CloudSyncNamespace, name: String, payloadZone: CloudZoneID? = nil) throws {
     try self.init(
       namespace: namespace,
+      payloadZone: payloadZone,
       root: FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString)")
     )
   }
 
-  private init(namespace: CloudSyncNamespace, root: URL) throws {
+  private init(namespace: CloudSyncNamespace, payloadZone: CloudZoneID?, root: URL) throws {
     self.root = root
     self.namespace = namespace
-    zone = try XCTUnwrap(namespace.zones.first)
+    self.payloadZone = payloadZone
+    zone = try XCTUnwrap(namespace.zones.first { $0 != payloadZone })
     library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
-    persistence = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    persistence = CloudFullSyncPersistence(
+      library: library, namespace: namespace, dataZone: zone, payloadZone: payloadZone
+    )
   }
 
   func reopened() throws -> CloudEnrollmentTestStore {
-    try CloudEnrollmentTestStore(namespace: namespace, root: root)
+    try CloudEnrollmentTestStore(namespace: namespace, payloadZone: payloadZone, root: root)
   }
 
   func remove() {

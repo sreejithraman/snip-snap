@@ -2,10 +2,17 @@ import Foundation
 
 /// What a committed full-record fetch showed, in precedence order.
 package enum CloudFullFetchOutcome: Equatable, Sendable {
+  /// Where a complete fetch found records. Only a data-zone record proves the data zone exists.
+  package enum Records: Equatable, Sendable {
+    case absent
+    case outsideDataZone
+    case inDataZone
+  }
+
   case destructiveReset
   case ownedZoneMissing
   case incomplete
-  case complete(hasRecords: Bool)
+  case complete(records: Records)
 }
 
 /// What a committed full-record send showed, in precedence order.
@@ -57,11 +64,13 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
         (.ownedZoneMissing, .remoteCheckedMissingZone(let pending)),
         (.ownedZoneMissing, .seeding(let pending)):
         return .remoteCheckedMissingZone(zoneCreationPending: pending)
-      case (.complete(let hasRecords), .notEnrolled):
-        return hasRecords ? .active : .remoteChecked(zoneCreationPending: false)
-      case (.complete(let hasRecords), .remoteChecked(let pending)),
-        (.complete(let hasRecords), .remoteCheckedMissingZone(let pending)):
-        return hasRecords ? .active : .remoteChecked(zoneCreationPending: pending)
+      case (.complete(let records), .notEnrolled):
+        return records == .absent ? .remoteChecked(zoneCreationPending: false) : .active
+      case (.complete(let records), .remoteChecked(let pending)),
+        (.complete(let records), .remoteCheckedMissingZone(let pending)):
+        // While zone creation is pending, only a data-zone record proves the zone exists.
+        let activates = pending ? records == .inDataZone : records != .absent
+        return activates ? .active : .remoteChecked(zoneCreationPending: pending)
       case (.ownedZoneMissing, .blocked), (.complete, .seeding), (.complete, .active),
         (.complete, .blocked), (.incomplete, _):
         return self
@@ -197,15 +206,15 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
   package var zoneCreationPending: Bool { enrollment.zoneCreationPending }
   package var initialFetchInventory: CloudFullFetchInventory? { initialFetch.inventory }
 
-  /// Approval seeds the namespace, and an active one stays active. Callers check for
-  /// attention first, so this does not refuse a blocked namespace.
+  /// Approval seeds the namespace. An active namespace stays active, and a blocked one stays
+  /// blocked: only recovery clears a block.
   package func approvingEnrollment() -> CloudFullNamespaceState {
     let next: Enrollment = switch enrollment {
     case .notEnrolled: .seeding(zoneCreationPending: false)
-    case .remoteChecked(let pending), .seeding(let pending), .blocked(let pending):
+    case .remoteChecked(let pending), .seeding(let pending):
       .seeding(zoneCreationPending: pending)
     case .remoteCheckedMissingZone: .seeding(zoneCreationPending: true)
-    case .active: .active
+    case .active, .blocked: enrollment
     }
     return advanced(to: next, initialFetch: initialFetch)
   }
