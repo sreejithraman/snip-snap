@@ -233,6 +233,52 @@ final class CloudEnrollmentStorageFormatTests: XCTestCase {
     }
   }
 
+  /// No shipped build wrote these rows. A read keeps only the fields the phase holds and leaves
+  /// the stored columns alone; the next write stores the tidied row.
+  func testUnwrittenLegacyTextNamespaceRowsTidyOnReadAndOnTheNextWrite() async throws {
+    let approved: Set<String> = ["1F0E2D3C-4B5A-4978-8695-A4B3C2D1E0F9"]
+    let excluded: Set<String> = ["2A3B4C5D-6E7F-4081-9213-A4B5C6D7E8F9"]
+    func row(_ phase: String, _ approvedIDs: Set<String>, _ excludedIDs: Set<String>, _ pending: Bool)
+      -> TextNamespaceColumns
+    {
+      TextNamespaceColumns(phase: phase, approvedSnipIDs: approvedIDs, excludedSnipIDs: excludedIDs,
+        zoneCreationPending: pending)
+    }
+    let fixtures: [(stored: TextNamespaceColumns, tidied: TextNamespaceColumns)] = [
+      (row("notEnrolled", approved, [], false), row("notEnrolled", [], [], false)),
+      (row("notEnrolled", [], excluded, false), row("notEnrolled", [], [], false)),
+      (row("notEnrolled", [], [], true), row("notEnrolled", [], [], false)),
+      (row("remoteChecked", approved, excluded, false), row("remoteChecked", [], excluded, false)),
+      (row("remoteChecked", [], excluded, true), row("remoteChecked", [], excluded, false)),
+      (row("remoteCheckedMissingZone", approved, excluded, false),
+        row("remoteCheckedMissingZone", [], excluded, false)),
+      (row("remoteCheckedMissingZone", [], excluded, true), row("remoteCheckedMissingZone", [], excluded, false)),
+      (row("active", approved, excluded, false), row("active", [], excluded, false)),
+      (row("active", [], excluded, true), row("active", [], excluded, false)),
+      (row("blocked", approved, excluded, true), row("blocked", approved, excluded, false)),
+    ]
+    for (stored, tidied) in fixtures {
+      let label = String(describing: stored)
+      let location = temporaryStore()
+      defer { try? FileManager.default.removeItem(at: location.root) }
+      let store = try SwiftDataSnipLibrary(storeURL: location.store)
+      try await store.insertTextNamespaceRow(namespaceKey: namespace.rawValue, columns: stored)
+
+      let value = try await store.cloudTextSyncSnapshot(namespaceKey: namespace).namespaceState
+      XCTAssertEqual(value.phase.rawValue, tidied.phase, label)
+      XCTAssertEqual(Set(value.approvedSnipIDs.map(\.uuidString)), tidied.approvedSnipIDs, label)
+      XCTAssertEqual(Set(value.excludedSnipIDs.map(\.uuidString)), tidied.excludedSnipIDs, label)
+      XCTAssertEqual(value.zoneCreationPending, tidied.zoneCreationPending, label)
+      let unwritten = try await store.textNamespaceColumns(namespaceKey: namespace.rawValue)
+      XCTAssertEqual(unwritten, stored, label)
+
+      try await store.transitionCloudTextNamespace(namespaceKey: namespace, expectedPhase: value.phase,
+        value: value)
+      let written = try await store.textNamespaceColumns(namespaceKey: namespace.rawValue)
+      XCTAssertEqual(written, tidied, label)
+    }
+  }
+
   private func assertNamespace(
     _ state: CloudFullNamespaceState,
     matches fixture: NamespaceFixture,

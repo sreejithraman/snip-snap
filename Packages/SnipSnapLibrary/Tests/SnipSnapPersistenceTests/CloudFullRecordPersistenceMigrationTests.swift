@@ -285,6 +285,56 @@ extension CloudFullRecordPersistenceTests {
     )
   }
 
+  /// No shipped build wrote an active text row with approvals. Active holds none, so migration
+  /// enrolls the local lists only, where builds before the enrollment machine also enrolled the
+  /// stray snip.
+  func testActiveLegacyNamespaceWithStrayApprovalsEnrollsOnlyLocalLists() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    try FileManager.default.createDirectory(at: location.root, withIntermediateDirectories: true)
+    let namespace = CloudSyncNamespaceKey(rawValue: "private|account-a|generation-stray-approval")
+    let customList = SnipList(
+      id: UUID(),
+      name: "Custom",
+      systemImage: "folder",
+      position: 1
+    )
+    let straySnip = Snip(content: "approved while active", origin: .quickEntry, listID: customList.id)
+    do {
+      let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+      let configuration = ModelConfiguration(
+        "Legacy",
+        schema: schema,
+        url: location.store,
+        cloudKitDatabase: .none
+      )
+      let container = try ModelContainer(for: schema, configurations: [configuration])
+      let context = ModelContext(container)
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(customList))
+      context.insert(StoredSnipRecord(straySnip))
+      context.insert(StoredRequestRecord(id: straySnip.requestID))
+      let row = try StoredCloudNamespaceState(
+        namespaceKey: namespace.rawValue,
+        value: approvedTextNamespace([])
+      )
+      XCTAssertEqual(row.phase, CloudNamespaceBootstrapPhase.active.rawValue)
+      row.approvedSnipIDs = try JSONEncoder().encode(Set([straySnip.id]))
+      context.insert(row)
+      try context.save()
+    }
+
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let snapshot = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
+    XCTAssertEqual(
+      snapshot.enrolledEntities,
+      [
+        CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+        CloudEntityReference(kind: .list, domainID: customList.id),
+      ]
+    )
+  }
+
   func testLegacySeedProvenanceDefaultsToTheOriginalDigestVersion() throws {
     let provenance = SyncModeSeedProvenance(
       sourceSnipID: UUID(),
