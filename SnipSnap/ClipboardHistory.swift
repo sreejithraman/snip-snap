@@ -633,7 +633,9 @@ final class ClipboardHistory: ObservableObject {
         do {
             try await cloudService?.resetAccountBinding(includingUnboundHistory: includingUnboundHistory, settingAside: {
                 // A failed save can leave entries only in memory, and the set-aside archives the disk file.
-                _ = try await sharedStore.merge(state)
+                do { _ = try await sharedStore.merge(state) }
+                // An unreadable history file can't take a merge, so it's set aside as-is, as before.
+                catch is DecodingError {}
                 if case .settingAside(let current, _, let captures) = handoff {
                     handoff = .settingAside(id: current, isRetired: true, captures: captures)
                 }

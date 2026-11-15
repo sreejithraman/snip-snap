@@ -1108,6 +1108,48 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertNotNil(history.syncError)
     }
 
+    func testSetAsideSetsAsideAnUnreadableHistoryFileAsIs() async throws {
+        let fixture = try await makeHistoryAdoptingANewSyncGeneration(syncing: [clipboardEntry("first generation")])
+        let history = fixture.history
+        let unreadable = Data("not clipboard history".utf8)
+        try unreadable.write(to: history.sharedStore.url, options: .atomic)
+        _ = try await capture("copied while the file is unreadable", in: fixture)
+        XCTAssertNotNil(history.persistenceError)
+
+        await history.syncNow()
+
+        let setAsideFiles = try FileManager.default
+            .contentsOfDirectory(at: fixture.historyDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        XCTAssertEqual(try setAsideFiles.map { try Data(contentsOf: $0) }, [unreadable])
+        let stored = try await history.sharedStore.load()
+        XCTAssertEqual(stored.entries.map(\.id), [])
+        XCTAssertEqual(try Data(contentsOf: fixture.bindingURL), try JSONEncoder().encode(fixture.secondGeneration))
+        XCTAssertNil(history.syncError)
+    }
+
+    func testAccountResetWhileSavesStillFailKeepsTheHistoryAndTheBinding() async throws {
+        let fixture = try await makeHistoryAdoptingANewSyncGeneration(syncing: [clipboardEntry("account A")])
+        let history = fixture.history
+        let copy = try await captureWhileSavesFail("copied while saves fail", in: fixture)
+
+        await history.resetCloudAccount()
+
+        XCTAssertTrue(history.entries.contains { $0.id == copy.id })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.bindingURL.path))
+        let resetError = try XCTUnwrap(history.syncError)
+        XCTAssertTrue(resetError.hasPrefix("Couldn’t update clipboard history for this account."))
+
+        // The fixture sends every generation but the first to secondCloud.
+        fixture.generationSource.current = clipboardSyncGeneration(account: "account-B")
+        history.stopSync()
+        await history.syncNow()
+
+        let uploaded = await fixture.secondCloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertTrue(history.entries.contains { $0.id == copy.id })
+    }
+
     func testSetAsideWaitingForSavesRunsAgainOnlyOnTheNextSync() async throws {
         let diagnostics = ClipboardDiagnosticProbe()
         let fixture = try await makeHistoryAdoptingANewSyncGeneration(
