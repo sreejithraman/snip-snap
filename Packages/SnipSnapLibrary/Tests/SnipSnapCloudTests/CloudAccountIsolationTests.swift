@@ -1131,6 +1131,65 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
     }
 
+    func testStatusStillReportsAnIsolationWhoseSwapKeepsFailing() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swapFault = AccountIsolationSwapFault()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            manifestWriter: swapFault.write,
+            writeHook: swapFault.arm
+        )
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.refreshAccountState()
+            XCTFail("The full disk must fail the isolation's pointer swap")
+        } catch SyncModePersistenceError.storageFailure {}
+
+        swapFault.failNextSwap()
+        do {
+            let status = try await coordinator.status()
+            XCTAssertEqual(status.state, .needsAttention)
+            XCTAssertEqual(status.attentionReason, .accountSignedOut)
+        } catch {
+            XCTFail("Status must still report an isolation whose swap fails again: \(error)")
+        }
+        let declared = try await persistence.snapshot()
+        XCTAssertEqual(declared.activeStore.kind, .iCloudSync)
+
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Keep Local Copy must report the failed swap")
+        } catch {
+            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+        }
+
+        let finished = try await coordinator.refreshAccountState()
+        XCTAssertEqual(finished.state, .off)
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
     func testInterruptedIsolationFinishesWithoutRelaunch() async throws {
         let points: [SyncModeCrashPoint] = [
             .afterAccountIsolationManifest,

@@ -137,6 +137,37 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertTrue(remaining.snips.isEmpty)
   }
 
+  func testRepeatedSwapFailureStillShowsTheSignedOutNotice() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let firstLibrary = try await fixture.session.activeLibrary().library
+    try await Self.add("account content", to: firstLibrary)
+    await fixture.account.set(.noAccount)
+    fixture.swapFault.failNextSwap()
+    do {
+      _ = try await fixture.handler.refreshAppleAccountNotice()
+      XCTFail("The full disk must fail the isolation's pointer swap")
+    } catch SyncModePersistenceError.storageFailure {}
+
+    fixture.swapFault.failNextSwap()
+    do {
+      let notice = try await fixture.handler.refreshAppleAccountNotice()
+      XCTAssertEqual(notice, .signedOut)
+    } catch {
+      XCTFail("A swap that fails again must not hide the signed-out notice: \(error)")
+    }
+    let declared = try await fixture.persistence.snapshot()
+    XCTAssertEqual(declared.activeStore.kind, .iCloudSync)
+
+    let notice = try await fixture.handler.refreshAppleAccountNotice()
+    XCTAssertEqual(notice, .signedOut)
+    let isolated = try await fixture.persistence.snapshot()
+    XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+    let local = try await fixture.session.activeLibrary().library
+    let hidden = try await local.checkedSnapshot(sortedBy: .manual)
+    XCTAssertTrue(hidden.snips.isEmpty, "The prior account's content must stay hidden")
+  }
+
   func testHandlerReadsCannotRecoverAnotherLiveRecordReservation() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
