@@ -731,11 +731,26 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         defer { try? FileManager.default.removeItem(at: client.root) }
         let local = entry("local pin", pinned: true)
         try await client.store.insert(local)
-        try await client.sync.resetAccountBinding()
+        var settingAsideCalls = 0
+        try await client.sync.resetAccountBinding(settingAside: { settingAsideCalls += 1 })
+        #expect(settingAsideCalls == 0)
+        #expect(try await setAsideEntryIDs(in: client.root) == [])
         #expect(try await client.store.load().entries.map(\.id) == [local.id])
         try await client.sync.deleteSyncedHistory(generation: "account-generation-A")
         try await client.sync.deleteSyncedHistory(generation: "account-generation-A")
         #expect(try await client.store.load().entries.map(\.id) == [local.id])
+    }
+
+    @Test func accountResetIncludingUnboundHistorySetsItAside() async throws {
+        let client = ClipboardClient(ClipboardTestCloud())
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let local = entry("never synced")
+        try await client.store.insert(local)
+        var settingAsideCalls = 0
+        try await client.sync.resetAccountBinding(includingUnboundHistory: true, settingAside: { settingAsideCalls += 1 })
+        #expect(settingAsideCalls == 1)
+        #expect(try await setAsideEntryIDs(in: client.root) == [[local.id]])
+        #expect(try await client.store.load().entries.isEmpty)
     }
 
     @Test func unchangedSyncDoesNotWriteAnotherManifest() async throws {
