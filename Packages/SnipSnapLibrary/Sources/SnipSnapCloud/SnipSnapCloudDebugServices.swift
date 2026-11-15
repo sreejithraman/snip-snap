@@ -11,15 +11,21 @@ actor SimulatedCloudCollectionReset {
   private let local: SwiftDataCloudCollectionLocalStore?
   private let coordinator: CloudCollectionCoordinator?
   private let simulateEncryptedDataReset: Bool
+  private let simulateRemovalPending: Bool
+  /// Fails each sync's cleanup of the old zones until a retry.
+  private var keepsRemovalPending: Bool
   private var prepared = false
 
   init(
     rootURL: URL,
     persistence: SwiftDataSyncModePersistence,
-    simulateEncryptedDataReset: Bool = false
+    simulateEncryptedDataReset: Bool = false,
+    simulateRemovalPending: Bool = false
   ) {
     self.persistence = persistence
     self.simulateEncryptedDataReset = simulateEncryptedDataReset
+    self.simulateRemovalPending = simulateRemovalPending
+    keepsRemovalPending = simulateRemovalPending
     old = CloudCollectionDescriptor.fresh(ownerName: "ui-test-owner")
     server = FakeCloudServer()
     let transport = FakeCloudControlTransport(server: server)
@@ -44,12 +50,20 @@ actor SimulatedCloudCollectionReset {
 
   func synchronize() async throws -> SnipSnapCloudSyncResult {
     let coordinator = try await prepare()
+    if keepsRemovalPending {
+      await transport.failNextZoneDelete()
+    }
     let status = try await coordinator.synchronize()
     if status == .purged {
       try await local?.markPurged()
       return .iCloudDataReset
     }
     return syncResult(for: status)
+  }
+
+  func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
+    keepsRemovalPending = false
+    return try await synchronize()
   }
 
   func enableSync() async throws {
@@ -102,6 +116,12 @@ actor SimulatedCloudCollectionReset {
     await transport.seedControl(old)
     if simulateEncryptedDataReset {
       await transport.removeControl()
+    }
+    if simulateRemovalPending {
+      // The real delete publishes a fresh collection and stages the old zones, whose
+      // deletion then fails.
+      await transport.failNextZoneDelete()
+      _ = try await coordinator.deleteSyncedContent()
     }
     prepared = true
     return coordinator

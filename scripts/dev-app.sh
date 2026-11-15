@@ -284,6 +284,12 @@ start_app() {
     if [[ "${SNIP_SNAP_UI_TEST_UPDATE_SETTINGS:-}" == 1 ]]; then
         launch_arguments+=(--env "SNIP_SNAP_UI_TEST_UPDATE_SETTINGS=1")
     fi
+    if [[ "${SNIP_SNAP_UI_TEST_SYNC_SETTINGS:-}" == 1 ]]; then
+        launch_arguments+=(--env "SNIP_SNAP_UI_TEST_SYNC_SETTINGS=1")
+    fi
+    if [[ "${SNIP_SNAP_UI_TEST_REMOVAL_PENDING:-}" == 1 ]]; then
+        launch_arguments+=(--env "SNIP_SNAP_UI_TEST_REMOVAL_PENDING=1")
+    fi
     if ! /usr/bin/open "${launch_arguments[@]}" "$app_path"; then
         write_result start failed "Snip Snap Dev $slot did not open." passed failed
         return 1

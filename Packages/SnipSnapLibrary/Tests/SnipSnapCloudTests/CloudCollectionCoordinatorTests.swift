@@ -827,6 +827,37 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
   }
 
   @MainActor
+  func testSimulatedRemovalPendingHoldsUntilARetry() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SimulatedRemovalPending-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let original = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("original.store", isDirectory: false)
+    )
+    let assembly = SnipLibraryAssembly(
+      library: original,
+      syncModeRootURL: root,
+      initializeSyncModeStore: true
+    )
+    let services = SnipSnapCloudAppAssembly.simulatedServices(
+      rootURL: root,
+      syncModeStore: try XCTUnwrap(assembly.syncModeStore),
+      environment: ["SNIP_SNAP_UI_TEST_REMOVAL_PENDING": "1"]
+    )
+    let session = try XCTUnwrap(services.syncSession)
+
+    let launchSync = try await session.synchronize()
+    XCTAssertEqual(launchSync, .oldSyncedContentRemovalPending)
+    let laterSync = try await session.synchronize()
+    XCTAssertEqual(laterSync, .oldSyncedContentRemovalPending)
+
+    let retry = try await session.retrySynchronization()
+    XCTAssertEqual(retry, .oldSyncedContentRemovalCompleted)
+    let syncAfterRetry = try await session.synchronize()
+    XCTAssertNotEqual(syncAfterRetry, .oldSyncedContentRemovalPending)
+  }
+
+  @MainActor
   func testSettingsResetKeepsAppAssemblyOnTheFreshWritableStore() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudCollectionSharedAssembly-\(UUID().uuidString)")
