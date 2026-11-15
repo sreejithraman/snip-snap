@@ -15,7 +15,7 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
             XCTAssertTrue(draft.canDismiss)
             XCTAssertTrue(draft.canSave)
 
-            openPicker(source, in: draft)
+            draft.presentAttachmentPicker(source)
 
             XCTAssertFalse(draft.canDismiss, "\(source)")
             XCTAssertFalse(draft.canSave, "\(source)")
@@ -24,7 +24,7 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
             model.cancelInlineSnipEdit()
             XCTAssertTrue(model.snipEditorDraft === draft, "\(source)")
 
-            closePicker(source, in: draft)
+            draft.dismissAttachmentPicker(source)
 
             XCTAssertTrue(draft.canDismiss, "\(source)")
             XCTAssertTrue(draft.canSave, "\(source)")
@@ -47,8 +47,8 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         let added = try XCTUnwrap(draft.attachments.last)
         let addedURL = try XCTUnwrap(added.url)
 
-        openPicker(.files, replacing: existingID, in: draft)
-        closePicker(.files, in: draft)
+        draft.presentAttachmentPicker(.files, replacing: existingID)
+        draft.dismissAttachmentPicker(.files)
         let picked = try [makeSourceFile("first-pick.txt"), makeSourceFile("second-pick.txt")]
         draft.stage(.success(picked), using: model)
         await waitUntilStagingStops(draft)
@@ -60,8 +60,8 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         XCTAssertEqual(draft.attachments[1], added)
         XCTAssertFalse(draft.attachments.contains { $0.fileName == "second-pick.txt" })
 
-        openPicker(.files, replacing: added.id, in: draft)
-        closePicker(.files, in: draft)
+        draft.presentAttachmentPicker(.files, replacing: added.id)
+        draft.dismissAttachmentPicker(.files)
         let replacement = try makeSourceFile("replacement.txt")
         draft.stage(.success([replacement]), using: model)
         await waitUntilStagingStops(draft)
@@ -85,8 +85,8 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         defer { draft.discard() }
         let existing = try XCTUnwrap(draft.attachments.first)
 
-        openPicker(.files, replacing: existingID, in: draft)
-        closePicker(.files, in: draft)
+        draft.presentAttachmentPicker(.files, replacing: existingID)
+        draft.dismissAttachmentPicker(.files)
         draft.stage(.failure(CocoaError(.userCancelled)), using: model)
 
         XCTAssertNil(model.latestFailure)
@@ -105,8 +105,8 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         let draft = try beginEditing(snip, in: model)
         defer { draft.discard() }
 
-        openPicker(.files, in: draft)
-        closePicker(.files, in: draft)
+        draft.presentAttachmentPicker(.files)
+        draft.dismissAttachmentPicker(.files)
         draft.stage(.failure(CocoaError(.fileReadNoPermission)), using: model)
 
         XCTAssertEqual(model.latestFailure?.operation, "attachment.import_select")
@@ -261,11 +261,11 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         XCTAssertFalse(draft.canSave)
         XCTAssertFalse(model.beginInlineSnipEdit(snip))
 
-        pagePreview(to: secondURL, in: draft)
+        draft.pageAttachmentPreview(to: secondURL)
         XCTAssertEqual(draft.previewURL, secondURL)
         XCTAssertFalse(draft.canDismiss)
 
-        closePreview(in: draft)
+        draft.dismissAttachmentPreview()
         XCTAssertNil(draft.previewURL)
         XCTAssertTrue(draft.canDismiss)
         XCTAssertTrue(draft.canSave)
@@ -291,8 +291,8 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
 
         draft.previewAttachment(existing, using: model)
         await handler.waitUntilPrepareStarts()
-        openPicker(.files, replacing: existing.id, in: draft)
-        closePicker(.files, in: draft)
+        draft.presentAttachmentPicker(.files, replacing: existing.id)
+        draft.dismissAttachmentPicker(.files)
         let replacement = try makeSourceFile("replacement.txt")
         draft.stage(.success([replacement]), using: model)
         await waitUntilStagingStops(draft)
@@ -334,7 +334,7 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
         XCTAssertEqual(draft.previewURL, prepared)
         let prepareCount = await handler.prepareCount()
         XCTAssertEqual(prepareCount, 1)
-        closePreview(in: draft)
+        draft.dismissAttachmentPreview()
         XCTAssertTrue(draft.canDismiss)
     }
 
@@ -410,26 +410,5 @@ final class IOSSnipEditorDraftTests: IOSModelTestCase {
     private func waitUntilStagingStops(_ draft: SnipEditorDraft) async {
         _ = await TestReadiness.wait { !draft.isStaging }
         XCTAssertFalse(draft.isStaging)
-    }
-
-    private func openPicker(_ source: AttachmentSource, replacing attachmentID: UUID? = nil, in draft: SnipEditorDraft) {
-        draft.replacementID = attachmentID
-        draft.presentAttachmentSource(source)
-    }
-
-    private func closePicker(_ source: AttachmentSource, in draft: SnipEditorDraft) {
-        switch source {
-        case .files: draft.isImporting = false
-        case .photos: draft.isPickingPhotos = false
-        case .camera: draft.isTakingPhoto = false
-        }
-    }
-
-    private func pagePreview(to url: URL, in draft: SnipEditorDraft) {
-        draft.previewURL = url
-    }
-
-    private func closePreview(in draft: SnipEditorDraft) {
-        draft.previewURL = nil
     }
 }
