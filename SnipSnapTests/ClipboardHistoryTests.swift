@@ -1017,7 +1017,7 @@ final class ClipboardHistoryTests: XCTestCase {
         let uploadedTombstonesWhileSavesFail = await unbound.cloud.uploadedTombstoneIDs
         XCTAssertEqual(uploadedWhileSavesFail, [])
         XCTAssertEqual(uploadedTombstonesWhileSavesFail, [])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: unbound.bindingURL.path))
+        XCTAssertEqual(try Data(contentsOf: unbound.bindingURL), try JSONEncoder().encode("clipboard-reset-pending"))
         XCTAssertNotNil(history.syncError)
 
         try restoreSaves(at: history.sharedStore.url)

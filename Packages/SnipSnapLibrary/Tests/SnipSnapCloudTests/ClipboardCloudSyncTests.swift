@@ -798,7 +798,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
             try await client.run(scope: "account-generation-B")
         }
         #expect(try await cloud.fetch().entries.isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: bindingURL.path))
+        #expect(try Data(contentsOf: bindingURL) == JSONEncoder().encode("clipboard-reset-pending"))
 
         try await client.sync.resetAccountBinding()
         #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
@@ -837,7 +837,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
             try await client.run(scope: "account-generation-B")
         }
         #expect(try await cloud.fetch().entries.isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: bindingURL.path))
+        #expect(try Data(contentsOf: bindingURL) == JSONEncoder().encode("clipboard-reset-pending"))
 
         try await client.sync.resetAccountBinding()
         #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
@@ -847,7 +847,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await cloud.fetch().entries.isEmpty)
     }
 
-    @Test(.disabled("Held until the fix so the Mac app relaunch test runs red first")) func failedAccountResetBlocksTheNextAccountAfterARelaunch() async throws {
+    @Test func failedAccountResetBlocksTheNextAccountAfterARelaunch() async throws {
         struct SettingAsideFailure: Error {}
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
@@ -877,7 +877,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try Data(contentsOf: bindingURL) == bindingB)
     }
 
-    @Test(.disabled("Held until the fix so the Mac app relaunch test runs red first")) func accountResetBusyBehindAnotherResetBlocksTheNextAccountAfterARelaunch() async throws {
+    @Test func accountResetBusyBehindAnotherResetBlocksTheNextAccountAfterARelaunch() async throws {
         struct SettingAsideFailure: Error {}
         let gate = ClipboardRetrySleepGate()
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
@@ -920,7 +920,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await cloud.fetch().entries.isEmpty)
     }
 
-    @Test(.disabled("Held until the fix so the Mac app relaunch test runs red first")) func accountResetBusyBehindADeleteBlocksTheNextAccountAfterARelaunch() async throws {
+    @Test func accountResetBusyBehindADeleteBlocksTheNextAccountAfterARelaunch() async throws {
         let clock = ClipboardRetryClock()
         let sleep = ClipboardRetrySleepGate()
         let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { duration in
@@ -961,7 +961,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await cloud.fetch().entries.isEmpty)
     }
 
-    @Test(.disabled("Held until the fix so the Mac app relaunch test runs red first"), arguments: ClipboardSetAsideCrash.allCases)
+    @Test(arguments: ClipboardSetAsideCrash.allCases)
     func relaunchAfterAnInterruptedSetAsideBlocksTheNextAccount(_ crash: ClipboardSetAsideCrash) async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
@@ -994,7 +994,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try Data(contentsOf: bindingURL) == bindingB)
     }
 
-    @Test(.disabled("Held until the fix so the Mac app relaunch test runs red first")) func resetMarkerIsAStringNoOlderBuildReadsAsABinding() async throws {
+    @Test func resetMarkerIsAStringNoOlderBuildReadsAsABinding() async throws {
         struct SettingAsideFailure: Error {}
         let client = ClipboardClient(ClipboardTestCloud())
         defer { try? FileManager.default.removeItem(at: client.root) }
