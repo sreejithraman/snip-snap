@@ -642,8 +642,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         cliCleanupTask = nil
         coordinator.savePanelWindowFrame(using: AppWindowDefaults.frameAutosaveName)
         Task { @MainActor [self] in
-            do { try await cliLifecycle.stop() }
-            catch { model.presentError(error) }
+            await model.endCLIAppSession(cliLifecycle)
             model.flushComposerDrafts()
             await model.clipboardHistory.flushPersistence()
             sender.reply(toApplicationShouldTerminate: true)

@@ -198,6 +198,12 @@ extension AppModel {
         catch { presentError(error, operation: "cli.scope_suspend") }
     }
 
+    /// Ends the CLI's app session at quit. A failure is shown and recorded, and quitting goes on.
+    func endCLIAppSession(_ lifecycle: SnipCLIAppLifecycle) async {
+        do { try await lifecycle.stop() }
+        catch { presentError(error) }
+    }
+
     func cliArchive(scopeToken: String?) async throws -> SnipLibrarySnapshot {
         let result: Result<SnipLibrarySnapshot, Error> = await withCommandLock {
             guard scopeToken == nil || scopeToken == cliScopeToken else {
