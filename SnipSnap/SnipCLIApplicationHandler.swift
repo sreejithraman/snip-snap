@@ -127,7 +127,8 @@ final class SnipCLIApplicationHandler {
                 }
                 await cloudSyncHandler.retrySyncWhenPossible()
             }
-            return SnipCLIReceipt(request: request, status: cliSyncHasFailure ? .failed : .success,
+            let retryFailed = cliSyncHasFailure || syncedContentSettings.finishDeletingIssue != nil
+            return SnipCLIReceipt(request: request, status: retryFailed ? .failed : .success,
                 message: syncedContentSettings.detail, extendedResult: .application(cliSyncResult()),
                 resultingScopeToken: model.cliScopeToken)
         case .clipboardSyncStatus: return receipt(cliClipboardSyncResult())

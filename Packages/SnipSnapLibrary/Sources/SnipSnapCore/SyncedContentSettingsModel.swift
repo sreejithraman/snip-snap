@@ -354,6 +354,8 @@ public final class SyncedContentSettingsModel {
 
   /// Whether Settings offers Try Again for Delete Synced Content's incomplete removal.
   public var canFinishDeleting: Bool { mode == .iCloudSync && state == .removalPending }
+  /// What kept the latest explicit sync from finishing Delete Synced Content's incomplete removal.
+  public private(set) var finishDeletingIssue: SyncedContentSyncIssue?
 
   public func enableICloudSync() async {
     guard canEnable, let enableAction else { return }
@@ -446,6 +448,7 @@ public final class SyncedContentSettingsModel {
     guard !isPerformingExplicitSync else { return }
     isPerformingExplicitSync = true
     defer { isPerformingExplicitSync = false }
+    finishDeletingIssue = nil
     await action()
   }
 
