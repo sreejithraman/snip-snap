@@ -132,32 +132,6 @@ enum NewListButtonStyle: String {
     var isPinned: Bool { self == .roundPlus || self == .roundCompose }
 }
 
-/// Moves the library's selection to a neighboring page, for the scene's menu commands.
-struct LibraryPageStep {
-    let step: (Int) -> Void
-}
-
-extension FocusedValues {
-    @Entry var libraryPageStep: LibraryPageStep?
-}
-
-/// The arrow keys move between the rail's pages like a sidebar list. As menu commands they work
-/// wherever focus is, and text editing keeps the arrow keys first.
-struct LibraryPageCommands: Commands {
-    @FocusedValue(\.libraryPageStep) private var pageStep
-
-    var body: some Commands {
-        CommandGroup(after: .sidebar) {
-            Button("Previous Page") { pageStep?.step(-1) }
-                .keyboardShortcut(.upArrow, modifiers: [])
-                .disabled(pageStep == nil)
-            Button("Next Page") { pageStep?.step(1) }
-                .keyboardShortcut(.downArrow, modifiers: [])
-                .disabled(pageStep == nil)
-        }
-    }
-}
-
 extension Array where Element == LibraryPage {
     /// The page `offset` steps from `page`, or nil past either end, so arrow keys stop at the ends.
     func page(_ offset: Int, from page: LibraryPage) -> LibraryPage? {
@@ -310,7 +284,18 @@ struct LibraryRailView: View {
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
-        .focusedSceneValue(\.libraryPageStep, LibraryPageStep(step: selectAdjacentPage(by:)))
+        .background {
+            // Text editing keeps the arrow keys; elsewhere they move between pages like a sidebar list.
+            Group {
+                Button("Previous Page") { selectAdjacentPage(by: -1) }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                Button("Next Page") { selectAdjacentPage(by: 1) }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             widthToggle
                 // Clears iPad window controls, which sit in the window's top-leading corner.

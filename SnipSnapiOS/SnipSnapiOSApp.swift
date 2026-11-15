@@ -127,7 +127,6 @@ struct SnipSnapiOSApp: App {
             )
             .fontDesign(.rounded)
         }
-        .commands { LibraryPageCommands() }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let state: AppRuntimeTrace.State = switch phase {
             case .active: .active
