@@ -16,7 +16,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     ).map { ($0.attachmentID, $0) })
-    var rollbackURLs: [URL] = []
+    var durableCopies: [CloudAttachmentDurableCopy] = []
     do {
       for attachment in loaded.attachments where attachment.relativePath.hasPrefix("CloudDownloads/") {
         try lock.check()
@@ -29,9 +29,10 @@ extension SwiftDataSnipLibrary {
           fileName: attachment.fileName,
           source: source,
           expectedByteCount: publication.byteCount,
-          expectedSHA256: publication.sha256
+          expectedSHA256: publication.sha256,
+          storedAttachments: loaded.attachments
         )
-        if let rollbackURL = copy.rollbackURL { rollbackURLs.append(rollbackURL) }
+        durableCopies.append(copy)
         attachment.relativePath = copy.relativePath
       }
       for row in try Self.cloudAttachmentPublications(
@@ -74,14 +75,14 @@ extension SwiftDataSnipLibrary {
       try context.save()
     } catch {
       context.rollback()
-      for url in rollbackURLs.reversed() { try? FileManager.default.removeItem(at: url) }
+      for copy in durableCopies.reversed() { copy.rollBack() }
       throw error
     }
     try lock.check()
     try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
   }
 
-  /// Verifies or promotes every Cloud attachment before a local-copy transfer.
+  /// Verifies every Cloud attachment, or makes its durable copy, before a local-copy transfer.
   /// Cloud metadata remains intact until the transition commits.
   package func prepareCloudAttachmentsForLocalCopy(
     namespaceKey: CloudSyncNamespaceKey
@@ -95,8 +96,8 @@ extension SwiftDataSnipLibrary {
     }
   }
 
-  /// Verifies durable bytes or promotes a verified cache entry into durable storage.
-  /// Returns `false` only when accepted Cloud metadata can recover unavailable bytes.
+  /// Verifies durable bytes, or makes a durable copy of a verified cache entry.
+  /// Returns `false` only when the bytes are unavailable here but recoverable from CloudKit.
   package func materializeCloudAttachmentForLocalCopy(
     namespaceKey: CloudSyncNamespaceKey,
     attachmentID: UUID
@@ -127,6 +128,7 @@ extension SwiftDataSnipLibrary {
       }
       return true
     }
+    let lifecycle = publication.lifecycle
     guard attachment.relativePath.hasPrefix("CloudDownloads/") else {
       let durable = try attachmentURL(relativePath: attachment.relativePath)
       let isValid = cloudAttachmentFileIsValid(
@@ -134,7 +136,7 @@ extension SwiftDataSnipLibrary {
         expectedByteCount: publication.byteCount,
         expectedSHA256: publication.sha256
       )
-      if !isValid, !publication.metadataAccepted {
+      if !isValid, !lifecycle.isPayloadRecoverableFromCloudKit {
         throw SnipLibraryError.attachmentCopyFailed
       }
       return isValid
@@ -147,13 +149,13 @@ extension SwiftDataSnipLibrary {
     do {
       cachedSource = try attachmentURL(relativePath: attachment.relativePath)
     } catch {
-      guard publication.metadataAccepted else { throw error }
+      guard lifecycle.isPayloadRecoverableFromCloudKit else { throw error }
       return false
     }
     let source: URL
     if FileManager.default.fileExists(atPath: cachedSource.path) {
       source = cachedSource
-    } else if let relativePath = publication.sourceRelativePath {
+    } else if let relativePath = lifecycle.localSourceRelativePath {
       source = try Self.validatedChild(relativePath: relativePath, root: attachmentRootURL)
     } else {
       return false
@@ -163,27 +165,29 @@ extension SwiftDataSnipLibrary {
       expectedByteCount: publication.byteCount,
       expectedSHA256: publication.sha256
     ) else {
-      guard publication.metadataAccepted else { throw SnipLibraryError.attachmentCopyFailed }
+      guard lifecycle.isPayloadRecoverableFromCloudKit else {
+        throw SnipLibraryError.attachmentCopyFailed
+      }
       return false
     }
-    var rollbackURL: URL?
+    var durableCopy: CloudAttachmentDurableCopy?
     do {
       let copy = try copyCloudAttachmentToDurableStorage(
         attachmentID: attachment.id,
         fileName: attachment.fileName,
         source: source,
         expectedByteCount: publication.byteCount,
-        expectedSHA256: publication.sha256
+        expectedSHA256: publication.sha256,
+        storedAttachments: loaded.attachments
       )
-      rollbackURL = copy.rollbackURL
+      durableCopy = copy
       attachment.relativePath = copy.relativePath
       try afterMutationBeforeSave()
       try lock.check()
       try context.save()
-      rollbackURL = nil
     } catch {
       context.rollback()
-      if let rollbackURL { try? FileManager.default.removeItem(at: rollbackURL) }
+      durableCopy?.rollBack()
       throw error
     }
     let refreshed = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
@@ -212,8 +216,9 @@ extension SwiftDataSnipLibrary {
     fileName: String,
     source: URL,
     expectedByteCount: Int64,
-    expectedSHA256: Data
-  ) throws -> (relativePath: String, rollbackURL: URL?) {
+    expectedSHA256: Data,
+    storedAttachments: [StoredAttachmentRecord]
+  ) throws -> CloudAttachmentDurableCopy {
     let safeName = URL(fileURLWithPath: fileName).lastPathComponent
     guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
     let relativePath = "\(attachmentID.uuidString)/\(safeName)"
@@ -222,13 +227,21 @@ extension SwiftDataSnipLibrary {
       relativePath: relativePath,
       root: attachmentRootURL
     )
-    guard !FileManager.default.fileExists(atPath: destination.path) else {
+    if FileManager.default.fileExists(atPath: destination.path) {
       let values = try destination.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-      guard values.isRegularFile == true,
-        Int64(values.fileSize ?? -1) == expectedByteCount,
+      guard values.isRegularFile == true else { throw SnipLibraryError.attachmentCopyFailed }
+      if Int64(values.fileSize ?? -1) == expectedByteCount,
         try AttachmentFileIO.digest(at: destination) == expectedSHA256
-      else { throw SnipLibraryError.attachmentCopyFailed }
-      return (relativePath, nil)
+      {
+        return .reused(relativePath: relativePath)
+      }
+      // A copy killed midway leaves a partial file. A file that a stored attachment references
+      // holds that attachment's bytes, so only an unreferenced one is replaced. A case-insensitive
+      // volume resolves paths that differ only in case to the same file.
+      guard !storedAttachments.contains(where: {
+        $0.relativePath.compare(relativePath, options: .caseInsensitive) == .orderedSame
+      }) else { throw SnipLibraryError.attachmentCopyFailed }
+      try FileManager.default.removeItem(at: destination)
     }
     let directory = destination.deletingLastPathComponent()
     let directoryExisted = FileManager.default.fileExists(atPath: directory.path)
@@ -244,7 +257,10 @@ extension SwiftDataSnipLibrary {
       }
       try DurableFile.syncFile(destination)
       try DurableFile.syncDirectory(directory)
-      return (relativePath, directoryExisted ? destination : directory)
+      return .created(
+        relativePath: relativePath,
+        rollback: directoryExisted ? destination : directory
+      )
     } catch {
       if directoryExisted {
         try? FileManager.default.removeItem(at: destination)
@@ -253,5 +269,24 @@ extension SwiftDataSnipLibrary {
       }
       throw error
     }
+  }
+}
+
+/// A durable copy made for one save. Rolling back removes only what this copy created: the
+/// file, or the attachment directory when the copy created it.
+private enum CloudAttachmentDurableCopy {
+  /// The destination already held the verified bytes.
+  case reused(relativePath: String)
+  case created(relativePath: String, rollback: URL)
+
+  var relativePath: String {
+    switch self {
+    case .reused(let relativePath), .created(let relativePath, _): relativePath
+    }
+  }
+
+  func rollBack() {
+    guard case .created(_, let rollback) = self else { return }
+    try? FileManager.default.removeItem(at: rollback)
   }
 }

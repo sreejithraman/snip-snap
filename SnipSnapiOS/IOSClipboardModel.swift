@@ -186,8 +186,19 @@ final class IOSClipboardModel {
         guard syncIsActive else { cloud.stop(); return }
         do {
             guard let generation = try await generation(), syncPhase == run else { return }
-            // The service checks this before the run and stops the run when it stops holding.
-            let synced = try await cloud.synchronize(generation: generation, isEnabled: { [self] in syncIsActive })
+            func synchronizeHistory() async throws -> ClipboardHistoryState {
+                // The service checks this before the run and stops the run when it stops holding.
+                try await cloud.synchronize(generation: generation, isEnabled: { [self] in syncIsActive })
+            }
+            let synced: ClipboardHistoryState
+            do {
+                synced = try await synchronizeHistory()
+            } catch ClipboardCloudError.syncGenerationChanged {
+                // Set-aside history never uploads into the new sync generation.
+                try await setAsideHistory()
+                guard syncPhase == run, syncIsActive else { return }
+                synced = try await synchronizeHistory()
+            }
             guard syncPhase == run, syncIsActive else { return }
             entries = synced.entries
             syncErrorMessage = nil
@@ -229,9 +240,7 @@ final class IOSClipboardModel {
 
     func resetAccountBinding() async {
         do {
-            try await cloud?.resetAccountBinding()
-            await load()
-            syncErrorMessage = nil
+            try await setAsideHistory(includingUnboundHistory: syncEnabled)
         } catch {
             diagnostics.record(.failure(
                 operation: "clipboard.account_reset",
@@ -240,6 +249,12 @@ final class IOSClipboardModel {
             ))
             syncErrorMessage = ClipboardSyncErrorMessage.accountReset(for: error)
         }
+    }
+
+    private func setAsideHistory(includingUnboundHistory: Bool = false) async throws {
+        try await cloud?.resetAccountBinding(includingUnboundHistory: includingUnboundHistory)
+        await load()
+        syncErrorMessage = nil
     }
 
     func togglePin(_ entry: ClipboardEntry) async {
