@@ -121,7 +121,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         var snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         if let pruned = snapshot.namespaceState.pruningDeletedSeeds(
             liveSnipIDs: Set(snapshot.snips.map(\.id)),
-            linkedSnipIDs: Set(snapshot.records.map(\.snipID))
+            linkedSnipIDs: snapshot.sentSnipIDs
         ) {
             try await library.transitionCloudTextNamespace(
                 namespaceKey: namespaceKey,
@@ -238,15 +238,10 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 liveSnipIDs: localIDs,
                 deletionRecoveryData: try Self.encode(.modeRetryDeletion)
             )
-            // Only a row with server state links its snip: seeding reserves placeholder rows
-            // before anything reaches iCloud.
-            let sentSnipIDs = Set(snapshot.records.filter {
-                $0.acceptedText != nil || $0.shadowData != nil || $0.systemFields != nil
-            }.map(\.snipID))
             guard let next = snapshot.namespaceState.replacingSeedApproval(
                 with: snipIDs,
                 liveSnipIDs: localIDs,
-                linkedSnipIDs: sentSnipIDs
+                linkedSnipIDs: snapshot.sentSnipIDs
             ) else {
                 return
             }
