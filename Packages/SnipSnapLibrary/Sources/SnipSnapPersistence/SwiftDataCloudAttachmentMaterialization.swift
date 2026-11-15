@@ -31,11 +31,17 @@ extension SwiftDataSnipLibrary {
     let storedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
       predicate: #Predicate<StoredSnipAttachmentReference> { snipIDs.contains($0.snipID) }
     ))
+    let localOrdersBySnip = Dictionary(grouping: storedReferences, by: \.snipID).mapValues {
+      $0.sorted { lhs, rhs in
+        if lhs.position != rhs.position { return lhs.position < rhs.position }
+        return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
+      }.map(\.attachmentID)
+    }
     var references = Dictionary(uniqueKeysWithValues: storedReferences.map { ($0.id, $0) })
     let presentRowsBySnip = Dictionary(
       grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
     )
-    let adoptedSnipIDs = Set(publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID))
+    var touchedSnipIDs = Set(publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID))
     let cacheEntries = Dictionary(uniqueKeysWithValues:
       try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
@@ -93,22 +99,26 @@ extension SwiftDataSnipLibrary {
         )
         context.insert(reference)
         references[referenceID] = reference
+        touchedSnipIDs.insert(publication.snipID)
       }
     }
-    let referencesBySnip = Dictionary(grouping: references.values, by: \.snipID)
-    // Adopt a snip's attachment order as a whole only when its local sequence still matches its base.
-    let snipsAdoptingOrder = Set(adoptedSnipIDs.filter { snipID in
-      let localOrder = (referencesBySnip[snipID] ?? []).sorted { lhs, rhs in
-        if lhs.position != rhs.position { return lhs.position < rhs.position }
-        return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
-      }.map(\.attachmentID)
-      let baseOrder = (presentRowsBySnip[snipID] ?? []).sorted { lhs, rhs in
+    // A snip adopts the fetched attachment order as a whole, compared over shared attachments,
+    // unless the local order changed or an edit there awaits acknowledgement.
+    let snipsAdoptingOrder = Set(touchedSnipIDs.filter { snipID in
+      let presentRows = presentRowsBySnip[snipID] ?? []
+      guard !presentRows.contains(where: { $0.lifecycle.isPresentAwaitingMetadata }) else {
+        return false
+      }
+      let localOrder = localOrdersBySnip[snipID] ?? []
+      let baseOrder = presentRows.sorted { lhs, rhs in
         let lhsPosition = adoptedBases[lhs.attachmentID]?.position ?? lhs.position
         let rhsPosition = adoptedBases[rhs.attachmentID]?.position ?? rhs.position
         if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
         return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
       }.map(\.attachmentID)
-      return localOrder == baseOrder
+      let sharedIDs = Set(localOrder).intersection(baseOrder)
+      return localOrder.filter { sharedIDs.contains($0) }
+        == baseOrder.filter { sharedIDs.contains($0) }
     })
     for snipID in snipsAdoptingOrder {
       for row in presentRowsBySnip[snipID] ?? [] {
