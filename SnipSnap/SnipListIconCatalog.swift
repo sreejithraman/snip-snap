@@ -1,9 +1,5 @@
+import SnipSnapCore
 import SwiftUI
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 struct SnipListIconCategory: Identifiable {
     let title: String
@@ -27,17 +23,12 @@ enum SnipListIconOptions {
 
     // Loading an image for every name retains hundreds of MB in the OS glyph cache.
     // Use release metadata; probe only names not covered by that snapshot.
+    /// Leaves out the old default symbols: a list saved with one shows letters.
     static let availableIcons = SFSymbolNames.available(
         in: ProcessInfo.processInfo.operatingSystemVersion
     ) { name in
-        autoreleasepool {
-#if os(macOS)
-            NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
-#else
-            UIImage(systemName: name) != nil
-#endif
-        }
-    }
+        autoreleasepool { ListIconSymbol.isAvailable(name) }
+    }.filter { !SnipList.legacyDefaultIcons.contains($0) }
     private static let availableIconSet = Set(availableIcons)
 
     static var searchPlaceholder: String {
@@ -325,6 +316,7 @@ enum SnipListIconOptions {
     ]
 
     static func title(for icon: String) -> String {
+        guard SnipList.icon(stored: icon) != nil else { return String(localized: "No icon") }
         let defaultTitle = icon.replacingOccurrences(of: ".", with: " ").capitalized
         return Bundle.main.localizedString(
             forKey: "icon.\(icon)",

@@ -631,7 +631,7 @@ struct InlineListEditor: View {
                                 }
                             }
                         case .color:
-                            SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                            SnipListColorPicker(selection: $draft.color, automatic: SnipList.automaticColor(for: list.id), showsTitle: false)
                                 .padding(SnipSnapSpacing.paneContentInset)
                         }
                     }
@@ -689,7 +689,7 @@ struct InlineListEditor: View {
                 InlineListIconPicker(selection: $draft.systemImage, query: $draft.iconQuery, searchFocus: $focusedField)
             case .color:
                 ScrollView {
-                    SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                    SnipListColorPicker(selection: $draft.color, automatic: SnipList.automaticColor(for: list.id), showsTitle: false)
                         .padding(.vertical, SnipSnapSpacing.relatedContent)
                 }
                 .scrollBounceBehavior(.basedOnSize)
@@ -710,20 +710,31 @@ struct InlineListEditor: View {
         })
     }
 
+    /// The list as it will look once saved.
+    private var draftPreview: SnipList {
+        var preview = list
+        if !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { preview.name = draft.name }
+        preview.systemImage = draft.systemImage
+        preview.color = draft.color
+        return preview
+    }
+
     private var editorHeader: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             HStack(spacing: 12) {
-                Image(systemName: ListIconSymbol.supportedName(draft.systemImage))
-                    .font(.title3.weight(.semibold))
+                SnipListMarkView(list: draftPreview, diameter: 40)
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
                     .frame(width: 44, height: 44)
-                    .accessibilityLabel("List icon: \(SnipListIconOptions.title(for: draft.systemImage))")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityLabel(
+                        draftPreview.icon.map { "List icon: \(SnipListIconOptions.title(for: $0))" } ?? String(localized: "No icon")
+                    )
                     .accessibilityIdentifier("list-icon-preview")
 
                 TextField(list.displayName, text: $draft.name)
                     .font(.system(.title, design: .rounded, weight: .bold))
-                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
+                    .foregroundStyle(draftPreview.accent.color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .textInputAutocapitalization(.words)
@@ -772,7 +783,7 @@ struct InlineListEditor: View {
                 Group {
                     if draft.isSaving {
                         ProgressView()
-                            .tint(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+                            .tint(draftPreview.accent.filledControlLabel(in: environment))
                     } else {
                         Image(systemName: "checkmark")
                             .font(.system(size: actionSymbolSize, weight: .semibold))
@@ -783,8 +794,8 @@ struct InlineListEditor: View {
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .controlSize(.large)
-            .tint(SnipListAppearance(preset: draft.color).controlTint)
-            .foregroundStyle(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+            .tint(draftPreview.accent.controlTint)
+            .foregroundStyle(draftPreview.accent.filledControlLabel(in: environment))
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel(draft.isSaving ? "Saving…" : model.newListID == list.id ? "Create list" : "Save list")
             .accessibilityIdentifier("save-list")

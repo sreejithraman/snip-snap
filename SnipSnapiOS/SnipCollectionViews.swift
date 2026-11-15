@@ -657,7 +657,11 @@ struct LibrarySearchView: View {
                                 snipResult(snip)
                             }
                         } header: {
-                            Label(group.list.displayName, systemImage: group.list.displaySystemImage)
+                            Label {
+                                Text(group.list.displayName)
+                            } icon: {
+                                SnipListMarkView(list: group.list, diameter: 20)
+                            }
                                 .foregroundStyle(group.list.accent.color)
                                 .accessibilityIdentifier("search-section-\(group.list.id)")
                         }

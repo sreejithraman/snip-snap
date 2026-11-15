@@ -122,7 +122,7 @@ private struct ListManagementPanel: View {
     private func listRow(_ list: SnipList) -> some View {
         HStack(spacing: 0) {
             selectionButton(page: .list(list.id), title: list.displayName,
-                            systemImage: list.displaySystemImage, color: list.accent.color,
+                            mark: list.displayMark, appearance: list.accent,
                             identifier: "list-management-select-\(list.id.uuidString)")
             .accessibilityActions {
                 if let index = displayedLists.firstIndex(where: { $0.id == list.id }) {
@@ -156,22 +156,21 @@ private struct ListManagementPanel: View {
     }
 
     private func selectionButton(
-        page: LibraryPage, title: String, systemImage: String, color: Color, identifier: String
+        page: LibraryPage, title: String, mark: SnipListMark, appearance: SnipListAppearance, identifier: String
     ) -> some View {
         Button {
             dismiss()
             model.selectPage(page)
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .frame(width: 24)
+                SnipListMarkView(mark: mark, appearance: appearance, diameter: 26)
                 Text(title)
                     .font(.body.weight(model.selectedPage == page ? .semibold : .regular))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
             }
-            .foregroundStyle(color)
+            .foregroundStyle(appearance.color)
             .frame(maxWidth: .infinity, minHeight: max(56, rowHeight))
             .contentShape(Rectangle())
         }

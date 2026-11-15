@@ -326,9 +326,7 @@ struct SnipListTabBarView: View {
                 .help("Clipboard")
         case .list(let listID):
             if let list = model.displayedLists.first(where: { $0.id == listID }) {
-                Image(systemName: list.displaySystemImage)
-                    .foregroundStyle(list.accent.color)
-                    .accessibilityLabel(list.displayName)
+                SnipListMarkView(list: list, diameter: 22)
                     .help(list.displayName)
             }
         }
