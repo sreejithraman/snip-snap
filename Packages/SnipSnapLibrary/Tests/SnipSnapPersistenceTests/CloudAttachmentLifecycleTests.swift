@@ -101,32 +101,38 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     )
   }
 
-  func testRemovingAnAttachmentWithAPendingPayloadDropsItsPublicationAndQueuedUpload() async throws {
+  func testRemovingAnAttachmentWithAPendingPayloadDropsItsPublicationAndOwesItsUploadACleanup() async throws {
     let fixture = try await makeLocalAttachmentFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let queuedUpload = try XCTUnwrap(fixture.publication.sourceURL)
+    let queuedUpload = try XCTUnwrap(fixture.publication.sourceURL, "The pending payload must have an upload copy.")
     _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
 
     try await reconcile(fixture.library)
 
     let removed = try await attachmentStorage(fixture.library)
-    XCTAssertTrue(removed.publications.isEmpty)
-    XCTAssertTrue(removed.cleanups.isEmpty)
+    XCTAssertTrue(removed.publications.isEmpty, "Never-published metadata needs no retained publication.")
+    XCTAssertEqual(removed.cleanups.count, 1, "The upload may be in flight, so it must be owed a cleanup.")
+    let cleanup = try XCTUnwrap(removed.cleanups.first, "The abandoned upload must have a cleanup.")
+    XCTAssertEqual(cleanup.identity, fixture.publication.metadata.payloadIdentity, "The cleanup must name the abandoned payload.")
+    XCTAssertNil(cleanup.shadowData, "CloudKit has not accepted a payload shadow yet.")
+    XCTAssertNil(cleanup.blockedByAttachmentID, "No metadata ever named this payload.")
     XCTAssertFalse(
-      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path)
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path),
+      "The abandoned upload copy must be removed after saving."
     )
-    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [])
+    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [], "No upload directory may outlive the removal.")
   }
 
-  func testRemovingAnAttachmentWithAnAcceptedPayloadQueuesOneCleanupWithItsShadow() async throws {
+  func testRemovingAnAttachmentWithAnAcceptedPayloadCleansItUpAfterItsMetadataDelete() async throws {
     let fixture = try await makeLocalAttachmentFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let pending = fixture.publication
-    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+    let queuedUpload = try XCTUnwrap(pending.sourceURL, "The pending payload must have an upload copy.")
+    let payloadShadow = Data("payload-shadow".utf8)
     try await commit(fixture.library, [.payloadAccepted(
       attachmentID: pending.metadata.attachmentID,
       expectedRevision: pending.revision,
-      shadowData: Data("payload-shadow".utf8),
+      shadowData: payloadShadow,
       systemFields: Data("payload-fields".utf8)
     )])
     _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
@@ -134,17 +140,121 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     try await reconcile(fixture.library)
 
     let removed = try await attachmentStorage(fixture.library)
-    XCTAssertTrue(removed.publications.isEmpty)
-    XCTAssertEqual(removed.cleanups.count, 1)
-    let cleanup = try XCTUnwrap(removed.cleanups.first)
-    XCTAssertEqual(cleanup.identity, pending.metadata.payloadIdentity)
-    XCTAssertEqual(cleanup.shadowData, Data("payload-shadow".utf8))
-    XCTAssertNil(cleanup.blockedByAttachmentID)
-    XCTAssertNil(cleanup.lastFailure)
+    let publication = try XCTUnwrap(removed.publications.first, "A metadata save may be in flight, so the publication must stay.")
+    XCTAssertFalse(publication.isLocallyPresent, "The retained publication must record its removal.")
+    XCTAssertTrue(removed.cleanups.isEmpty, "The payload must wait until its metadata is gone.")
+    try await commit(fixture.library, [.metadataDeleteAccepted(
+      attachmentID: publication.metadata.attachmentID,
+      expectedRevision: publication.revision
+    )])
+    let deleted = try await attachmentStorage(fixture.library)
+    XCTAssertTrue(deleted.publications.isEmpty, "An accepted metadata delete must retire the publication.")
+    XCTAssertEqual(deleted.cleanups.count, 1, "An accepted metadata delete must owe one payload cleanup.")
+    let cleanup = try XCTUnwrap(deleted.cleanups.first, "The accepted payload must have a cleanup.")
+    XCTAssertEqual(cleanup.identity, pending.metadata.payloadIdentity, "The cleanup must name the accepted payload.")
+    XCTAssertEqual(cleanup.shadowData, payloadShadow, "The cleanup must retain the accepted payload shadow.")
+    XCTAssertNil(cleanup.blockedByAttachmentID, "There is no replacement at this location.")
+    XCTAssertNil(cleanup.lastFailure, "The new cleanup must have no failure.")
     XCTAssertFalse(
-      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path)
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path),
+      "Accepting the payload must release its upload copy."
     )
-    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [])
+    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [], "No upload directory may remain.")
+  }
+
+  func testReplacingAFileWhileAPublishedAttachmentsEditIsPendingKeepsTheOldPayloadUntilTheNewMetadataPublishes() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let published = try await publishLocalAttachment(fixture)
+    var snips = try await fixture.library.checkedSnapshot(sortedBy: .manual).snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == fixture.snipID }), "The fixture must keep its snip.")
+    snips[index].attachments[0].fileName = "renamed.txt"
+    _ = try await fixture.library.perform(.replaceAll(snips), sortedBy: .manual)
+    try await reconcile(fixture.library)
+    let editedStorage = try await attachmentStorage(fixture.library)
+    let edited = try XCTUnwrap(editedStorage.publications.first, "The metadata edit must keep the publication.")
+    XCTAssertFalse(edited.metadataAccepted, "The rename must be pending before the file changes.")
+
+    try await replaceFixtureFile(fixture)
+
+    let replacedStorage = try await attachmentStorage(fixture.library)
+    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The replacement must keep the publication.")
+    XCTAssertTrue(replacedStorage.cleanups.isEmpty, "Published metadata still names the old payload, so its cleanup must wait.")
+    XCTAssertEqual(replaced.priorPayloadIdentity, published.metadata.payloadIdentity, "The old payload must wait as the replaced payload.")
+    XCTAssertEqual(replaced.priorPayloadShadowData, published.payloadShadowData, "The replaced payload must retain its accepted shadow.")
+    let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+    let reopenedStorage = try await attachmentStorage(reopened)
+    XCTAssertEqual(reopenedStorage, replacedStorage, "The pending replacement must survive a reopen.")
+    try await commit(reopened, [.payloadAccepted(
+      attachmentID: replaced.metadata.attachmentID,
+      expectedRevision: replaced.revision,
+      shadowData: Data("replacement-payload-shadow".utf8),
+      systemFields: Data()
+    )])
+    let payloadStorage = try await attachmentStorage(reopened)
+    let payload = try XCTUnwrap(payloadStorage.publications.first, "Accepting the payload must keep the publication.")
+    XCTAssertTrue(payloadStorage.cleanups.isEmpty, "The old payload must still wait for the new metadata.")
+    try await commit(reopened, [.metadataAccepted(
+      attachmentID: payload.metadata.attachmentID,
+      expectedRevision: payload.revision,
+      shadowData: Data("replacement-metadata-shadow".utf8),
+      systemFields: Data()
+    )])
+    let accepted = try await attachmentStorage(reopened)
+    XCTAssertEqual(accepted.cleanups.map(\.identity), [published.metadata.payloadIdentity], "Publishing the replacement must owe exactly the old payload a cleanup.")
+    XCTAssertEqual(accepted.cleanups.first?.shadowData, published.payloadShadowData, "The cleanup must use the old payload shadow.")
+  }
+
+  func testRemovingAnAttachmentAfterItsFileWasReplacedKeepsItUntilItsMetadataDeleteIsAccepted() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let published = try await publishLocalAttachment(fixture)
+    try await replaceFixtureFile(fixture)
+    let replacedStorage = try await attachmentStorage(fixture.library)
+    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The replacement must keep the publication.")
+    let upload = try XCTUnwrap(replaced.sourceURL, "The replacement payload must have an upload copy.")
+    _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
+
+    try await reconcile(fixture.library)
+
+    let removed = try await attachmentStorage(fixture.library)
+    let publication = try XCTUnwrap(removed.publications.first, "Published metadata must be deleted before retiring the publication.")
+    XCTAssertFalse(publication.isLocallyPresent, "The kept publication must record its removal.")
+    XCTAssertEqual(publication.priorPayloadIdentity, published.metadata.payloadIdentity, "The published payload must remain owed after the replacement is removed.")
+    XCTAssertEqual(removed.cleanups.count, 1, "Only the abandoned replacement upload may be owed now.")
+    XCTAssertEqual(removed.cleanups.first?.identity, replaced.metadata.payloadIdentity, "The immediate cleanup must name the replacement upload.")
+    XCTAssertNil(removed.cleanups.first?.shadowData, "The abandoned upload has no accepted shadow.")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: upload.deletingLastPathComponent().path), "The abandoned upload copy must be removed.")
+    let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+    let reopenedStorage = try await attachmentStorage(reopened)
+    XCTAssertEqual(reopenedStorage, removed, "Removal must preserve both payload obligations across a reopen.")
+    try await commit(reopened, [.metadataDeleteAccepted(
+      attachmentID: publication.metadata.attachmentID,
+      expectedRevision: publication.revision
+    )])
+    let deleted = try await attachmentStorage(reopened)
+    XCTAssertTrue(deleted.publications.isEmpty, "The accepted metadata delete must retire the publication.")
+    XCTAssertEqual(Set(deleted.cleanups.map(\.identity)), Set([published.metadata.payloadIdentity, replaced.metadata.payloadIdentity]), "Both payloads must be owed cleanup after the metadata is gone.")
+    XCTAssertEqual(deleted.cleanups.first(where: { $0.identity == published.metadata.payloadIdentity })?.shadowData, published.payloadShadowData, "The published payload's cleanup must keep its shadow.")
+  }
+
+  func testRemovalSaveFailureKeepsThePublicationAndQueuedUploadAfterReopen() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let upload = try XCTUnwrap(fixture.publication.sourceURL, "The pending payload must have an upload copy.")
+    _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
+    let before = try await attachmentStorage(fixture.library)
+    let failing = try failingLibrary(storeURL: fixture.storeURL)
+
+    do {
+      try await reconcile(failing)
+      XCTFail("The injected save failure must abort the removal.")
+    } catch is InjectedSaveFailure {}
+
+    let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+    let after = try await attachmentStorage(reopened)
+    XCTAssertEqual(after, before, "A failed removal must persist neither lifecycle changes nor cleanups.")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: upload.path), "A failed removal must retain the queued upload copy.")
   }
 
   func testTransitionSaveFailureLeavesPublicationsCleanupsAndQueuedUploadUnchanged() async throws {
@@ -1127,6 +1237,34 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
 
   private var namespace: CloudSyncNamespaceKey {
     CloudSyncNamespaceKey(rawValue: "attachment-lifecycle")
+  }
+
+  private func publishLocalAttachment(_ fixture: LocalAttachmentFixture) async throws -> CloudAttachmentPublication {
+    let pending = fixture.publication
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("published-payload-shadow".utf8),
+      systemFields: Data()
+    )])
+    let payloadStorage = try await attachmentStorage(fixture.library)
+    let payload = try XCTUnwrap(payloadStorage.publications.first, "Accepting the payload must keep its publication.")
+    try await commit(fixture.library, [.metadataAccepted(
+      attachmentID: payload.metadata.attachmentID,
+      expectedRevision: payload.revision,
+      shadowData: Data("published-metadata-shadow".utf8),
+      systemFields: Data()
+    )])
+    let publishedStorage = try await attachmentStorage(fixture.library)
+    return try XCTUnwrap(publishedStorage.publications.first, "Accepting metadata must keep its publication.")
+  }
+
+  private func replaceFixtureFile(_ fixture: LocalAttachmentFixture) async throws {
+    let storage = try await attachmentStorage(fixture.library)
+    let publication = try XCTUnwrap(storage.publications.first, "The fixture must keep its publication.")
+    let source = try XCTUnwrap(publication.localSourceURL, "The fixture must retain its durable file.")
+    try Data("replacement file bytes".utf8).write(to: source)
+    try await reconcile(fixture.library)
   }
 
   private func makeLocalAttachmentFixture() async throws -> LocalAttachmentFixture {

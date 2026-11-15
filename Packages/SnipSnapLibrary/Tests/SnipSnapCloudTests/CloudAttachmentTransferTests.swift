@@ -3380,6 +3380,1051 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
   }
 
+  // MARK: Acknowledgements after local edits (SM33)
+
+  // 5b: removing the first of two attachments moves the second. The second is removed before
+  // that move syncs, so CloudKit still holds its published metadata.
+  func testRemovingAnAttachmentWhosePositionSaveIsPendingDeletesItsMetadataBeforeItsPayload() async throws {
+    let setup = try await makeRemovedPublishedAttachmentFixture()
+    let fixture = setup.fixture
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let moved = setup.remaining
+    let metadataBase = try CloudRecordShadow(data: XCTUnwrap(
+      moved.metadataShadowData,
+      "The moved attachment must keep its published metadata shadow."
+    ))
+    let payloadBase = try CloudRecordShadow(data: XCTUnwrap(
+      moved.payloadShadowData,
+      "The moved attachment must keep its accepted payload shadow."
+    ))
+    let payloadID = CloudAttachmentRecordCodec.recordID(moved.metadata.payloadIdentity)
+    try await keepAttachments([], ofSnip: moved.metadata.snipID, in: fixture.library)
+
+    let plan = try await fixture.store.pendingChanges()
+
+    XCTAssertTrue(
+      plan.operations.contains(.delete(
+        CloudAttachmentRecordCodec.recordID(moved.metadataIdentity),
+        base: metadataBase
+      )),
+      "CloudKit still holds the moved attachment's metadata, so removing it must delete that metadata."
+    )
+    XCTAssertFalse(
+      plan.operations.contains(where: { $0.id == payloadID }),
+      "The payload must wait until CloudKit accepts the metadata delete."
+    )
+    let removed = try await snapshot(fixture.library, fixture.namespace)
+    let removedMoved = try XCTUnwrap(
+      removed.publications.first(where: {
+        $0.metadata.attachmentID == moved.metadata.attachmentID
+      }),
+      "The removed attachment must keep its publication until its metadata delete is accepted."
+    )
+    XCTAssertFalse(removedMoved.isLocallyPresent, "The publication must record the removal.")
+    XCTAssertFalse(
+      removed.cleanups.contains(where: { $0.identity == moved.metadata.payloadIdentity }),
+      "Nothing may owe the payload a cleanup while published metadata names it."
+    )
+
+    let reopenedLibrary = try SwiftDataSnipLibrary(
+      storeURL: fixture.root.appendingPathComponent("store")
+    )
+    let reopened = try await snapshot(reopenedLibrary, fixture.namespace)
+    XCTAssertEqual(reopened, removed, "The removed publication must survive a reopen unchanged.")
+
+    try await reopenedLibrary.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.metadataDeleteAccepted(
+        attachmentID: moved.metadata.attachmentID,
+        expectedRevision: removedMoved.revision
+      )]
+    )
+
+    let deleted = try await snapshot(reopenedLibrary, fixture.namespace)
+    XCTAssertFalse(
+      deleted.publications.contains(where: {
+        $0.metadata.attachmentID == moved.metadata.attachmentID
+      }),
+      "An accepted metadata delete must retire the publication."
+    )
+    XCTAssertEqual(
+      deleted.cleanups.filter { $0.identity == moved.metadata.payloadIdentity }.count,
+      1,
+      "The accepted delete must owe exactly one cleanup for this payload."
+    )
+    let cleanup = try XCTUnwrap(
+      deleted.cleanups.first(where: { $0.identity == moved.metadata.payloadIdentity }),
+      "An accepted metadata delete must owe the payload its cleanup."
+    )
+    XCTAssertEqual(
+      cleanup.shadowData,
+      moved.payloadShadowData,
+      "The cleanup must delete from the accepted payload shadow."
+    )
+    XCTAssertNil(cleanup.blockedByAttachmentID, "No replacement waits at the removed location.")
+    let reopenedStore = CloudFullSyncPersistence(
+      library: reopenedLibrary,
+      namespace: fixture.namespace,
+      dataZone: CloudZoneID(name: "data", ownerName: "owner"),
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
+    )
+    let next = try await reopenedStore.pendingChanges()
+    XCTAssertTrue(
+      next.operations.contains(.delete(payloadID, base: payloadBase)),
+      "Once the metadata is gone, the next plan must delete the payload."
+    )
+  }
+
+  // 5b across devices: client 1 removes A, plans the move of B offline, then removes B.
+  func testRemovingBothAttachmentsBeforeTheMoveSyncsLeavesNoAttachmentOnTheOtherDevice() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["first", "second"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    // The first sync accepts the payloads; the second publishes the metadata that names them.
+    try await client.sync.sync()
+    try await client.sync.sync()
+    let published = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(published.publications.count, 2, "Client 1 must publish both attachments.")
+    XCTAssertTrue(
+      published.publications.allSatisfy(\.metadataAccepted),
+      "Client 1 must publish both attachments' metadata."
+    )
+    let ordered = published.publications.sorted { $0.metadata.position < $1.metadata.position }
+    let first = try XCTUnwrap(ordered.first, "Client 1 must publish the first attachment.")
+    let second = try XCTUnwrap(ordered.last, "Client 1 must publish the second attachment.")
+    let other = try attachmentClient(
+      root: client.root,
+      storeURL: client.root.appendingPathComponent("other.store"),
+      namespace: client.namespace,
+      server: client.server,
+      snipID: client.snipID
+    )
+    try await other.sync.fetchRemote()
+    let received = try await other.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      received.snips.first(where: { $0.id == client.snipID })?.attachments.count,
+      2,
+      "Client 2 must receive both attachments."
+    )
+
+    try await keepAttachments([second.metadata.attachmentID], ofSnip: client.snipID, in: client.library)
+    _ = try await client.store.pendingChanges()
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    for _ in 0..<3 { try await client.sync.sync() }
+    try await other.sync.fetchRemote()
+
+    for publication in [first, second] {
+      let metadataRecord = await client.server.fullSnapshot(
+        for: CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+      )
+      XCTAssertNil(metadataRecord, "\(publication.metadata.fileName)'s metadata must leave CloudKit.")
+      let payloadRecord = await client.server.fullSnapshot(
+        for: CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+      )
+      XCTAssertNil(payloadRecord, "\(publication.metadata.fileName)'s payload must leave CloudKit.")
+    }
+    let otherLocal = try await other.library.checkedSnapshot(sortedBy: .manual)
+    let otherSnip = try XCTUnwrap(
+      otherLocal.snips.first(where: { $0.id == client.snipID }),
+      "Client 2 must keep the snip."
+    )
+    XCTAssertEqual(otherSnip.attachments, [], "Client 2 must drop both attachments.")
+    let otherStorage = try await snapshot(other.library, other.namespace)
+    XCTAssertEqual(otherStorage.publications, [], "Client 2 must keep no publication.")
+  }
+
+  // 4a: the user restores an attachment with a local file while its metadata delete is in
+  // flight. The delete lands, then its result comes back.
+  func testRestoringAnAttachmentWhileItsDeleteIsInFlightKeepsSyncing() async throws {
+    let held = try await makeHeldMetadataDelete()
+    let client = held.client
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await restoreSnip(held.snip, in: client.library)
+    _ = try await client.store.pendingChanges()
+
+    try await client.store.stage(.sent(held.sent), outbound: held.outbound)
+    do {
+      try await client.store.applyStaged(held.sent.id)
+    } catch {
+      return XCTFail("The delete's result must apply to the restored attachment, not throw \(error).")
+    }
+    try await client.transport.confirmApplied(held.sent.id)
+
+    let text = "edited after the restore"
+    try await editText(ofSnip: client.snipID, to: text, in: client.library)
+    try await client.sync.sync()
+    try await client.sync.sync()
+    try await assertRestoreRepublished(held, in: client, text: text)
+  }
+
+  // 4b: the same restore on a device that only downloaded the attachment. It cannot republish
+  // without the bytes, so the delete wins as soon as its result comes back.
+  func testRestoringADownloadedAttachmentWhileItsDeleteIsInFlightSettlesOnTheDelete() async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    let kept = pair.first
+    let restored = pair.second
+    let beforeRemoval = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(
+      beforeRemoval.snips.first(where: { $0.id == pair.snipID }),
+      "Client 2 must hold the snip."
+    )
+    try await editDownloadedAttachments(pair, keeping: [kept.id])
+    let outbound = try await pair.receiverStore.pendingChanges()
+    let metadataID = CloudAttachmentRecordCodec.recordID(restored.metadataIdentity)
+    XCTAssertTrue(
+      outbound.operations.contains(where: { operation in
+        if case .delete(let id, _) = operation { id == metadataID } else { false }
+      }),
+      "Removing the attachment must plan its metadata delete."
+    )
+    let sent = try await pair.assetFetches.send(outbound)
+    let deletedRecord = await pair.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(deletedRecord, "CloudKit must apply the delete before its result comes back.")
+    try await restoreSnip(snip, in: pair.receiverLibrary)
+    _ = try await pair.receiverStore.pendingChanges()
+    let restoredStorage = try await snapshot(pair.receiverLibrary, pair.namespace)
+    let restoredPublication = try publication(of: restored.id, in: restoredStorage)
+    XCTAssertTrue(
+      restoredPublication.isLocallyPresent && restoredPublication.metadataAccepted,
+      "The restore must bring back the published attachment with nothing to send."
+    )
+
+    try await pair.receiverStore.stage(.sent(sent), outbound: outbound)
+    try await pair.receiverStore.applyStaged(sent.id)
+    try await pair.assetFetches.confirmApplied(sent.id)
+
+    let settled = try await snapshot(pair.receiverLibrary, pair.namespace)
+    XCTAssertFalse(
+      settled.publications.contains(where: { $0.metadata.attachmentID == restored.id }),
+      "CloudKit applied the delete and this device holds no bytes to republish, so the delete must win now."
+    )
+    let local = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      local.snips.first(where: { $0.id == pair.snipID })?.attachments.map(\.id),
+      [kept.id],
+      "The snip must drop the attachment CloudKit no longer has."
+    )
+
+    try await pair.receiver.fetchRemote()
+
+    let fetched = try await snapshot(pair.receiverLibrary, pair.namespace)
+    XCTAssertEqual(
+      fetched.publications,
+      settled.publications,
+      "Fetching this device's own delete must change nothing."
+    )
+    let fetchedLocal = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      fetchedLocal.snips.first(where: { $0.id == pair.snipID })?.attachments.map(\.id),
+      [kept.id],
+      "Fetching this device's own delete must not change the snip."
+    )
+  }
+
+  // 4c: the delete's result is staged, the user restores the attachment, and the app relaunches
+  // before the staged batch applies.
+  func testAStagedDeleteAcknowledgementAppliedAfterARestoreReplans() async throws {
+    let held = try await makeHeldMetadataDelete()
+    let client = held.client
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.store.stage(.sent(held.sent), outbound: held.outbound)
+    try await restoreSnip(held.snip, in: client.library)
+    try await client.library.reconcileCloudAttachments(
+      namespaceKey: client.namespace.namespaceKey,
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+    let relaunched = try reopened(client)
+
+    do {
+      try await relaunched.store.applyStaged(held.sent.id)
+    } catch {
+      return XCTFail("A delete's result staged before the restore must replan, not throw \(error).")
+    }
+
+    let text = "edited after the relaunch"
+    try await editText(ofSnip: client.snipID, to: text, in: relaunched.library)
+    try await relaunched.sync.sync()
+    try await relaunched.sync.sync()
+    try await assertRestoreRepublished(held, in: relaunched, text: text)
+  }
+
+  // 4a and 4c already left staged batches on devices. An older build stored the delete's result
+  // as accepted, which the restored attachment refuses on every replay.
+  func testADeleteAcknowledgementStuckByAnOlderBuildReplansOnTheFirstSyncAfterUpgrade() async throws {
+    let held = try await makeHeldMetadataDelete()
+    let client = held.client
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await restoreSnip(held.snip, in: client.library)
+    _ = try await client.store.pendingChanges()
+    let restoredStorage = try await snapshot(client.library, client.namespace)
+    let restored = try XCTUnwrap(
+      restoredStorage.publications.first,
+      "The restored attachment must keep its publication."
+    )
+    XCTAssertTrue(restored.isLocallyPresent, "The restore must bring the attachment back.")
+    try await client.store.stage(.sent(held.sent), outbound: held.outbound)
+    let staged = try await client.store.stagedBatches()
+    let batch = try XCTUnwrap(
+      staged.first(where: { $0.batchID == held.sent.id }),
+      "The delete's result must be staged."
+    )
+    let legacyBatch = stagedByAnOlderBuild(
+      batch,
+      attachmentTransitions: [.metadataDeleteAccepted(
+        attachmentID: restored.metadata.attachmentID,
+        expectedRevision: restored.revision
+      )]
+    )
+    try await client.library.replaceStagedCloudFullBatch(legacyBatch)
+    do {
+      _ = try await client.library.commitCloudFullBatch(legacyBatch)
+      XCTFail("The legacy transition must reproduce the old build's stuck batch.")
+    } catch let error as CloudAttachmentStorageError {
+      XCTAssertEqual(error, .staleTransition, "A present row must reject the legacy delete acceptance.")
+    }
+    let upgraded = try reopened(client)
+    let persisted = try await upgraded.store.stagedBatches()
+    XCTAssertEqual(persisted, [legacyBatch], "The upgrade must start with the exact stuck batch on disk.")
+
+    do {
+      try await upgraded.sync.sync()
+    } catch {
+      return XCTFail("The first sync after upgrading must replan the stuck batch, not throw \(error).")
+    }
+
+    let remaining = try await upgraded.store.stagedBatches()
+    XCTAssertEqual(remaining, [], "The first sync must commit the replanned batch.")
+    let firstSyncStorage = try await snapshot(upgraded.library, upgraded.namespace)
+    let firstSyncPublication = try XCTUnwrap(
+      firstSyncStorage.publications.first,
+      "The first sync must retain the restored attachment."
+    )
+    XCTAssertNotEqual(
+      firstSyncPublication.metadata.attachmentID,
+      restored.metadata.attachmentID,
+      "The first sync must remap the restored attachment and make progress."
+    )
+    let firstSyncRecord = await upgraded.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(firstSyncPublication.metadataIdentity)
+    )
+    XCTAssertNotNil(firstSyncRecord, "The first sync must republish the restored metadata.")
+    let text = "edited after the upgrade"
+    try await editText(ofSnip: client.snipID, to: text, in: upgraded.library)
+    try await upgraded.sync.sync()
+    try await assertRestoreRepublished(held, in: upgraded, text: text)
+  }
+
+  // 4e: the user renames an attachment, then renames it again while the first save is in flight.
+  func testAnEditDuringAnInFlightMetadataSaveStaysPendingAfterTheSaveIsAccepted() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["a"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    try await client.sync.sync()
+    try await renameAttachment(ofSnip: client.snipID, to: "b.txt", in: client.library)
+    let outbound = try await client.store.pendingChanges()
+    let storage = try await snapshot(client.library, client.namespace)
+    let renamed = try XCTUnwrap(storage.publications.first, "The attachment must keep its publication.")
+    let metadataID = CloudAttachmentRecordCodec.recordID(renamed.metadataIdentity)
+    XCTAssertTrue(
+      outbound.operations.contains(where: { operation in
+        if case .save(let draft) = operation { draft.id == metadataID } else { false }
+      }),
+      "The first rename must plan a metadata save."
+    )
+    let sent = try await client.transport.send(outbound)
+    guard case .saved(let savedRecord)? = sent.items.first(where: { $0.id == metadataID }) else {
+      return XCTFail("CloudKit must accept the first rename.")
+    }
+    try await renameAttachment(ofSnip: client.snipID, to: "c.txt", in: client.library)
+    _ = try await client.store.pendingChanges()
+
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    try await client.store.applyStaged(sent.id)
+    try await client.transport.confirmApplied(sent.id)
+
+    let acknowledgedStorage = try await snapshot(client.library, client.namespace)
+    let acknowledged = try XCTUnwrap(
+      acknowledgedStorage.publications.first,
+      "The attachment must keep its publication."
+    )
+    XCTAssertFalse(
+      acknowledged.metadataAccepted,
+      "The second rename must stay pending after CloudKit accepts the first."
+    )
+    XCTAssertEqual(acknowledged.metadata.fileName, "c.txt", "The second rename must survive.")
+    XCTAssertEqual(
+      acknowledged.metadataShadowData,
+      savedRecord.shadow.data,
+      "The accepted save must become the base for the pending rename."
+    )
+
+    try await client.sync.sync()
+
+    let serverRecord = await client.server.fullSnapshot(for: metadataID)
+    XCTAssertEqual(
+      serverRecord?.encryptedFields["fileName"],
+      .string("c.txt"),
+      "CloudKit must end with the second rename."
+    )
+  }
+
+  // 5: the user removes an attachment while its first metadata save is in flight. The save lands.
+  func testRemovingAnAttachmentDuringItsFirstMetadataSaveLeavesNoAttachmentAnywhere() async throws {
+    try await assertRemovalDuringTheFirstMetadataSaveLeavesNoAttachment(relaunching: false)
+  }
+
+  func testRemovingAnAttachmentDuringItsFirstMetadataSaveKeepsItsPublicationAcrossARelaunch() async throws {
+    try await assertRemovalDuringTheFirstMetadataSaveLeavesNoAttachment(relaunching: true)
+  }
+
+  // 5, unknown item: the removed attachment's first save finds no record, so CloudKit holds no
+  // metadata for it.
+  func testRemovingAnAttachmentWhoseFirstMetadataSaveCameBackUnknownSettlesItsCleanup() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["unknown-first-save"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    let accepted = try await snapshot(client.library, client.namespace)
+    let publication = try XCTUnwrap(accepted.publications.first, "The first sync must keep the publication.")
+    XCTAssertTrue(publication.payloadAccepted, "The first sync must accept the payload.")
+    let metadataID = CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+    let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+    let outbound = try await client.store.pendingChanges()
+    let metadataSave = try XCTUnwrap(
+      outbound.operations.first(where: { $0.id == metadataID }),
+      "The second plan must save the metadata."
+    )
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    _ = try await client.store.pendingChanges()
+    let submitted = CloudOutboundBatch(operations: [metadataSave])
+    let sent = CloudSentBatch(
+      id: UUID(),
+      items: [.unknownItem(metadataID)],
+      engineState: try await client.store.loadEngineState()
+    )
+
+    try await client.store.stage(.sent(sent), outbound: submitted)
+    try await client.store.applyStaged(sent.id)
+
+    let settled = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(settled.publications, [], "CloudKit holds no metadata for it, so the removal must settle.")
+    XCTAssertEqual(
+      settled.cleanups.map(\.identity),
+      [publication.metadata.payloadIdentity],
+      "The accepted payload must be owed its cleanup."
+    )
+    XCTAssertEqual(
+      settled.cleanups.first?.shadowData,
+      publication.payloadShadowData,
+      "The cleanup must delete from the accepted payload shadow."
+    )
+
+    try await client.sync.sync()
+
+    let payloadRecord = await client.server.fullSnapshot(for: payloadID)
+    XCTAssertNil(payloadRecord, "The cleanup must delete the payload.")
+    let cleaned = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(cleaned.cleanups, [], "The cleanup must settle.")
+  }
+
+  // 7b: the user removes an attachment while its first upload is in flight. The upload lands.
+  func testRemovingAnAttachmentDuringItsFirstUploadDeletesTheUploadedPayload() async throws {
+    try await assertRemovalDuringTheFirstUploadDeletesThePayload(relaunching: false)
+  }
+
+  func testRemovingAnAttachmentDuringItsFirstUploadDeletesTheUploadedPayloadAfterARelaunch() async throws {
+    try await assertRemovalDuringTheFirstUploadDeletesThePayload(relaunching: true)
+  }
+
+  // 7b guard: an attachment removed before its upload starts is owed the same cleanup. It finds
+  // nothing in CloudKit and settles in one sync.
+  func testRemovingAnAttachmentBeforeItsUploadStartsSettlesItsCleanup() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["never-uploaded"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    _ = try await client.store.pendingChanges()
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+
+    try await client.sync.sync()
+
+    let settled = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(settled.publications, [], "The removed attachment must keep no publication.")
+    XCTAssertEqual(settled.cleanups, [], "A cleanup for a payload CloudKit never got must settle in one sync.")
+    let issue = try await client.store.unresolvedSyncIssue()
+    XCTAssertNil(issue, "The removal must leave no sync issue.")
+  }
+
+  func testAnAbandonedUploadFailureDoesNotFailItsCleanup() async throws {
+    for failure in [CloudOperationFailure.quotaExceeded, .zoneMissing] {
+      let client = try await makeAttachmentClient(fileNames: [])
+      defer { try? FileManager.default.removeItem(at: client.root) }
+      try await client.sync.sync()
+      let source = client.root.appendingPathComponent("abandoned.txt")
+      try Data("abandoned bytes".utf8).write(to: source)
+      let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = try XCTUnwrap(local.snips.first, "The fixture must publish its snip.")
+      _ = try await client.library.perform(.editAttachments(
+        snipID: snip.id,
+        content: snip.content,
+        edits: [.added(sourceURL: source)],
+        expectedUpdatedAt: snip.updatedAt,
+        now: Date(timeIntervalSince1970: 1)
+      ), sortedBy: .manual)
+      let outbound = try await client.store.pendingChanges()
+      let pending = try await snapshot(client.library, client.namespace)
+      let publication = try XCTUnwrap(pending.publications.first, "The fixture must queue its upload.")
+      let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+      let save = try XCTUnwrap(outbound.operations.first(where: { $0.id == payloadID }), "The first plan must save the payload.")
+      try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+      _ = try await client.store.pendingChanges()
+      let removed = try await snapshot(client.library, client.namespace)
+      let namespaceBefore = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+      let sent = CloudSentBatch(
+        id: UUID(),
+        items: [.failed(payloadID, failure)],
+        engineState: try await client.store.loadEngineState()
+      )
+
+      try await client.store.stage(.sent(sent), outbound: CloudOutboundBatch(operations: [save]))
+      try await client.store.applyStaged(sent.id)
+
+      let acknowledged = try await snapshot(client.library, client.namespace)
+      XCTAssertEqual(acknowledged, removed, "An abandoned save failure must not change its cleanup: \(failure).")
+      let fullStorage = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+      XCTAssertEqual(fullStorage.namespaceState.phase, namespaceBefore.namespaceState.phase, "An abandoned attachment save must never trigger zone recovery.")
+    }
+  }
+
+  // 9: the user replaces a published attachment's bytes, then removes it before the new bytes
+  // upload. CloudKit still holds metadata that names the old payload.
+  func testRemovingAnAttachmentAfterItsFileWasReplacedDeletesItsMetadataAndBothPayloads() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["replaced"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    try await client.sync.sync()
+    let publishedStorage = try await snapshot(client.library, client.namespace)
+    let published = try XCTUnwrap(publishedStorage.publications.first, "The attachment must publish.")
+    XCTAssertTrue(published.metadataAccepted, "The attachment's metadata must publish.")
+    let durableFile = try XCTUnwrap(published.localSourceURL, "The attachment must keep its local file.")
+    try Data("replacement bytes that never upload".utf8).write(to: durableFile)
+    _ = try await client.store.pendingChanges()
+    let replacedStorage = try await snapshot(client.library, client.namespace)
+    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The attachment must keep its publication.")
+    XCTAssertEqual(
+      replaced.priorPayloadIdentity,
+      published.metadata.payloadIdentity,
+      "The published payload must wait as the replaced payload."
+    )
+    let payloadIDs = [published.metadata.payloadIdentity, replaced.metadata.payloadIdentity]
+      .map(CloudAttachmentRecordCodec.recordID)
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+
+    for _ in 0..<3 { try await client.sync.sync() }
+
+    let metadataRecord = await client.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(published.metadataIdentity)
+    )
+    XCTAssertNil(metadataRecord, "The removal must delete the published metadata.")
+    for payloadID in payloadIDs {
+      let payloadRecord = await client.server.fullSnapshot(for: payloadID)
+      XCTAssertNil(payloadRecord, "No payload of the removed attachment may stay in CloudKit.")
+    }
+    let settled = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(settled.publications, [], "The removal must settle its publication.")
+    XCTAssertEqual(settled.cleanups, [], "The removal must settle every cleanup.")
+  }
+
+  // 6: this device adopts metadata that names a payload it had replaced, then publishes an edit.
+  // The replaced payload's cleanup comes due while live metadata names it.
+  func testACleanupNeverDeletesAPayloadThatLiveMetadataNames() async throws {
+    let fixture = try await makePendingAttachmentFixture(names: ["live"])
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pendingStorage = try await snapshot(fixture.library, fixture.namespace)
+    let pending = try XCTUnwrap(
+      pendingStorage.publications.first,
+      "The fixture must queue its attachment."
+    )
+    let payloadRecord = try payloadShadow(pending.metadata.payloadIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.payloadAccepted(
+        attachmentID: pending.metadata.attachmentID,
+        expectedRevision: pending.revision,
+        shadowData: payloadRecord.data,
+        systemFields: payloadRecord.systemFields
+      )]
+    )
+    let metadataRecord = try metadataShadow(pending.metadataIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.metadataAccepted(
+        attachmentID: pending.metadata.attachmentID,
+        expectedRevision: pending.revision + 1,
+        shadowData: metadataRecord.data,
+        systemFields: metadataRecord.systemFields
+      )]
+    )
+    let publishedStorage = try await snapshot(fixture.library, fixture.namespace)
+    let published = try XCTUnwrap(
+      publishedStorage.publications.first,
+      "The attachment must publish."
+    )
+    let livePayload = published.metadata.payloadIdentity
+    let durableFile = try XCTUnwrap(published.localSourceURL, "The attachment must keep its local file.")
+    let originalBytes = try Data(contentsOf: durableFile)
+    try Data("bytes this device replaced".utf8).write(to: durableFile)
+    _ = try await fixture.store.pendingChanges()
+    let replacedStorage = try await snapshot(fixture.library, fixture.namespace)
+    let replaced = try XCTUnwrap(
+      replacedStorage.publications.first,
+      "The attachment must keep its publication."
+    )
+    XCTAssertEqual(replaced.priorPayloadIdentity, livePayload, "The published payload must wait as replaced.")
+    // Reverting the local file lets the next reconcile retain the server's original payload.
+    try originalBytes.write(to: durableFile)
+    let remoteRecord = try metadataShadow(replaced.metadataIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.remoteMetadataAccepted(
+        metadata: published.metadata,
+        metadataIdentity: replaced.metadataIdentity,
+        shadowData: remoteRecord.data,
+        systemFields: remoteRecord.systemFields
+      )]
+    )
+    try await renameAttachment(
+      ofSnip: replaced.metadata.snipID,
+      to: "renamed here.txt",
+      in: fixture.library
+    )
+    _ = try await fixture.store.pendingChanges()
+    let editedStorage = try await snapshot(fixture.library, fixture.namespace)
+    let edited = try XCTUnwrap(
+      editedStorage.publications.first,
+      "The attachment must keep its publication."
+    )
+    XCTAssertEqual(edited.metadata.payloadIdentity, livePayload, "The adopted metadata must name the live payload.")
+    XCTAssertFalse(edited.metadataAccepted, "The local rename must wait to sync.")
+    let acceptedRecord = try metadataShadow(edited.metadataIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.metadataAccepted(
+        attachmentID: edited.metadata.attachmentID,
+        expectedRevision: edited.revision,
+        shadowData: acceptedRecord.data,
+        systemFields: acceptedRecord.systemFields
+      )]
+    )
+    let accepted = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertEqual(
+      accepted.publications.first?.metadata.payloadIdentity,
+      livePayload,
+      "The accepted metadata must still name the live payload."
+    )
+    XCTAssertTrue(
+      accepted.cleanups.contains(where: { $0.identity == livePayload }),
+      "The replaced payload's cleanup is due, so only the planner can keep the live payload."
+    )
+
+    let plan = try await fixture.store.pendingChanges()
+
+    XCTAssertFalse(
+      plan.operations.contains(where: { $0.id == CloudAttachmentRecordCodec.recordID(livePayload) }),
+      "A cleanup must never delete a payload that a publication names."
+    )
+  }
+
+  private func assertRemovalDuringTheFirstMetadataSaveLeavesNoAttachment(
+    relaunching: Bool,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let client = try await makeAttachmentClient(fileNames: ["removed-while-publishing"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    let accepted = try await snapshot(client.library, client.namespace)
+    let publication = try XCTUnwrap(
+      accepted.publications.first,
+      "The first sync must keep the publication.",
+      file: file,
+      line: line
+    )
+    XCTAssertTrue(
+      publication.payloadAccepted && !publication.metadataAccepted,
+      "The first sync must accept only the payload.",
+      file: file,
+      line: line
+    )
+    let metadataID = CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+    let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+    let outbound = try await client.store.pendingChanges()
+    XCTAssertTrue(
+      outbound.operations.contains(where: { $0.id == metadataID }),
+      "The second plan must save the metadata.",
+      file: file,
+      line: line
+    )
+    let sent = try await client.transport.send(outbound)
+    let landed = await client.server.fullSnapshot(for: metadataID)
+    XCTAssertNotNil(
+      landed,
+      "CloudKit must accept the metadata before its result comes back.",
+      file: file,
+      line: line
+    )
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    _ = try await client.store.pendingChanges()
+    let session: AttachmentClient
+    if relaunching {
+      session = try reopened(client)
+      let relaunchedStorage = try await snapshot(session.library, session.namespace)
+      let kept = try XCTUnwrap(
+        relaunchedStorage.publications.first,
+        "CloudKit may be receiving its metadata, so the removed attachment must keep its publication.",
+        file: file,
+        line: line
+      )
+      XCTAssertFalse(kept.isLocallyPresent, "The kept publication must record the removal.", file: file, line: line)
+    } else {
+      session = client
+    }
+
+    try await session.store.stage(.sent(sent), outbound: outbound)
+    try await session.store.applyStaged(sent.id)
+    if !relaunching { try await client.transport.confirmApplied(sent.id) }
+    for _ in 0..<3 { try await session.sync.sync() }
+
+    let metadataRecord = await session.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(metadataRecord, "The metadata that landed after the removal must be deleted.", file: file, line: line)
+    let payloadRecord = await session.server.fullSnapshot(for: payloadID)
+    XCTAssertNil(payloadRecord, "The payload must be cleaned up after its metadata.", file: file, line: line)
+    let other = try attachmentClient(
+      root: session.root,
+      storeURL: session.root.appendingPathComponent("other.store"),
+      namespace: session.namespace,
+      server: session.server,
+      snipID: session.snipID
+    )
+    try await other.sync.fetchRemote()
+    try await session.sync.fetchRemote()
+    for (name, library) in [("client 1", session.library), ("client 2", other.library)] {
+      let local = try await library.checkedSnapshot(sortedBy: .manual)
+      let snip = try XCTUnwrap(
+        local.snips.first(where: { $0.id == session.snipID }),
+        "\(name) must hold the snip.",
+        file: file,
+        line: line
+      )
+      XCTAssertEqual(snip.attachments, [], "\(name) must show no attachment.", file: file, line: line)
+      let storage = try await snapshot(library, session.namespace)
+      XCTAssertEqual(storage.publications, [], "\(name) must keep no publication.", file: file, line: line)
+    }
+  }
+
+  private func assertRemovalDuringTheFirstUploadDeletesThePayload(
+    relaunching: Bool,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let client = try await makeAttachmentClient(fileNames: ["wrong-video"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    let outbound = try await client.store.pendingChanges()
+    let storage = try await snapshot(client.library, client.namespace)
+    let pending = try XCTUnwrap(storage.publications.first, "The first plan must queue the upload.", file: file, line: line)
+    let queuedUpload = try XCTUnwrap(pending.sourceURL, "The upload must have a queued copy.", file: file, line: line)
+    let payloadID = CloudAttachmentRecordCodec.recordID(pending.metadata.payloadIdentity)
+    XCTAssertTrue(
+      outbound.operations.contains(where: { $0.id == payloadID }),
+      "The first plan must upload the payload.",
+      file: file,
+      line: line
+    )
+    let sent = try await client.transport.send(outbound)
+    let uploaded = await client.server.fullSnapshot(for: payloadID)
+    XCTAssertNotNil(uploaded, "CloudKit must accept the upload before its result comes back.", file: file, line: line)
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    _ = try await client.store.pendingChanges()
+    let session = relaunching ? try reopened(client) : client
+
+    try await session.store.stage(.sent(sent), outbound: outbound)
+    try await session.store.applyStaged(sent.id)
+    if !relaunching { try await client.transport.confirmApplied(sent.id) }
+    try await session.sync.sync()
+    try await session.sync.sync()
+
+    let payloadRecord = await session.server.fullSnapshot(for: payloadID)
+    XCTAssertNil(payloadRecord, "The upload that landed after the removal must be deleted.", file: file, line: line)
+    let settled = try await snapshot(session.library, session.namespace)
+    XCTAssertEqual(settled.publications, [], "The removed attachment must keep no publication.", file: file, line: line)
+    XCTAssertEqual(settled.cleanups, [], "The abandoned upload's cleanup must settle.", file: file, line: line)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path),
+      "No queued upload copy may outlive the removal.",
+      file: file,
+      line: line
+    )
+  }
+
+  /// Client 1 publishes one attachment from a local file, removes it, and sends the metadata
+  /// delete. CloudKit applies the delete, and its result has not come back yet.
+  private func makeHeldMetadataDelete() async throws -> HeldMetadataDelete {
+    let client = try await makeAttachmentClient(fileNames: ["restored"])
+    // The first sync accepts the payload; the second publishes the metadata that names it.
+    try await client.sync.sync()
+    try await client.sync.sync()
+    let publishedStorage = try await snapshot(client.library, client.namespace)
+    let published = try XCTUnwrap(publishedStorage.publications.first, "The fixture must publish its attachment.")
+    XCTAssertTrue(published.metadataAccepted, "The fixture must publish its attachment's metadata.")
+    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(
+      local.snips.first(where: { $0.id == client.snipID }),
+      "The fixture must keep its snip."
+    )
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    let outbound = try await client.store.pendingChanges()
+    let metadataID = CloudAttachmentRecordCodec.recordID(published.metadataIdentity)
+    XCTAssertTrue(
+      outbound.operations.contains(where: { operation in
+        if case .delete(let id, _) = operation { id == metadataID } else { false }
+      }),
+      "Removing the attachment must plan its metadata delete."
+    )
+    let sent = try await client.transport.send(outbound)
+    let deletedRecord = await client.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(deletedRecord, "CloudKit must apply the delete before its result comes back.")
+    return HeldMetadataDelete(
+      client: client,
+      published: published,
+      snip: snip,
+      outbound: outbound,
+      sent: sent
+    )
+  }
+
+  /// The restore republished the attachment under a new identity, and text kept syncing.
+  private func assertRestoreRepublished(
+    _ held: HeldMetadataDelete,
+    in client: AttachmentClient,
+    text: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let staged = try await client.store.stagedBatches()
+    XCTAssertEqual(staged, [], "No staged batch may stay stuck.", file: file, line: line)
+    let storedText = await client.server.storedTextValues()
+    XCTAssertTrue(storedText.contains(text), "Text edits after the restore must sync.", file: file, line: line)
+    let storage = try await snapshot(client.library, client.namespace)
+    let republished = try XCTUnwrap(
+      storage.publications.first,
+      "The restored attachment must keep a publication.",
+      file: file,
+      line: line
+    )
+    XCTAssertNotEqual(
+      republished.metadata.attachmentID,
+      held.published.metadata.attachmentID,
+      "CloudKit applied the delete, so the restore must republish under a new identity.",
+      file: file,
+      line: line
+    )
+    XCTAssertTrue(republished.metadataAccepted, "The republished metadata must be accepted.", file: file, line: line)
+    let record = await client.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(republished.metadataIdentity)
+    )
+    XCTAssertNotNil(record, "CloudKit must hold the republished metadata.", file: file, line: line)
+    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      local.snips.first(where: { $0.id == client.snipID })?.attachments.map(\.id),
+      [republished.metadata.attachmentID],
+      "The snip must list the restored attachment.",
+      file: file,
+      line: line
+    )
+  }
+
+  /// The staged batch as an older build stored it, with these attachment transitions.
+  private func stagedByAnOlderBuild(
+    _ batch: CloudFullBatchCommit,
+    attachmentTransitions: [CloudAttachmentTransition]
+  ) -> CloudFullBatchCommit {
+    CloudFullBatchCommit(
+      namespaceKey: batch.namespaceKey,
+      batchID: batch.batchID,
+      expectedEngineState: batch.expectedEngineState,
+      nextEngineState: batch.nextEngineState,
+      nextEnrollment: batch.nextEnrollment,
+      expectedNamespaceRevision: batch.expectedNamespaceRevision,
+      nextNamespaceState: batch.nextNamespaceState,
+      rawBatchData: batch.rawBatchData,
+      outboundBindings: batch.outboundBindings,
+      recoveryInputs: batch.recoveryInputs,
+      recoveryChanges: batch.recoveryChanges,
+      recoveryReviews: batch.recoveryReviews,
+      graphRepairs: batch.graphRepairs,
+      settledDeleteIdentities: batch.settledDeleteIdentities,
+      attachmentTransitions: attachmentTransitions,
+      items: batch.items
+    )
+  }
+
+  /// One client with one snip whose attachments come from local files, enrolled but not synced.
+  private func makeAttachmentClient(fileNames: [String]) async throws -> AttachmentClient {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let sources = try fileNames.map { name in
+      let url = root.appendingPathComponent("\(name).txt")
+      try Data("\(name) bytes".utf8).write(to: url)
+      return url
+    }
+    let storeURL = root.appendingPathComponent("client.store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let added = try await library.perform(
+      .add(
+        content: "local attachments",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: sources,
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    let snipID = try XCTUnwrap(added.snapshot.snips.first?.id, "The fixture must save its snip.")
+    let client = attachmentClient(
+      root: root,
+      storeURL: storeURL,
+      library: library,
+      namespace: namespaceValue(),
+      server: FakeCloudServer(),
+      snipID: snipID
+    )
+    try await client.store.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
+      CloudEntityReference(kind: .snip, domainID: snipID),
+    ])
+    return client
+  }
+
+  /// The same store after a relaunch: a new library, persistence, transport, and coordinator.
+  private func reopened(_ client: AttachmentClient) throws -> AttachmentClient {
+    try attachmentClient(
+      root: client.root,
+      storeURL: client.storeURL,
+      namespace: client.namespace,
+      server: client.server,
+      snipID: client.snipID
+    )
+  }
+
+  private func attachmentClient(
+    root: URL,
+    storeURL: URL,
+    namespace: CloudSyncNamespace,
+    server: FakeCloudServer,
+    snipID: UUID
+  ) throws -> AttachmentClient {
+    attachmentClient(
+      root: root,
+      storeURL: storeURL,
+      library: try SwiftDataSnipLibrary(storeURL: storeURL),
+      namespace: namespace,
+      server: server,
+      snipID: snipID
+    )
+  }
+
+  private func attachmentClient(
+    root: URL,
+    storeURL: URL,
+    library: SwiftDataSnipLibrary,
+    namespace: CloudSyncNamespace,
+    server: FakeCloudServer,
+    snipID: UUID
+  ) -> AttachmentClient {
+    let dataZone = CloudZoneID(name: "data", ownerName: "owner")
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: dataZone,
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
+    )
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: namespace,
+      automaticallyFetchedZones: [dataZone]
+    )
+    return AttachmentClient(
+      root: root,
+      storeURL: storeURL,
+      namespace: namespace,
+      server: server,
+      snipID: snipID,
+      library: library,
+      store: store,
+      transport: transport,
+      sync: CloudFullSyncCoordinator(store: store, transport: transport, fetchScope: .zones([dataZone]))
+    )
+  }
+
+  /// Edits the snip so it keeps only these attachments, in this order, as the editor does.
+  private func keepAttachments(
+    _ attachmentIDs: [UUID],
+    ofSnip snipID: UUID,
+    in library: SwiftDataSnipLibrary
+  ) async throws {
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == snipID }), "The snip must exist.")
+    _ = try await library.perform(
+      .editAttachments(
+        snipID: snipID,
+        content: snip.content,
+        edits: attachmentIDs.map { SnipAttachmentEdit.existing(attachmentID: $0) },
+        expectedUpdatedAt: snip.updatedAt,
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+  }
+
+  /// Puts the snip back as it was before its attachments changed, as an undo does.
+  private func restoreSnip(_ snip: Snip, in library: SwiftDataSnipLibrary) async throws {
+    var snips = try await library.checkedSnapshot(sortedBy: .manual).snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == snip.id }), "The snip must exist.")
+    snips[index] = snip
+    _ = try await library.perform(.replaceAll(snips), sortedBy: .manual)
+  }
+
+  /// Renames the snip's first attachment, as a whole-library replace does.
+  private func renameAttachment(
+    ofSnip snipID: UUID,
+    to fileName: String,
+    in library: SwiftDataSnipLibrary
+  ) async throws {
+    var snips = try await library.checkedSnapshot(sortedBy: .manual).snips
+    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == snipID }), "The snip must exist.")
+    snips[index].attachments[0].fileName = fileName
+    _ = try await library.perform(.replaceAll(snips), sortedBy: .manual)
+  }
+
+  private func editText(
+    ofSnip snipID: UUID,
+    to content: String,
+    in library: SwiftDataSnipLibrary
+  ) async throws {
+    _ = try await library.perform(
+      .update(
+        id: snipID,
+        content: content,
+        attachmentURLs: nil,
+        expectedUpdatedAt: nil,
+        now: Date(timeIntervalSince1970: 4)
+      ),
+      sortedBy: .manual
+    )
+  }
+
   private func snapshot(
     _ library: SwiftDataSnipLibrary,
     _ namespace: CloudSyncNamespace
@@ -3879,6 +4924,26 @@ final class CloudAttachmentTransferTests: XCTestCase {
       attachmentURLs: urls
     )
   }
+}
+
+private struct AttachmentClient {
+  let root: URL
+  let storeURL: URL
+  let namespace: CloudSyncNamespace
+  let server: FakeCloudServer
+  let snipID: UUID
+  let library: SwiftDataSnipLibrary
+  let store: CloudFullSyncPersistence
+  let transport: FakeCloudRecordTransport
+  let sync: CloudFullSyncCoordinator
+}
+
+private struct HeldMetadataDelete {
+  let client: AttachmentClient
+  let published: CloudAttachmentPublication
+  let snip: Snip
+  let outbound: CloudOutboundBatch
+  let sent: CloudSentBatch
 }
 
 private struct AvailableCacheFixture {
