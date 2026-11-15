@@ -269,6 +269,101 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testAccountChoiceRetryKeepsTheFailureVisibleUntilItSucceeds() async {
+        let failure = "Couldn’t save your choice. Try again."
+        let handler = MacAppleAccountCacheHandlerProbe()
+        let libraryChange = AccountLibraryChangeGate(steps: [.fail, .hold])
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: handler,
+            activeLibraryChangeAction: { try await libraryChange.run() },
+            diagnostics: MacDiagnosticRecorderProbe().recorder
+        )
+        await model.resolve(.keepLocalCopy)
+        XCTAssertEqual(model.errorMessage, failure)
+
+        let retry = Task { await model.resolve(.remove) }
+        await libraryChange.waitUntilHeld()
+        XCTAssertTrue(model.isResolving)
+        XCTAssertEqual(model.errorMessage, failure)
+        await model.resolve(.keepLocalCopy)
+        await model.refresh()
+        let choicesWhileResolving = await handler.choices()
+        let refreshesWhileResolving = await handler.refreshCount()
+        XCTAssertEqual(choicesWhileResolving, [.keepLocalCopy, .remove])
+        XCTAssertEqual(refreshesWhileResolving, 0)
+        XCTAssertEqual(model.notice, .signedOut)
+
+        await libraryChange.release()
+        await retry.value
+
+        XCTAssertFalse(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.notice)
+    }
+
+    @MainActor
+    func testCancelledAccountChoiceKeepsThePriorFailurePresentation() async {
+        let failure = "Couldn’t save your choice. Try again."
+        let diagnostics = MacDiagnosticRecorderProbe()
+        let cancelAfterFailure = AccountLibraryChangeGate(steps: [.fail, .cancel])
+        let afterFailure = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(),
+            activeLibraryChangeAction: { try await cancelAfterFailure.run() },
+            diagnostics: diagnostics.recorder
+        )
+        await afterFailure.resolve(.keepLocalCopy)
+        await afterFailure.resolve(.keepLocalCopy)
+
+        XCTAssertFalse(afterFailure.isResolving)
+        XCTAssertEqual(afterFailure.errorMessage, failure)
+        XCTAssertEqual(afterFailure.notice, .signedOut)
+        XCTAssertEqual(diagnostics.events.filter { $0.operation == "sync.account_resolve" }.count, 1)
+
+        let firstChoiceDiagnostics = MacDiagnosticRecorderProbe()
+        let cancelFirst = AccountLibraryChangeGate(steps: [.cancel])
+        let firstChoice = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(),
+            activeLibraryChangeAction: { try await cancelFirst.run() },
+            diagnostics: firstChoiceDiagnostics.recorder
+        )
+        await firstChoice.resolve(.keepLocalCopy)
+
+        XCTAssertFalse(firstChoice.isResolving)
+        XCTAssertNil(firstChoice.errorMessage)
+        XCTAssertFalse(firstChoiceDiagnostics.events.contains { $0.operation == "sync.account_resolve" })
+    }
+
+    @MainActor
+    func testAccountCheckDuringAChoiceClearsTheShownFailure() async throws {
+        let handler = MacAppleAccountCacheHandlerProbe(notices: [.signedOut])
+        let libraryChange = AccountLibraryChangeGate(steps: [.fail, .hold])
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: handler,
+            activeLibraryChangeAction: { try await libraryChange.run() },
+            diagnostics: MacDiagnosticRecorderProbe().recorder
+        )
+        await model.resolve(.keepLocalCopy)
+        XCTAssertNotNil(model.errorMessage)
+
+        let retry = Task { await model.resolve(.remove) }
+        await libraryChange.waitUntilHeld()
+        try await model.refreshCheckingAccount(notifyActiveLibraryChange: false)
+        XCTAssertTrue(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+
+        await libraryChange.release(throwing: CancellationError())
+        await retry.value
+
+        XCTAssertFalse(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.notice, .signedOut)
+    }
+
+    @MainActor
     func testAccountRefreshRecordsBackgroundFailureWhileKeepingTheSafeNotice() async {
         let diagnostics = MacDiagnosticRecorderProbe()
         let model = AppleAccountNoticeModel(
@@ -4707,6 +4802,46 @@ private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
 }
 
 private enum MacAccountProbeError: Error { case failed }
+
+/// Scripts each active-library change after an account choice, holding one open on request.
+private actor AccountLibraryChangeGate {
+    enum Step: Sendable { case fail, cancel, hold }
+
+    private var steps: [Step]
+    private var held: CheckedContinuation<Void, any Error>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var hasHeld = false
+
+    init(steps: [Step]) {
+        self.steps = steps
+    }
+
+    func run() async throws {
+        switch steps.removeFirst() {
+        case .fail:
+            throw MacAccountProbeError.failed
+        case .cancel:
+            throw CancellationError()
+        case .hold:
+            try await withCheckedThrowingContinuation { continuation in
+                held = continuation
+                hasHeld = true
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters.removeAll()
+            }
+        }
+    }
+
+    func waitUntilHeld() async {
+        if hasHeld { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release(throwing error: (any Error)? = nil) {
+        if let error { held?.resume(throwing: error) } else { held?.resume() }
+        held = nil
+    }
+}
 
 private actor AccountLibraryRebindCounter {
     private var count = 0
