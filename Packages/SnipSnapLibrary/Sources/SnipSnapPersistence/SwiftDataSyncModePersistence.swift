@@ -430,6 +430,7 @@ package actor SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.transitionInProgress
       }
       if manifest.activeStoreID == transition.sourceStoreID,
+        fullReenableMergeInFlight != transition.id,
         !hasStoreFile(id: transition.candidateStoreID)
       {
         // Before the swap, the source still holds the library, so a fresh candidate loses
