@@ -193,6 +193,55 @@ final class CloudSyncSessionTests: XCTestCase {
     XCTAssertEqual(events, ["sync", "retry", "retry", "schedule", "sync"])
   }
 
+  /// Sync-mode Try Again treats a transition stage it finds at its start as left over by an
+  /// earlier operation. That holds only while mode operations run one at a time.
+  func testDisableAndCancelSetupWaitForAnEnableInFlight() async throws {
+    let probe = ModeOperationProbe()
+    let session = SnipSnapCloudSyncSession(
+      synchronize: { .noChange },
+      enable: {
+        await probe.run("enable", pausing: true)
+        return .enabled
+      },
+      cancelEnable: { await probe.run("cancel setup") },
+      disable: { _ in await probe.run("disable") },
+      delete: { .completed },
+      activeLibrary: { throw SyncModePersistenceError.missingStore }
+    )
+    let enable = Task { try await session.enableICloudSync() }
+    await probe.waitUntilPaused()
+
+    let disableWaits = expectation(description: "Disable waits for the enable in flight")
+    disableWaits.isInverted = true
+    let cancelWaits = expectation(description: "Cancel setup waits for the enable in flight")
+    cancelWaits.isInverted = true
+    let disable = Task {
+      defer { disableWaits.fulfill() }
+      try await session.disableICloudSync(.useCurrentCache)
+    }
+    let cancelSetup = Task {
+      defer { cancelWaits.fulfill() }
+      try await session.cancelICloudSyncSetup()
+    }
+    await fulfillment(of: [disableWaits, cancelWaits], timeout: 0.05)
+    let whileEnabling = await probe.events()
+    XCTAssertEqual(whileEnabling, ["enable started"])
+
+    await probe.resume()
+    let enabled = try await enable.value
+    try await disable.value
+    try await cancelSetup.value
+    XCTAssertEqual(enabled, .enabled)
+    let events = await probe.events()
+    XCTAssertEqual(Array(events.prefix(2)), ["enable started", "enable finished"])
+    XCTAssertEqual(
+      Set(events.dropFirst(2)),
+      ["disable started", "disable finished", "cancel setup started", "cancel setup finished"]
+    )
+    let overlaps = await probe.overlaps()
+    XCTAssertEqual(overlaps, [])
+  }
+
   /// Waits for callers to join the queue rather than for a fixed time.
   private func waitForQueuedRequests(
     _ count: Int,
@@ -312,4 +361,45 @@ private actor SessionWorkProbe {
   }
 
   func events() -> [String] { recorded }
+}
+
+/// Records when each mode action starts and finishes, and any action that starts while
+/// another runs.
+private actor ModeOperationProbe {
+  private var running: [String] = []
+  private var recorded: [String] = []
+  private var concurrent: [String] = []
+  private var paused = false
+  private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+  private var release: CheckedContinuation<Void, Never>?
+
+  func run(_ name: String, pausing: Bool = false) async {
+    if !running.isEmpty {
+      concurrent.append("\(name) during \(running.joined(separator: ", "))")
+    }
+    running.append(name)
+    recorded.append("\(name) started")
+    if pausing {
+      paused = true
+      pauseWaiters.forEach { $0.resume() }
+      pauseWaiters = []
+      await withCheckedContinuation { release = $0 }
+    }
+    running.removeAll { $0 == name }
+    recorded.append("\(name) finished")
+  }
+
+  func waitUntilPaused() async {
+    if paused { return }
+    await withCheckedContinuation { pauseWaiters.append($0) }
+  }
+
+  func resume() {
+    release?.resume()
+    release = nil
+  }
+
+  func events() -> [String] { recorded }
+
+  func overlaps() -> [String] { concurrent }
 }
