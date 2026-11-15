@@ -83,27 +83,41 @@ struct CloudAttachmentRemoteChanges {
   var adoptions: [UUID: CloudAttachmentAdoption] = [:]
   /// Snips that lost an attachment to another device's delete.
   var removedSnipIDs: Set<UUID> = []
+  /// Snips whose every unacknowledged row came back as this device's own save.
+  var ownSaveSnipIDs: Set<UUID> = []
+
+  /// The base for an adopted row's place in its snip's order. An own save counts only when the
+  /// snip's whole unacknowledged edit came back: a record that matches one row by chance must
+  /// not mix two devices' orders into one base (SM33 D7).
+  func orderBase(
+    of adoption: CloudAttachmentAdoption,
+    onSnip snipID: UUID
+  ) -> CloudAttachmentMetadataValue? {
+    ownSaveSnipIDs.contains(snipID) ? adoption.fieldBase : adoption.base
+  }
 }
 
 /// A fetched record applied to a locally present publication in one commit.
 struct CloudAttachmentAdoption {
   /// What iCloud acknowledged before the commit, or nil when this device can't read it.
   let base: CloudAttachmentMetadataValue?
+  /// The row's unacknowledged edit when the record equals it. iCloud then holds this device's
+  /// own save, whose result never arrived (SM33 D7).
+  let ownSave: CloudAttachmentMetadataValue?
   let record: CloudAttachmentMetadataValue
+
+  /// The base for the row's fields.
+  var fieldBase: CloudAttachmentMetadataValue? { ownSave ?? base }
 }
 
 extension StoredCloudAttachmentPublication {
-  /// The values iCloud last acknowledged, or nil for metadata it never accepted. A published row
-  /// equals its shadow, so its own values stand in when the shadow can't be read.
+  /// The values iCloud last acknowledged, or nil when this device can't read them. The library
+  /// mirrors an accepted row, so its own values are the base. Only a pending row reads its shadow.
   func acknowledgedMetadata(
     _ acknowledgedValues: CloudAttachmentAcknowledgedValues
   ) -> CloudAttachmentMetadataValue? {
     let lifecycle = self.lifecycle
-    if let shadowData = lifecycle.metadataShadowData,
-      let acknowledged = try? acknowledgedValues.metadata(fromShadow: shadowData)
-    {
-      return acknowledged
-    }
-    return lifecycle.isMetadataAccepted ? metadata : nil
+    if lifecycle.isMetadataAccepted { return metadata }
+    return lifecycle.metadataShadowData.flatMap { try? acknowledgedValues.metadata(fromShadow: $0) }
   }
 }

@@ -55,7 +55,7 @@ extension SwiftDataSnipLibrary {
         snipID: publication.snipID,
         attachmentID: publication.attachmentID
       )
-      if let adoption = adoptions[publication.attachmentID], let base = adoption.base,
+      if let adoption = adoptions[publication.attachmentID], let base = adoption.fieldBase,
         let stored = attachments[publication.attachmentID],
         references[referenceID] != nil
       {
@@ -118,7 +118,7 @@ extension SwiftDataSnipLibrary {
       for member in members {
         guard let row = presentRows[member.attachmentID], row.snipID == snipID else { continue }
         if let adoption = adoptions[row.attachmentID] {
-          basePositions[row.attachmentID] = adoption.base?.position
+          basePositions[row.attachmentID] = changes.orderBase(of: adoption, onSnip: snipID)?.position
           remotePositions[row.attachmentID] = adoption.record.position
         } else if let acknowledged = row.acknowledgedMetadata(acknowledgedValues) {
           basePositions[row.attachmentID] = acknowledged.position
@@ -131,7 +131,7 @@ extension SwiftDataSnipLibrary {
         base: basePositions,
         remote: remotePositions
       )
-      // Stored positions are local order; the shadows hold the cloud coordinates.
+      // Stored positions are local order; publications and shadows hold the cloud coordinates.
       for (position, attachmentID) in order.enumerated() {
         let referenceID = StoredSnipAttachmentReference.identifier(
           snipID: snipID, attachmentID: attachmentID

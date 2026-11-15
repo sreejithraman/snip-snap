@@ -68,11 +68,15 @@ extension SwiftDataSnipLibrary {
       context: context
     )
     var cacheByAttachment = Dictionary(grouping: cacheRows, by: \.attachmentID)
+    let awaitingRows = publications.filter { $0.lifecycle.isPresentAwaitingMetadata }
     var pendingReplacementIDsByLocation = Dictionary(
-      grouping: publications.filter { $0.lifecycle.isPresentAwaitingMetadata },
+      grouping: awaitingRows,
       by: { "\($0.snipID.uuidString)|\($0.position)" }
     ).mapValues { rows in
       rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
+    }
+    let awaitingIDsBySnip = Dictionary(grouping: awaitingRows, by: \.snipID).mapValues {
+      Set($0.map(\.attachmentID))
     }
     func removeCache(for attachmentID: UUID) {
       for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
@@ -119,20 +123,17 @@ extension SwiftDataSnipLibrary {
           }
           if row.lifecycle.isLocallyPresent {
             let base = row.acknowledgedMetadata(acknowledgedValues)
-            // A commit's first adoption of a row keeps the base from before the commit.
-            let commitBase = if let earlier = changes.adoptions[metadata.attachmentID] {
-              earlier.base
+            let ownSave: CloudAttachmentMetadataValue? =
+              row.lifecycle.isPresentAwaitingMetadata && row.metadata == metadata ? metadata : nil
+            // A commit's first adoption of a row keeps the bases from before the commit.
+            let adoption = if let earlier = changes.adoptions[metadata.attachmentID] {
+              CloudAttachmentAdoption(base: earlier.base, ownSave: earlier.ownSave, record: metadata)
             } else {
-              base
+              CloudAttachmentAdoption(base: base, ownSave: ownSave, record: metadata)
             }
-            changes.adoptions[metadata.attachmentID] = CloudAttachmentAdoption(
-              base: commitBase, record: metadata
-            )
-            // A published row already equals its base, so only a pending edit keeps fields.
+            changes.adoptions[metadata.attachmentID] = adoption
             // A record naming another payload is adopted whole: its publisher may delete ours.
-            if row.lifecycle.isPresentAwaitingMetadata,
-              row.payloadIdentity == metadata.payloadIdentity
-            {
+            if row.payloadIdentity == metadata.payloadIdentity {
               let merged = CloudAttachmentMerge.metadata(
                 base: base, local: row.metadata, remote: metadata
               )
@@ -362,6 +363,8 @@ extension SwiftDataSnipLibrary {
         try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
+    let ownSaveIDs = Set(changes.adoptions.filter { $0.value.ownSave != nil }.keys)
+    changes.ownSaveSnipIDs = Set(awaitingIDsBySnip.filter { $0.value.isSubset(of: ownSaveIDs) }.keys)
     return changes
   }
 
