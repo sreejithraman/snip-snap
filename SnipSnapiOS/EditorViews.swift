@@ -604,6 +604,7 @@ struct InlineListEditor: View {
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                     .frame(width: 44, height: 44)
                     .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isImage)
                     .accessibilityLabel(
                         draftPreview.icon.map { "List icon: \(SnipListIconOptions.title(for: $0))" } ?? String(localized: "No icon")
                     )

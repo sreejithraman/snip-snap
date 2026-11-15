@@ -852,7 +852,9 @@ final class PanelTests: StoreBackedTestCase {
         let idle = SnipListIconOptions.displayedCategories(query: "  ", recentIcons: recents)
         XCTAssertEqual(idle.first?.title, "Recent")
         XCTAssertEqual(idle.first?.icons, recents)
-        XCTAssertEqual(idle.flatMap(\.icons).count, 30)
+        // The old default symbols mean "no icon", so the picker leaves them out.
+        XCTAssertEqual(idle.flatMap(\.icons).count, 28)
+        XCTAssertTrue(SnipList.legacyDefaultIcons.isDisjoint(with: SnipListIconOptions.availableIcons))
         XCTAssertEqual(Set(idle.flatMap(\.icons)).count, idle.flatMap(\.icons).count)
 
         let fullCatalogResult = SnipListIconOptions.displayedCategories(query: "stethoscope.circle")
