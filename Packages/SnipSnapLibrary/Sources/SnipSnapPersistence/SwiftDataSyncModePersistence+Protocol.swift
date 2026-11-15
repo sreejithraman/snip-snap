@@ -63,7 +63,7 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  func promoteAcceptedFullRetryBases(
+  private func promoteAcceptedFullRetryBases(
     transition: SyncModeTransition,
     candidate: SwiftDataSnipLibrary
   ) async throws {
