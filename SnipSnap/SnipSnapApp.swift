@@ -312,6 +312,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
             let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
+            var stopIssue: SyncedContentSyncIssue?
             do {
                 let result: SnipSnapCloudSyncResult
                 if retry {
@@ -342,9 +343,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     try await reloadActiveLibrary()
                     break
                 case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-                    try await cliRequestStore.suspendActiveScope()
-                    await model.clipboardHistory.resetCloudAccount()
-                    try await reloadActiveLibrary()
                     let issue: SyncedContentSyncIssue
                     switch result {
                     case .iCloudDataReset:
@@ -354,6 +352,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     default:
                         issue = .iCloudAccountChanged
                     }
+                    stopIssue = issue
+                    try await cliRequestStore.suspendActiveScope()
+                    await model.clipboardHistory.resetCloudAccount()
+                    try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordSyncStopped(issue)
                 case .syncIssue(let issue):
                     cloudServices.syncedContentSettings.recordSyncFailure(issue)
@@ -378,6 +380,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 cloudServices.syncedContentSettings.recordSyncFailure(
                     SnipSnapCloudSyncIssueMapper.issue(for: error)
                 )
+                if let stopIssue { cloudServices.syncedContentSettings.recordSyncStopped(stopIssue) }
             }
         }
         let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
