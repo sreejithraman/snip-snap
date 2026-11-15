@@ -132,6 +132,86 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: staging.path).isEmpty)
     }
 
+    func testProviderLoadDeliversACompletionThatArrivesBeforeItsProgress() async throws {
+        let progress = Progress(totalUnitCount: 1)
+        let value = try await ProviderLoad<Int>.run { finish in
+            finish { 7 }
+            return progress
+        }
+        XCTAssertEqual(value, 7)
+        XCTAssertFalse(progress.isCancelled)
+    }
+
+    func testProviderLoadDeliversOnlyItsFirstCompletion() async throws {
+        var secondRan = false
+        let value = try await ProviderLoad<Int>.run { finish in
+            finish { 1 }
+            finish {
+                secondRan = true
+                return 2
+            }
+            return Progress(totalUnitCount: 1)
+        }
+        XCTAssertEqual(value, 1)
+        XCTAssertFalse(secondRan)
+    }
+
+    func testProviderLoadCancellationInterruptsTheProviderAndSkipsItsLateCompletion() async {
+        let progress = Progress(totalUnitCount: 1)
+        let started = expectation(description: "Provider load started")
+        let task = Task { () -> Bool in
+            var lateFinish: (@Sendable (() throws -> Int) -> Void)?
+            do {
+                _ = try await ProviderLoad<Int>.run { finish in
+                    lateFinish = finish
+                    started.fulfill()
+                    return progress
+                }
+                XCTFail("Cancelled load must not return a value")
+            } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+            var lateRan = false
+            lateFinish?({
+                lateRan = true
+                return 1
+            })
+            return lateRan
+        }
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
+        task.cancel()
+        let lateRan = await task.value
+        XCTAssertFalse(lateRan)
+        XCTAssertTrue(progress.isCancelled)
+    }
+
+    func testProviderLoadCancelledBeforeItBeginsNeverStartsTheProvider() async {
+        let task = Task {
+            try await ProviderLoad<Int>.run { _ in
+                XCTFail("A cancelled load must not start its provider")
+                return Progress()
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled load must not return a value")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+    }
+
+    func testProviderLoadCancelsAProgressThatArrivesAfterCancellation() async {
+        let progress = Progress(totalUnitCount: 1)
+        let task = Task {
+            try await ProviderLoad<Int>.run { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return progress
+            }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled load must not return a value")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        XCTAssertTrue(progress.isCancelled)
+    }
+
     func testMixedComposerPasteWaitsForDelayedTextAndKeepsItsCapturedSelection() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
