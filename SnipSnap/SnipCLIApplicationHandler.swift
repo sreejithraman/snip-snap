@@ -228,7 +228,6 @@ final class SnipCLIApplicationHandler {
                 guard self.model.editingID == nil else { throw SnipCLIRequestError.editingInProgress }
                 try self.cliShowPanel()
                 self.model.showClipboard()
-                self.model.exitSearch()
                 return receipt(self.cliApplicationStatus(), message: "Showing clipboard history.")
             }
         case .closeSearch:
@@ -249,7 +248,6 @@ final class SnipCLIApplicationHandler {
                 }
                 let list = try self.model.cliList(selector, in: snapshot.lists)
                 try self.cliShowPanel()
-                self.model.exitSearch()
                 self.model.selectList(list)
                 return receipt(self.cliApplicationStatus(), message: "Selected list.")
             }

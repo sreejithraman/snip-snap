@@ -31,6 +31,7 @@ struct SnipListView: View {
     let clipboardFilePreviewRevision: Int
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
+    let onInlineEditEnd: () -> Void
 
     @State private var contextMenuSelection: Set<UUID>?
     @State private var hasScrolledFromTop = false
@@ -588,16 +589,12 @@ struct SnipListView: View {
             onCaptureScreenArea: captureScreenAreaForEdit,
             onCancelEdit: {
                 model.cancelEditing()
-                focusedTarget = .list
+                onInlineEditEnd()
             },
             onSaveEdit: { text in
                 guard let session,
                       await model.saveInlineEdit(content: text, in: session) else { return false }
-                focusedTarget = model.isSearchExpanded
-                    && model.filteredSnips.isEmpty
-                    && model.clipboardSearchMatches.isEmpty
-                    ? .search
-                    : .list
+                onInlineEditEnd()
                 return true
             },
             onEditError: { model.presentError($0, operation: "composer.paste_stage") }
