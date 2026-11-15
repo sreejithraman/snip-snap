@@ -27,6 +27,18 @@ enum LibrarySidebarExpandedWidth: Equatable, RawRepresentable {
     }
 }
 
+/// How a device's list column starts and how wide it may grow when flat. iPad starts with names
+/// shown in a wider column; phone panels, such as the open iPhone Duo, start on the thin rail.
+struct LibrarySidebarDefaults: Equatable {
+    let showsNames: Bool
+    let expandedWidth: LibrarySidebarExpandedWidth
+    let flatMaximumWidth: CGFloat
+
+    static let phone = Self(showsNames: false, expandedWidth: .default, flatMaximumWidth: 320)
+    /// 360 pt fits an 11" iPad in landscape and both 13" orientations; 40% of an 11" iPad in portrait is 333.
+    static let pad = Self(showsNames: true, expandedWidth: .points(300), flatMaximumWidth: 360)
+}
+
 /// The list column's sizing rules inside the view that holds it and its detail. The column is a
 /// thin rail, or a sidebar that shows names between a minimum width and a maximum the container sets.
 struct LibrarySidebarSizing: Equatable {
@@ -34,7 +46,6 @@ struct LibrarySidebarSizing: Equatable {
     static let minimumExpandedWidth: CGFloat = 200
     /// A release predicted below this width snaps to the rail; above it, the column shows names.
     static let railSnapThreshold: CGFloat = 140
-    static let flatMaximumWidth: CGFloat = 320
     static let flatMaximumFraction: CGFloat = 0.4
     static let hingeDetentDistance: CGFloat = 32
     /// A drag that travels no farther than this is a touch, not a resize.
@@ -43,7 +54,9 @@ struct LibrarySidebarSizing: Equatable {
     static let rubberBandReach: CGFloat = 30
 
     /// An unmeasured container leaves the flat maximum at its fixed cap.
-    static let unmeasured = LibrarySidebarSizing(containerWidth: .infinity, hingeEdge: nil)
+    static func unmeasured(_ defaults: LibrarySidebarDefaults = .phone) -> Self {
+        Self(containerWidth: .infinity, hingeEdge: nil, flatMaximumWidth: defaults.flatMaximumWidth)
+    }
 
     /// What the column shows: the rail, or names at an expanded width.
     enum Outcome: Equatable {
@@ -54,24 +67,30 @@ struct LibrarySidebarSizing: Equatable {
     let containerWidth: CGFloat
     /// The leading edge of a vertical hinge inside the container, as in a book pose.
     let hingeEdge: CGFloat?
+    /// The widest the column grows without a hinge, before the container's share limits it.
+    let flatMaximumWidth: CGFloat
 
     /// Reads the hinge from a container's division regions. Only a vertical band strictly inside
     /// the container counts. The Duo reports a division's margins inside its frame (20 + 20 pt on a
     /// 40-pt frame), so the frame alone bounds the fold.
-    init(containerWidth: CGFloat, divisions: [CGRect]) {
+    init(containerWidth: CGFloat, divisions: [CGRect], flatMaximumWidth: CGFloat = LibrarySidebarDefaults.phone.flatMaximumWidth) {
         let hinge = divisions.first { division in
             division.height > division.width && division.minX > 0 && division.maxX < containerWidth
         }
-        self.init(containerWidth: containerWidth, hingeEdge: hinge?.minX)
+        self.init(containerWidth: containerWidth, hingeEdge: hinge?.minX, flatMaximumWidth: flatMaximumWidth)
     }
 
-    init(containerWidth: CGFloat, hingeEdge: CGFloat?) {
+    init(
+        containerWidth: CGFloat, hingeEdge: CGFloat?,
+        flatMaximumWidth: CGFloat = LibrarySidebarDefaults.phone.flatMaximumWidth
+    ) {
         self.containerWidth = containerWidth
         self.hingeEdge = hingeEdge
+        self.flatMaximumWidth = flatMaximumWidth
     }
 
     var maximumExpandedWidth: CGFloat {
-        let maximum = hingeEdge ?? min(Self.flatMaximumWidth, containerWidth * Self.flatMaximumFraction)
+        let maximum = hingeEdge ?? min(flatMaximumWidth, containerWidth * Self.flatMaximumFraction)
         return max(Self.minimumExpandedWidth, maximum)
     }
 

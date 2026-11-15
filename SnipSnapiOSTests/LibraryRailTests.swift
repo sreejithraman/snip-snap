@@ -119,6 +119,25 @@ final class LibrarySidebarSizingTests: XCTestCase {
         XCTAssertNil(LibrarySidebarSizing(containerWidth: 800, divisions: []).hingeEdge)
     }
 
+    func testIPadStartsWithNamesInAWiderColumnThanThePhone() {
+        XCTAssertFalse(LibrarySidebarDefaults.phone.showsNames)
+        XCTAssertTrue(LibrarySidebarDefaults.pad.showsNames)
+        func maximum(_ defaults: LibrarySidebarDefaults, width: CGFloat) -> CGFloat {
+            LibrarySidebarSizing(containerWidth: width, hingeEdge: nil, flatMaximumWidth: defaults.flatMaximumWidth)
+                .maximumExpandedWidth
+        }
+        // 11" iPad portrait and landscape, then 13" portrait and landscape.
+        XCTAssertEqual(maximum(.pad, width: 834), 333.6, accuracy: 0.01)
+        XCTAssertEqual(maximum(.pad, width: 1210), 360)
+        XCTAssertEqual(maximum(.pad, width: 1032), 360)
+        XCTAssertEqual(maximum(.pad, width: 1376), 360)
+        // The open Duo keeps its cap.
+        XCTAssertEqual(maximum(.phone, width: 951), 320)
+        let padDefault = LibrarySidebarSizing(containerWidth: 1210, hingeEdge: nil, flatMaximumWidth: 360)
+            .width(isExpanded: true, expandedWidth: LibrarySidebarDefaults.pad.expandedWidth)
+        XCTAssertEqual(padDefault, 300)
+    }
+
     func testExpandedWidthRoundTripsAndRejectsJunk() {
         for width in [LibrarySidebarExpandedWidth.hinge, .points(256)] {
             XCTAssertEqual(LibrarySidebarExpandedWidth(rawValue: width.rawValue), width)

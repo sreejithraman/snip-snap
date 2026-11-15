@@ -29,14 +29,14 @@ struct IOSAppRootView: View {
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
-    private let regularLayout: RegularLibraryLayout
+    private let sidebarDefaults: LibrarySidebarDefaults
     init(
         session: IOSAppSession,
         uiTestAttachmentURLs: [URL] = [],
         seedsCopyShareFixtures: Bool = false,
         shareProcessToken: String? = nil,
         composerStorage: CompactComposerStorage = CompactComposerStorage(),
-        regularLayout: RegularLibraryLayout = .current
+        sidebarDefaults: LibrarySidebarDefaults = .current
     ) {
 #if DEBUG
         if let store = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_STORE"] {
@@ -48,7 +48,7 @@ struct IOSAppRootView: View {
         self.uiTestAttachmentURLs = uiTestAttachmentURLs
         self.seedsCopyShareFixtures = seedsCopyShareFixtures
         self.shareProcessToken = shareProcessToken
-        self.regularLayout = regularLayout
+        self.sidebarDefaults = sidebarDefaults
     }
 
     private var listPageMotion: ListPageMotion {
@@ -142,21 +142,6 @@ struct IOSAppRootView: View {
                     .opacity(0.01)
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("haptic-event")
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            // The rail's New List button anchors the badge instead.
-            if horizontalSizeClass == .regular, regularLayout == .sidebar,
-               let bundleID = Bundle.main.bundleIdentifier,
-               let suffix = bundleID.components(separatedBy: ".dev").last,
-               bundleID.contains(".dev"), let slot = Int(suffix) {
-                Text(verbatim: "DEV \(slot)")
-                    .font(.caption2.bold())
-                    .padding(4)
-                    .background(.yellow, in: Capsule())
-                    .foregroundStyle(.black)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -497,36 +482,19 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         } else {
-            switch regularLayout {
-            case .sidebar:
-                NavigationSplitView {
-                    ListSidebarView(
-                        model: model,
-                        sheet: $sheet,
-                        editMode: collectionEditModeBinding,
-                        syncedContentSettings: session.syncedContentSettings,
-                        syncNow: { await session.retrySyncWhenPossible() },
-                        deleteList: deleteList
-                    )
-                } detail: {
-                    regularDetail(libraryActions: nil)
-                }
-                .librarySearchable(model: model)
-            case .rail:
-                HStack(spacing: 0) {
-                    LibraryRailView(model: model, sheet: $sheet, deleteList: deleteList)
-                        .ignoresSafeArea(.keyboard)
-                        // Its resize handle straddles the card's leading edge.
-                        .zIndex(1)
-                    regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
-                        .librarySearchable(model: model)
-                        .sideButtonsWhereVerticalBar()
-                        .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
-                        .mask { railCardShape.ignoresSafeArea() }
-                }
-                .librarySidebarContainer()
-                .background(Color(.secondarySystemBackground).ignoresSafeArea())
+            HStack(spacing: 0) {
+                LibraryRailView(model: model, sheet: $sheet, defaults: sidebarDefaults, deleteList: deleteList)
+                    .ignoresSafeArea(.keyboard)
+                    // Its resize handle straddles the card's leading edge.
+                    .zIndex(1)
+                regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
+                    .librarySearchable(model: model)
+                    .sideButtonsWhereVerticalBar()
+                    .background { railCardShape.fill(Color(.systemBackground)).ignoresSafeArea() }
+                    .mask { railCardShape.ignoresSafeArea() }
             }
+            .librarySidebarContainer(sidebarDefaults)
+            .background(Color(.secondarySystemBackground).ignoresSafeArea())
         }
     }
 
@@ -535,7 +503,7 @@ struct IOSAppRootView: View {
         UnevenRoundedRectangle(topLeadingRadius: 26, bottomLeadingRadius: 26, style: .continuous)
     }
 
-    private func regularDetail(libraryActions: LibraryActionsMenu?) -> some View {
+    private func regularDetail(libraryActions: LibraryActionsMenu) -> some View {
         NavigationStack {
             ZStack {
                 if model.selectedPage == .clipboard {

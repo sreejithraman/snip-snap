@@ -2,14 +2,8 @@ import SnipSnapCore
 import SwiftUI
 import UIKit
 
-/// How the regular-width library shows its lists.
-enum RegularLibraryLayout: String {
-    case sidebar
-    case rail
-
-    /// Phone panels, such as the open iPhone Duo or a large iPhone in landscape, get the rail.
-    @MainActor static let current: RegularLibraryLayout = TryOverride.value("SNIP_SNAP_REGULAR_LAYOUT")
-        ?? (UIDevice.current.userInterfaceIdiom == .phone ? .rail : .sidebar)
+extension LibrarySidebarDefaults {
+    @MainActor static var current: Self { UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone }
 }
 
 /// Launch-time switches for trying design candidates on a device. Release builds ignore them.
@@ -167,28 +161,39 @@ enum RailListMark: Equatable {
 
 extension EnvironmentValues {
     /// Sizing for a library sidebar, set by the container that holds it and its detail.
-    @Entry var librarySidebarSizing = LibrarySidebarSizing.unmeasured
+    @Entry var librarySidebarSizing = LibrarySidebarSizing.unmeasured()
 }
 
 extension View {
     /// Measures this view as the container of a library sidebar and its detail, so the sidebar
     /// can size itself to the container's width and to a vertical hinge that divides it.
-    func librarySidebarContainer() -> some View { modifier(LibrarySidebarContainer()) }
+    func librarySidebarContainer(_ defaults: LibrarySidebarDefaults) -> some View {
+        modifier(LibrarySidebarContainer(defaults: defaults))
+    }
 }
 
 private struct LibrarySidebarContainer: ViewModifier {
-    @State private var sizing = LibrarySidebarSizing.unmeasured
+    let defaults: LibrarySidebarDefaults
+    @State private var sizing: LibrarySidebarSizing
+
+    init(defaults: LibrarySidebarDefaults) {
+        self.defaults = defaults
+        _sizing = State(initialValue: .unmeasured(defaults))
+    }
 
     func body(content: Content) -> some View {
         content
             .environment(\.librarySidebarSizing, sizing)
             .onGeometryChange(for: LibrarySidebarSizing.self) { proxy in
                 guard #available(iOS 27.1, *) else {
-                    return LibrarySidebarSizing(containerWidth: proxy.size.width, hingeEdge: nil)
+                    return LibrarySidebarSizing(
+                        containerWidth: proxy.size.width, hingeEdge: nil, flatMaximumWidth: defaults.flatMaximumWidth
+                    )
                 }
                 return LibrarySidebarSizing(
                     containerWidth: proxy.size.width,
-                    divisions: proxy.reservedRegions(kind: .division).map(\.frame)
+                    divisions: proxy.reservedRegions(kind: .division).map(\.frame),
+                    flatMaximumWidth: defaults.flatMaximumWidth
                 )
             } action: { sizing = $0 }
     }
@@ -196,6 +201,7 @@ private struct LibrarySidebarContainer: ViewModifier {
 
 /// The library's list column beside the page card. It is a thin rail of marks, or a wider sidebar
 /// that also shows names. Dragging its trailing edge resizes it; the toggle at its top switches looks.
+/// With a hardware keyboard, Tab focuses the column and the arrow keys move between its pages.
 struct LibraryRailView: View {
     /// Rows keep this inset on both sides, so a mark stays put as the column widens.
     private static let inset: CGFloat = 12
@@ -209,14 +215,20 @@ struct LibraryRailView: View {
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
     @State private var stripDrag: StripDrag?
     @GestureState private var isDraggingStrip = false
+    @FocusState private var isFocused: Bool
     private let newListStyle = NewListButtonStyle.current
 
-    init(model: IOSAppModel, sheet: Binding<AppSheet?>, deleteList: @escaping (UUID) async -> Void) {
+    init(
+        model: IOSAppModel, sheet: Binding<AppSheet?>, defaults: LibrarySidebarDefaults,
+        deleteList: @escaping (UUID) async -> Void
+    ) {
         self.model = model
         _sheet = sheet
         self.deleteList = deleteList
-        _isExpanded = AppStorage(wrappedValue: false, Self.storageKey("library-sidebar-expanded"))
-        _expandedWidth = AppStorage(wrappedValue: .default, Self.storageKey("library-sidebar-expanded-width"))
+        _isExpanded = AppStorage(wrappedValue: defaults.showsNames, Self.storageKey("library-sidebar-expanded"))
+        _expandedWidth = AppStorage(
+            wrappedValue: defaults.expandedWidth, Self.storageKey("library-sidebar-expanded-width")
+        )
     }
 
     /// UI-test runs each keep their own store, so one run's width choice can't leak into another.
@@ -251,6 +263,7 @@ struct LibraryRailView: View {
                 RailButton(
                     title: String(localized: "Clipboard"),
                     isSelected: model.selectedPage == .clipboard,
+                    showsFocus: isFocused,
                     nameOpacity: nameOpacity,
                     action: { model.selectPage(.clipboard) }
                 ) {
@@ -270,6 +283,7 @@ struct LibraryRailView: View {
                     RailButton(
                         title: list.displayName,
                         isSelected: model.selectedPage == .list(list.id),
+                        showsFocus: isFocused,
                         nameOpacity: nameOpacity,
                         action: { model.selectPage(.list(list.id)) }
                     ) {
@@ -292,6 +306,14 @@ struct LibraryRailView: View {
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
+        .accessibilityIdentifier("library-rail")
+        .focusable()
+        .focused($isFocused)
+        // The selected row shows focus instead of a ring around the whole column.
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            selectAdjacentPage(by: press.key == .upArrow ? -1 : 1)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             widthToggle
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -322,6 +344,16 @@ struct LibraryRailView: View {
         }
     }
 
+    /// Moves like a sidebar list: the selection follows the arrow and stops at either end.
+    private func selectAdjacentPage(by offset: Int) -> KeyPress.Result {
+        let pages = model.pages
+        guard let index = pages.firstIndex(of: model.selectedPage) else { return .ignored }
+        let target = index + offset
+        guard pages.indices.contains(target) else { return .handled }
+        model.selectPage(pages[target])
+        return .handled
+    }
+
     private var widthToggleTitle: Text {
         isExpanded ? Text("Hide List Names") : Text("Show List Names")
     }
@@ -337,6 +369,8 @@ struct LibraryRailView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .help(widthToggleTitle)
         .keyboardShortcut("s", modifiers: [.command, .control])
         .accessibilityLabel(widthToggleTitle)
         .accessibilityIdentifier("sidebar-width-toggle")
@@ -429,6 +463,7 @@ struct LibraryRailView: View {
         RailButton(
             title: String(localized: "Needs attention"),
             isSelected: false,
+            showsFocus: false,
             nameOpacity: nameOpacity,
             count: model.recoverySnapshot.needsAttentionCount,
             action: { sheet = .recoveryCenter }
@@ -452,6 +487,7 @@ struct LibraryRailView: View {
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
+                .help("New List")
                 .accessibilityLabel("New List")
                 .accessibilityShowsLargeContentViewer {
                     Label("New List", systemImage: newListStyle.systemImage)
@@ -460,6 +496,7 @@ struct LibraryRailView: View {
                 RailButton(
                     title: String(localized: "New List"),
                     isSelected: false,
+                    showsFocus: false,
                     nameOpacity: nameOpacity,
                     action: { Task { await model.openNewList() } }
                 ) {
@@ -480,6 +517,8 @@ private struct RailButton<Mark: View>: View {
     private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     let title: String
     let isSelected: Bool
+    /// Marks the selected row while the column has keyboard focus.
+    let showsFocus: Bool
     let nameOpacity: Double
     var count: Int?
     let action: () -> Void
@@ -521,9 +560,14 @@ private struct RailButton<Mark: View>: View {
                 // The card's color ties the selected list to the page beside it.
                 if isSelected { Self.shape.fill(Color(.systemBackground)) }
             }
-            .contentShape([.interaction, .contextMenuPreview], Self.shape)
+            .overlay {
+                if isSelected, showsFocus { Self.shape.strokeBorder(.tint, lineWidth: 3) }
+            }
+            .contentShape([.interaction, .contextMenuPreview, .hoverEffect], Self.shape)
         }
         .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .help(title)
         .accessibilityLabel(title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityShowsLargeContentViewer {
