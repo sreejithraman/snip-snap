@@ -1,12 +1,12 @@
 import Observation
 import ImageIO
 import SnipSnapCore
-import SnipSnapCloud
 import SnipSnapPersistence
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import XCTest
+@testable import SnipSnapCloud
 @testable import SnipSnapiOS
 
 @MainActor
@@ -39,6 +39,43 @@ private final class IOSClipboardGenerationGate {
     func releaseWithEmptyGeneration(_ request: Int) {
         held.removeValue(forKey: request)?.resume(returning: "")
     }
+}
+
+/// Holds the first upload until the test resumes it; a cancelled run then uploads nothing.
+private actor IOSClipboardHeldUploadCloud: ClipboardCloudTransport {
+    private var snapshot = ClipboardCloudSnapshot()
+    private var holdsNextSave = true
+    private var heldSave: CheckedContinuation<Void, Never>?
+
+    var uploadedEntryIDs: Set<UUID> { Set(snapshot.entries.keys) }
+
+    /// Waits for the upload to be held. On timeout it stops holding, so no later upload hangs.
+    func uploadHeld(within timeout: Duration = .seconds(5)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while heldSave == nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if heldSave == nil { holdsNextSave = false }
+        return heldSave != nil
+    }
+
+    func resumeUpload() {
+        heldSave?.resume()
+        heldSave = nil
+    }
+
+    func fetch() -> ClipboardCloudSnapshot { snapshot }
+
+    func save(_ incoming: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws {
+        if holdsNextSave {
+            holdsNextSave = false
+            await withCheckedContinuation { heldSave = $0 }
+        }
+        try cancellation.check()
+        snapshot = incoming
+    }
+
+    func deleteAll() { snapshot = ClipboardCloudSnapshot() }
 }
 
 @MainActor
@@ -111,6 +148,57 @@ final class IOSClipboardModelTests: IOSModelTestCase {
 
         finishDisable.finish()
         await disabling.value
+    }
+
+    func testTurningICloudSyncOffFromTheStaleCopyAlertStopsTheUploadInFlight() async throws {
+        let (disableFinished, finishDisable) = AsyncStream<Void>.makeStream()
+        let settings = SyncedContentSettingsModel(
+            mode: .iCloudSync,
+            initialState: .failed(.iCloudUnavailable),
+            disableAction: { _ in for await _ in disableFinished {} }
+        )
+        let (model, service, cloud) = try await makeUploadingClipboardModel(settings: settings)
+        let sync = Task { await model.synchronize() }
+        let uploadHeld = await cloud.uploadHeld()
+        XCTAssertTrue(uploadHeld, "The upload never started")
+
+        // The alert's Turn off sync button.
+        let disabling = Task.immediate { await settings.disableICloudSync(.useCurrentCache) }
+        try await waitUntil { !service.isSyncing }
+        await cloud.resumeUpload()
+        await sync.value
+
+        let uploaded = await cloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertNil(model.syncErrorMessage)
+        finishDisable.finish()
+        await disabling.value
+    }
+
+    func testDeletingSyncedContentStopsTheUploadInFlight() async throws {
+        let (deleteFinished, finishDelete) = AsyncStream<Void>.makeStream()
+        let settings = SyncedContentSettingsModel(
+            mode: .iCloudSync,
+            deleteAction: {
+                for await _ in deleteFinished {}
+                return .completed
+            }
+        )
+        let (model, service, cloud) = try await makeUploadingClipboardModel(settings: settings)
+        let sync = Task { await model.synchronize() }
+        let uploadHeld = await cloud.uploadHeld()
+        XCTAssertTrue(uploadHeld, "The upload never started")
+
+        let deleting = Task.immediate { await settings.deleteSyncedContent() }
+        try await waitUntil { !service.isSyncing }
+        await cloud.resumeUpload()
+        await sync.value
+
+        let uploaded = await cloud.uploadedEntryIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertNil(model.syncErrorMessage)
+        finishDelete.finish()
+        await deleting.value
     }
 
     func testOverlappingClipboardSyncsStartOneRun() async throws {
@@ -196,7 +284,7 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertFalse(reordered)
         let changed = await model.toggleDone(id: pinned.id)
         XCTAssertFalse(changed)
-        model.selectedSnipIDs = [ordinary.id, pinned.id]
+        model.selectSnips([ordinary.id, pinned.id])
         _ = await model.setSelectionDone(true)
         XCTAssertFalse(model.snips.first { $0.id == pinned.id }!.isDone)
         XCTAssertTrue(model.snips.first { $0.id == ordinary.id }!.isDone)
@@ -371,6 +459,36 @@ final class IOSClipboardModelTests: IOSModelTestCase {
             preferences: preferences,
             generation: { try await gate.generation() }
         )
+    }
+
+    /// A model with clipboard sync on and one entry to upload to `cloud`.
+    private func makeUploadingClipboardModel(
+        settings: SyncedContentSettingsModel
+    ) async throws -> (IOSClipboardModel, ClipboardCloudSyncService, IOSClipboardHeldUploadCloud) {
+        let cloud = IOSClipboardHeldUploadCloud()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        var made: (store: ClipboardHistoryStore, service: ClipboardCloudSyncService)?
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: settings,
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: preferences,
+            generation: { "account-generation-A" },
+            makeCloudService: { store, _, syncRootURL in
+                let service = ClipboardCloudSyncService(store: store, syncRootURL: syncRootURL,
+                                                        makeTransport: { _ in cloud })
+                made = (store, service)
+                return service
+            }
+        )
+        let (store, service) = try XCTUnwrap(made)
+        try await store.insert(ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("stays local".utf8))
+        ])]))
+        return (model, service, cloud)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {

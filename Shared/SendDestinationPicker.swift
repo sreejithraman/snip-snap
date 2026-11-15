@@ -27,7 +27,10 @@ enum ListDestinationPurpose {
 }
 
 struct ListDestinationLabel: View {
+    @Environment(\.self) private var environment
     let list: SnipList
+    /// System menus draw only images, so their letters are rendered at a fixed size.
+    var isSystemMenuItem = false
 
     var body: some View {
         Label {
@@ -35,9 +38,13 @@ struct ListDestinationLabel: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
-            Image(systemName: list.displaySystemImage)
-                .foregroundStyle(list.accent.color)
-                .frame(width: 24)
+            if isSystemMenuItem {
+                list.menuMarkImage(in: environment)
+                    .foregroundStyle(list.accent.color)
+                    .frame(width: 24)
+            } else {
+                SnipListMarkView(list: list, diameter: 20)
+            }
         }
         .labelStyle(.titleAndIcon)
     }

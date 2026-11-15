@@ -3421,7 +3421,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         tabs.buttons["Color"].tap()
         XCTAssertEqual(field.value as? String, editedName)
         XCTAssertTrue(app.buttons["list-color-blue"].isSelected)
-        XCTAssertTrue(app.images["list-icon-preview"].label.contains("List Bullet"))
+        XCTAssertEqual(app.images["list-icon-preview"].label, "No icon")
         app.buttons["save-list"].tap()
         XCTAssertTrue(app.navigationBars["Reading Notes"].waitForExistence(timeout: 3))
     }

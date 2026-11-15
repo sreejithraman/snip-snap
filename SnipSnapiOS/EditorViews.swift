@@ -8,19 +8,42 @@ import UniformTypeIdentifiers
 
 @Observable @MainActor
 final class SnipEditorDraft {
+    /// Where a picked file goes.
+    private enum AttachmentTarget: Equatable {
+        case append
+        case replace(UUID)
+    }
+
+    /// Saving and staging both read the staging directory, so one runs at a time.
+    private enum Work {
+        case idle
+        case staging(session: UUID, task: Task<Void, Never>)
+        case saving(session: UUID)
+    }
+
+    /// A discarded draft keeps its staging directory until running work stops reading it.
+    private enum Phase {
+        case editing(Work)
+        case discarded(finishing: Work)
+    }
+
+    /// Pickers and previews are modal, so one occupies the editor at a time.
+    private enum Presentation: Equatable {
+        case none
+        case picker(AttachmentSource)
+        case preparingPreview(session: UUID)
+        case preview(URL)
+    }
+
     let original: Snip
     var content: String
-    var attachments: [AttachmentDraft]
-    var previewURL: URL?
-    var isImporting = false
-    var isPickingPhotos = false
+    private(set) var attachments: [AttachmentDraft]
+    /// The Photos picker's selection, which the editor stages and clears.
     var selectedPhotos: [PhotosPickerItem] = []
-    var isTakingPhoto = false
-    var replacementID: UUID?
-    private var stagingTask: Task<Void, Never>?
-    private(set) var isSaving = false
-    private(set) var isPreparingPreview = false
-    private var isDiscarded = false
+    private var phase = Phase.editing(.idle)
+    private var presentation = Presentation.none
+    /// A picker's result can arrive after it closes.
+    private var pendingPick: AttachmentTarget? = nil
     private let stagingDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("SnipSnapAttachmentDrafts", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -40,116 +63,210 @@ final class SnipEditorDraft {
         }
     }
 
-    var isStaging: Bool { stagingTask != nil }
+    private var work: Work {
+        switch phase {
+        case .editing(let work), .discarded(finishing: let work): work
+        }
+    }
+
+    var isSaving: Bool {
+        if case .saving = work { true } else { false }
+    }
+
+    var isStaging: Bool {
+        if case .staging = work { true } else { false }
+    }
+
+    var previewURL: URL? {
+        if case .preview(let url) = presentation { url } else { nil }
+    }
+
+    var presentedPicker: AttachmentSource? {
+        if case .picker(let source) = presentation { source } else { nil }
+    }
+
+    /// A replacing picker takes one item.
+    var pickerReplacesAttachment: Bool {
+        if case .some(.replace) = pendingPick { true } else { false }
+    }
+
+    private var isPreviewing: Bool {
+        switch presentation {
+        case .preparingPreview, .preview: true
+        case .none, .picker: false
+        }
+    }
+
     var canDismiss: Bool {
-        !isDiscarded && AttachmentDraftLifecycle.allowsSaving(
+        guard case .editing = phase else { return false }
+        return AttachmentDraftLifecycle.allowsSaving(
             isSaving: isSaving,
             isStaging: isStaging,
-            isImporting: isImporting,
-            isPickingMedia: isPickingPhotos || isTakingPhoto,
-            isPreviewing: previewURL != nil || isPreparingPreview
+            isImporting: presentedPicker == .files,
+            isPickingMedia: presentedPicker == .photos || presentedPicker == .camera,
+            isPreviewing: isPreviewing
         )
     }
+
     var canSave: Bool {
-        !isDiscarded && canDismiss
+        canDismiss
             && (!content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
     func save(using model: IOSAppModel) async -> Bool {
         guard canSave else { return false }
-        isSaving = true
+        let session = UUID()
+        phase = .editing(.saving(session: session))
         let succeeded = await model.saveInlineSnipEdit(self)
-        isSaving = false
-        if succeeded || isDiscarded { cleanStagingDirectory() }
+        finishSaving(session, succeeded: succeeded)
         return succeeded
     }
 
-    func stopImport() { stagingTask?.cancel() }
+    func stopImport() {
+        if case .staging(session: _, task: let task) = work { task.cancel() }
+    }
 
     func discard() {
-        isDiscarded = true
-        stagingTask?.cancel()
-        // A save or cancelled importer may still be reading staged files.
-        if !isSaving && !isStaging { cleanStagingDirectory() }
+        guard case .editing(let work) = phase else { return }
+        phase = .discarded(finishing: work)
+        presentation = .none
+        pendingPick = nil
+        switch work {
+        case .idle: cleanStagingDirectory()
+        case .staging(session: _, task: let task): task.cancel()
+        case .saving: break
+        }
+    }
+
+    func presentAttachmentPicker(_ source: AttachmentSource, replacing attachmentID: UUID? = nil) {
+        presentation = .picker(source)
+        pendingPick = attachmentID.map(AttachmentTarget.replace) ?? .append
+    }
+
+    /// The picker closed itself. Its pending pick waits for the result.
+    func dismissAttachmentPicker(_ source: AttachmentSource) {
+        guard presentation == .picker(source) else { return }
+        presentation = .none
+    }
+
+    func finishCameraCapture(_ image: UIImage?, using model: IOSAppModel) {
+        dismissAttachmentPicker(.camera)
+        if let image {
+            stageMedia(.camera(image), using: model)
+        } else {
+            pendingPick = nil
+        }
     }
 
     func previewAttachment(_ attachment: AttachmentDraft, using model: IOSAppModel) {
-        guard !isPreparingPreview else { return }
-        isPreparingPreview = true
+        guard case .editing = phase, presentation == .none else { return }
+        let session = UUID()
+        presentation = .preparingPreview(session: session)
         Task {
-            defer { isPreparingPreview = false }
-            guard let url = await attachment.previewURL(prepareExisting: {
+            let url = await attachment.previewURL(prepareExisting: {
                 await model.prepareAttachmentPreview($0)
-            }),
-                  !isDiscarded,
-                  let index = attachments.firstIndex(where: { $0.id == attachment.id })
-            else { return }
-            let current = attachments[index]
-            guard current == attachment else { return }
-            if case .existing = current.source {
-                previewURL = model.usableAttachmentURL(for: attachment.id) ?? url
-            } else {
-                previewURL = url
-            }
+            })
+            guard presentation == .preparingPreview(session: session) else { return }
+            presentation = preparedPreview(of: attachment, at: url, using: model)
         }
     }
 
-    func presentAttachmentSource(_ source: AttachmentSource) {
-        switch source {
-        case .files: isImporting = true
-        case .photos: isPickingPhotos = true
-        case .camera: isTakingPhoto = true
-        }
+    func pageAttachmentPreview(to url: URL) {
+        guard case .preview = presentation else { return }
+        presentation = .preview(url)
+    }
+
+    func dismissAttachmentPreview() {
+        guard case .preview = presentation else { return }
+        presentation = .none
     }
 
     func stage(_ result: Result<[URL], any Error>, using model: IOSAppModel) {
-        guard case .success(let urls) = result else {
-            if case .failure(let error) = result {
-                let nsError = error as NSError
-                if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
-                    model.presentError(error, operation: "attachment.import_select")
-                }
+        switch result {
+        case .success(let urls):
+            stageMedia(.files(urls), using: model)
+        case .failure(let error):
+            let nsError = error as NSError
+            if nsError.domain != NSCocoaErrorDomain || nsError.code != NSUserCancelledError {
+                model.presentError(error, operation: "attachment.import_select")
             }
-            replacementID = nil
-            return
+            pendingPick = nil
         }
-        stageMedia(.files(urls), using: model)
     }
 
     func stageMedia(_ input: AttachmentMediaInput, using model: IOSAppModel) {
-        guard stagingTask == nil else { return }
-        let targetID = replacementID
-        replacementID = nil
+        guard case .editing(.idle) = phase else { return }
+        let target = pendingPick ?? .append
+        pendingPick = nil
         let selectedInput: AttachmentMediaInput
-        if case .files(let urls) = input, targetID != nil {
+        if case .files(let urls) = input, case .replace = target {
             selectedInput = .files(Array(urls.prefix(1)))
         } else {
             selectedInput = input
         }
-        stagingTask = Task {
+        let session = UUID()
+        // The task runs on the main actor, so it starts only after `phase` is set.
+        let task = Task {
             var staged: [StagedAttachment] = []
-            defer {
-                stagingTask = nil
-                if isDiscarded { cleanStagingDirectory() }
-            }
+            defer { finishStaging(session) }
             do {
                 staged = try await AttachmentMediaStager.stage(selectedInput, in: stagingDirectory)
                 try Task.checkCancellation()
-                guard !isDiscarded else {
+                guard case .editing = phase else {
                     AttachmentDraftStager.clean(staged)
                     return
                 }
-                applyStaged(staged, replacing: targetID)
+                applyStaged(staged, to: target)
             } catch is CancellationError {
                 AttachmentDraftStager.clean(staged)
             } catch {
                 model.presentError(error, operation: "attachment.import_stage")
             }
         }
+        phase = .editing(.staging(session: session, task: task))
     }
 
-    private func applyStaged(_ staged: [StagedAttachment], replacing targetID: UUID?) {
-        if let targetID, let replacement = staged.first {
+    private func finishSaving(_ session: UUID, succeeded: Bool) {
+        switch phase {
+        case .editing(.saving(session: let current)) where current == session:
+            phase = .editing(.idle)
+            if succeeded { cleanStagingDirectory() }
+        case .discarded(finishing: .saving(session: let current)) where current == session:
+            finishDiscardedWork()
+        default:
+            break
+        }
+    }
+
+    private func finishStaging(_ session: UUID) {
+        switch phase {
+        case .editing(.staging(session: let current, task: _)) where current == session:
+            phase = .editing(.idle)
+        case .discarded(finishing: .staging(session: let current, task: _)) where current == session:
+            finishDiscardedWork()
+        default:
+            break
+        }
+    }
+
+    /// Running work no longer reads the discarded draft's staged files.
+    private func finishDiscardedWork() {
+        phase = .discarded(finishing: .idle)
+        cleanStagingDirectory()
+    }
+
+    private func preparedPreview(
+        of attachment: AttachmentDraft, at url: URL?, using model: IOSAppModel
+    ) -> Presentation {
+        guard let url, attachments.first(where: { $0.id == attachment.id }) == attachment else { return .none }
+        if case .existing = attachment.source {
+            return .preview(model.usableAttachmentURL(for: attachment.id) ?? url)
+        }
+        return .preview(url)
+    }
+
+    private func applyStaged(_ staged: [StagedAttachment], to target: AttachmentTarget) {
+        if case .replace(let targetID) = target, let replacement = staged.first {
             replaceAttachment(id: targetID, with: replacement)
         } else {
             attachments.append(contentsOf: staged.map(AttachmentDraft.added))
@@ -229,8 +346,7 @@ struct InlineSnipEditor: View {
                         isDisabled: !draft.canDismiss,
                         preview: { draft.previewAttachment($0, using: model) },
                         replace: { attachment, source in
-                            draft.replacementID = attachment.id
-                            draft.presentAttachmentSource(source)
+                            draft.presentAttachmentPicker(source, replacing: attachment.id)
                         },
                         remove: { draft.removeAttachment(id: $0.id) }
                     )
@@ -292,15 +408,15 @@ struct InlineSnipEditor: View {
             if ownsPresentation { model.haptics.invalidatePendingFeedback() }
         }
         .fileImporter(
-            isPresented: presentationBinding(\.isImporting, inactiveValue: false),
+            isPresented: pickerBinding(.files),
             allowedContentTypes: [.data],
-            allowsMultipleSelection: draft.replacementID == nil,
+            allowsMultipleSelection: !draft.pickerReplacesAttachment,
             onCompletion: { draft.stage($0, using: model) }
         )
         .photosPicker(
-            isPresented: presentationBinding(\.isPickingPhotos, inactiveValue: false),
+            isPresented: pickerBinding(.photos),
             selection: $draft.selectedPhotos,
-            maxSelectionCount: draft.replacementID == nil ? nil : 1,
+            maxSelectionCount: draft.pickerReplacesAttachment ? 1 : nil,
             matching: .images,
             preferredItemEncoding: .current
         )
@@ -309,13 +425,10 @@ struct InlineSnipEditor: View {
             draft.selectedPhotos = []
             draft.stageMedia(.photos(items), using: model)
         }
-        .fullScreenCover(isPresented: presentationBinding(\.isTakingPhoto, inactiveValue: false)) {
-            AttachmentCameraPicker { image in
-                draft.isTakingPhoto = false
-                if let image { draft.stageMedia(.camera(image), using: model) } else { draft.replacementID = nil }
-            }
+        .fullScreenCover(isPresented: pickerBinding(.camera)) {
+            AttachmentCameraPicker { draft.finishCameraCapture($0, using: model) }
         }
-        .attachmentPreview(presentationBinding(\.previewURL, inactiveValue: nil), in: draft.attachments.compactMap { attachment in
+        .attachmentPreview(previewBinding, in: draft.attachments.compactMap { attachment in
             if case .existing = attachment.source {
                 return model.usableAttachmentURL(for: attachment.id)
             }
@@ -333,23 +446,32 @@ struct InlineSnipEditor: View {
         return model.selectedPage == .list(sourceListID)
     }
 
-    private func presentationBinding<Value>(
-        _ keyPath: ReferenceWritableKeyPath<SnipEditorDraft, Value>, inactiveValue: Value
-    ) -> Binding<Value> {
+    private func pickerBinding(_ source: AttachmentSource) -> Binding<Bool> {
         Binding(
-            get: { ownsPresentation ? draft[keyPath: keyPath] : inactiveValue },
-            set: { value in
+            get: { ownsPresentation && draft.presentedPicker == source },
+            set: { isPresented in
+                guard ownsPresentation, !isPresented else { return }
+                draft.dismissAttachmentPicker(source)
+            }
+        )
+    }
+
+    private var previewBinding: Binding<URL?> {
+        Binding(
+            get: { ownsPresentation ? draft.previewURL : nil },
+            set: { url in
                 guard ownsPresentation else { return }
-                draft[keyPath: keyPath] = value
+                if let url {
+                    draft.pageAttachmentPreview(to: url)
+                } else {
+                    draft.dismissAttachmentPreview()
+                }
             }
         )
     }
 
     private var addAttachmentButton: some View {
-        AttachmentSourceMenu(choose: { source in
-            draft.replacementID = nil
-            draft.presentAttachmentSource(source)
-        }) {
+        AttachmentSourceMenu(choose: { draft.presentAttachmentPicker($0) }) {
             EditorSecondaryActionIcon(systemName: "plus")
         }
         .buttonStyle(.plain)
@@ -509,7 +631,7 @@ struct InlineListEditor: View {
                                 }
                             }
                         case .color:
-                            SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                            SnipListColorPicker(selection: $draft.color, automatic: SnipList.automaticColor(for: list.id), showsTitle: false)
                                 .padding(SnipSnapSpacing.paneContentInset)
                         }
                     }
@@ -567,7 +689,7 @@ struct InlineListEditor: View {
                 InlineListIconPicker(selection: $draft.systemImage, query: $draft.iconQuery, searchFocus: $focusedField)
             case .color:
                 ScrollView {
-                    SnipListColorPicker(selection: $draft.color, showsTitle: false)
+                    SnipListColorPicker(selection: $draft.color, automatic: SnipList.automaticColor(for: list.id), showsTitle: false)
                         .padding(.vertical, SnipSnapSpacing.relatedContent)
                 }
                 .scrollBounceBehavior(.basedOnSize)
@@ -588,20 +710,31 @@ struct InlineListEditor: View {
         })
     }
 
+    /// The list as it will look once saved.
+    private var draftPreview: SnipList {
+        var preview = list
+        if !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { preview.name = draft.name }
+        preview.systemImage = draft.systemImage
+        preview.color = draft.color
+        return preview
+    }
+
     private var editorHeader: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             HStack(spacing: 12) {
-                Image(systemName: ListIconSymbol.supportedName(draft.systemImage))
-                    .font(.title3.weight(.semibold))
+                SnipListMarkView(list: draftPreview, diameter: 40)
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
                     .frame(width: 44, height: 44)
-                    .accessibilityLabel("List icon: \(SnipListIconOptions.title(for: draft.systemImage))")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityLabel(
+                        draftPreview.icon.map { "List icon: \(SnipListIconOptions.title(for: $0))" } ?? String(localized: "No icon")
+                    )
                     .accessibilityIdentifier("list-icon-preview")
 
                 TextField(list.displayName, text: $draft.name)
                     .font(.system(.title, design: .rounded, weight: .bold))
-                    .foregroundStyle(SnipListAppearance(preset: draft.color).color)
+                    .foregroundStyle(draftPreview.accent.color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
                     .textInputAutocapitalization(.words)
@@ -650,7 +783,7 @@ struct InlineListEditor: View {
                 Group {
                     if draft.isSaving {
                         ProgressView()
-                            .tint(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+                            .tint(draftPreview.accent.filledControlLabel(in: environment))
                     } else {
                         Image(systemName: "checkmark")
                             .font(.system(size: actionSymbolSize, weight: .semibold))
@@ -661,8 +794,8 @@ struct InlineListEditor: View {
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .controlSize(.large)
-            .tint(SnipListAppearance(preset: draft.color).controlTint)
-            .foregroundStyle(SnipListAppearance(preset: draft.color).filledControlLabel(in: environment))
+            .tint(draftPreview.accent.controlTint)
+            .foregroundStyle(draftPreview.accent.filledControlLabel(in: environment))
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel(draft.isSaving ? "Saving…" : model.newListID == list.id ? "Create list" : "Save list")
             .accessibilityIdentifier("save-list")
