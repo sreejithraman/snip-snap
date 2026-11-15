@@ -266,6 +266,9 @@ package actor SwiftDataSyncModePersistence {
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
   private var strandedRollback: SyncModeTransition?
 
+  /// The transition whose full re-enable merge this process is applying. Try Again skips it.
+  var fullReenableMergeInFlight: UUID?
+
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
   var nextManagedReadAttempt: UInt64 = 0
