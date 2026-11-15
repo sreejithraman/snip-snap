@@ -27,17 +27,28 @@ final class AppModel: ObservableObject {
     @Published var activeListID: UUID
     @Published private(set) var isShowingClipboard = false
     @Published var clipboardViewOptions = ClipboardViewOptions()
-    @Published private(set) var isSearchExpanded = false
-    @Published private var storedQuery = ""
+    private enum SearchMode: Equatable {
+        case closed
+        case open(query: String)
+    }
+
+    @Published private var searchMode = SearchMode.closed
+    var isSearchExpanded: Bool { searchMode != .closed }
     var query: String {
-        get { storedQuery }
+        get {
+            guard case .open(let query) = searchMode else { return "" }
+            return query
+        }
         set {
-            guard editingID == nil || newValue == storedQuery else { return }
-            storedQuery = newValue
-            if isSearchExpanded && !hasActiveQuery {
+            guard editingID == nil || newValue == query else { return }
+            switch searchMode {
+            case .open:
+                searchMode = .open(query: newValue)
+                if hasActiveQuery { reconcileSelection() } else { selection = [] }
+            case .closed:
+                guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 selection = []
-            } else {
-                reconcileSelection()
+                searchMode = .open(query: newValue)
             }
         }
     }
@@ -257,19 +268,24 @@ final class AppModel: ObservableObject {
     func endCLIMutation() { cliMutationInProgress = false }
 
     func enterSearch() {
-        guard editingID == nil, !isSearchExpanded else { return }
+        guard editingID == nil, searchMode == .closed else { return }
         selection = []
-        isSearchExpanded = true
+        searchMode = .open(query: "")
     }
 
     func exitSearch() {
-        guard editingID == nil else { return }
-        query = ""
-        isSearchExpanded = false
+        guard editingID == nil, searchMode != .closed else { return }
+        selection = []
+        searchMode = .closed
     }
 
     var restingFocusTarget: PanelFocusTarget {
         isSearchExpanded ? .search : (isShowingClipboard ? .clipboard : .list)
+    }
+
+    var focusTargetAfterInlineEdit: PanelFocusTarget {
+        guard isSearchExpanded else { return restingFocusTarget }
+        return filteredSnips.isEmpty && clipboardSearchMatches.isEmpty ? .search : .list
     }
 
     var hasActiveQuery: Bool {
@@ -295,10 +311,66 @@ final class AppModel: ObservableObject {
     private var cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let defaults: UserDefaults
     let composerDrafts: ComposerDraftStore
-    private var redirectedComposerTextByList: [UUID: String] = [:]
-    private var redirectedInboxRevisionByList: [UUID: UInt64] = [:]
-    private var inboxDraftRevision: UInt64 = 0
-    private var retiredComposerListIDs: Set<UUID> = []
+
+    /// Routes composer text for lists that left the library.
+    private struct ComposerRedirection {
+        private enum DeletedList {
+            /// Deleted in this draft scope. Its draft text moved to the end of Inbox at
+            /// `inboxRevision`; later text from its composer replaces that tail.
+            case redirected(text: String, inboxRevision: UInt64)
+            /// Left with the previous draft scope. Its composer no longer writes.
+            case retired
+        }
+
+        /// A list with no entry owns no Inbox tail, so its redirected text appends.
+        private var deletedLists: [UUID: DeletedList] = [:]
+        private var inboxRevision: UInt64 = 0
+
+        func isRetired(_ listID: UUID) -> Bool {
+            if case .retired = deletedLists[listID] { true } else { false }
+        }
+
+        mutating func inboxChanged() { inboxRevision &+= 1 }
+
+        mutating func listsReturned(_ liveIDs: Set<UUID>) {
+            deletedLists = deletedLists.filter { !liveIDs.contains($0.key) }
+        }
+
+        mutating func listDeleted(_ listID: UUID, movedText: String) {
+            inboxChanged()
+            guard !movedText.isEmpty else { return }
+            deletedLists[listID] = .redirected(text: movedText, inboxRevision: inboxRevision)
+        }
+
+        /// Returns the new Inbox text, or nil when Inbox keeps its text.
+        mutating func redirect(_ text: String, from listID: UUID, inboxText: String) -> String? {
+            var previous = ""
+            var ownsInboxTail = false
+            if case .redirected(let redirectedText, let revision) = deletedLists[listID] {
+                previous = redirectedText
+                ownsInboxTail = revision == inboxRevision
+            }
+            guard text != previous else { return nil }
+            var updated: String?
+            if ownsInboxTail, !previous.isEmpty, inboxText.hasSuffix(previous) {
+                var base = String(inboxText.dropLast(previous.count))
+                if base.hasSuffix("\n\n") { base.removeLast(2) }
+                updated = base + (base.isEmpty || text.isEmpty ? "" : "\n\n") + text
+            } else if !text.isEmpty {
+                updated = inboxText + (inboxText.isEmpty ? "" : "\n\n") + text
+            }
+            inboxChanged()
+            deletedLists[listID] = .redirected(text: text, inboxRevision: inboxRevision)
+            return updated
+        }
+
+        mutating func switchScope(retiring listIDs: Set<UUID>) {
+            deletedLists = Dictionary(uniqueKeysWithValues: listIDs.map { ($0, DeletedList.retired) })
+            inboxChanged()
+        }
+    }
+
+    private var composerRedirection = ComposerRedirection()
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
     private let publishShareDestinations: (([SnipList]) -> Void)?
@@ -586,15 +658,12 @@ final class AppModel: ObservableObject {
             )
             if scopeChanged {
                 composerDrafts.switchScope(to: newDraftScope)
-                redirectedComposerTextByList.removeAll()
-                redirectedInboxRevisionByList.removeAll()
-                inboxDraftRevision &+= 1
             }
             apply(state)
             libraryRevision = UUID()
             let currentListIDs = Set(lists.map(\.id))
             if scopeChanged {
-                retiredComposerListIDs = previousListIDs.subtracting(currentListIDs)
+                composerRedirection.switchScope(retiring: previousListIDs.subtracting(currentListIDs))
             }
             await reloadUnlocked()
         }
@@ -648,7 +717,7 @@ final class AppModel: ObservableObject {
     func moveUnattributedLegacyDraftToInbox(_ id: UUID) {
         composerDrafts.moveUnattributedLegacyDraftToInbox(id)
         legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
-        inboxDraftRevision &+= 1
+        composerRedirection.inboxChanged()
     }
     var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
     var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
@@ -697,11 +766,11 @@ final class AppModel: ObservableObject {
         snips = snapshot.snips
         lists = snapshot.lists
         let liveIDs = Set(lists.map(\.id))
-        retiredComposerListIDs.subtract(liveIDs)
+        composerRedirection.listsReturned(liveIDs)
         if reconcileOrphanDrafts {
             for id in composerDrafts.draftListIDs()
-                where !liveIDs.contains(id) && !retiredComposerListIDs.contains(id) {
-                moveComposerDraftToInbox(from: id)
+                where !liveIDs.contains(id) && !composerRedirection.isRetired(id) {
+                redirectDeletedListDraft(from: id)
             }
         }
         attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
@@ -871,6 +940,13 @@ final class AppModel: ObservableObject {
     }
 
     func selectList(_ list: SnipList, preservingSelection: Bool = false) {
+        exitSearch()
+        showListPage(list, preservingSelection: preservingSelection)
+    }
+
+    /// Changes the page without closing search, so a search selection moved
+    /// to a new list stays on its results.
+    private func showListPage(_ list: SnipList, preservingSelection: Bool) {
         guard editingID == nil else { return }
         activeListID = list.id
         defaults.set(list.id.uuidString, forKey: Self.activeListDefaultsKey)
@@ -880,6 +956,7 @@ final class AppModel: ObservableObject {
 
     func showClipboard() {
         guard editingID == nil else { return }
+        exitSearch()
         isShowingClipboard = true
         selection = []
     }
@@ -895,29 +972,16 @@ final class AppModel: ObservableObject {
     }
 
     func saveComposerText(_ text: String, for listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
-        let destinationID = liveComposerListID(listID)
-        guard destinationID != listID else {
+        guard !composerRedirection.isRetired(listID) else { return }
+        guard liveComposerListID(listID) != listID else {
             composerDrafts.setText(text, for: listID)
-            if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
+            if listID == SnipList.inboxID { composerRedirection.inboxChanged() }
             return
         }
-        let previous = redirectedComposerTextByList[listID] ?? ""
-        guard text != previous else { return }
-        let current = composerDrafts.draft(for: destinationID).text
-        if redirectedInboxRevisionByList[listID] == inboxDraftRevision,
-           !previous.isEmpty, current.hasSuffix(previous) {
-            var base = String(current.dropLast(previous.count))
-            if base.hasSuffix("\n\n") { base.removeLast(2) }
-            let separator = base.isEmpty || text.isEmpty ? "" : "\n\n"
-            composerDrafts.setText(base + separator + text, for: destinationID)
-        } else if !text.isEmpty {
-            let separator = current.isEmpty ? "" : "\n\n"
-            composerDrafts.setText(current + separator + text, for: destinationID)
+        let inboxText = composerDrafts.draft(for: SnipList.inboxID).text
+        if let updated = composerRedirection.redirect(text, from: listID, inboxText: inboxText) {
+            composerDrafts.setText(updated, for: SnipList.inboxID)
         }
-        redirectedComposerTextByList[listID] = text
-        inboxDraftRevision &+= 1
-        redirectedInboxRevisionByList[listID] = inboxDraftRevision
     }
 
     func flushComposerDrafts() {
@@ -925,17 +989,17 @@ final class AppModel: ObservableObject {
     }
 
     func addDraftAttachments(_ urls: [URL], to listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.add(urls, to: liveComposerListID(listID))
     }
 
     func replaceDraftAttachments(_ urls: [URL], in listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.replaceAttachments(urls, for: liveComposerListID(listID))
     }
 
     func addTemporaryDraftAttachment(_ url: URL, to listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.addTemporary(url, to: liveComposerListID(listID))
     }
 
@@ -944,14 +1008,14 @@ final class AppModel: ObservableObject {
     }
 
     func finishScreenCapture(_ url: URL, in listID: UUID, succeeded: Bool) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.finishScreenCapture(
             url, in: liveComposerListID(listID), succeeded: succeeded
         )
     }
 
     func removeDraftAttachment(_ url: URL, from listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.remove(url, from: liveComposerListID(listID))
     }
 
@@ -960,20 +1024,22 @@ final class AppModel: ObservableObject {
     }
 
     func clearDraft(for listID: UUID) {
-        guard !retiredComposerListIDs.contains(listID) else { return }
+        guard !composerRedirection.isRetired(listID) else { return }
         composerDrafts.clear(listID: listID)
-        if listID == SnipList.inboxID { inboxDraftRevision &+= 1 }
+        if listID == SnipList.inboxID { composerRedirection.inboxChanged() }
     }
 
     func moveComposerDraftToInbox(from listID: UUID) {
+        composerDrafts.moveDraft(from: listID, to: SnipList.inboxID)
+        composerDrafts.flushText()
+        composerRedirection.inboxChanged()
+    }
+
+    private func redirectDeletedListDraft(from listID: UUID) {
         let text = composerDrafts.draft(for: listID).text
         composerDrafts.moveDraft(from: listID, to: SnipList.inboxID)
         composerDrafts.flushText()
-        inboxDraftRevision &+= 1
-        if !text.isEmpty {
-            redirectedComposerTextByList[listID] = text
-            redirectedInboxRevisionByList[listID] = inboxDraftRevision
-        }
+        composerRedirection.listDeleted(listID, movedText: text)
     }
 
     func saveComposerDraft(
@@ -985,7 +1051,7 @@ final class AppModel: ObservableObject {
         let destinationID = destinationListID ?? listID
         return await withCommandLock {
             guard libraryRevision == revision, composerDrafts.scope == scope,
-                  !retiredComposerListIDs.contains(listID),
+                  !composerRedirection.isRetired(listID),
                   liveComposerListID(listID) == listID,
                   lists.contains(where: { $0.id == destinationID }) else { return false }
             let snapshot = composerDrafts.beginSave(listID: listID, content: content)
@@ -1033,7 +1099,7 @@ final class AppModel: ObservableObject {
                 return .failure(error)
             case .success(let list):
                 let selectedMovingIDs = selection.intersection(movingIDs)
-                selectList(list, preservingSelection: !movingIDs.isEmpty)
+                showListPage(list, preservingSelection: !movingIDs.isEmpty)
                 guard !movingIDs.isEmpty else { return .success(()) }
                 let orderedIDs = snips.filter { movingIDs.contains($0.id) }.map(\.id)
                 guard !orderedIDs.isEmpty else { return nil }

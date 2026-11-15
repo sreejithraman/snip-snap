@@ -1,3 +1,4 @@
+import Foundation
 import Observation
 import SnipSnapCore
 
@@ -6,9 +7,15 @@ import SnipSnapCore
 final class AppleAccountNoticeModel {
     typealias ActiveLibraryChangeAction = @MainActor @Sendable () async throws -> Void
 
+    /// Kept apart from `notice`: a readiness check can change the notice while a choice resolves.
+    private enum CacheChoicePhase: Equatable {
+        case ready
+        case failed
+        case resolving(UUID, showsPriorFailure: Bool)
+    }
+
     private(set) var notice: AppleAccountNotice?
-    private(set) var isResolving = false
-    private(set) var errorMessage: String?
+    private var cacheChoice = CacheChoicePhase.ready
     private let handler: (any AppleAccountCacheHandling)?
     private let diagnostics: AppDiagnosticRecorder
     private var activeLibraryChangeAction: ActiveLibraryChangeAction?
@@ -30,6 +37,20 @@ final class AppleAccountNoticeModel {
         activeLibraryChangeAction = action
     }
 
+    var isResolving: Bool {
+        if case .resolving = cacheChoice { return true }
+        return false
+    }
+
+    var errorMessage: String? {
+        switch cacheChoice {
+        case .failed, .resolving(_, showsPriorFailure: true):
+            return String(localized: "Couldn’t save your choice. Try again.")
+        case .ready, .resolving:
+            return nil
+        }
+    }
+
     var showsResolutionActions: Bool {
         notice == .signedOut || notice == .accountChanged
     }
@@ -49,8 +70,8 @@ final class AppleAccountNoticeModel {
 
     func resolve(_ choice: AppleAccountCacheChoice) async {
         guard let handler, notice != nil, !isResolving else { return }
-        isResolving = true
-        defer { isResolving = false }
+        let token = UUID()
+        cacheChoice = .resolving(token, showsPriorFailure: cacheChoice == .failed)
         do {
             try await handler.resolveAppleAccountCache(choice)
             try await activeLibraryChangeAction?()
@@ -59,12 +80,13 @@ final class AppleAccountNoticeModel {
                 notice = refreshedNotice
                 recordNotice()
             }
-            errorMessage = nil
+            finishResolving(token, failed: false)
         } catch is CancellationError {
             // Dismissing an account action does not create a new failure presentation.
+            cancelResolving(token)
         } catch {
             diagnostics.record(.failure(operation: "sync.account_resolve", error: error, visibility: .user))
-            errorMessage = String(localized: "Couldn’t save your choice. Try again.")
+            finishResolving(token, failed: true)
         }
     }
 
@@ -91,7 +113,28 @@ final class AppleAccountNoticeModel {
            Self.changesActiveLibrary(priorNotice) || Self.changesActiveLibrary(refreshedNotice) {
             try await activeLibraryChangeAction?()
         }
-        errorMessage = nil
+        clearCacheChoiceFailure()
+    }
+
+    private func finishResolving(_ token: UUID, failed: Bool) {
+        guard case .resolving(token, _) = cacheChoice else { return }
+        cacheChoice = failed ? .failed : .ready
+    }
+
+    private func cancelResolving(_ token: UUID) {
+        guard case .resolving(token, let showsPriorFailure) = cacheChoice else { return }
+        cacheChoice = showsPriorFailure ? .failed : .ready
+    }
+
+    private func clearCacheChoiceFailure() {
+        switch cacheChoice {
+        case .failed:
+            cacheChoice = .ready
+        case .resolving(let token, showsPriorFailure: true):
+            cacheChoice = .resolving(token, showsPriorFailure: false)
+        case .ready, .resolving:
+            break
+        }
     }
 
     private static func changesActiveLibrary(_ notice: AppleAccountNotice?) -> Bool {

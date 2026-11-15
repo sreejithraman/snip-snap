@@ -191,7 +191,6 @@ struct ContentView: View {
         .onAppear {
             coordinator.openSettingsAction = { openSettings() }
             cacheComposerDraft(for: model.activeListID)
-            if model.hasActiveQuery { model.enterSearch() }
             focusedTarget = model.restingFocusTarget
             commandNumberPicker.startMonitoring(onPick: pickCommandNumber)
             commandNumberPicker.setEnabled(hasCommandNumberFocus)
@@ -223,11 +222,6 @@ struct ContentView: View {
         .onChange(of: model.isSearchExpanded) { _, _ in
             sendDestination = nil
             updatePanelComposerExpansion(for: inlineEntryHeight(for: model.activeListID))
-        }
-        .onChange(of: model.query) { _, _ in
-            if model.hasActiveQuery && !model.isSearchExpanded {
-                expandSearch(focus: false)
-            }
         }
         .onChange(of: model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty) { _, hasNoMatches in
             if hasNoMatches,
@@ -508,14 +502,13 @@ struct ContentView: View {
         }
     }
 
-    private func expandSearch(focus: Bool = true) {
+    private func expandSearch() {
         guard model.editingID == nil else { return }
         if !model.isSearchExpanded {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
                 model.enterSearch()
             }
         }
-        guard focus else { return }
         Task { @MainActor in
             await Task.yield()
             if model.isSearchExpanded { focusedTarget = .search }
@@ -533,6 +526,18 @@ struct ContentView: View {
             guard !model.isSearchExpanded, model.editingID == nil else { return }
             guard focus != .inlineEntry || !model.isShowingClipboard else { return }
             focusedTarget = focus ?? model.restingFocusTarget
+        }
+    }
+
+    /// Header controls stay disabled until the closed editor's update renders,
+    /// so focus waits one turn, as in `collapseSearch`.
+    private func restoreFocusAfterInlineEdit() {
+        guard model.editingID == nil else { return }
+        focusedTarget = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard model.editingID == nil else { return }
+            focusedTarget = model.focusTargetAfterInlineEdit
         }
     }
 
@@ -645,7 +650,8 @@ struct ContentView: View {
             clipboardEntries: model.clipboardSearchMatches,
             clipboardFilePreviewRevision: clipboardHistory.filePreviewRevision,
             onPreviewAttachments: openAttachmentPreview,
-            onRemovePreviewURL: removePreviewURL
+            onRemovePreviewURL: removePreviewURL,
+            onInlineEditEnd: restoreFocusAfterInlineEdit
         )
     }
 

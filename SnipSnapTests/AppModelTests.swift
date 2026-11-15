@@ -269,6 +269,101 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testAccountChoiceRetryKeepsTheFailureVisibleUntilItSucceeds() async {
+        let failure = "Couldn’t save your choice. Try again."
+        let handler = MacAppleAccountCacheHandlerProbe()
+        let libraryChange = AccountLibraryChangeGate(steps: [.fail, .hold])
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: handler,
+            activeLibraryChangeAction: { try await libraryChange.run() },
+            diagnostics: MacDiagnosticRecorderProbe().recorder
+        )
+        await model.resolve(.keepLocalCopy)
+        XCTAssertEqual(model.errorMessage, failure)
+
+        let retry = Task { await model.resolve(.remove) }
+        await libraryChange.waitUntilHeld()
+        XCTAssertTrue(model.isResolving)
+        XCTAssertEqual(model.errorMessage, failure)
+        await model.resolve(.keepLocalCopy)
+        await model.refresh()
+        let choicesWhileResolving = await handler.choices()
+        let refreshesWhileResolving = await handler.refreshCount()
+        XCTAssertEqual(choicesWhileResolving, [.keepLocalCopy, .remove])
+        XCTAssertEqual(refreshesWhileResolving, 0)
+        XCTAssertEqual(model.notice, .signedOut)
+
+        await libraryChange.release()
+        await retry.value
+
+        XCTAssertFalse(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNil(model.notice)
+    }
+
+    @MainActor
+    func testCancelledAccountChoiceKeepsThePriorFailurePresentation() async {
+        let failure = "Couldn’t save your choice. Try again."
+        let diagnostics = MacDiagnosticRecorderProbe()
+        let cancelAfterFailure = AccountLibraryChangeGate(steps: [.fail, .cancel])
+        let afterFailure = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(),
+            activeLibraryChangeAction: { try await cancelAfterFailure.run() },
+            diagnostics: diagnostics.recorder
+        )
+        await afterFailure.resolve(.keepLocalCopy)
+        await afterFailure.resolve(.keepLocalCopy)
+
+        XCTAssertFalse(afterFailure.isResolving)
+        XCTAssertEqual(afterFailure.errorMessage, failure)
+        XCTAssertEqual(afterFailure.notice, .signedOut)
+        XCTAssertEqual(diagnostics.events.filter { $0.operation == "sync.account_resolve" }.count, 1)
+
+        let firstChoiceDiagnostics = MacDiagnosticRecorderProbe()
+        let cancelFirst = AccountLibraryChangeGate(steps: [.cancel])
+        let firstChoice = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: MacAppleAccountCacheHandlerProbe(),
+            activeLibraryChangeAction: { try await cancelFirst.run() },
+            diagnostics: firstChoiceDiagnostics.recorder
+        )
+        await firstChoice.resolve(.keepLocalCopy)
+
+        XCTAssertFalse(firstChoice.isResolving)
+        XCTAssertNil(firstChoice.errorMessage)
+        XCTAssertFalse(firstChoiceDiagnostics.events.contains { $0.operation == "sync.account_resolve" })
+    }
+
+    @MainActor
+    func testAccountCheckDuringAChoiceClearsTheShownFailure() async throws {
+        let handler = MacAppleAccountCacheHandlerProbe(notices: [.signedOut])
+        let libraryChange = AccountLibraryChangeGate(steps: [.fail, .hold])
+        let model = AppleAccountNoticeModel(
+            notice: .signedOut,
+            handler: handler,
+            activeLibraryChangeAction: { try await libraryChange.run() },
+            diagnostics: MacDiagnosticRecorderProbe().recorder
+        )
+        await model.resolve(.keepLocalCopy)
+        XCTAssertNotNil(model.errorMessage)
+
+        let retry = Task { await model.resolve(.remove) }
+        await libraryChange.waitUntilHeld()
+        try await model.refreshCheckingAccount(notifyActiveLibraryChange: false)
+        XCTAssertTrue(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+
+        await libraryChange.release(throwing: CancellationError())
+        await retry.value
+
+        XCTAssertFalse(model.isResolving)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.notice, .signedOut)
+    }
+
+    @MainActor
     func testAccountRefreshRecordsBackgroundFailureWhileKeepingTheSafeNotice() async {
         let diagnostics = MacDiagnosticRecorderProbe()
         let model = AppleAccountNoticeModel(
@@ -1211,14 +1306,79 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         let keep = try XCTUnwrap(model.snips.first { $0.content == "Keep" })
         let hide = try XCTUnwrap(model.snips.first { $0.content == "Hide" })
+        model.enterSearch()
+        model.query = "e"
         model.selectSnip(keep.id, modifiers: .command)
         model.selectSnip(hide.id, modifiers: .command)
+        XCTAssertEqual(model.selection, [keep.id, hide.id])
         model.query = "Keep"
         XCTAssertEqual(model.selection, [keep.id])
         XCTAssertEqual(model.selectionState.anchor, keep.id)
         XCTAssertEqual(model.selectionState.focus, keep.id)
-        model.query = ""
-        XCTAssertEqual(model.selection, [keep.id])
+    }
+
+    @MainActor
+    func testQueryWhileSearchIsClosedOpensSearchAndClearsSelection() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Keep", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.selection = [snip.id]
+
+        model.query = "   "
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.selection, [snip.id])
+
+        model.query = "Keep"
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "Keep")
+        XCTAssertTrue(model.selection.isEmpty)
+        XCTAssertEqual(model.filteredSnips.map(\.id), [snip.id])
+    }
+
+    @MainActor
+    func testShowingClipboardOrSelectingAListClosesSearch() async throws {
+        let other = SnipList(id: UUID(), name: "Other", systemImage: "folder", position: 1)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [Snip(content: "Draft", origin: .quickEntry)], lists: [.inbox, other]),
+            defaults: defaults()
+        )
+        await model.reload()
+
+        model.enterSearch()
+        model.query = "Draft"
+        model.showClipboard()
+        XCTAssertTrue(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+
+        model.enterSearch()
+        model.query = "Draft"
+        model.selectList(other)
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.activeListID, other.id)
+    }
+
+    @MainActor
+    func testMovingSearchSelectionToANewListKeepsSearchOpen() async throws {
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+        model.enterSearch()
+        model.query = "Draft"
+        model.selection = [snip.id]
+
+        let moved = await model.createList(name: "Destination", systemImage: "folder", movingIDs: [snip.id])
+
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.activeList.name, "Destination")
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "Draft")
+        XCTAssertEqual(model.filteredSnips.map(\.id), [snip.id])
     }
 
     @MainActor
@@ -2452,13 +2612,16 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.canReorder(ids: [first.id]))
 
         model.query = "First"
+        model.selection = [first.id]
+        XCTAssertEqual(model.selection, [first.id])
         XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
         XCTAssertEqual(model.snips.map(\.id), originalIDs)
         XCTAssertEqual(model.sortMode, .chronological)
 
-        model.query = ""
+        model.exitSearch()
+        model.selection = [first.id]
         model.completionFilter = .done
         XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
@@ -4238,6 +4401,70 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testDeletedListComposerKeepsTheDraftAnAgentMovedToInbox() async throws {
+        let research = SnipList(id: UUID(), name: "Research", systemImage: "folder", position: 1)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [], lists: [.inbox, research]),
+            defaults: defaults()
+        )
+        await model.reload()
+        model.saveComposerText("Moved by an agent", for: research.id)
+        let researchRevision = try await cliDraftRevision("Research", in: model)
+        let inboxRevision = try await cliDraftRevision("Inbox", in: model)
+        _ = try await model.handleCLIRequest(SnipCLIRequest(
+            action: .extended(.data(.moveDraft(
+                list: "Research", destination: "Inbox",
+                expectedRevision: researchRevision,
+                expectedDestinationRevision: inboxRevision
+            ))),
+            scopeToken: model.cliScopeToken
+        ))
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Moved by an agent")
+
+        await model.deleteList(research)
+        XCTAssertFalse(model.lists.contains(where: { $0.id == research.id }))
+        model.saveComposerText("Typed after the deletion", for: research.id)
+
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text,
+                       "Moved by an agent\n\nTyped after the deletion")
+    }
+
+    @MainActor
+    func testListThatLeavesAgainDoesNotReplaceItsEarlierInboxRedirection() async {
+        let research = SnipList(id: UUID(), name: "Research", systemImage: "folder", position: 1)
+        let scope = SnipRecoveryScope("same-account")
+        let withResearch = InMemorySnipLibrary(snips: [], lists: [.inbox, research])
+        let withoutResearch = InMemorySnipLibrary(snips: [], lists: [.inbox])
+        let model = AppModel(library: withResearch, defaults: defaults(), recoveryScope: scope)
+        await model.reload()
+        model.saveComposerText("Research draft", for: research.id)
+
+        await model.replaceLibrary(withoutResearch, recoveryScope: scope)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Research draft")
+        await model.replaceLibrary(withResearch, recoveryScope: scope)
+        XCTAssertTrue(model.lists.contains(where: { $0.id == research.id }))
+        XCTAssertEqual(model.composerDraft(for: research.id).text, "")
+        await model.replaceLibrary(withoutResearch, recoveryScope: scope)
+        model.saveComposerText("Typed after it left again", for: research.id)
+
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text,
+                       "Research draft\n\nTyped after it left again")
+    }
+
+    @MainActor
+    private func cliDraftRevision(_ list: String, in model: AppModel) async throws -> String {
+        let receipt = try await model.handleCLIRequest(SnipCLIRequest(
+            action: .extended(.data(.showDraft(list: list))),
+            scopeToken: model.cliScopeToken
+        ))
+        guard case .data(let result) = receipt.extendedResult else {
+            XCTFail("Expected a draft result")
+            return ""
+        }
+        return try XCTUnwrap(result.drafts?.first?.revision)
+    }
+
+    @MainActor
     func testComposerRejectsQueuedSendAfterSameScopeLibraryReplacement() async throws {
         let root = try storeURL().deletingLastPathComponent()
         let original = try JSONSnipLibrary(fileURL: root.appendingPathComponent("original.json"))
@@ -4707,6 +4934,46 @@ private actor MacAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
 }
 
 private enum MacAccountProbeError: Error { case failed }
+
+/// Scripts each active-library change after an account choice, holding one open on request.
+private actor AccountLibraryChangeGate {
+    enum Step: Sendable { case fail, cancel, hold }
+
+    private var steps: [Step]
+    private var held: CheckedContinuation<Void, any Error>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var hasHeld = false
+
+    init(steps: [Step]) {
+        self.steps = steps
+    }
+
+    func run() async throws {
+        switch steps.removeFirst() {
+        case .fail:
+            throw MacAccountProbeError.failed
+        case .cancel:
+            throw CancellationError()
+        case .hold:
+            try await withCheckedThrowingContinuation { continuation in
+                held = continuation
+                hasHeld = true
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters.removeAll()
+            }
+        }
+    }
+
+    func waitUntilHeld() async {
+        if hasHeld { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release(throwing error: (any Error)? = nil) {
+        if let error { held?.resume(throwing: error) } else { held?.resume() }
+        held = nil
+    }
+}
 
 private actor AccountLibraryRebindCounter {
     private var count = 0

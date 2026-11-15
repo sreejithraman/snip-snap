@@ -19,8 +19,7 @@ struct IOSAppRootView: View {
     @State private var copyShare = IOSCopyShareCoordinator()
     @State private var compactComposerStorage: CompactComposerStorage
     @State private var listPageMotionState = ListPageMotionState()
-    @State private var edgeCreationTask: Task<Void, Never>?
-    @State private var edgeCreationTaskID: UUID?
+    @State private var edgeCreation = ListEdgeCreationRequest()
     @State private var clipboardViewState = ClipboardViewState()
     @State private var isCompactComposerFocused = false
 #if DEBUG
@@ -578,9 +577,7 @@ struct IOSAppRootView: View {
     }
 
     private func cancelEdgeCreation() {
-        edgeCreationTask?.cancel()
-        edgeCreationTask = nil
-        edgeCreationTaskID = nil
+        edgeCreation.cancel()
     }
 
     private func deleteList(_ id: UUID) async {
@@ -697,16 +694,9 @@ struct IOSAppRootView: View {
             }
             return
         }
-        cancelEdgeCreation()
         let requestID = UUID()
-        edgeCreationTaskID = requestID
         let task = Task { @MainActor in
-            defer {
-                if edgeCreationTaskID == requestID {
-                    edgeCreationTask = nil
-                    edgeCreationTaskID = nil
-                }
-            }
+            defer { edgeCreation.finish(requestID) }
             guard !Task.isCancelled,
                   settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
                   canCreateListFromEdge(sourcePage, pages: pages) else {
@@ -719,7 +709,7 @@ struct IOSAppRootView: View {
             }
             let pendingListID = model.newListID
             await model.openNewList(ifSelectedPageIs: sourcePage)
-            guard !Task.isCancelled, edgeCreationTaskID == requestID,
+            guard !Task.isCancelled, edgeCreation.isCurrent(requestID),
                   settlementID.map({ listPageMotion.transition?.settlement?.id == $0 }) ?? true,
                   model.newListID == pendingListID else { return }
             if let pendingListID, !model.isSearchPresented,
@@ -734,7 +724,7 @@ struct IOSAppRootView: View {
                 listPageMotion.interrupt()
             }
         }
-        edgeCreationTask = task
+        edgeCreation.begin(requestID, task: task)
         await task.value
     }
 
