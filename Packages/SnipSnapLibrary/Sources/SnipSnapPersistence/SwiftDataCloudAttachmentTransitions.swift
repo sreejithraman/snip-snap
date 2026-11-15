@@ -306,6 +306,9 @@ extension SwiftDataSnipLibrary {
         guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
         cleanupQueue.queue(row.lifecycle.payloadCleanup)
+        for cleanup in row.lifecycle.payloadCleanupsAfterMetadataDeletion {
+          cleanupQueue.queue(cleanup)
+        }
         removeRemotelyDeleted(row)
       case .cleanupAccepted(let identity, let expected):
         try cleanupQueue.acceptDeletion(of: identity, expectedRevision: expected)

@@ -134,8 +134,6 @@ struct CloudAttachmentPublicationLifecycle {
   /// CloudKit accepted metadata at least once and may still hold it after a local edit.
   var hasPublishedMetadata: Bool { metadataRecord != .unrecorded }
 
-  private var mayHaveCloudMetadata: Bool { hasPublishedMetadata || acceptedPayload != nil }
-
   var isMetadataAccepted: Bool {
     guard case .published = upload else { return false }
     return true
@@ -169,6 +167,14 @@ struct CloudAttachmentPublicationLifecycle {
   /// The cleanup this attachment's payload is owed once nothing references it.
   var payloadCleanup: CloudAttachmentOwedCleanup {
     CloudAttachmentOwedCleanup(identity: payloadIdentity, shadowData: payloadShadowData)
+  }
+
+  /// The accepted and replaced payloads owed cleanup once their metadata is gone.
+  var payloadCleanupsAfterMetadataDeletion: [CloudAttachmentOwedCleanup] {
+    var cleanups: [CloudAttachmentOwedCleanup] = []
+    if acceptedPayload != nil { cleanups.append(payloadCleanup) }
+    if let replacedPayload { cleanups.append(replacedPayload) }
+    return cleanups
   }
 
   func hasAcceptedMetadata(_ record: CloudAttachmentAcceptedRecord) -> Bool {
@@ -247,7 +253,7 @@ struct CloudAttachmentPublicationLifecycle {
         cleanup: payloadCleanup,
         queuedUpload: queuedUpload
       )
-      if mayHaveCloudMetadata {
+      if hasPublishedMetadata {
         upload = .payloadPending(queuedUpload: nil)
         return .awaitMetadataDeletion(abandonedUpload: abandoned)
       }
@@ -354,10 +360,7 @@ struct CloudAttachmentPublicationLifecycle {
     guard revision == expectedRevision, !isLocallyPresent else {
       throw CloudAttachmentStorageError.staleTransition
     }
-    var cleanups: [CloudAttachmentOwedCleanup] = []
-    if acceptedPayload != nil { cleanups.append(payloadCleanup) }
-    if let replacedPayload { cleanups.append(replacedPayload) }
-    return cleanups
+    return payloadCleanupsAfterMetadataDeletion
   }
 
   /// Adopts the server's metadata after a delete conflict, so the delete retries from it.
