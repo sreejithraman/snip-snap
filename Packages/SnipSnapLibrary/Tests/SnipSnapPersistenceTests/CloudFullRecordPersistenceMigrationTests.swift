@@ -142,10 +142,7 @@ extension CloudFullRecordPersistenceTests {
       context.insert(
         try StoredCloudNamespaceState(
           namespaceKey: namespace.rawValue,
-          value: CloudNamespaceStateStorage(
-            phase: .seeding,
-            approvedSnipIDs: [snipID]
-          )
+          value: approvedTextNamespace([snipID])
         )
       )
       try context.save()
@@ -271,7 +268,7 @@ extension CloudFullRecordPersistenceTests {
       context.insert(
         try StoredCloudNamespaceState(
           namespaceKey: namespace.rawValue,
-          value: CloudNamespaceStateStorage(phase: .active)
+          value: approvedTextNamespace([])
         )
       )
       try context.save()
@@ -374,4 +371,11 @@ extension CloudFullRecordPersistenceTests {
     XCTAssertNil(CloudWirePayloadEnvelope.legacyPayload(from: future))
   }
 
+  /// A remote-checked legacy text namespace after its first seed approval: seeding with these
+  /// snips, or active when none are approved.
+  private func approvedTextNamespace(_ snipIDs: Set<UUID>) throws -> CloudNamespaceStateStorage {
+    try XCTUnwrap(CloudNamespaceStateStorage.notEnrolled
+      .committingFetch(.complete(remoteSnipIDs: [], localSnipIDs: snipIDs))
+      .approvingSeed(snipIDs, localSnipIDs: snipIDs))
+  }
 }

@@ -46,9 +46,12 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         ].map { try SwiftDataCloudTextPersistence.recoveryEvent($0, batchID: UUID()) }
         let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
         try await bridge.stage(.fetched(batch))
+        let active = try XCTUnwrap(CloudNamespaceStateStorage.notEnrolled
+            .committingFetch(.complete(remoteSnipIDs: [], localSnipIDs: []))
+            .approvingSeed([], localSnipIDs: []))
         try await library.applyCloudTextFetched(namespaceKey: namespace.namespaceKey,
             mutations: [], recoveryEvents: events, engineState: nil,
-            namespaceState: CloudNamespaceStateStorage(phase: .active), stagedBatchID: batch.id)
+            namespaceState: active, stagedBatchID: batch.id)
 
         let evidence = try await bridge.enrollmentEvidence()
         let status = try await bridge.statusEvidence()

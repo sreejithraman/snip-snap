@@ -62,27 +62,6 @@ package enum CloudNamespaceBootstrapPhase: String, Codable, Equatable, Sendable 
   case blocked
 }
 
-package struct CloudNamespaceStateStorage: Codable, Equatable, Sendable {
-  package let phase: CloudNamespaceBootstrapPhase
-  package let approvedSnipIDs: Set<UUID>
-  package let excludedSnipIDs: Set<UUID>
-  package let zoneCreationPending: Bool
-
-  package init(
-    phase: CloudNamespaceBootstrapPhase,
-    approvedSnipIDs: Set<UUID> = [],
-    excludedSnipIDs: Set<UUID> = [],
-    zoneCreationPending: Bool = false
-  ) {
-    self.phase = phase
-    self.approvedSnipIDs = approvedSnipIDs
-    self.excludedSnipIDs = excludedSnipIDs
-    self.zoneCreationPending = zoneCreationPending
-  }
-
-  package static let notEnrolled = CloudNamespaceStateStorage(phase: .notEnrolled)
-}
-
 package struct CloudStagedBatchStorage: Equatable, Sendable {
   package let id: UUID
   package let payload: Data

@@ -123,59 +123,20 @@ extension SwiftDataCloudTextPersistence {
       hasDestructiveReset: Bool,
       hasIncompleteFetch: Bool
   ) -> CloudNamespaceStateStorage {
-      let state = current.namespaceState
+      let outcome: CloudTextFetchOutcome
       if hasDestructiveReset {
-          return CloudNamespaceStateStorage(
-              phase: .blocked,
-              approvedSnipIDs: state.approvedSnipIDs,
-              excludedSnipIDs: state.excludedSnipIDs
+          outcome = .destructiveReset
+      } else if hasMissingZone {
+          outcome = .zoneMissing
+      } else if hasIncompleteFetch {
+          outcome = .incomplete
+      } else {
+          outcome = .complete(
+              remoteSnipIDs: Set(fetchedValues.map(\.snipID)),
+              localSnipIDs: Set(current.snips.map(\.id))
           )
       }
-      if state.phase == .blocked { return state }
-      if hasMissingZone {
-          switch state.phase {
-          case .active:
-              return CloudNamespaceStateStorage(
-                  phase: .blocked,
-                  excludedSnipIDs: state.excludedSnipIDs
-              )
-          case .seeding:
-              return CloudNamespaceStateStorage(
-                  phase: .seeding,
-                  approvedSnipIDs: state.approvedSnipIDs,
-                  excludedSnipIDs: state.excludedSnipIDs,
-                  zoneCreationPending: true
-              )
-          case .notEnrolled, .remoteChecked, .remoteCheckedMissingZone:
-              return CloudNamespaceStateStorage(
-                  phase: .remoteCheckedMissingZone,
-                  excludedSnipIDs: state.excludedSnipIDs
-              )
-          case .blocked:
-              return state
-          }
-      }
-      if hasIncompleteFetch { return state }
-      if state.phase == .active {
-          return CloudNamespaceStateStorage(
-              phase: .active,
-              excludedSnipIDs: state.excludedSnipIDs
-          )
-      }
-      if state.phase == .seeding {
-          return state
-      }
-      if !fetchedValues.isEmpty {
-          let remoteIDs = Set(fetchedValues.map(\.snipID))
-          return CloudNamespaceStateStorage(
-              phase: .active,
-              excludedSnipIDs: Set(current.snips.map(\.id)).subtracting(remoteIDs)
-          )
-      }
-      return CloudNamespaceStateStorage(
-          phase: .remoteChecked,
-          excludedSnipIDs: state.excludedSnipIDs
-      )
+      return current.namespaceState.committingFetch(outcome)
   }
 
   nonisolated static func hasIncompleteFetch(_ batch: CloudFetchedBatch) -> Bool {
@@ -196,47 +157,17 @@ extension SwiftDataCloudTextPersistence {
       batch: CloudSentBatch,
       textZone: CloudZoneID
   ) -> CloudNamespaceStateStorage {
-      var state = current.namespaceState
+      let state = current.namespaceState
       if batch.databaseEvents.contains(where: isDestructiveReset) {
-          return CloudNamespaceStateStorage(
-              phase: .blocked,
-              approvedSnipIDs: state.approvedSnipIDs,
-              excludedSnipIDs: state.excludedSnipIDs
-          )
+          return state.committingSend(.destructiveReset)
       }
       if hasMissingZone(batch, textZone: textZone) {
-          if state.phase == .seeding {
-              return CloudNamespaceStateStorage(
-                  phase: .seeding,
-                  approvedSnipIDs: state.approvedSnipIDs,
-                  excludedSnipIDs: state.excludedSnipIDs,
-                  zoneCreationPending: true
-              )
-          }
-          return CloudNamespaceStateStorage(
-              phase: .blocked,
-              approvedSnipIDs: state.approvedSnipIDs,
-              excludedSnipIDs: state.excludedSnipIDs
-          )
-      }
-      guard state.phase == .seeding else { return state }
-      if state.zoneCreationPending {
-          let zoneWasSaved = batch.databaseEvents.contains(where: { event in
-             guard case .zoneSaved(let zone) = event else { return false }
-             return zone == textZone
-          })
-          guard zoneWasSaved else { return state }
-          state = CloudNamespaceStateStorage(
-              phase: state.phase,
-              approvedSnipIDs: state.approvedSnipIDs,
-              excludedSnipIDs: state.excludedSnipIDs,
-              zoneCreationPending: false
-          )
+          return state.committingSend(.zoneMissing)
       }
       let recordByIdentity = Dictionary(
           uniqueKeysWithValues: current.records.map { ($0.identity, $0) }
       )
-      var completed = Set(
+      var finished = Set(
           current.records.filter { $0.acceptedText != nil }.map(\.snipID)
       )
       for item in batch.items {
@@ -256,15 +187,17 @@ extension SwiftDataCloudTextPersistence {
               continue
           }
           guard isTerminal, let record = recordByIdentity[storageIdentity(id)] else { continue }
-          completed.insert(record.snipID)
+          finished.insert(record.snipID)
       }
-      guard state.approvedSnipIDs.isSubset(of: completed) else { return state }
       let linkedSnipIDs = Set(current.records.map(\.snipID))
-      let unapprovedDuringSeed = Set(current.snips.map(\.id)).subtracting(linkedSnipIDs)
-      return CloudNamespaceStateStorage(
-          phase: .active,
-          excludedSnipIDs: state.excludedSnipIDs.union(unapprovedDuringSeed)
-      )
+      return state.committingSend(.delivered(
+          zoneSaved: batch.databaseEvents.contains { event in
+              guard case .zoneSaved(let zone) = event else { return false }
+              return zone == textZone
+          },
+          finishedSnipIDs: finished,
+          unlinkedSnipIDs: Set(current.snips.map(\.id)).subtracting(linkedSnipIDs)
+      ))
   }
 
   nonisolated static func isDestructiveReset(_ event: CloudDatabaseEvent) -> Bool {
