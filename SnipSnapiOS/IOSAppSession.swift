@@ -406,11 +406,15 @@ final class IOSCloudSyncActionBridge {
 
 @MainActor
 final class IOSShareImportCoordinator {
+    private enum ImportPhase {
+        case idle
+        case importing(Task<Void, Never>, run: UUID, trailingPassQueued: Bool)
+    }
+
     private let model: IOSAppModel
     private let importOperation: @Sendable () async -> ShareImportSummary
     private let syncOperation: @MainActor @Sendable () async throws -> Void
-    private var inFlight: Task<Void, Never>?
-    private var needsTrailingPass = false
+    private var phase = ImportPhase.idle
 
     init(
         model: IOSAppModel,
@@ -423,22 +427,40 @@ final class IOSShareImportCoordinator {
     }
 
     func importPendingAndReload() async {
-        if let inFlight {
-            needsTrailingPass = true
-            await inFlight.value
+        if case .importing(let task, let run, _) = phase {
+            phase = .importing(task, run: run, trailingPassQueued: true)
+            await task.value
             return
         }
+        let run = UUID()
         let task = Task { [self] in
-            defer { inFlight = nil }
             var importFailures = 0
             repeat {
-                needsTrailingPass = false
+                startPass(of: run)
                 importFailures = await runPass()
-            } while needsTrailingPass
+            } while hasQueuedTrailingPass(in: run)
+            finishImport(run)
             report(importFailures)
         }
-        inFlight = task
+        phase = .importing(task, run: run, trailingPassQueued: false)
         await task.value
+    }
+
+    /// Clearing the queued pass when a pass starts, not when one ends, lets a trigger that
+    /// arrives before the first pass runs join that pass.
+    private func startPass(of run: UUID) {
+        guard case .importing(let task, run, trailingPassQueued: true) = phase else { return }
+        phase = .importing(task, run: run, trailingPassQueued: false)
+    }
+
+    private func hasQueuedTrailingPass(in run: UUID) -> Bool {
+        if case .importing(_, run, trailingPassQueued: true) = phase { return true }
+        return false
+    }
+
+    private func finishImport(_ run: UUID) {
+        guard case .importing(_, run, _) = phase else { return }
+        phase = .idle
     }
 
     private func runPass() async -> Int {

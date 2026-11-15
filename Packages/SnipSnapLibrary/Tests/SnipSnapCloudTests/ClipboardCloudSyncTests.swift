@@ -72,18 +72,26 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     let files: ClipboardFileStore
     let sync: ClipboardCloudSyncService
     init(_ cloud: ClipboardTestCloud, retry: CloudKitOperationRetry = CloudKitOperationRetry()) {
+        self.init(retry: retry, makeTransport: { _ in cloud })
+    }
+    init(retry: CloudKitOperationRetry = CloudKitOperationRetry(),
+         makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         files = ClipboardFileStore(rootURL: root.appendingPathComponent("ClipboardFiles"))
         store = ClipboardHistoryStore(url: root.appendingPathComponent("clipboard.json"), fileStore: files)
         sync = ClipboardCloudSyncService(store: store, syncRootURL: root,
-                                         makeTransport: { _ in cloud }, retry: retry)
+                                         makeTransport: makeTransport, retry: retry)
     }
     /// A new service on the same root and store, as after the old one is discarded.
     init(reopening previous: ClipboardClient, _ cloud: ClipboardTestCloud) {
+        self.init(reopening: previous, makeTransport: { _ in cloud })
+    }
+    init(reopening previous: ClipboardClient,
+         makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport) {
         root = previous.root
         files = previous.files
         store = previous.store
-        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: { _ in cloud })
+        sync = ClipboardCloudSyncService(store: store, syncRootURL: root, makeTransport: makeTransport)
     }
     @discardableResult func run(enabled: Bool = true, scope: String = "account-generation-A") async throws -> ClipboardHistoryState {
         try await run(scope: scope, isEnabled: { enabled })
@@ -124,6 +132,36 @@ private func requireSavePaused<Success: Sendable>(
     let paused = await cloud.savePaused()
     if !paused { run.cancel() }
     try #require(paused, "The save never paused")
+}
+
+/// The saved-snips namespace key the apps pass as the clipboard generation.
+private func namespaceKey(cloudScope: String = "private", account: String, generation: UUID) -> String {
+    let value = generation.uuidString.lowercased()
+    return ICloudSyncNamespaceBinding(
+        scope: cloudScope,
+        accountLineage: account,
+        generation: generation,
+        zones: [
+            ICloudSyncZoneBinding(name: "snips-\(value)", ownerName: CKCurrentUserDefaultName),
+            ICloudSyncZoneBinding(name: "payloads-\(value)", ownerName: CKCurrentUserDefaultName),
+        ]
+    ).namespaceKey.rawValue
+}
+
+/// The entry IDs in each clipboard history set aside under `root`.
+private func setAsideEntryIDs(in root: URL) async throws -> [[UUID]] {
+    let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+    var histories: [[UUID]] = []
+    for file in files {
+        histories.append(try await ClipboardHistoryStore(url: file).load().entries.map(\.id))
+    }
+    return histories
+}
+
+/// Where a crash interrupts a set-aside: after copying the history, or after emptying the store.
+enum ClipboardSetAsideCrash: CaseIterable, Sendable {
+    case afterCopy, afterEmptySave
 }
 
 @Suite @MainActor struct ClipboardCloudSyncTests {
@@ -298,6 +336,114 @@ private func requireSavePaused<Success: Sendable>(
         try await client.sync.resetAccountBinding()
         #expect(try await client.store.load().entries.isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: client.root.path).contains { $0.hasPrefix("clipboard-quarantine-") })
+    }
+    @Test func newSyncGenerationInTheSameAccountIsNotAnAccountChange() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("first generation"))
+        try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
+            try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        }
+    }
+    @Test func relaunchedServiceTreatsANewSyncGenerationAsTheSameAccount() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("first generation"))
+        try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        let relaunched = ClipboardClient(reopening: client, cloud)
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
+            try await relaunched.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        }
+    }
+    @Test func setAsideHistoryNeverUploadsIntoTheNewSyncGeneration() async throws {
+        let first = namespaceKey(account: "account-A", generation: UUID())
+        let second = namespaceKey(account: "account-A", generation: UUID())
+        let firstCloud = ClipboardTestCloud(); let secondCloud = ClipboardTestCloud()
+        let client = ClipboardClient(makeTransport: { $0 == first ? firstCloud : secondCloud })
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let older = entry("first generation")
+        try await client.store.insert(older); try await client.run(scope: first)
+
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) { try await client.run(scope: second) }
+        #expect(try await secondCloud.fetch().entries.isEmpty)
+        #expect(try await client.store.load().entries.map(\.id) == [older.id])
+        #expect(try Data(contentsOf: bindingURL) == JSONEncoder().encode(first))
+
+        try await client.sync.resetAccountBinding()
+        #expect(try await client.store.load().entries.isEmpty)
+        #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
+        let newer = entry("second generation")
+        try await client.store.insert(newer); try await client.run(scope: second)
+        #expect(Set(try await secondCloud.fetch().entries.keys) == [newer.id])
+        #expect(try Data(contentsOf: bindingURL) == JSONEncoder().encode(second))
+    }
+    @Test func relaunchedServiceFollowsANewSyncGenerationAfterSettingHistoryAside() async throws {
+        let first = namespaceKey(account: "account-A", generation: UUID())
+        let second = namespaceKey(account: "account-A", generation: UUID())
+        let firstCloud = ClipboardTestCloud(); let secondCloud = ClipboardTestCloud()
+        let transport: @Sendable (String) -> any ClipboardCloudTransport = { $0 == first ? firstCloud : secondCloud }
+        let client = ClipboardClient(makeTransport: transport)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let older = entry("first generation")
+        try await client.store.insert(older); try await client.run(scope: first)
+
+        let relaunched = ClipboardClient(reopening: client, makeTransport: transport)
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) { try await relaunched.run(scope: second) }
+        try await relaunched.sync.resetAccountBinding()
+        let newer = entry("second generation")
+        try await relaunched.store.insert(newer); try await relaunched.run(scope: second)
+        #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
+        #expect(Set(try await secondCloud.fetch().entries.keys) == [newer.id])
+    }
+    @Test(arguments: ClipboardSetAsideCrash.allCases)
+    func relaunchAfterAnInterruptedSetAsideSetsHistoryAsideAgainAndFollows(_ crash: ClipboardSetAsideCrash) async throws {
+        let first = namespaceKey(account: "account-A", generation: UUID())
+        let second = namespaceKey(account: "account-A", generation: UUID())
+        let firstCloud = ClipboardTestCloud(); let secondCloud = ClipboardTestCloud()
+        let transport: @Sendable (String) -> any ClipboardCloudTransport = { $0 == first ? firstCloud : secondCloud }
+        let client = ClipboardClient(makeTransport: transport)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let older = entry("first generation")
+        try await client.store.insert(older); try await client.run(scope: first)
+
+        // What the interrupted set-aside left on disk; the first binding is still there.
+        let copy = client.root.appendingPathComponent("clipboard-quarantine-\(UUID().uuidString).json")
+        try FileManager.default.copyItem(at: client.store.url, to: copy)
+        if crash == .afterEmptySave { try await client.store.save(ClipboardHistoryState()) }
+
+        let relaunched = ClipboardClient(reopening: client, makeTransport: transport)
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) { try await relaunched.run(scope: second) }
+        try await relaunched.sync.resetAccountBinding()
+        let newer = entry("second generation")
+        try await relaunched.store.insert(newer); try await relaunched.run(scope: second)
+
+        #expect(try Data(contentsOf: bindingURL) == JSONEncoder().encode(second))
+        let remote = try await secondCloud.fetch()
+        #expect(Set(remote.entries.keys) == [newer.id])
+        #expect(remote.tombstones[older.id] == nil)
+        let setAside = try await setAsideEntryIDs(in: client.root)
+        #expect(setAside.allSatisfy { Set($0).isSubset(of: [older.id]) })
+        #expect(setAside.contains([older.id]))
+        let active = try await relaunched.store.load()
+        #expect(!active.entries.contains { $0.id == older.id })
+    }
+    @Test func otherAccountOrCloudScopeIsAnAccountChangeAndKeepsTheBindingFile() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let generation = UUID()
+        let bound = namespaceKey(account: "account-A", generation: generation)
+        try await client.store.insert(entry("account A")); try await client.run(scope: bound)
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(account: "account-B", generation: generation))
+        }
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(cloudScope: "shared", account: "account-A", generation: generation))
+        }
+        let stored = try Data(contentsOf: client.root.appendingPathComponent("clipboard-account-binding.json"))
+        #expect(try stored == JSONEncoder().encode(bound))
     }
     @Test func pinnedFilesTransferBytesAndUnpinnedReferencesStayLocal() async throws {
         let cloud = ClipboardTestCloud(); let a = ClipboardClient(cloud); let b = ClipboardClient(cloud)

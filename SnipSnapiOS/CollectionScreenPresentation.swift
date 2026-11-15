@@ -95,6 +95,13 @@ private struct RoundedNavigationTitle: UIViewControllerRepresentable {
             guard let navigationController,
                   let item = navigationController.topViewController?.navigationItem else { return }
             let bar = navigationController.navigationBar
+            // iPad drops the leading minimum margin for a column that starts inside the window, as
+            // the page card beside the rail does, which would pin the large title to the card's edge.
+            var margins = navigationController.view.directionalLayoutMargins
+            if traitCollection.userInterfaceIdiom == .pad, margins.leading < margins.trailing {
+                margins.leading = margins.trailing
+                navigationController.view.directionalLayoutMargins = margins
+            }
             func styled(_ source: UINavigationBarAppearance) -> UINavigationBarAppearance {
                 let appearance = source.copy() as! UINavigationBarAppearance
                 appearance.titleTextAttributes[.font] = UIFont.rounded(size: 17, weight: .semibold)

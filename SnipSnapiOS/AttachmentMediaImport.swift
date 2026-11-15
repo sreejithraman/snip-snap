@@ -111,51 +111,6 @@ private struct PickedPhotoFile: Transferable, Sendable {
     }
 }
 
-private final class PhotoLoad: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<PickedPhotoFile?, Error>?
-    private var progress: Progress?
-    private var isCancelled = false
-
-    func begin(_ continuation: CheckedContinuation<PickedPhotoFile?, Error>) {
-        lock.lock()
-        if isCancelled {
-            lock.unlock()
-            continuation.resume(throwing: CancellationError())
-            return
-        }
-        self.continuation = continuation
-        lock.unlock()
-    }
-
-    func setProgress(_ progress: Progress) {
-        lock.lock()
-        self.progress = progress
-        let shouldCancel = isCancelled
-        lock.unlock()
-        if shouldCancel { progress.cancel() }
-    }
-
-    func finish(_ result: Result<PickedPhotoFile?, Error>) {
-        lock.lock()
-        let continuation = continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(with: result)
-    }
-
-    func cancel() {
-        lock.lock()
-        isCancelled = true
-        let continuation = continuation
-        self.continuation = nil
-        let progress = progress
-        lock.unlock()
-        progress?.cancel()
-        continuation?.resume(throwing: CancellationError())
-    }
-}
-
 enum AttachmentMediaInput {
     case files([URL])
     case photos([PhotosPickerItem])
@@ -187,17 +142,10 @@ enum AttachmentMediaStager {
     }
 
     private static func loadPhoto(_ item: PhotosPickerItem) async throws -> PickedPhotoFile? {
-        let load = PhotoLoad()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                load.begin(continuation)
-                let progress = item.loadTransferable(type: PickedPhotoFile.self) { result in
-                    load.finish(result)
-                }
-                load.setProgress(progress)
+        try await ProviderLoad<PickedPhotoFile?>.run { finish in
+            item.loadTransferable(type: PickedPhotoFile.self) { result in
+                finish { try result.get() }
             }
-        } onCancel: {
-            load.cancel()
         }
     }
 

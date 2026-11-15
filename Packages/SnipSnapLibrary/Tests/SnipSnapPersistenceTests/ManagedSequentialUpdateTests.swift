@@ -221,6 +221,59 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     await release.open()
     try await syncing.value
   }
+
+  func testEditsResumeAfterAnEditFailsToSave() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fault = SaveFault()
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root, afterMutationBeforeSave: fault.check)
+    let library = try await persistence.activeLibrary()
+    let revision = try await persistence.snapshot().activeStore.revision
+    fault.failNextSave()
+    do {
+      _ = try await library.perform(addCommand("Lost to the failed save"), sortedBy: .manual)
+      XCTFail("The edit must report the failed save")
+    } catch CocoaError.fileWriteOutOfSpace {}
+    let afterFailure = try await persistence.snapshot()
+    XCTAssertFalse(afterFailure.hasActiveMutationReservation)
+
+    do { _ = try await library.perform(addCommand("Saved after the failed save"), sortedBy: .manual) }
+    catch { XCTFail("The next edit must save: \(error)") }
+    let state = try await persistence.snapshot()
+    XCTAssertFalse(state.hasActiveMutationReservation)
+    XCTAssertEqual(state.activeStore.revision, revision + 2)
+    let saved = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(saved.snips.map(\.content), ["Saved after the failed save"])
+  }
+
+  func testEditsResumeAfterAnImportFailsToSave() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let backup = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("Backup", isDirectory: true)
+        .appendingPathComponent("snips.store"))
+    _ = try await backup.perform(addCommand("Lost with the failed import"), sortedBy: .manual)
+    let source = try await backup.transferSnapshot(revision: 0)
+    let fault = SaveFault()
+    let persistence = try SwiftDataSyncModePersistence(
+      rootURL: root.appendingPathComponent("Library", isDirectory: true),
+      afterMutationBeforeSave: fault.check)
+    let library = try await persistence.activeLibrary()
+    let preview = try await library.previewImport(source, transitionID: UUID())
+    XCTAssertEqual(preview.addedSnipCount, 1)
+    fault.failNextSave()
+    do {
+      _ = try await library.applyImport(preview)
+      XCTFail("The import must report the failed save")
+    } catch CocoaError.fileWriteOutOfSpace {}
+    let afterFailure = try await persistence.snapshot()
+    XCTAssertFalse(afterFailure.hasActiveMutationReservation)
+
+    do { _ = try await library.perform(addCommand("Saved after the failed import"), sortedBy: .manual) }
+    catch { XCTFail("The next edit must save: \(error)") }
+    let saved = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(saved.snips.map(\.content), ["Saved after the failed import"])
+  }
 }
 
 private func makeICloudPersistence(
@@ -277,6 +330,23 @@ private final class ManifestWriteFaults: Sendable {
 }
 
 private enum ManifestWriteFault: Error { case injected }
+
+/// Fails the next library save the way a full disk would.
+private final class SaveFault: Sendable {
+  private let armed = Mutex(false)
+
+  func failNextSave() {
+    armed.withLock { $0 = true }
+  }
+
+  func check() throws {
+    let fails = armed.withLock { armed in
+      defer { armed = false }
+      return armed
+    }
+    if fails { throw CocoaError(.fileWriteOutOfSpace) }
+  }
+}
 
 private actor SequentialUpdateLatch {
   private var isOpen = false

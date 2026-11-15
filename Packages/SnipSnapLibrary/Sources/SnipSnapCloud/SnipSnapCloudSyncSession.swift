@@ -21,13 +21,101 @@ public actor SnipSnapCloudSyncSession {
   private enum RequestKind: Int {
     case schedule, synchronize, retry
   }
-  private struct Request {
+  private typealias RequestWaiter = CheckedContinuation<SnipSnapCloudSyncResult, any Error>
+  private struct SyncRequest {
     let id: UUID
     let kind: RequestKind
+    /// Scheduled sync has no caller to answer.
+    let waiter: RequestWaiter?
   }
-  private var requests: [Request] = []
-  private var requestWaiters: [UUID: CheckedContinuation<SnipSnapCloudSyncResult, any Error>] = [:]
-  private var processingRequests = false
+  /// One run of sync work and the callers it answers.
+  private struct RequestBatch {
+    let kind: RequestKind
+    /// Scheduled sync joined this run, so a failure also goes to the automatic error handler.
+    let includesAutomaticSync: Bool
+    var waiting: [SyncRequest]
+  }
+  /// One drain runs at a time. Requests that arrive during a batch wait together for the next one.
+  private enum RequestQueue {
+    case idle
+    case draining(queued: [SyncRequest])
+    case running(RequestBatch, queued: [SyncRequest])
+
+    /// Returns true when this request starts a drain.
+    mutating func enqueue(_ request: SyncRequest) -> Bool {
+      switch self {
+      case .idle:
+        self = .draining(queued: [request])
+        return true
+      case .draining(var queued):
+        queued.append(request)
+        self = .draining(queued: queued)
+        return false
+      case .running(let batch, var queued):
+        queued.append(request)
+        self = .running(batch, queued: queued)
+        return false
+      }
+    }
+
+    /// Releases a waiting caller. Work already running continues for the rest of its batch.
+    mutating func cancel(_ id: UUID) -> RequestWaiter? {
+      switch self {
+      case .idle:
+        return nil
+      case .draining(var queued):
+        let waiter = Self.removeWaiter(id, from: &queued)
+        self = .draining(queued: queued)
+        return waiter
+      case .running(var batch, var queued):
+        if let waiter = Self.removeWaiter(id, from: &batch.waiting) {
+          self = .running(batch, queued: queued)
+          return waiter
+        }
+        let waiter = Self.removeWaiter(id, from: &queued)
+        self = .running(batch, queued: queued)
+        return waiter
+      }
+    }
+
+    /// Takes every queued request into one batch, or ends the drain when none remain.
+    mutating func startBatch() -> RequestBatch? {
+      guard case .draining(let queued) = self else { return nil }
+      guard let kind = queued.map(\.kind).max(by: { $0.rawValue < $1.rawValue }) else {
+        self = .idle
+        return nil
+      }
+      let batch = RequestBatch(
+        kind: kind,
+        includesAutomaticSync: queued.contains { $0.kind == .schedule },
+        waiting: queued.filter { $0.waiter != nil }
+      )
+      self = .running(batch, queued: [])
+      return batch
+    }
+
+    /// Returns the batch's remaining waiters in queue order.
+    mutating func finishBatch() -> [RequestWaiter] {
+      guard case .running(let batch, let queued) = self else { return [] }
+      self = .draining(queued: queued)
+      return batch.waiting.compactMap(\.waiter)
+    }
+
+    var queuedCount: Int {
+      switch self {
+      case .idle: 0
+      case .draining(let queued), .running(_, let queued): queued.count
+      }
+    }
+
+    private static func removeWaiter(
+      _ id: UUID, from requests: inout [SyncRequest]
+    ) -> RequestWaiter? {
+      guard let index = requests.firstIndex(where: { $0.id == id }) else { return nil }
+      return requests.remove(at: index).waiter
+    }
+  }
+  private var requestQueue = RequestQueue.idle
   private let operationGate: AsyncOperationGate
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
@@ -102,7 +190,7 @@ public actor SnipSnapCloudSyncSession {
   }
 
   public func scheduleAutomaticSync() {
-    enqueue(Request(id: UUID(), kind: .schedule))
+    enqueue(SyncRequest(id: UUID(), kind: .schedule, waiter: nil))
   }
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
@@ -125,36 +213,33 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease(libraryAction)
   }
 
+  /// Requests waiting for the next batch, not counting the batch that is running.
+  var queuedRequestCount: Int { requestQueue.queuedCount }
+
   private func request(_ kind: RequestKind) async throws -> SnipSnapCloudSyncResult {
     let id = UUID()
     return try await withTaskCancellationHandler {
       try Task.checkCancellation()
-      return try await withCheckedThrowingContinuation { continuation in
-        requestWaiters[id] = continuation
-        enqueue(Request(id: id, kind: kind))
+      return try await withCheckedThrowingContinuation { waiter in
+        enqueue(SyncRequest(id: id, kind: kind, waiter: waiter))
       }
     } onCancel: {
       Task { await self.cancelRequest(id) }
     }
   }
 
-  private func enqueue(_ request: Request) {
-    requests.append(request)
-    guard !processingRequests else { return }
-    processingRequests = true
-    Task { await runRequests() }
+  private func enqueue(_ request: SyncRequest) {
+    guard requestQueue.enqueue(request) else { return }
+    Task { await drainRequests() }
   }
 
   private func cancelRequest(_ id: UUID) {
-    requests.removeAll { $0.id == id }
-    requestWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    requestQueue.cancel(id)?.resume(throwing: CancellationError())
   }
 
-  private func runRequests() async {
-    while !requests.isEmpty {
-      let batch = requests
-      requests = []
-      let kind = batch.map(\.kind).max { $0.rawValue < $1.rawValue }!
+  private func drainRequests() async {
+    while let batch = requestQueue.startBatch() {
+      let kind = batch.kind
       let result: Result<SnipSnapCloudSyncResult, any Error>
       do {
         let value = try await operationGate.withLease { [synchronizeAction, retryAction, scheduleAction] in
@@ -171,15 +256,14 @@ public actor SnipSnapCloudSyncSession {
         result = .success(value)
       } catch {
         result = .failure(error)
-        if batch.contains(where: { $0.kind == .schedule }) {
+        if batch.includesAutomaticSync {
           await automaticErrorHandler(error)
         }
       }
-      for request in batch {
-        requestWaiters.removeValue(forKey: request.id)?.resume(with: result)
+      for waiter in requestQueue.finishBatch() {
+        waiter.resume(with: result)
       }
     }
-    processingRequests = false
   }
 
 }
