@@ -335,11 +335,13 @@ package actor ICloudSyncModeCoordinator {
            isolation.resolution != .removing,
            case .available(let accountLineage) = accountState,
            accountLineage == isolation.namespace.accountLineage,
-           isolation.namespace == namespace.binding {
-            let recoveredMissingBytes = try await preserveIsolatedAttachmentsForLocalCopy(
-                storeID: isolation.storeID
-            )
-            try await persistence.resolveAccountIsolation(.keepLocalCopy)
+           isolation.namespace == namespace.binding,
+           let recoveredMissingBytes = try await persistence.keepReturningAccountIsolation(
+               isolation.id,
+               preservingAttachments: { storeID in
+                   try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
+               }
+           ) {
             if recoveredMissingBytes {
                 // Finish the safety copy first. A later explicit enable can start a
                 // fresh remote-first transition without holding account isolation open.
