@@ -786,8 +786,7 @@ package actor SwiftDataSyncModePersistence {
 
   /// A full-record enable that sent records first keeps their accepted bases in the source, so a
   /// later enable merges against what the server holds. Keeping them is best effort: Cancel setup
-  /// always aborts. Callers serialize mode changes through the session gate, so the check after
-  /// the promotion aborts whatever enable is still pending.
+  /// always aborts.
   package func cancelPendingICloudEnable() async throws {
     guard let transition = pendingICloudEnable() else { return }
     if transition.syncProtocol == .fullRecordV1, transition.sendAttempt != nil,
