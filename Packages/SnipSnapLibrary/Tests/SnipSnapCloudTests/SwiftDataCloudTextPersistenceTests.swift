@@ -2005,6 +2005,79 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertTrue(pending.operations.isEmpty, "the other snip stays local")
     }
 
+    // SM27-F2: when the re-merged seed is delivered, the snip the re-merge superseded holds only a
+    // placeholder row, so finishing seeding excludes it instead of uploading it.
+    func testSeedingModeMergeDeliveryExcludesTheSupersededPlaceholder() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let (superseded, remerged, remergedSave) = try await seedThenRemerge(bridge, library: library)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(Set(stored.records.map(\.snipID)), [superseded, remerged])
+        XCTAssertTrue(stored.records.allSatisfy { $0.acceptedText == nil }, "neither row was sent")
+
+        let accepted = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: remergedSave))
+        let sent = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(sent))
+        try await bridge.applyStaged(sent.id)
+
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [superseded], "the delivered seed stays linked")
+        let pending = try await bridge.pendingChanges()
+        XCTAssertTrue(pending.operations.isEmpty, "the superseded snip stays local")
+    }
+
+    // SM27-F2: when seed pruning finishes a re-merged seeding, the snip the re-merge superseded
+    // holds only a placeholder row, so pruning excludes it instead of uploading it.
+    func testSeedingModeMergePruningExcludesTheSupersededPlaceholder() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let (superseded, remerged, _) = try await seedThenRemerge(bridge, library: library)
+        _ = try await library.perform(.delete(ids: [remerged]), sortedBy: .chronological)
+
+        let pending = try await bridge.pendingChanges()
+        let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [superseded])
+        XCTAssertTrue(pending.operations.isEmpty, "the superseded snip stays local")
+    }
+
+    // SM27-F2 guard: excluding the superseded placeholder doesn't strand it. A later active merge
+    // that approves it again stops excluding it, and its placeholder row then uploads.
+    func testActiveModeMergeReapprovingTheSupersededPlaceholderUploadsIt() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let (superseded, _, remergedSave) = try await seedThenRemerge(bridge, library: library)
+        let accepted = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: remergedSave))
+        let sent = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(sent))
+        try await bridge.applyStaged(sent.id)
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+
+        try await bridge.approveModeMerge(snipIDs: [superseded])
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        let pending = try await bridge.pendingChanges()
+        guard case .save(let draft) = pending.operations.first, pending.operations.count == 1 else {
+            return XCTFail("Expected the re-approved snip to upload.")
+        }
+        XCTAssertEqual(draft.routingFields["snipID"], .string(superseded.uuidString.lowercased()))
+    }
+
     // SM27-H3: a snip excluded at the first seed and approved by a later merge keeps syncing.
     func testActiveModeMergeApprovalOfAnExcludedSnipKeepsItsLaterEditsSyncing() async throws {
         let directory = temporaryDirectory()
@@ -2259,6 +2332,25 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         try await bridge.applyStaged(batch.id)
     }
 
+    /// Seeds `superseded` until it holds a placeholder row, then re-merges to approve `remerged`
+    /// instead. Returns the re-merged seed's save, which must be the only pending operation.
+    private func seedThenRemerge(
+        _ bridge: SwiftDataCloudTextPersistence,
+        library: SwiftDataSnipLibrary
+    ) async throws -> (superseded: UUID, remerged: UUID, remergedSave: CloudRecordDraft) {
+        let superseded = try await addSnip("superseded by the re-merge", to: library)
+        let remerged = try await addSnip("approved by the re-merge", to: library)
+        try await markRemoteChecked(bridge)
+        try await bridge.approveSeeding(snipIDs: [superseded])
+        _ = try await bridge.pendingChanges()
+        try await bridge.approveModeMerge(snipIDs: [remerged])
+        let pending = try await bridge.pendingChanges()
+        guard pending.operations.count == 1, case .save(let draft) = pending.operations[0],
+            draft.routingFields["snipID"] == .string(remerged.uuidString.lowercased())
+        else { throw UnexpectedRemergeOutcome() }
+        return (superseded, remerged, draft)
+    }
+
     private func approveAllLocalSnips(
         _ bridge: SwiftDataCloudTextPersistence,
         library: SwiftDataSnipLibrary
@@ -2306,3 +2398,5 @@ private final class CloudApplyFailureGate: @unchecked Sendable {
 }
 
 private struct UnexpectedAddOutcome: Error {}
+
+private struct UnexpectedRemergeOutcome: Error {}
