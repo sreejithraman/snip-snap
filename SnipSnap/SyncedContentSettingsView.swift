@@ -29,7 +29,7 @@ struct SyncedContentSettingsView: View {
                     syncMessage
                 }
 
-                if model.canRetryFailedSync, let retryAction {
+                if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
                     Button("Try Again") {
                         isRetryingSync = true
                         Task {

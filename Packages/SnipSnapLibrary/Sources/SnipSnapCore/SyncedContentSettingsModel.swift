@@ -352,6 +352,9 @@ public final class SyncedContentSettingsModel {
     return issue.canRetry
   }
 
+  /// Whether Settings offers Try Again for Delete Synced Content's incomplete removal.
+  public var canFinishDeleting: Bool { false }
+
   public func enableICloudSync() async {
     guard canEnable, let enableAction else { return }
     status.state = .enabling()
