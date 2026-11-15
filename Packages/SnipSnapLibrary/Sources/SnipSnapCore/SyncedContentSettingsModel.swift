@@ -213,6 +213,7 @@ public final class SyncedContentSettingsModel {
   /// Changes each time Settings enters `.removalPending`.
   @ObservationIgnored private var removalID = 0
   private var isPerformingExplicitSync = false
+  private var explicitRemovalFailure: SyncedContentSyncIssue?
   private let enableAction: EnableAction?
   private let issueMapper: IssueMapper
   private let cancelEnableAction: CancelEnableAction?
@@ -354,6 +355,10 @@ public final class SyncedContentSettingsModel {
 
   /// Whether Settings offers Try Again for Delete Synced Content's incomplete removal.
   public var canFinishDeleting: Bool { mode == .iCloudSync && state == .removalPending }
+  /// What kept the latest explicit sync from finishing Delete Synced Content's incomplete removal.
+  public var finishDeletingIssue: SyncedContentSyncIssue? {
+    canFinishDeleting ? explicitRemovalFailure : nil
+  }
 
   public func enableICloudSync() async {
     guard canEnable, let enableAction else { return }
@@ -420,10 +425,21 @@ public final class SyncedContentSettingsModel {
   }
 
   /// Records that a sync request reported Delete Synced Content's removal incomplete. A
-  /// running delete reports its own outcome.
+  /// running delete reports its own outcome. Only an explicit sync records a removal that
+  /// stays incomplete, so automatic syncs can't flood diagnostics.
   public func recordRemovalPending() {
-    guard mode == .iCloudSync, state != .removalPending, state != .deleting else { return }
-    enterRemovalPending()
+    guard mode == .iCloudSync else { return }
+    switch state {
+    case .deleting:
+      break
+    case .removalPending where isPerformingExplicitSync && explicitRemovalFailure != .someChangesPending:
+      record(.someChangesPending, operation: "sync.delete")
+      explicitRemovalFailure = .someChangesPending
+    case .removalPending:
+      break
+    default:
+      enterRemovalPending()
+    }
   }
 
   /// Records that a sync request reported Delete Synced Content's removal finished. It
@@ -446,6 +462,7 @@ public final class SyncedContentSettingsModel {
     guard !isPerformingExplicitSync else { return }
     isPerformingExplicitSync = true
     defer { isPerformingExplicitSync = false }
+    explicitRemovalFailure = nil
     await action()
   }
 
@@ -495,6 +512,11 @@ public final class SyncedContentSettingsModel {
     case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
       record(issue, operation: "sync.run")
       status.state = .failed(issue)
+    // Automatic syncs can fail on every schedule here, so only an explicit sync records.
+    // An automatic result can repeat the retry's own error, so a repeat records once.
+    case (.iCloudSync, .removalPending) where isPerformingExplicitSync && explicitRemovalFailure != issue:
+      record(issue, operation: "sync.run")
+      explicitRemovalFailure = issue
     case (.localOnly, .enabling(let existing)) where existing == issue:
       break
     case (.localOnly, .enabling) where issue.retriesAutomatically:
@@ -551,6 +573,7 @@ public final class SyncedContentSettingsModel {
 
   private func enterRemovalPending() {
     removalID += 1
+    explicitRemovalFailure = nil
     record(.someChangesPending, operation: "sync.delete")
     status.state = .removalPending
   }
