@@ -953,3 +953,149 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testRoot.path))
     }
 }
+
+// MARK: - Image viewer zoom
+
+final class ImageViewerZoomTests: XCTestCase {
+    /// The image fills the viewport exactly, so at scale s the pan limit is
+    /// 50 × (s − 1) across and 100 × (s − 1) down.
+    private let bounds = ImageViewerBounds(
+        imageSize: CGSize(width: 100, height: 200),
+        viewport: CGSize(width: 100, height: 200)
+    )
+    private let longSwipeDown = CGSize(width: 10, height: 150)
+
+    func testDoubleTapZoomsToTwiceAndBackToBaseZoom() {
+        var zoom = ImageViewerZoom()
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 2)
+        XCTAssertEqual(zoom.offset, .zero)
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+
+        zoom.pinchEnded(magnification: 3, in: bounds)
+        zoom.dragBegan()
+        XCTAssertFalse(zoom.dragEnded(
+            translation: CGSize(width: 40, height: -60), magnification: 1, in: bounds
+        ))
+        XCTAssertEqual(zoom.scale, 3)
+        XCTAssertEqual(zoom.offset, CGSize(width: 40, height: -60))
+        zoom.toggle()
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testPinchEndClampsScaleAndBoundsOffset() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchEnded(magnification: 5, in: bounds)
+        XCTAssertEqual(zoom.scale, 3)
+        zoom.dragBegan()
+        _ = zoom.dragEnded(translation: CGSize(width: 500, height: 500), magnification: 1, in: bounds)
+        XCTAssertEqual(zoom.offset, CGSize(width: 100, height: 200))
+
+        zoom.pinchEnded(magnification: 0.5, in: bounds)
+        XCTAssertEqual(zoom.scale, 1.5)
+        XCTAssertEqual(zoom.offset, CGSize(width: 25, height: 50))
+
+        zoom.pinchEnded(magnification: 0.1, in: bounds)
+        XCTAssertEqual(zoom.scale, 1)
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testDragAboveBaseZoomPansWithinTheImage() {
+        var zoom = ImageViewerZoom()
+        zoom.toggle()
+        zoom.dragBegan()
+        let pan = CGSize(width: 30, height: -80)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: pan, magnification: 1, reduceMotion: false, in: bounds),
+            pan
+        )
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: pan, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, pan)
+
+        zoom.dragBegan()
+        XCTAssertEqual(
+            zoom.displayOffset(
+                dragTranslation: CGSize(width: 100, height: -100),
+                magnification: 1,
+                reduceMotion: false,
+                in: bounds
+            ),
+            CGSize(width: 50, height: -100)
+        )
+        XCTAssertFalse(zoom.dragEnded(
+            translation: CGSize(width: 100, height: -100), magnification: 1, in: bounds
+        ))
+        XCTAssertEqual(zoom.offset, CGSize(width: 50, height: -100))
+
+        zoom.dragBegan()
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, CGSize(width: 50, height: 50))
+    }
+
+    func testSwipeDownAtBaseZoomCloses() {
+        var zoom = ImageViewerZoom()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: longSwipeDown, magnification: 1, reduceMotion: false, in: bounds),
+            CGSize(width: 0, height: 150)
+        )
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: longSwipeDown, magnification: 1, reduceMotion: true, in: bounds),
+            .zero
+        )
+        let swipeUp = CGSize(width: 0, height: -150)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: swipeUp, magnification: 1), 0)
+        XCTAssertEqual(
+            zoom.displayOffset(dragTranslation: swipeUp, magnification: 1, reduceMotion: false, in: bounds),
+            .zero
+        )
+
+        let staysOpen = [
+            CGSize(width: 0, height: 100),
+            swipeUp,
+            CGSize(width: 150, height: 120),
+        ]
+        for translation in staysOpen {
+            zoom.dragBegan()
+            XCTAssertFalse(
+                zoom.dragEnded(translation: translation, magnification: 1, in: bounds),
+                "\(translation) should not close the viewer"
+            )
+        }
+        zoom.dragBegan()
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testPinchDuringDragPansEvenBackAtBaseZoom() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchChanged(whileDragging: false)
+        zoom.pinchEnded(magnification: 1, in: bounds)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+
+        zoom.dragBegan()
+        zoom.pinchChanged(whileDragging: true)
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+
+        zoom.dragBegan()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    func testCancelledPinchDragDoesNotBlockTheNextSwipeToClose() {
+        var zoom = ImageViewerZoom()
+        zoom.dragBegan()
+        zoom.pinchChanged(whileDragging: true)
+        // The system takes the touches, so neither gesture ends.
+
+        zoom.dragBegan()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+}
