@@ -7,8 +7,7 @@ import XCTest
 /// After an aborted enable, a fresh enable runs against a server that already holds the aborted
 /// attempt's records (SM23-F4). It must end with one copy of each snip: no recovered copies and no
 /// extra server records. An enable is aborted either by Try Again finding its candidate's files
-/// gone (SM23-F3-D3) or by Cancel setup. Current builds start every enable as full-record, so a
-/// legacy enable appears only as one an older build left in progress.
+/// gone (SM23-F3-D3) or by Cancel setup. Every shipped build starts its enables as full-record.
 extension ICloudSyncModeCoordinatorTests {
     // (b)
     func testFullRecordTryAgainWithAMissingCandidateAddsNoDuplicateSnips() async throws {
@@ -87,23 +86,12 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(serverTexts, expected.values.sorted())
     }
 
-    // SM23-F4 D2: an older build's legacy enable, cancelled after an upgrade.
-    func testFullRecordEnableAfterCancellingAnUpgradedLegacySetupAddsNoDuplicateSnips()
-        async throws
-    {
-        try await assertFreshEnableKeepsOneCopyOfEachSnip(
-            .relaunchCancelSetupThenEnable,
-            syncProtocol: .legacyTextV1
-        )
-    }
-
     // SM23-F4 D3 = A: keeping the sent records' bases is best effort.
     func testCancelSetupThatCantKeepTheSentBasesStillAbortsAndRecordsTheFailure() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let stranded = try await strandAnEnableThatReachedTheServer(
             root: root,
-            syncProtocol: .fullRecordV1,
             fullDisk: .manifestAndStore
         )
         stranded.disk.freeManifest()
@@ -191,7 +179,6 @@ extension ICloudSyncModeCoordinatorTests {
     /// original snip.
     private func assertFreshEnableKeepsOneCopyOfEachSnip(
         _ retry: SameServerRetry,
-        syncProtocol: SyncModeSyncProtocol = .fullRecordV1,
         fullDisk: SameServerFullDisk.Extent = .manifestOnly,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -200,7 +187,6 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let enabled = try await freshEnableOnTheSameServer(
             after: retry,
-            syncProtocol: syncProtocol,
             fullDisk: fullDisk,
             root: root,
             file: file,
@@ -218,12 +204,10 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Strands an enable that `syncProtocol`'s build started and whose first send reached the
-    /// server, aborts it by `retry`, and runs the fresh enable on the same server. A relaunch
-    /// reopens under today's default protocol.
+    /// Strands an enable whose first send reached the server, aborts it by `retry`, and runs the
+    /// fresh enable on the same server.
     private func freshEnableOnTheSameServer(
         after retry: SameServerRetry,
-        syncProtocol: SyncModeSyncProtocol = .fullRecordV1,
         fullDisk: SameServerFullDisk.Extent,
         root: URL,
         file: StaticString = #filePath,
@@ -231,7 +215,6 @@ extension ICloudSyncModeCoordinatorTests {
     ) async throws -> SameServerFreshEnable {
         let stranded = try await strandAnEnableThatReachedTheServer(
             root: root,
-            syncProtocol: syncProtocol,
             fullDisk: fullDisk,
             file: file,
             line: line
@@ -276,13 +259,9 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertEqual(reopened.transition?.phase, .candidateReady, file: file, line: line)
             try await edit(editedSnipID, to: Self.sameServerEditedText, in: persistence)
             expected[editedSnipID] = Self.sameServerEditedText
-        case .cancelSetupThenEnable, .cancelSetupEditThenEnable, .relaunchCancelSetupThenEnable:
+        case .cancelSetupThenEnable, .cancelSetupEditThenEnable:
             stranded.disk.free()
-            if retry == .relaunchCancelSetupThenEnable {
-                persistence = try relaunch(stranded, root: root)
-            } else {
-                persistence = stranded.persistence
-            }
+            persistence = stranded.persistence
             try await persistence.cancelPendingICloudEnable()
             let cancelled = try await persistence.snapshot()
             XCTAssertNil(cancelled.transition, file: file, line: line)
@@ -337,12 +316,11 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Adds the snips and runs an enable until its first send reached `server`, then fails its
-    /// pointer swap on a full disk, so it stays at `firstSendComplete` with the source frozen.
-    /// The disk stays full.
+    /// Adds the snips and runs a full-record enable until its first send reached `server`, then
+    /// fails its pointer swap on a full disk, so it stays at `firstSendComplete` with the source
+    /// frozen. The disk stays full.
     private func strandAnEnableThatReachedTheServer(
         root: URL,
-        syncProtocol: SyncModeSyncProtocol,
         fullDisk: SameServerFullDisk.Extent,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -351,7 +329,7 @@ extension ICloudSyncModeCoordinatorTests {
         let probe = StoreOpenDiagnosticProbe()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: syncProtocol,
+            defaultSyncProtocol: .fullRecordV1,
             crashHook: disk.hit,
             manifestWriter: disk.writer.write,
             afterMutationBeforeSave: disk.checkStoreSave,
@@ -452,8 +430,6 @@ private enum SameServerRetry: Equatable {
     case relaunchEditThenTryAgain
     case cancelSetupThenEnable
     case cancelSetupEditThenEnable
-    /// After a legacy strand, the relaunch is the first launch of an upgraded build.
-    case relaunchCancelSetupThenEnable
 
     var abortsAMissingCandidate: Bool {
         self == .tryAgain || self == .relaunchEditThenTryAgain
