@@ -126,6 +126,8 @@ final class CloudSyncSessionTests: XCTestCase {
   func testFailureReachesAutomaticErrorHandlerOnlyWhenScheduledSyncJoinedTheRun() async throws {
     let probe = SessionWorkProbe()
     let reports = ErrorReports()
+    let handlerRelease = Latch()
+    let callerResumed = Latch()
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await probe.run("sync"); return .contentUpdated },
       retry: { try await probe.run("retry"); throw SessionTestError("retry") },
@@ -138,25 +140,38 @@ final class CloudSyncSessionTests: XCTestCase {
       activeLibrary: { throw SyncModePersistenceError.missingStore },
       automaticErrorHandler: { error in
         await reports.record(error as? SessionTestError ?? SessionTestError("unexpected \(error)"))
+        await handlerRelease.wait()
       }
     )
     let first = Task { try await session.synchronize() }
     await probe.waitUntilPaused()
-    let retry = Task { try await session.retrySynchronization() }
+    let retry = Task { () async -> Result<SnipSnapCloudSyncResult, any Error> in
+      let result: Result<SnipSnapCloudSyncResult, any Error>
+      do {
+        result = .success(try await session.retrySynchronization())
+      } catch {
+        result = .failure(error)
+      }
+      await callerResumed.open()
+      return result
+    }
     await session.scheduleAutomaticSync()
     try await waitForQueuedRequests(2, in: session)
     await probe.resume()
     _ = try await first.value
 
-    do {
-      _ = try await retry.value
+    try await waitUntil("the automatic error handler receives the failure") {
+      await reports.values() == [SessionTestError("retry")]
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    let resumedDuringReport = await callerResumed.isOpen
+    XCTAssertFalse(resumedDuringReport, "The caller must wait for the automatic error report")
+    await handlerRelease.open()
+    switch await retry.value {
+    case .success:
       XCTFail("Expected Try Again that absorbed scheduled sync to fail")
-    } catch let error as SessionTestError {
-      XCTAssertEqual(error, SessionTestError("retry"))
-      let reported = await reports.values()
-      XCTAssertEqual(
-        reported, [SessionTestError("retry")], "The report must precede the caller's result"
-      )
+    case .failure(let error):
+      XCTAssertEqual(error as? SessionTestError, SessionTestError("retry"))
     }
     do {
       _ = try await session.retrySynchronization()
@@ -185,10 +200,22 @@ final class CloudSyncSessionTests: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) async throws {
+    try await waitUntil("\(count) sync requests are queued", file: file, line: line) {
+      await session.queuedRequestCount == count
+    }
+  }
+
+  /// Fails instead of hanging when the condition doesn't hold within two seconds.
+  private func waitUntil(
+    _ description: String,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ condition: () async -> Bool
+  ) async throws {
     let deadline = ContinuousClock.now + .seconds(2)
-    while await session.queuedRequestCount != count {
+    while await !condition() {
       guard ContinuousClock.now < deadline else {
-        XCTFail("Expected \(count) queued sync requests", file: file, line: line)
+        XCTFail("Timed out waiting until \(description)", file: file, line: line)
         return
       }
       try await Task.sleep(for: .milliseconds(1))
@@ -223,6 +250,23 @@ private actor ErrorReports {
   }
 
   func values() -> [SessionTestError] { recorded }
+}
+
+/// Suspends callers of `wait()` until `open()`, then lets every later call through.
+private actor Latch {
+  private(set) var isOpen = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    if isOpen { return }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+
+  func open() {
+    isOpen = true
+    waiters.forEach { $0.resume() }
+    waiters = []
+  }
 }
 
 private actor SessionWorkProbe {
