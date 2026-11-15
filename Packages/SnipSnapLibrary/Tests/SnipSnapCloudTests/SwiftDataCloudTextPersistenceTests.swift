@@ -1844,6 +1844,280 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(finalSecond.snips.map(\.content), ["from iPhone"])
     }
 
+    func testModeMergeRequiresARemoteCheckAndSeedsAMissingZoneAcrossReopen() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let approved = try await addSnip("approved by the merge", to: library)
+        let excluded = try await addSnip("left local", to: library)
+
+        do {
+            try await bridge.approveModeMerge(snipIDs: [approved])
+            XCTFail("Expected a remote fetch before a mode merge.")
+        } catch CloudNamespaceEnrollmentError.remoteFetchRequired {}
+        let missing = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+            engineState: nil)
+        try await bridge.stage(.fetched(missing))
+        try await bridge.applyStaged(missing.id)
+        try await bridge.approveModeMerge(snipIDs: [approved])
+
+        let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let reopened = SwiftDataCloudTextPersistence(
+            library: reopenedLibrary, namespace: namespace, textZone: zone
+        )
+        let stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [approved])
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [excluded])
+        XCTAssertTrue(stored.namespaceState.zoneCreationPending)
+        let pending = try await reopened.pendingChanges()
+        XCTAssertEqual(pending.operations.count, 1)
+        XCTAssertEqual(pending.zonesToSave, [zone])
+    }
+
+    /// Characterizes the current seeding merge: it replaces approvals and clears zone creation.
+    func testSeedingModeMergeReplacesApprovalsAndClearsZoneCreation() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let first = try await addSnip("first approval", to: library)
+        let second = try await addSnip("second approval", to: library)
+        let missing = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+            engineState: nil)
+        try await bridge.stage(.fetched(missing))
+        try await bridge.applyStaged(missing.id)
+        try await bridge.approveSeeding(snipIDs: [first])
+
+        try await bridge.approveModeMerge(snipIDs: [second])
+        var stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [second])
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+
+        try await bridge.approveModeMerge(snipIDs: [second])
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [second])
+
+        try await bridge.approveModeMerge(snipIDs: [])
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+    }
+
+    func testActiveModeMergeSeedsOnlyUnlinkedApprovals() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let linked = try await addSnip("already synced", to: library)
+        try await markRemoteChecked(bridge)
+        try await bridge.approveSeeding(snipIDs: [linked])
+        guard case .save(let draft) = try await bridge.pendingChanges().operations.first else {
+            return XCTFail("Expected the approved seed.")
+        }
+        let accepted = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft))
+        let sent = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(sent))
+        try await bridge.applyStaged(sent.id)
+        let added = try await addSnip("added by the merge", to: library)
+        let leftLocal = try await addSnip("left local by the merge", to: library)
+
+        try await bridge.approveModeMerge(snipIDs: [linked, added])
+
+        let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let reopened = SwiftDataCloudTextPersistence(
+            library: reopenedLibrary, namespace: namespace, textZone: zone
+        )
+        let stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [added])
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [leftLocal])
+        XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        let pending = try await reopened.pendingChanges()
+        guard case .save(let addedDraft) = pending.operations.first, pending.operations.count == 1 else {
+            return XCTFail("Expected one seed for the merged addition.")
+        }
+        XCTAssertEqual(addedDraft.routingFields["snipID"], .string(added.uuidString.lowercased()))
+    }
+
+    func testRemoteCheckFetchOutcomesActivateFromRemoteRecordsAndBlockAfterwards() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let local = try await addSnip("local before the first fetch", to: library)
+        let phases: [(CloudFetchedBatch, CloudNamespaceBootstrapPhase)] = [
+            (CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+                engineState: nil), .remoteCheckedMissingZone),
+            (CloudFetchedBatch(id: UUID(), items: [], engineState: nil), .remoteChecked),
+            (CloudFetchedBatch(id: UUID(), items: [], databaseEvents: [.zoneDeleted(zone, reason: .deleted)],
+                engineState: nil), .remoteCheckedMissingZone),
+        ]
+        for (batch, phase) in phases {
+            try await bridge.stage(.fetched(batch))
+            try await bridge.applyStaged(batch.id)
+            let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+            XCTAssertEqual(stored.namespaceState.phase, phase)
+            XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
+            XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+            XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        }
+        let remote = try CloudKitRecordMapper.snapshot(
+            CloudKitRecordMapper.record(for: .text(id: .random(in: zone), snipID: UUID(), text: "remote"))
+        )
+        let fetched = CloudFetchedBatch(id: UUID(), items: [.record(remote)], engineState: nil)
+        try await bridge.stage(.fetched(fetched))
+        try await bridge.applyStaged(fetched.id)
+
+        let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let reopened = SwiftDataCloudTextPersistence(
+            library: reopenedLibrary, namespace: namespace, textZone: zone
+        )
+        var stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [local])
+        let activePending = try await reopened.pendingChanges()
+        XCTAssertTrue(activePending.operations.isEmpty)
+
+        let incomplete = CloudFetchedBatch(id: UUID(), items: [], databaseEvents: [.failed(nil, .retryable)],
+            engineState: nil)
+        try await reopened.stage(.fetched(incomplete))
+        try await reopened.applyStaged(incomplete.id)
+        stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [local])
+
+        let missing = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+            engineState: nil)
+        try await reopened.stage(.fetched(missing))
+        try await reopened.applyStaged(missing.id)
+        stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .blocked)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [local])
+    }
+
+    func testDestructiveResetBlocksSeedingAndKeepsItsApprovalsAcrossReopen() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let approved = try await addSnip("approved before the reset", to: library)
+        let excluded = try await addSnip("excluded before the reset", to: library)
+        let missing = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+            engineState: nil)
+        try await bridge.stage(.fetched(missing))
+        try await bridge.applyStaged(missing.id)
+        try await bridge.approveSeeding(snipIDs: [approved])
+        let purge = CloudFetchedBatch(id: UUID(), items: [],
+            databaseEvents: [.zoneDeleted(zone, reason: .purged)], engineState: nil)
+        try await bridge.stage(.fetched(purge))
+        try await bridge.applyStaged(purge.id)
+        let clean = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+        try await bridge.stage(.fetched(clean))
+        try await bridge.applyStaged(clean.id)
+
+        let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let reopened = SwiftDataCloudTextPersistence(
+            library: reopenedLibrary, namespace: namespace, textZone: zone
+        )
+        let stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .blocked)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [approved])
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [excluded])
+        XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        let pending = try await reopened.pendingChanges()
+        XCTAssertEqual(pending, CloudOutboundBatch(operations: []))
+        do {
+            try await reopened.approveSeeding(snipIDs: [approved])
+            XCTFail("Expected a blocked namespace to refuse seed approval.")
+        } catch CloudNamespaceEnrollmentError.remoteFetchRequired {}
+        do {
+            try await reopened.approveModeMerge(snipIDs: [approved])
+            XCTFail("Expected a blocked namespace to refuse a mode merge.")
+        } catch CloudNamespaceEnrollmentError.remoteFetchRequired {}
+    }
+
+    func testSeedSendWithoutTheZoneSaveKeepsZoneCreationPending() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("snips.store")
+        let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let namespace = makeNamespace()
+        let zone = try XCTUnwrap(namespace.zones.first)
+        let bridge = SwiftDataCloudTextPersistence(library: library, namespace: namespace, textZone: zone)
+        let seed = try await addSnip("seed before the zone exists", to: library)
+        let missing = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.failed(zone, .zoneMissing)],
+            engineState: nil)
+        try await bridge.stage(.fetched(missing))
+        try await bridge.applyStaged(missing.id)
+        try await bridge.approveSeeding(snipIDs: [seed])
+        guard case .save(let draft) = try await bridge.pendingChanges().operations.first else {
+            return XCTFail("Expected the approved seed.")
+        }
+        let accepted = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft))
+        let savedWithoutZone = CloudSentBatch(id: UUID(), items: [.saved(accepted)], engineState: nil)
+        try await bridge.stage(.sent(savedWithoutZone))
+        try await bridge.applyStaged(savedWithoutZone.id)
+
+        let reopenedLibrary = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let reopened = SwiftDataCloudTextPersistence(
+            library: reopenedLibrary, namespace: namespace, textZone: zone
+        )
+        var stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .seeding)
+        XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [seed])
+        XCTAssertTrue(stored.namespaceState.zoneCreationPending)
+        let pending = try await reopened.pendingChanges()
+        XCTAssertEqual(pending, CloudOutboundBatch(operations: [], zonesToSave: [zone]))
+
+        let zoneSaved = CloudSentBatch(id: UUID(), items: [], databaseEvents: [.zoneSaved(zone)],
+            engineState: nil)
+        try await reopened.stage(.sent(zoneSaved))
+        try await reopened.applyStaged(zoneSaved.id)
+        stored = try await reopenedLibrary.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+    }
+
+    private func addSnip(_ content: String, to library: SwiftDataSnipLibrary) async throws -> UUID {
+        let added = try await library.perform(
+            .add(
+                content: content,
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inboxID,
+                attachmentURLs: [],
+                requestID: UUID(),
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+        guard case .add(.added(let id)) = added.outcome else { throw UnexpectedAddOutcome() }
+        return id
+    }
+
     private func markRemoteChecked(_ bridge: SwiftDataCloudTextPersistence) async throws {
         let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
         try await bridge.stage(.fetched(batch))
@@ -1895,3 +2169,5 @@ private final class CloudApplyFailureGate: @unchecked Sendable {
         if calls == failOnCall { throw Failure.injected }
     }
 }
+
+private struct UnexpectedAddOutcome: Error {}
