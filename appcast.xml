@@ -4,6 +4,27 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sun, 15 Nov 2026 01:31:08 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.201</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.201-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>201</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.201/Snip-Snap-0.6.1.zip" length="18493880" type="application/octet-stream" sparkle:edSignature="jgo8bGDlAXTS4B5s3FEMuQf6RNbAu+NivTrH716vYyDFfP32cqgBXw/bSBy43/4aGMQOtZ+WDLQrNawiuoyjCg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 201 — Mac
+
+- Keep paused clipboard capture from admitting a converting copy
+- End clipboard sync at once when it&#39;s turned off on the Mac
+- Drive snackbars, failures, and Retry Undo through one presentation machine
+- Give the saved snips session one import-preview state and one exclusive-access state
+- Let the session own Mac backup preview identity
+- Read CLI request markers through one decoded state
+- Keep a late Synced Content result from replacing a sync stop
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Fri, 13 Nov 2026 22:24:09 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.192</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.192-mac.txt</sparkle:fullReleaseNotesLink>

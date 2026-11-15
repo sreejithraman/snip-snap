@@ -162,6 +162,36 @@ final class CloudOutboundAdmissionTests: XCTestCase {
     XCTAssertTrue(queue.admission.blocksAll)
   }
 
+  func testStoppedAdmissionStillReportsItsRecordBlocks() {
+    let zone = CloudZoneID(name: "zone", ownerName: "owner")
+    let durableID = CloudRecordID(zone: zone, name: "durable")
+    let observedID = CloudRecordID(zone: zone, name: "observed")
+    let outbound = CloudOutboundBatch(operations: [.delete(durableID, base: nil), .delete(observedID, base: nil)],
+      zonesToSave: [zone])
+    let failedID = UUID()
+    let resetID = UUID()
+    var queue = CloudRecordOutboundQueue()
+    queue.restoreAdmission(CloudRecordOutboundAdmission(blockedRecordIDs: [durableID]))
+    XCTAssertEqual(queue.schedule(outbound),
+      CloudOutboundBatch(operations: [.delete(observedID, base: nil)], zonesToSave: [zone]))
+    queue.observe(.fetched(CloudFetchedBatch(id: failedID, items: [.failed(observedID, .invalidRecord)],
+      engineState: nil)), zones: [zone])
+    queue.observe(.sent(CloudSentBatch(id: resetID, items: [],
+      databaseEvents: [.zoneDeleted(zone, reason: .encryptedDataReset)], engineState: nil)), zones: [zone])
+    XCTAssertEqual(queue.admission,
+      CloudRecordOutboundAdmission(blockedRecordIDs: [durableID, observedID], blocksAll: true))
+    XCTAssertEqual(queue.current, CloudOutboundBatch(operations: []))
+
+    queue.confirmAdmission(resetID, durable: .open)
+    XCTAssertEqual(queue.admission, CloudRecordOutboundAdmission(blockedRecordIDs: [observedID], blocksAll: true))
+    XCTAssertNil(queue.schedule(outbound))
+
+    queue.confirmAdmission(failedID, durable: CloudRecordOutboundAdmission(blockedRecordIDs: [durableID]))
+    XCTAssertEqual(queue.admission, CloudRecordOutboundAdmission(blockedRecordIDs: [durableID], blocksAll: true))
+    XCTAssertNil(queue.schedule(outbound))
+    XCTAssertEqual(queue.current, CloudOutboundBatch(operations: []))
+  }
+
   private struct Fixture {
     let root: URL
     let url: URL
