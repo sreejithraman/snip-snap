@@ -95,7 +95,8 @@ if [[ "$run_ios_app_tests" == YES ]]; then
     if [[ "${CI:-}" == true && -z "${SNIP_SNAP_IOS_TEST_DESTINATION:-}" ]]; then
         ios_test_destination="platform=iOS Simulator,id=$("$script_dir/ci-boot-ios-simulator.sh" "$ios_test_device")"
     fi
-    if xcodebuild \
+    # DO NOT MERGE: W13 zombie diagnostic. Names the freed view if the fold-suite layout crash recurs.
+    if TEST_RUNNER_NSZombieEnabled=YES xcodebuild \
         -project "$repo_dir/SnipSnap.xcodeproj" \
         -scheme SnipSnapiOS \
         -configuration Debug \
@@ -104,7 +105,9 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         CODE_SIGNING_ALLOWED=NO \
         SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= \
         -parallel-testing-enabled NO \
-        -only-testing:SnipSnapiOSTests \
+        -only-testing:SnipSnapiOSTests/IOSFoldContinuitySidebarTests \
+        -only-testing:SnipSnapiOSTests/IOSFoldContinuityTests \
+        -test-iterations 10 \
         test; then
         :
     else
