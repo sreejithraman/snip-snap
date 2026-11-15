@@ -255,8 +255,22 @@ final class CloudSyncSessionTests: XCTestCase {
       retrySyncWhenPossible: {},
       scheduleSyncAfterLocalChange: {}
     ))
-    let enable = Task { try await session.enableICloudSync() }
+    let enable = Task {
+      do {
+        let outcome = try await session.enableICloudSync()
+        await probe.heldWorkFinished()
+        return outcome
+      } catch {
+        await probe.heldWorkFinished()
+        throw error
+      }
+    }
     await probe.waitUntilPaused()
+    guard await probe.events() == ["source read"] else {
+      _ = try await enable.value
+      XCTFail("The enable finished without reaching its local-library read")
+      return
+    }
 
     let checkWaits = expectation(description: "The account handler waits for the enable in flight")
     checkWaits.isInverted = true
@@ -353,6 +367,7 @@ private actor SessionWorkProbe {
   private var active = false
   private var paused = false
   private var pauseNext = true
+  private var heldWorkIsDone = false
   private var recorded: [String] = []
   private var release: CheckedContinuation<Void, Never>?
   private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -376,8 +391,15 @@ private actor SessionWorkProbe {
   }
 
   func waitUntilPaused() async {
-    if paused { return }
+    if paused || heldWorkIsDone { return }
     await withCheckedContinuation { pauseWaiters.append($0) }
+  }
+
+  /// Ends `waitUntilPaused()` for work that finished without reaching `run`.
+  func heldWorkFinished() {
+    heldWorkIsDone = true
+    pauseWaiters.forEach { $0.resume() }
+    pauseWaiters = []
   }
 
   func resume() {
