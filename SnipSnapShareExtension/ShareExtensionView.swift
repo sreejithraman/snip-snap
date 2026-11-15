@@ -5,6 +5,7 @@ struct ShareExtensionView: View {
     let model: ShareExtensionModel
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.self) private var environment
 
     private var destinationAccent: SnipListAppearance {
         model.destinationList?.accent ?? SnipListAppearance(preset: nil)
@@ -93,7 +94,11 @@ struct ShareExtensionView: View {
                 Section("Save to") {
                     Picker("List", selection: Bindable(model).destinationListID) {
                         ForEach(model.lists) { list in
-                            Label(list.displayName, systemImage: list.displaySystemImage)
+                            Label {
+                                Text(list.displayName)
+                            } icon: {
+                                list.menuMarkImage(in: environment)
+                            }
                                 .tag(list.id)
                         }
                     }

@@ -16,6 +16,7 @@ private enum SnipListScrollTarget {
 
 struct SnipListView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: AppModel
     let displayedListID: UUID
     let isInteractive: Bool
@@ -30,6 +31,7 @@ struct SnipListView: View {
     let clipboardFilePreviewRevision: Int
     let onPreviewAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
+    let onInlineEditEnd: () -> Void
 
     @State private var contextMenuSelection: Set<UUID>?
     @State private var hasScrolledFromTop = false
@@ -587,16 +589,12 @@ struct SnipListView: View {
             onCaptureScreenArea: captureScreenAreaForEdit,
             onCancelEdit: {
                 model.cancelEditing()
-                focusedTarget = .list
+                onInlineEditEnd()
             },
             onSaveEdit: { text in
                 guard let session,
                       await model.saveInlineEdit(content: text, in: session) else { return false }
-                focusedTarget = model.isSearchExpanded
-                    && model.filteredSnips.isEmpty
-                    && model.clipboardSearchMatches.isEmpty
-                    ? .search
-                    : .list
+                onInlineEditEnd()
                 return true
             },
             onEditError: { model.presentError($0, operation: "composer.paste_stage") }
@@ -767,7 +765,7 @@ struct SnipListView: View {
                 submenu.addPanelAction(
                     list.displayName,
                     isEnabled: model.editingID == nil,
-                    systemImage: list.displaySystemImage
+                    image: list.menuMarkImage(colorScheme: colorScheme)
                 ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }

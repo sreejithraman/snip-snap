@@ -22,9 +22,11 @@ private struct SnipListIconPicker: View {
             isPresented = true
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: selection)
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 18)
+                SnipListMarkView(
+                    mark: ListIconSymbol.pickerMark(for: selection),
+                    appearance: SnipListAppearance(preset: nil),
+                    diameter: 20
+                )
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
@@ -76,6 +78,10 @@ private struct SnipListIconBrowser: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        SnipListNoIconButton(selection: $selection) { dismiss() }
+                            .padding([.horizontal, .top], 12)
+                    }
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                         ForEach(displayedCategories) { category in
                             Section {
@@ -141,7 +147,7 @@ struct NewSnipListSheet: View {
     @Binding var isPresented: Bool
     let movingIDs: Set<UUID>
     @State private var name = ""
-    @State private var systemImage = "circle.grid.2x2.fill"
+    @State private var systemImage = ""
     @State private var color: SnipListColorPreset?
 
     var body: some View {
@@ -205,7 +211,15 @@ struct SnipListEditSheet: View {
         _color = State(initialValue: list.color)
     }
 
-    private var appearance: SnipListAppearance { SnipListAppearance(preset: color) }
+    /// The list as it will look once saved.
+    private var preview: SnipList {
+        var preview = list
+        if !cleanedName.isEmpty { preview.name = cleanedName }
+        preview.systemImage = systemImage
+        preview.color = color
+        return preview
+    }
+    private var appearance: SnipListAppearance { preview.accent }
     private var cleanedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
@@ -215,11 +229,9 @@ struct SnipListEditSheet: View {
 
             HStack(spacing: SnipSnapSpacing.paneContentInset) {
                 Button { showsIcons = true } label: {
-                    Image(systemName: ListIconSymbol.supportedName(systemImage))
-                        .font(.system(size: 24, weight: .medium))
+                    SnipListMarkView(list: preview, diameter: 40)
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: systemImage)
-                        .foregroundStyle(appearance.color)
                         .frame(width: 64, height: 64)
                         .background(appearance.selectionFill, in: RoundedRectangle(cornerRadius: 16))
                         .overlay(alignment: .bottomTrailing) {
@@ -260,7 +272,7 @@ struct SnipListEditSheet: View {
                     .onSubmit(save)
             }
 
-            SnipListColorPicker(selection: $color)
+            SnipListColorPicker(selection: $color, automatic: SnipList.automaticColor(for: list.id))
 
             Divider()
             HStack {

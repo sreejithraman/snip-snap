@@ -60,7 +60,8 @@ final class IOSClipboardModel {
         UIDevice.current.model == "iPad" ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
     }
 
-    init(rootURL: URL, settings: SyncedContentSettingsModel, containerIdentifier: String? = nil,
+    init(rootURL: URL, syncRootURL: URL? = nil, settings: SyncedContentSettingsModel,
+         containerIdentifier: String? = nil,
          preferences: UserDefaults = .standard,
          generation: @escaping @MainActor () async throws -> String? = { nil },
          diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
@@ -83,7 +84,8 @@ final class IOSClipboardModel {
         cloud = containerIdentifier.flatMap {
             let identifier = $0.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !identifier.isEmpty else { return nil }
-            return makeCloudService(store, identifier, rootURL.appendingPathComponent("SyncMode", isDirectory: true))
+            return makeCloudService(store, identifier,
+                syncRootURL ?? rootURL.appendingPathComponent("SyncMode", isDirectory: true))
         }
     }
 

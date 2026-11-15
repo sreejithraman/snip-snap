@@ -84,11 +84,10 @@ private struct FullScreenAttachmentImage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: CGImage?
     @State private var didFailToLoad = false
-    @State private var zoomScale: CGFloat = 1
-    @State private var panOffset: CGSize = .zero
-    @State private var pinchOccurredDuringDrag = false
+    @State private var zoom = ImageViewerZoom()
     @GestureState private var magnification: CGFloat = 1
     @GestureState private var dragTranslation: CGSize = .zero
+    @GestureState private var isDragging = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -104,12 +103,16 @@ private struct FullScreenAttachmentImage: View {
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .scaleEffect(effectiveZoom)
-                        .offset(imageOffset(image: displayedImage, viewport: geometry.size))
+                        .scaleEffect(zoom.effectiveScale(magnification: magnification))
+                        .offset(zoom.displayOffset(
+                            dragTranslation: dragTranslation,
+                            magnification: magnification,
+                            reduceMotion: reduceMotion,
+                            in: ImageViewerBounds(image: displayedImage, viewport: geometry.size)
+                        ))
                         .onTapGesture(count: 2) {
                             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                                zoomScale = zoomScale > 1 ? 1 : 2
-                                panOffset = .zero
+                                zoom.toggle()
                             }
                         }
                         .accessibilityLabel("Image preview")
@@ -123,22 +126,16 @@ private struct FullScreenAttachmentImage: View {
                     .updating($dragTranslation) { value, state, _ in
                         state = value.translation
                     }
+                    .updating($isDragging) { _, state, _ in
+                        state = true
+                    }
                     .onEnded { value in
-                        if effectiveZoom > 1 || pinchOccurredDuringDrag {
-                            panOffset = boundedOffset(
-                                CGSize(
-                                    width: panOffset.width + value.translation.width,
-                                    height: panOffset.height + value.translation.height
-                                ),
-                                image: image,
-                                viewport: geometry.size,
-                                scale: effectiveZoom
-                            )
-                        } else if value.translation.height > 100,
-                                  abs(value.translation.height) > abs(value.translation.width) {
-                            close()
-                        }
-                        pinchOccurredDuringDrag = false
+                        let closes = zoom.dragEnded(
+                            translation: value.translation,
+                            magnification: magnification,
+                            in: ImageViewerBounds(image: image, viewport: geometry.size)
+                        )
+                        if closes { close() }
                     }
             )
             .simultaneousGesture(
@@ -147,20 +144,21 @@ private struct FullScreenAttachmentImage: View {
                         state = value.magnification
                     }
                     .onChanged { _ in
-                        if dragTranslation != .zero { pinchOccurredDuringDrag = true }
+                        zoom.pinchChanged(whileDragging: dragTranslation != .zero)
                     }
                     .onEnded { value in
-                        zoomScale = min(3, max(1, zoomScale * value.magnification))
-                        panOffset = boundedOffset(
-                            panOffset, image: image, viewport: geometry.size, scale: zoomScale
+                        zoom.pinchEnded(
+                            magnification: value.magnification,
+                            in: ImageViewerBounds(image: image, viewport: geometry.size)
                         )
                     }
             )
+            .onChange(of: isDragging) { _, dragging in
+                if dragging { zoom.dragStarted() } else { zoom.dragStopped() }
+            }
             .task(id: url) {
                 didFailToLoad = false
-                zoomScale = 1
-                panOffset = .zero
-                pinchOccurredDuringDrag = false
+                zoom = ImageViewerZoom()
                 image = FullScreenImageLoader.shared.cachedImage(for: url)
                     ?? AttachmentThumbnailCache.shared.cachedImage(
                         for: url,
@@ -202,51 +200,137 @@ private struct FullScreenAttachmentImage: View {
         )
     }
 
-    private var effectiveZoom: CGFloat {
-        min(3, max(1, zoomScale * magnification))
-    }
-
     private var dismissalDistance: CGFloat {
-        guard effectiveZoom == 1,
-              !pinchOccurredDuringDrag,
-              dragTranslation.height > 0,
-              abs(dragTranslation.height) > abs(dragTranslation.width) else { return 0 }
-        return dragTranslation.height
+        zoom.dismissalDistance(dragTranslation: dragTranslation, magnification: magnification)
     }
 
     private func close() {
         dismissPresentation()
         dismiss()
     }
+}
 
-    private func imageOffset(image: CGImage, viewport: CGSize) -> CGSize {
-        if effectiveZoom == 1 && !pinchOccurredDuringDrag {
-            return CGSize(width: 0, height: reduceMotion ? 0 : dismissalDistance)
+/// Committed zoom and pan, and whether the current drag has seen a pinch.
+struct ImageViewerZoom {
+    /// Whether the drag has seen a pinch. A pinch during a drag turns it into a pan, even
+    /// back at base zoom.
+    private enum DragPinch {
+        case none
+        /// A pinch happened during the drag in progress.
+        case seen
+        /// The drag stopped after a pinch. Its end can still arrive; the next drag's start
+        /// clears this.
+        case seenBeforeStop
+    }
+
+    private(set) var scale: CGFloat = 1
+    private(set) var offset: CGSize = .zero
+    private var dragPinch = DragPinch.none
+
+    mutating func toggle() {
+        scale = scale > 1 ? 1 : 2
+        offset = .zero
+    }
+
+    /// A pinch that arrives before the start is seen belongs to the new drag, so it stays.
+    mutating func dragStarted() {
+        if dragPinch == .seenBeforeStop { dragPinch = .none }
+    }
+
+    mutating func pinchChanged(whileDragging: Bool) {
+        if whileDragging { dragPinch = .seen }
+    }
+
+    /// The drag ended or the system cancelled it. SwiftUI may report this before or after
+    /// `dragEnded`, so the pinch mark stays readable by a late end.
+    mutating func dragStopped() {
+        if dragPinch == .seen { dragPinch = .seenBeforeStop }
+    }
+
+    mutating func pinchEnded(magnification: CGFloat, in bounds: ImageViewerBounds) {
+        scale = min(3, max(1, scale * magnification))
+        offset = bounds.bounded(offset, scale: scale)
+    }
+
+    /// Returns true when the drag is a swipe that closes the viewer.
+    mutating func dragEnded(
+        translation: CGSize,
+        magnification: CGFloat,
+        in bounds: ImageViewerBounds
+    ) -> Bool {
+        defer { dragPinch = .none }
+        let zoom = effectiveScale(magnification: magnification)
+        if zoom > 1 || dragPinch != .none {
+            offset = bounds.bounded(
+                CGSize(width: offset.width + translation.width, height: offset.height + translation.height),
+                scale: zoom
+            )
+            return false
         }
-        return boundedOffset(
+        return translation.height > 100 && abs(translation.height) > abs(translation.width)
+    }
+
+    func effectiveScale(magnification: CGFloat) -> CGFloat {
+        min(3, max(1, scale * magnification))
+    }
+
+    func dismissalDistance(dragTranslation: CGSize, magnification: CGFloat) -> CGFloat {
+        guard !pans(at: effectiveScale(magnification: magnification)),
+              dragTranslation.height > 0,
+              abs(dragTranslation.height) > abs(dragTranslation.width) else { return 0 }
+        return dragTranslation.height
+    }
+
+    func displayOffset(
+        dragTranslation: CGSize,
+        magnification: CGFloat,
+        reduceMotion: Bool,
+        in bounds: ImageViewerBounds
+    ) -> CGSize {
+        let zoom = effectiveScale(magnification: magnification)
+        guard pans(at: zoom) else {
+            let distance = dismissalDistance(dragTranslation: dragTranslation, magnification: magnification)
+            return CGSize(width: 0, height: reduceMotion ? 0 : distance)
+        }
+        return bounds.bounded(
             CGSize(
-                width: panOffset.width + dragTranslation.width,
-                height: panOffset.height + dragTranslation.height
+                width: offset.width + dragTranslation.width,
+                height: offset.height + dragTranslation.height
             ),
-            image: image,
-            viewport: viewport,
-            scale: effectiveZoom
+            scale: zoom
         )
     }
 
-    private func boundedOffset(
-        _ offset: CGSize,
-        image: CGImage?,
-        viewport: CGSize,
-        scale: CGFloat
-    ) -> CGSize {
-        guard let image, viewport.width > 0, viewport.height > 0 else { return .zero }
-        let fittedScale = min(viewport.width / CGFloat(image.width), viewport.height / CGFloat(image.height))
-        let horizontalLimit = max(0, (CGFloat(image.width) * fittedScale * scale - viewport.width) / 2)
-        let verticalLimit = max(0, (CGFloat(image.height) * fittedScale * scale - viewport.height) / 2)
+    /// Whether the drag in progress pans. A stopped drag's pinch no longer counts, so the
+    /// next drag follows the finger.
+    private func pans(at zoom: CGFloat) -> Bool {
+        zoom > 1 || dragPinch == .seen
+    }
+}
+
+/// How far a fitted image can pan inside the viewport.
+struct ImageViewerBounds {
+    /// Pixel size, or nil before an image loads.
+    let imageSize: CGSize?
+    let viewport: CGSize
+
+    func bounded(_ offset: CGSize, scale: CGFloat) -> CGSize {
+        guard let imageSize, viewport.width > 0, viewport.height > 0 else { return .zero }
+        let fittedScale = min(viewport.width / imageSize.width, viewport.height / imageSize.height)
+        let horizontalLimit = max(0, (imageSize.width * fittedScale * scale - viewport.width) / 2)
+        let verticalLimit = max(0, (imageSize.height * fittedScale * scale - viewport.height) / 2)
         return CGSize(
             width: min(horizontalLimit, max(-horizontalLimit, offset.width)),
             height: min(verticalLimit, max(-verticalLimit, offset.height))
+        )
+    }
+}
+
+private extension ImageViewerBounds {
+    init(image: CGImage?, viewport: CGSize) {
+        self.init(
+            imageSize: image.map { CGSize(width: CGFloat($0.width), height: CGFloat($0.height)) },
+            viewport: viewport
         )
     }
 }

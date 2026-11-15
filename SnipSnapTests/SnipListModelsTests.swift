@@ -903,6 +903,153 @@ final class SnipListModelsTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testGeneratedMarkdownOutlivesItsExportUntilAnotherOwnerTakesThePasteboard() async throws {
+        let attachment = try makeMixedSnipExportAttachment()
+        defer { try? FileManager.default.removeItem(at: attachment.deletingLastPathComponent()) }
+        let pasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-generated-markdown-handoff-\(UUID())")
+        )
+        defer { pasteboard.releaseGlobally() }
+
+        let markdownURL = try await copyMixedSnipExport(
+            attachment: attachment,
+            to: pasteboard
+        )
+        defer { try? FileManager.default.removeItem(at: markdownURL.deletingLastPathComponent()) }
+
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Another app's copy", forType: .string))
+
+        let removed = await waitUntil {
+            !FileManager.default.fileExists(atPath: markdownURL.path)
+        }
+        XCTAssertTrue(removed)
+    }
+
+    @MainActor
+    func testGeneratedMarkdownLeavesWithAnExportThatNeverReachesThePasteboard() async throws {
+        let attachment = try makeMixedSnipExportAttachment()
+        defer { try? FileManager.default.removeItem(at: attachment.deletingLastPathComponent()) }
+
+        let markdownURL: URL
+        do {
+            let export = try await SnipPasteboardExport.preparingClipboardExport(
+                text: "Explain this image",
+                attachmentURLs: [attachment]
+            )
+            markdownURL = try generatedMarkdownURL(
+                in: export.pasteboardWriters().compactMap { $0 as? NSPasteboardItem }
+            )
+            withExtendedLifetime(export) {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
+            }
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markdownURL.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: markdownURL.deletingLastPathComponent().path
+            )
+        )
+    }
+
+    @MainActor
+    func testGeneratedMarkdownKeepsWatchingThePasteboardItWasCopiedTo() async throws {
+        let attachment = try makeMixedSnipExportAttachment()
+        defer { try? FileManager.default.removeItem(at: attachment.deletingLastPathComponent()) }
+        let copiedPasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-generated-markdown-copied-\(UUID())")
+        )
+        defer { copiedPasteboard.releaseGlobally() }
+        let laterPasteboard = NSPasteboard(
+            name: .init("SnipSnapTests-generated-markdown-later-\(UUID())")
+        )
+        defer { laterPasteboard.releaseGlobally() }
+
+        let markdownURL = try await copyMixedSnipExport(
+            attachment: attachment,
+            to: copiedPasteboard,
+            thenRetainingUntilChangesTo: laterPasteboard
+        )
+        defer { try? FileManager.default.removeItem(at: markdownURL.deletingLastPathComponent()) }
+
+        laterPasteboard.clearContents()
+        XCTAssertTrue(laterPasteboard.setString("Another app's copy", forType: .string))
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
+
+        copiedPasteboard.clearContents()
+        XCTAssertTrue(copiedPasteboard.setString("Another app's copy", forType: .string))
+
+        let removed = await waitUntil {
+            !FileManager.default.fileExists(atPath: markdownURL.path)
+        }
+        XCTAssertTrue(removed)
+    }
+
+    private func makeMixedSnipExportAttachment() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let attachment = directory.appendingPathComponent("image.png")
+        try Data([0x89, 0x50, 0x4e, 0x47]).write(to: attachment)
+        return attachment
+    }
+
+    /// Copies a mixed snip and drops its export on return, so only the
+    /// pasteboard retention keeps the generated Markdown alive.
+    @MainActor
+    private func copyMixedSnipExport(
+        attachment: URL,
+        to pasteboard: NSPasteboard,
+        thenRetainingUntilChangesTo laterPasteboard: NSPasteboard? = nil
+    ) async throws -> URL {
+        let export = try await SnipPasteboardExport.preparingClipboardExport(
+            text: "Explain this image",
+            attachmentURLs: [attachment]
+        )
+        let changeCount = pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects(export.pasteboardWriters()))
+        export.retainStagedResources(
+            untilPasteboardChanges: pasteboard,
+            from: changeCount
+        )
+        if let laterPasteboard {
+            export.retainStagedResources(
+                untilPasteboardChanges: laterPasteboard,
+                from: laterPasteboard.clearContents()
+            )
+        }
+        return try generatedMarkdownURL(in: pasteboard.pasteboardItems ?? [])
+    }
+
+    private func generatedMarkdownURL(in items: [NSPasteboardItem]) throws -> URL {
+        let item = items.first { $0.types.contains(SnipPasteboardMarkdownFile.privateType) }
+        return try XCTUnwrap(
+            item?.string(forType: .fileURL).flatMap(URL.init(string:))
+        )
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(2),
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition(), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
+    }
+
     func testNewSnipRevealWaitsForTheAddedRowWhenTheListWasAtTheTop() {
         let existingID = UUID()
         let addedID = UUID()
