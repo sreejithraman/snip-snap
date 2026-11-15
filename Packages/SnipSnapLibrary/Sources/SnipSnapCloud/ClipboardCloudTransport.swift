@@ -74,24 +74,28 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
     }
     private let database: CKDatabase
     private let zone: CKRecordZone.ID
+    private let bound: CloudKitCallBound
     private var cache: [String: Data] = [:]
     private var uploaded: Set<String> = []
     private var zoneReady = false
     private var fetchedReferences: Set<String> = []
-    package init(database: CKDatabase, generation: String) {
+    package init(database: CKDatabase, generation: String, bound: CloudKitCallBound = .standard) {
         self.database = database
+        self.bound = bound
         let digest = Self.digest(Data(generation.utf8))
         zone = CKRecordZone.ID(zoneName: "SnipSnapClipboard-" + String(digest.prefix(24)))
     }
     private func prepare() async throws {
         guard !zoneReady else { return }
-        _ = try await database.save(CKRecordZone(zoneID: zone))
+        _ = try await database.configuredWith(configuration: bound.configuration(.small)) {
+            [zone] configured in try await configured.save(CKRecordZone(zoneID: zone))
+        }
         zoneReady = true
     }
     package func fetch() async throws -> ClipboardCloudSnapshot {
         try await prepare()
         let record: CKRecord
-        do { record = try await database.record(for: CKRecord.ID(recordName: "manifest", zoneID: zone)) }
+        do { record = try await transferRecord(CKRecord.ID(recordName: "manifest", zoneID: zone)) }
         catch let error as CKError where error.code == .unknownItem {
             cache = [:]; uploaded = []; fetchedReferences = []
             return ClipboardCloudSnapshot()
@@ -105,7 +109,7 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         for (id, reference) in manifest.entries {
             let recordName = reference.recordName
             if let data = cache[recordName] { entries[id] = data; continue }
-            let payload = try await database.record(for: CKRecord.ID(recordName: recordName, zoneID: zone))
+            let payload = try await transferRecord(CKRecord.ID(recordName: recordName, zoneID: zone))
             guard let asset = payload["payload"] as? CKAsset, let url = asset.fileURL else { throw ClipboardCloudError.invalidPayload }
             guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 * 1_024 * 1_024 else { throw ClipboardCloudError.payloadTooLarge }
             let data = try Data(contentsOf: url)
@@ -161,14 +165,28 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         defer { try? FileManager.default.removeItem(at: url) }
         ClipboardCloudRecordCodec.setPayload(url, on: record)
         try cancellation.check()
-        let results = try await database.modifyRecords(saving: [record], deleting: deleting, savePolicy: policy, atomically: true)
+        let results = try await database.configuredWith(configuration: bound.configuration(.transfer)) {
+            try await $0.modifyRecords(saving: [record], deleting: deleting, savePolicy: policy, atomically: true)
+        }
         guard let result = results.saveResults[record.recordID] else { throw ClipboardCloudError.invalidPayload }
         _ = try result.get()
     }
     package func deleteAll() async throws {
-        do { _ = try await database.deleteRecordZone(withID: zone) }
+        do {
+            _ = try await database.configuredWith(configuration: bound.configuration(.small)) {
+                [zone] configured in try await configured.deleteRecordZone(withID: zone)
+            }
+        }
         catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem { }
         zoneReady = false; uploaded = []; cache = [:]; fetchedReferences = []
+    }
+    /// The caller reads the record's asset after this returns, so a late read changes nothing.
+    private func transferRecord(_ id: CKRecord.ID) async throws -> CKRecord {
+        try await bound.read(.transfer) { [database, bound] in
+            try await database.configuredWith(configuration: bound.configuration(.transfer)) {
+                try await $0.record(for: id)
+            }
+        }
     }
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

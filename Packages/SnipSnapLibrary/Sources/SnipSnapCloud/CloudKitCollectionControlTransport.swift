@@ -65,10 +65,16 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
   private let database: CKDatabase
   private let controlID: CloudRecordID
   private let retry = CloudKitOperationRetry()
+  private let bound: CloudKitCallBound
 
-  package init(database: CKDatabase, controlID: CloudRecordID) {
+  package init(
+    database: CKDatabase,
+    controlID: CloudRecordID,
+    bound: CloudKitCallBound = .standard
+  ) {
     self.database = database
     self.controlID = controlID
+    self.bound = bound
   }
 
   package nonisolated static func isMissingControl(_ code: CKError.Code) -> Bool {
@@ -77,8 +83,13 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
 
   package func fetchControl() async throws -> CloudCollectionControlRecord? {
     do {
-      let record = try await retry.run(operationName: "control fetch") { [database, controlID] in
-        try await database.record(for: CloudKitRecordMapper.recordID(for: controlID))
+      let record = try await retry.run(operationName: "control fetch") {
+        [database, controlID, bound] in
+        try await bound.read(.small) {
+          try await database.configuredWith(configuration: bound.configuration(.small)) {
+            try await $0.record(for: CloudKitRecordMapper.recordID(for: controlID))
+          }
+        }
       }
       return try CloudCollectionControlCodec.decode(record, expectedID: controlID)
     } catch let error as CKError where Self.isMissingControl(error.code) {
@@ -88,13 +99,17 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
 
   package func createZones(_ zones: Set<CloudZoneID>) async throws {
     let allZones = zones.union([controlID.zone])
-    try await retry.run(operationName: "control create zones") { [database] in
-      let result = try await database.modifyRecordZones(
-        saving: allZones.map {
-          CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0))
-        },
-        deleting: []
-      )
+    try await retry.run(operationName: "control create zones") { [database, bound] in
+      let result = try await database.configuredWith(
+        configuration: bound.configuration(.small)
+      ) { configured in
+        try await configured.modifyRecordZones(
+          saving: allZones.map {
+            CKRecordZone(zoneID: CloudKitRecordMapper.zoneID(for: $0))
+          },
+          deleting: []
+        )
+      }
       try Self.requireZoneSuccess(result.saveResults)
     }
   }
@@ -109,13 +124,17 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
       replacing: version
     )
     do {
-      let saved = try await retry.run(operationName: "control save") { [database] in
-        let result = try await database.modifyRecords(
-          saving: [record],
-          deleting: [],
-          savePolicy: .ifServerRecordUnchanged,
-          atomically: true
-        )
+      let saved = try await retry.run(operationName: "control save") { [database, bound] in
+        let result = try await database.configuredWith(
+          configuration: bound.configuration(.small)
+        ) { configured in
+          try await configured.modifyRecords(
+            saving: [record],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+          )
+        }
         guard let saved = result.saveResults[record.recordID] else {
           throw CloudTransportError.sendFailed
         }
@@ -130,11 +149,15 @@ package actor CloudKitCollectionControlTransport: CloudCollectionControlTranspor
   package func deleteZones(_ zones: Set<CloudZoneID>) async throws {
     guard !zones.isEmpty else { return }
     do {
-      try await retry.run(operationName: "control delete zones") { [database] in
-        let result = try await database.modifyRecordZones(
-          saving: [],
-          deleting: zones.map(CloudKitRecordMapper.zoneID(for:))
-        )
+      try await retry.run(operationName: "control delete zones") { [database, bound] in
+        let result = try await database.configuredWith(
+          configuration: bound.configuration(.small)
+        ) { configured in
+          try await configured.modifyRecordZones(
+            saving: [],
+            deleting: zones.map(CloudKitRecordMapper.zoneID(for:))
+          )
+        }
         try Self.requireZoneSuccess(result.deleteResults, ignoringMissingZones: true)
       }
     } catch let error as CKError where error.code == .zoneNotFound {

@@ -16,6 +16,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private let namespace: CloudSyncNamespace
     private let automaticallyFetchedZones: Set<CloudZoneID>
     private let readRecords: RecordReader
+    private let bound: CloudKitCallBound
     private let makeEngine: EngineFactory
     private var lifecycle = EngineLifecycle.stopped
     private var outboundQueue = CloudRecordOutboundQueue()
@@ -28,14 +29,20 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         database: CKDatabase,
         namespace: CloudSyncNamespace,
         automaticallyFetchedZones: Set<CloudZoneID>? = nil,
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        bound: CloudKitCallBound = .standard
     ) {
         self.init(
             namespace: namespace,
             automaticallyFetchedZones: automaticallyFetchedZones,
             diagnostics: diagnostics,
+            bound: bound,
             readRecords: { recordIDs, desiredKeys in
-                try await database.records(for: recordIDs, desiredKeys: desiredKeys)
+                try await database.configuredWith(
+                    configuration: bound.configuration(.transfer)
+                ) { configured in
+                    try await configured.records(for: recordIDs, desiredKeys: desiredKeys)
+                }
             },
             makeEngine: { serialization, automaticallySync, delegate in
                 var configuration = CKSyncEngine.Configuration(
@@ -53,12 +60,14 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         namespace: CloudSyncNamespace,
         automaticallyFetchedZones: Set<CloudZoneID>?,
         diagnostics: AppDiagnosticRecorder,
+        bound: CloudKitCallBound = .standard,
         readRecords: @escaping RecordReader,
         makeEngine: @escaping EngineFactory
     ) {
         self.namespace = namespace
         self.automaticallyFetchedZones = automaticallyFetchedZones ?? namespace.zones
         self.diagnostics = diagnostics
+        self.bound = bound
         self.readRecords = readRecords
         self.makeEngine = makeEngine
     }
@@ -226,7 +235,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     ) async throws -> CloudRecordSnapshot? {
         let recordID = CloudKitRecordMapper.recordID(for: id)
         do {
-            let results = try await readRecords([recordID], Array(fields).sorted())
+            let results = try await boundedRead([recordID], Array(fields).sorted())
             guard let result = results[recordID] else { return nil }
             do {
                 return try CloudKitRecordMapper.snapshot(
@@ -252,7 +261,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         var stage = CloudSyncDiagnostics.AttachmentStage.cloudKitRequest
         CloudSyncDiagnostics.attachmentStarted(stage)
         do {
-            let results = try await readRecords([recordID], [field])
+            let results = try await boundedRead([recordID], [field])
             CloudSyncDiagnostics.attachmentSucceeded(stage)
             stage = .cloudKitRecord
             CloudSyncDiagnostics.attachmentStarted(stage)
@@ -285,6 +294,16 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         } catch {
             CloudSyncDiagnostics.attachmentFailed(stage, error: error)
             throw error
+        }
+    }
+
+    /// Reads records with the transfer limits and the read backstop.
+    private func boundedRead(
+        _ recordIDs: [CKRecord.ID],
+        _ desiredKeys: [CKRecord.FieldKey]?
+    ) async throws -> [CKRecord.ID: Result<CKRecord, any Error>] {
+        try await bound.read(.transfer) { [readRecords] in
+            try await readRecords(recordIDs, desiredKeys)
         }
     }
 
