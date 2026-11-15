@@ -84,6 +84,38 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testFailedRetryOfAnIncompleteDeletionReportsFailure() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let cloud = ApplicationCLICloudEffects {
+            await settings.performExplicitSync { settings.recordSyncFailure(.waitingForConnection) }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(receipt.status, .failed)
+        XCTAssertEqual(receipt.message, settings.detail)
+    }
+
+    @MainActor
+    func testRetryThatLeavesADeletionIncompleteReportsFailure() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let cloud = ApplicationCLICloudEffects {
+            await settings.performExplicitSync { settings.recordRemovalPending() }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(receipt.status, .failed)
+        XCTAssertEqual(receipt.message, settings.detail)
+    }
+
+    @MainActor
     func testRetryWhileADeleteRunsStillRefuses() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
         await model.waitForInitialLoad()

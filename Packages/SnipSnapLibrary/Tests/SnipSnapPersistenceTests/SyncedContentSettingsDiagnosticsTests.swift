@@ -196,4 +196,146 @@ final class SyncedContentSettingsDiagnosticsTests: XCTestCase {
     XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.stop", "sync.delete"])
     XCTAssertEqual(events.withLock { $0.last?.outcome }, AppDiagnosticOutcome.failed)
   }
+
+  @MainActor
+  func testFailedTryAgainInDeletionIncompleteRecordsTheIssue() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+
+    await model.performExplicitSync { model.recordSyncFailure(.waitingForConnection) }
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(operation: "sync.run", errorCode: "sync.waitingForConnection", visibility: .user)
+    ])
+  }
+
+  @MainActor
+  func testTryAgainThatLeavesDeletionIncompleteRecordsThePendingRemoval() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+    let inFlightStart = model.recordSyncStarted()
+
+    await model.performExplicitSync { model.recordRemovalPending() }
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertEqual(model.finishDeletingIssue, .someChangesPending)
+    XCTAssertEqual(events.withLock { $0 }, [
+      .failure(operation: "sync.delete", errorCode: "sync.someChangesPending", visibility: .user)
+    ])
+    // A sync that saw this removal can still finish it.
+    model.recordSyncCompleted(inFlightStart)
+    XCTAssertEqual(model.state, .deleted)
+  }
+
+  @MainActor
+  func testSyncFailuresOutsideTryAgainInDeletionIncompleteRecordNothing() {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+
+    for _ in 0..<3 { model.recordSyncFailure(.waitingForConnection) }
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertNil(model.finishDeletingIssue)
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+  }
+
+  @MainActor
+  func testPendingRemovalReportsOutsideTryAgainRecordNothing() {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    events.withLock { $0.removeAll() }
+
+    for _ in 0..<3 { model.recordRemovalPending() }
+
+    XCTAssertEqual(model.state, .removalPending)
+    XCTAssertNil(model.finishDeletingIssue)
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+  }
+
+  @MainActor
+  func testNextTryAgainClearsTheFailedTryAgainIssueWhenItStarts() async {
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { _ in }
+    )
+    await model.performExplicitSync { model.recordSyncFailure(.waitingForConnection) }
+    XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
+
+    await model.performExplicitSync {
+      XCTAssertNil(model.finishDeletingIssue)
+      model.recordRemovalPending()
+    }
+
+    XCTAssertEqual(model.finishDeletingIssue, .someChangesPending)
+  }
+
+  @MainActor
+  func testTryAgainThatFinishesDeletingClearsTheIssueAndRecordsNothing() async {
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
+    )
+    await model.performExplicitSync { model.recordSyncFailure(.waitingForConnection) }
+    XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
+    events.withLock { $0.removeAll() }
+
+    await model.performExplicitSync {
+      let start = model.recordSyncStarted()
+      model.recordSyncCompleted(start)
+    }
+
+    XCTAssertEqual(model.state, .deleted)
+    XCTAssertNil(model.finishDeletingIssue)
+    XCTAssertTrue(events.withLock { $0.isEmpty })
+  }
+
+  @MainActor
+  func testDroppedTryAgainLeavesTheRunningTryAgainIssue() async {
+    let gate = SyncedContentActionGate()
+    let model = SyncedContentSettingsModel(
+      mode: .iCloudSync,
+      initialState: .removalPending,
+      diagnostics: AppDiagnosticRecorder { _ in }
+    )
+    let running = Task { @MainActor in
+      await model.performExplicitSync {
+        model.recordSyncFailure(.waitingForConnection)
+        await gate.wait()
+      }
+    }
+    await gate.waitUntilSuspended()
+
+    var droppedRan = false
+    await model.performExplicitSync { droppedRan = true }
+
+    XCTAssertFalse(droppedRan)
+    XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
+    gate.open()
+    await running.value
+    XCTAssertEqual(model.finishDeletingIssue, .waitingForConnection)
+  }
 }
