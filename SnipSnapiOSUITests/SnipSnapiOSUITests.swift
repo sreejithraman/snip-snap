@@ -558,6 +558,78 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings"].exists)
     }
 
+    /// Launches into the iPhone's regular-width rail, or skips where the window shows another layout.
+    private func launchAppShowingRail(storeName: String) throws -> XCUIApplication {
+        let app = launchApp(storeName: storeName)
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            throw XCTSkip("This check needs the regular-width rail.")
+        }
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            throw XCTSkip("iPad keeps the sidebar.")
+        }
+        XCTAssertTrue(app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3))
+        return app
+    }
+
+    private func waitForClipboardRowWidth(
+        in app: XCUIApplication, _ description: String, _ matches: @escaping (CGFloat) -> Bool
+    ) {
+        let clipboard = app.buttons["clipboard-sidebar"]
+        XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
+        let settled = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in matches(clipboard.frame.width) }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed,
+                       "\(description): the Clipboard row is \(clipboard.frame.width) pt wide.")
+    }
+
+    func testRailShowsListNamesAcrossRelaunchUntilToggledBack() throws {
+        continueAfterFailure = false
+        let storeName = "rail-width-\(UUID().uuidString)"
+        var app = try launchAppShowingRail(storeName: storeName)
+        waitForClipboardRowWidth(in: app, "Rail by default") { $0 < 80 }
+
+        app.buttons["sidebar-width-toggle"].tap()
+        waitForClipboardRowWidth(in: app, "Names shown") { $0 > 150 }
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        waitForClipboardRowWidth(in: app, "Names shown after relaunch") { $0 > 150 }
+
+        app.buttons["sidebar-width-toggle"].tap()
+        waitForClipboardRowWidth(in: app, "Rail again") { $0 < 80 }
+    }
+
+    func testRailEdgeDragsResizeAndIgnoresVerticalDrags() throws {
+        continueAfterFailure = false
+        let app = try launchAppShowingRail(storeName: "rail-drag-\(UUID().uuidString)")
+        let clipboard = app.buttons["clipboard-sidebar"]
+        waitForClipboardRowWidth(in: app, "Rail by default") { $0 < 80 }
+        // Points come from the row itself: on the open Duo, the app's XCTest origin can be offset
+        // from element frames. Rows keep a 12-pt inset, so the column is the row plus 24 pt wide.
+        func dragFromColumnEdge(by offset: CGVector) {
+            // 4 pt inside the column, within the resize strip. Re-read after each width change.
+            let start = clipboard.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: 12 - 4, dy: 0))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+
+        dragFromColumnEdge(by: CGVector(dx: 200, dy: 0))
+        waitForClipboardRowWidth(in: app, "Dragged wider") { $0 > 150 }
+
+        let startInColumn = clipboard.frame.width + 24 - 4
+        dragFromColumnEdge(by: CGVector(dx: 110 - startInColumn, dy: 0))
+        waitForClipboardRowWidth(in: app, "Dragged back to the rail") { $0 < 80 }
+
+        // Mostly vertical, with enough sideways travel to expand the rail if it were taken as a resize.
+        dragFromColumnEdge(by: CGVector(dx: 80, dy: 240))
+        XCTAssertLessThan(clipboard.frame.width, 80, "A vertical drag on the rail's edge must not resize it.")
+        let resized = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in clipboard.frame.width >= 80 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 1), .timedOut,
+                       "A vertical drag on the rail's edge must not resize it.")
+    }
+
     func testLastSnipCanScrollAboveCompactControls() throws {
         continueAfterFailure = false
         let app = launchApp(withLongList: true)
