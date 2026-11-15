@@ -147,14 +147,8 @@ extension ICloudSyncModeCoordinatorTests {
             readHook: disk.failRead
         )
         try await add("kept", to: persistence.activeLibrary())
-        let namespace = makeNamespace()
         let server = FakeCloudServer()
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
+        let coordinator = modeCoordinator(on: persistence, server: server)
         if change == .optOut {
             let enabled = try await coordinator.enableOrRetry()
             XCTAssertEqual(enabled.state, .on, file: file, line: line)
@@ -176,7 +170,6 @@ extension ICloudSyncModeCoordinatorTests {
         return StrandedTransition(
             persistence: persistence,
             coordinator: coordinator,
-            namespace: namespace,
             server: server
         )
     }
@@ -187,20 +180,26 @@ extension ICloudSyncModeCoordinatorTests {
         on persistence: SwiftDataSyncModePersistence,
         like stranded: StrandedTransition
     ) async throws -> ICloudSyncModeStatus {
-        let namespace = stranded.namespace
-        let server = stranded.server
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
+        let coordinator = modeCoordinator(on: persistence, server: stranded.server)
         switch change {
         case .enable:
             return try await coordinator.enableOrRetry()
         case .optOut:
             return try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         }
+    }
+
+    private func modeCoordinator(
+        on persistence: SwiftDataSyncModePersistence,
+        server: FakeCloudServer
+    ) -> ICloudSyncModeCoordinator {
+        let namespace = makeNamespace()
+        return ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
     }
 
     /// iCloud sync of the active store waits while an opt-out holds its transition.
@@ -251,7 +250,6 @@ private enum StrandingFailure {
 private struct StrandedTransition {
     let persistence: SwiftDataSyncModePersistence
     let coordinator: ICloudSyncModeCoordinator
-    let namespace: CloudSyncNamespace
     let server: FakeCloudServer
 }
 

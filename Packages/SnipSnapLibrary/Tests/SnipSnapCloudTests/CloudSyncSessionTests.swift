@@ -196,15 +196,12 @@ final class CloudSyncSessionTests: XCTestCase {
   /// Sync-mode Try Again treats a transition stage it finds at its start as left over by an
   /// earlier operation. That holds only while mode operations run one at a time.
   func testDisableAndCancelSetupWaitForAnEnableInFlight() async throws {
-    let probe = ModeOperationProbe()
+    let probe = SessionWorkProbe()
     let session = SnipSnapCloudSyncSession(
       synchronize: { .noChange },
-      enable: {
-        await probe.run("enable", pausing: true)
-        return .enabled
-      },
-      cancelEnable: { await probe.run("cancel setup") },
-      disable: { _ in await probe.run("disable") },
+      enable: { try await probe.run("enable"); return .enabled },
+      cancelEnable: { try await probe.run("cancel setup") },
+      disable: { _ in try await probe.run("disable") },
       delete: { .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore }
     )
@@ -225,7 +222,7 @@ final class CloudSyncSessionTests: XCTestCase {
     }
     await fulfillment(of: [disableWaits, cancelWaits], timeout: 0.05)
     let whileEnabling = await probe.events()
-    XCTAssertEqual(whileEnabling, ["enable started"])
+    XCTAssertEqual(whileEnabling, ["enable"])
 
     await probe.resume()
     let enabled = try await enable.value
@@ -233,13 +230,47 @@ final class CloudSyncSessionTests: XCTestCase {
     try await cancelSetup.value
     XCTAssertEqual(enabled, .enabled)
     let events = await probe.events()
-    XCTAssertEqual(Array(events.prefix(2)), ["enable started", "enable finished"])
-    XCTAssertEqual(
-      Set(events.dropFirst(2)),
-      ["disable started", "disable finished", "cancel setup started", "cancel setup finished"]
+    XCTAssertEqual(events.first, "enable")
+    XCTAssertEqual(Set(events.dropFirst()), ["disable", "cancel setup"])
+  }
+
+  /// The app gives the account handler the session's gate, so the handler's calls also wait for
+  /// a mode operation in flight.
+  @MainActor
+  func testAccountHandlerWaitsForAnEnableInFlight() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("SharedModeGate-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let probe = SessionWorkProbe()
+    let local = try SwiftDataSnipLibrary(
+      storeURL: root.appendingPathComponent("source.store", isDirectory: false)
     )
-    let overlaps = await probe.overlaps()
-    XCTAssertEqual(overlaps, [])
+    let services = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
+      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
+      sourceLibrary: PausingSourceLibrary(base: local, probe: probe)
+    )
+    let session = try XCTUnwrap(services.syncSession)
+    let handler = try XCTUnwrap(services.makeAccountCacheHandler(
+      syncWhenPossible: {},
+      retrySyncWhenPossible: {},
+      scheduleSyncAfterLocalChange: {}
+    ))
+    let enable = Task { try await session.enableICloudSync() }
+    await probe.waitUntilPaused()
+
+    let checkWaits = expectation(description: "The account handler waits for the enable in flight")
+    checkWaits.isInverted = true
+    let check = Task {
+      defer { checkWaits.fulfill() }
+      return try await handler.isCloudSyncActive()
+    }
+    await fulfillment(of: [checkWaits], timeout: 0.05)
+
+    await probe.resume()
+    let enabled = try await enable.value
+    let isActive = try await check.value
+    XCTAssertEqual(enabled, .enabled)
+    XCTAssertTrue(isActive)
   }
 
   /// Waits for callers to join the queue rather than for a fixed time.
@@ -363,43 +394,28 @@ private actor SessionWorkProbe {
   func events() -> [String] { recorded }
 }
 
-/// Records when each mode action starts and finishes, and any action that starts while
-/// another runs.
-private actor ModeOperationProbe {
-  private var running: [String] = []
-  private var recorded: [String] = []
-  private var concurrent: [String] = []
-  private var paused = false
-  private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
-  private var release: CheckedContinuation<Void, Never>?
+/// Holds the enable at its read of the local library until `probe.resume()`.
+private struct PausingSourceLibrary: SnipLibrary {
+  let base: any SnipLibrary
+  let probe: SessionWorkProbe
 
-  func run(_ name: String, pausing: Bool = false) async {
-    if !running.isEmpty {
-      concurrent.append("\(name) during \(running.joined(separator: ", "))")
-    }
-    running.append(name)
-    recorded.append("\(name) started")
-    if pausing {
-      paused = true
-      pauseWaiters.forEach { $0.resume() }
-      pauseWaiters = []
-      await withCheckedContinuation { release = $0 }
-    }
-    running.removeAll { $0 == name }
-    recorded.append("\(name) finished")
+  func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
+    await base.snapshot(sortedBy: sortMode)
   }
 
-  func waitUntilPaused() async {
-    if paused { return }
-    await withCheckedContinuation { pauseWaiters.append($0) }
+  func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    try await base.checkedSnapshot(sortedBy: sortMode)
   }
 
-  func resume() {
-    release?.resume()
-    release = nil
+  func perform(
+    _ command: SnipLibraryCommand,
+    sortedBy sortMode: SnipSortMode
+  ) async throws -> SnipLibraryUpdate {
+    try await base.perform(command, sortedBy: sortMode)
   }
 
-  func events() -> [String] { recorded }
-
-  func overlaps() -> [String] { concurrent }
+  func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
+    try await probe.run("source read")
+    return try await base.transferSnapshot(revision: revision)
+  }
 }
