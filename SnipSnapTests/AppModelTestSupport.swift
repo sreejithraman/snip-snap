@@ -232,6 +232,10 @@ actor InMemorySnipLibrary: SnipLibrary {
     func recordedRecoveryChoices() -> [SnipRecoveryChoice] {
         recoveryChoices
     }
+
+    func deleteRemotely(_ id: UUID) {
+        snips.removeAll { $0.id == id }
+    }
 }
 
 

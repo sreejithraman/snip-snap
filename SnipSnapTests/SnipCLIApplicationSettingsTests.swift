@@ -33,11 +33,14 @@ final class SnipCLIApplicationSettingsTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testCLISettingsRejectEditingAndInvalidValuesWithoutChangingPreferences() throws {
+    func testCLISettingsRejectEditingAndInvalidValuesWithoutChangingPreferences() async throws {
         let preferences = defaults()
-        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: preferences)
+        let snip = Snip(content: "Editing", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: preferences)
         let updates = UpdateChannelSettings(defaults: preferences)
-        model.editingID = UUID()
+        await model.waitForInitialLoad()
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
         XCTAssertThrowsError(try SnipCLIApplicationSettings.apply(.appearance, value: "dark",
             model: model, updates: updates, updatesAvailable: true)) { error in
             guard case SnipCLIRequestError.editingInProgress = error else {
@@ -45,7 +48,7 @@ final class SnipCLIApplicationSettingsTests: StoreBackedTestCase {
             }
         }
         XCTAssertEqual(model.appearance, .system)
-        model.editingID = nil
+        model.cancelEditing()
         XCTAssertThrowsError(try SnipCLIApplicationSettings.apply(.appearance, value: "purple",
             model: model, updates: updates, updatesAvailable: true))
         XCTAssertEqual(model.appearance, .system)

@@ -10,12 +10,6 @@ enum PanelFocusTarget: Hashable {
     case inlineEntry
 }
 
-private struct InlineEditSession {
-    let snipID: UUID
-    var attachments: [URL]
-    var isSaving = false
-}
-
 private enum SnipListScrollTarget {
     case top
 }
@@ -25,15 +19,11 @@ struct SnipListView: View {
     @ObservedObject var model: AppModel
     let displayedListID: UUID
     let isInteractive: Bool
-    let ownsSharedEvents: Bool
     let dragSessionController: PanelDragSessionController
-    let fileDropController: PanelFileDropController
-    @ObservedObject var panelDialogs: PanelDialogPresentationState
     @ObservedObject var commandNumberPicker: CommandNumberPicker
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
     let moveSelectionToNewList: (Set<UUID>) -> Void
     let requestFileImport: (UUID) -> Void
-    @Binding var pendingEditAttachmentImport: PendingEditAttachmentImport?
     let captureScreenAreaForEdit: (@escaping @MainActor (URL?) -> Void) -> Void
     let bottomContentInset: CGFloat
     let clipboardEntries: [ClipboardEntry]
@@ -44,7 +34,6 @@ struct SnipListView: View {
     @State private var contextMenuSelection: Set<UUID>?
     @State private var hasScrolledFromTop = false
     @State private var addedSnipRevealState = AddedSnipRevealState()
-    @State private var editSession: InlineEditSession?
     @State private var drag = SnipListDrag()
     @State private var commandNumberOwner = CommandNumberOwner()
     @StateObject private var cardInteractionController = PanelCardInteractionController()
@@ -170,14 +159,6 @@ struct SnipListView: View {
                 }
             }
             .onChange(of: model.editingID, initial: true) { _, editingID in
-                editSession = editingID.flatMap { snipID in
-                    model.snips.first(where: { $0.id == snipID }).map { snip in
-                        InlineEditSession(
-                            snipID: snipID,
-                            attachments: snip.attachments.compactMap(model.attachmentURL)
-                        )
-                    }
-                }
                 guard let editingID,
                       snapshot.orderedVisibleIDs.contains(editingID) else { return }
                 Task { @MainActor in
@@ -236,20 +217,6 @@ struct SnipListView: View {
                 owner: commandNumberOwner
             )
         }
-        .onReceive(fileDropController.fileDrops) { urls in
-            guard ownsSharedEvents, !panelDialogs.isPresented else { return }
-            guard let editingID = model.editingID else { return }
-            addEditAttachments(urls, to: editingID)
-        }
-        .onChange(of: pendingEditAttachmentImport?.id, initial: true) {
-            guard ownsSharedEvents else { return }
-            guard let pendingEditAttachmentImport else { return }
-            self.pendingEditAttachmentImport = nil
-            addEditAttachments(
-                pendingEditAttachmentImport.urls,
-                to: pendingEditAttachmentImport.snipID
-            )
-        }
         .onDisappear {
             commandNumberPicker.releaseOwner(commandNumberOwner)
         }
@@ -264,28 +231,6 @@ struct SnipListView: View {
                 }
             )
         }
-    }
-
-    private func addEditAttachments(_ urls: [URL], to snipID: UUID) {
-        guard model.editingID == snipID,
-              let snip = model.snips.first(where: { $0.id == snipID }) else { return }
-        var session: InlineEditSession
-        if let editSession, editSession.snipID == snipID {
-            session = editSession
-        } else {
-            session = InlineEditSession(
-                snipID: snipID,
-                attachments: snip.attachments.compactMap(model.attachmentURL)
-            )
-        }
-        guard !session.isSaving else { return }
-        session.attachments.append(
-            contentsOf: PanelFileDropValidation.newFiles(
-                in: urls,
-                excluding: session.attachments
-            )
-        )
-        editSession = session
     }
 
     private func revealAddedSnip(
@@ -592,20 +537,30 @@ struct SnipListView: View {
     }
 
     private func snipCard(_ snip: Snip, snapshot: SnipListSnapshot) -> some View {
-        SnipCardRow(
+        let isEditing = model.editingID == snip.id
+        let session = isEditing ? model.inlineEditSessionID : nil
+        return SnipCardRow(
             snip: snip,
             appearance: (model.lists.first { $0.id == snip.listID } ?? .inbox).accent,
             isRecovered: model.isRecoveredSnip(snip.id),
             isSelected: (contextMenuSelection ?? model.selection).contains(snip.id),
-            isEditing: model.editingID == snip.id,
+            isEditing: isEditing,
             commandNumber: commandNumberPicker.displayedNumber(for: .snip(snip.id)),
             onPickCommandNumber: { commandNumberPicker.pick(.snip(snip.id)) },
-            editAttachments: editAttachmentsBinding(for: snip),
-            isSaving: savingBinding(for: snip),
+            editAttachments: isEditing ? model.inlineEditAttachments : [],
+            isSaving: isEditing && model.isSavingInlineEdit,
             attachmentURL: model.attachmentURL,
             onPreviewSavedAttachments: previewSavedAttachments,
             onPreviewLocalAttachments: onPreviewAttachments,
             onRemovePreviewURL: onRemovePreviewURL,
+            onAddEditAttachments: { urls in
+                guard let session else { return }
+                model.addInlineEditAttachments(urls, to: session)
+            },
+            onRemoveEditAttachment: { url in
+                guard let session else { return }
+                model.removeInlineEditAttachment(url, from: session)
+            },
             onSelect: { select(snip.id) },
             onSelectForExpansion: { isPointerClick in
                 if isPointerClick {
@@ -626,22 +581,17 @@ struct SnipListView: View {
                 return await model.copySnipsAndMarkDoneNow([snip])
             },
             onChooseFiles: {
-                guard model.editingID == snip.id else { return }
-                requestFileImport(snip.id)
+                guard let session else { return }
+                requestFileImport(session)
             },
             onCaptureScreenArea: captureScreenAreaForEdit,
             onCancelEdit: {
-                model.editingID = nil
+                model.cancelEditing()
                 focusedTarget = .list
             },
-            onSaveEdit: { text, attachments in
-                let saved = await model.update(
-                    id: snip.id,
-                    content: text,
-                    attachmentURLs: attachments
-                )
-                guard saved else { return false }
-                model.editingID = nil
+            onSaveEdit: { text in
+                guard let session,
+                      await model.saveInlineEdit(content: text, in: session) else { return false }
                 focusedTarget = model.isSearchExpanded
                     && model.filteredSnips.isEmpty
                     && model.clipboardSearchMatches.isEmpty
@@ -721,45 +671,6 @@ struct SnipListView: View {
         }
     }
 
-    private func editAttachmentsBinding(for snip: Snip) -> Binding<[URL]> {
-        Binding(
-            get: {
-                guard let editSession, editSession.snipID == snip.id else {
-                    return snip.attachments.compactMap(model.attachmentURL)
-                }
-                return editSession.attachments
-            },
-            set: { attachments in
-                let isSaving = editSession?.snipID == snip.id
-                    && editSession?.isSaving == true
-                editSession = InlineEditSession(
-                    snipID: snip.id,
-                    attachments: attachments,
-                    isSaving: isSaving
-                )
-            }
-        )
-    }
-
-    private func savingBinding(for snip: Snip) -> Binding<Bool> {
-        Binding(
-            get: { editSession?.snipID == snip.id && editSession?.isSaving == true },
-            set: { isSaving in
-                let attachments: [URL]
-                if let editSession, editSession.snipID == snip.id {
-                    attachments = editSession.attachments
-                } else {
-                    attachments = snip.attachments.compactMap(model.attachmentURL)
-                }
-                editSession = InlineEditSession(
-                    snipID: snip.id,
-                    attachments: attachments,
-                    isSaving: isSaving
-                )
-            }
-        )
-    }
-
     private func select(_ id: UUID) {
         model.selectSnip(id, modifiers: selectionModifiers(for: id))
         focusedTarget = .list
@@ -770,9 +681,7 @@ struct SnipListView: View {
         Task { @MainActor in
             let opened = await model.beginEditing(id)
             if !opened && model.editingID == nil && focusedTarget == nil {
-                focusedTarget = model.isSearchExpanded
-                    ? .search
-                    : (model.isShowingClipboard ? .clipboard : .list)
+                focusedTarget = model.restingFocusTarget
             }
         }
     }
