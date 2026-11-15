@@ -548,16 +548,17 @@ release_policy_appcast_item_hashes() {
         NAME = /[A-Za-z_:][A-Za-z0-9._:-]*/
         REFERENCE = /&(?:#([0-9]+)|#x([0-9A-Fa-f]+)|(amp|lt|gt|apos|quot));/
         NAMED_CHARACTERS = { "amp" => "&", "lt" => "<", "gt" => ">", "apos" => "\x27", "quot" => "\"" }
-        TEXT_ESCAPES = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;" }
+        # A parser reads a literal CR as LF, so a referenced CR stays a reference.
+        DECODED_ESCAPES = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\r" => "&#13;" }
 
         # Sparkle rewrites text with its own escaping, such as "\x27" for "&#39;".
         def canonical_text(text)
-          text.gsub(REFERENCE) do
-            name = $3
-            next NAMED_CHARACTERS.fetch(name) if name
+          text.gsub(/#{REFERENCE.source}|>/) do
+            next "&gt;" if $& == ">"
 
-            [$1 ? $1.to_i : $2.to_i(16)].pack("U").b
-          end.gsub(/[&<>]/, TEXT_ESCAPES)
+            character = $3 ? NAMED_CHARACTERS.fetch($3) : [$1 ? $1.to_i : $2.to_i(16)].pack("U").b
+            DECODED_ESCAPES.fetch(character, character)
+          end
         end
 
         def token_at(xml, offset)

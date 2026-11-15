@@ -186,6 +186,11 @@ assert_fails release_policy_require_preserved_appcast_items "$old_appcast" "$new
 print '<rss><channel><item><description>&amp;#39;</description></item></channel></rss>' > "$old_appcast"
 print "<rss><channel><item><title>0.1.0</title></item><item><description>'</description></item></channel></rss>" > "$new_appcast"
 assert_fails release_policy_require_preserved_appcast_items "$old_appcast" "$new_appcast"
+print '<rss><channel><item><description>a&#13;b</description></item></channel></rss>' > "$old_appcast"
+print -r -- $'<rss><channel><item><title>0.1.0</title></item><item><description>a\rb</description></item></channel></rss>' > "$new_appcast"
+assert_fails release_policy_require_preserved_appcast_items "$old_appcast" "$new_appcast"
+print '<rss><channel><item><title>0.1.0</title></item><item><description>a&#xD;b</description></item></channel></rss>' > "$new_appcast"
+assert_succeeds release_policy_require_preserved_appcast_items "$old_appcast" "$new_appcast"
 print '<rss><channel><item><enclosure url="a&#39;b.zip"/></item></channel></rss>' > "$old_appcast"
 print "<rss><channel><item><title>0.1.0</title></item><item><enclosure url=\"a'b.zip\"/></item></channel></rss>" > "$new_appcast"
 assert_fails release_policy_require_preserved_appcast_items "$old_appcast" "$new_appcast"
@@ -198,6 +203,8 @@ assert_succeeds /usr/bin/ruby "$script_dir/release-notes.rb" appcast "$notes_app
 [[ "$(<"$notes_appcast")" == *$'>- Fix Tom &amp; Jerry\'s &lt;paste&gt; "quotes" &gt; arrows\n</description>'* ]] || \
     fail_test "release notes are not escaped like Sparkle text"
 assert_succeeds /usr/bin/ruby "$script_dir/release-notes.rb" verify-appcast "$notes_appcast" 0.1.0 2 "$notes_file"
+print -rn -- $'- Fix line endings\r\n' > "$notes_file"
+assert_fails /usr/bin/ruby "$script_dir/release-notes.rb" appcast "$notes_appcast" 0.1.0 2 "$notes_file"
 
 print '<rss><channel><item><enclosure url="release.zip" length="10" sparkle:version="1" sparkle:shortVersionString="0.1.0" sparkle:edSignature="abc"/></item></channel></rss>' > "$old_appcast"
 /bin/cp "$old_appcast" "$new_appcast"

@@ -170,6 +170,8 @@ module ReleaseNotes
   def self.set_appcast_notes(path, version, build, notes_path)
     notes = File.read(notes_path)
     raise 'Release notes are empty' if notes.strip.empty?
+    # generate_appcast turns a carriage return into a newline on a later rewrite.
+    raise 'Release notes contain a carriage return or control character' if notes.match?(/[\x00-\x08\x0B-\x1F\x7F]/)
     count = 0
     xml = File.read(path).gsub(/<item\b.*?<\/item>/m) do |item|
       next item unless item.match?(/sparkle:version(?:="|>)#{Regexp.escape(build)}(?:"|<)/) &&
