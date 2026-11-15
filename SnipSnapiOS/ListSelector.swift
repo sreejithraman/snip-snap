@@ -24,16 +24,16 @@ private enum ListSelectorItem: Identifiable {
         case .list(let list): list.displayName
         }
     }
-    var systemImage: String {
+    var mark: SnipListMark {
         switch self {
-        case .clipboard: "clipboard"
-        case .list(let list): list.displaySystemImage
+        case .clipboard: .icon("clipboard")
+        case .list(let list): list.displayMark
         }
     }
-    var color: Color {
+    var appearance: SnipListAppearance {
         switch self {
-        case .clipboard: .primary
-        case .list(let list): list.accent.color
+        case .clipboard: SnipListAppearance(preset: nil)
+        case .list(let list): list.accent
         }
     }
 }
@@ -222,7 +222,7 @@ struct ListSelector: View {
         let morphEase = morph * morph * (3 - 2 * morph)
         let stretch = reduceMotion ? 0 : 30 * sin(.pi * progress) * (1 - morphEase)
         let lensWidth = baseWidth + (height - baseWidth) * morphEase + stretch
-        let tint = items.indices.contains(nearest) ? items[nearest].color : Color.primary
+        let tint = items.indices.contains(nearest) ? items[nearest].appearance.color : Color.primary
 
         return MotionPresentation(
             cursor: cursor, progress: progress, hoveringAdd: hoveringAdd,
@@ -353,11 +353,11 @@ struct ListSelector: View {
         return ZStack {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 HStack(spacing: 8) {
-                    Image(systemName: item.systemImage)
+                    SnipListMarkView(mark: item.mark, appearance: item.appearance, diameter: fontSize * 1.5, scalesWithText: false)
                     Text(item.title).lineLimit(1)
                 }
                 .font(.system(size: fontSize, weight: .semibold, design: .rounded))
-                .foregroundStyle(item.color)
+                .foregroundStyle(item.appearance.color)
                 .opacity((pageFrame.directEntrance?.destination == item.page
                     ? Double(pageFrame.directEntrance?.selectorProgress ?? 1) : 1)
                     * (index == items.count - 1 ? Double(trailingLabelOpacity) : 1))

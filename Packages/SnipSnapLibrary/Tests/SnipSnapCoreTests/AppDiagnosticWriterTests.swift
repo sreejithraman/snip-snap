@@ -441,6 +441,26 @@ final class AppDiagnosticWriterTests: XCTestCase {
     XCTAssertEqual(eventCount(recovered.text), 1)
   }
 
+  func testRecoveryWithoutAnAppendKeepsTheRetryBackoff() throws {
+    try Data("occupied".utf8).write(to: directory)
+    let clock = DiagnosticRetryClock()
+    let store = AppDiagnosticEventStore(
+      directoryURL: directory, appVersion: "1", appBuild: "2", now: { self.now })
+    let writer = AppDiagnosticWriter(
+      store: store, requiresReadableControls: true, scheduleRetry: clock.schedule)
+    writer.submit(
+      .failure(operation: "sync.run", errorCode: "sync.accessDenied", visibility: .user), at: now)
+    let first = try clock.next()
+    XCTAssertEqual(first.delay, 0.05, accuracy: 0.001)
+    // Unreadable shared controls discard the batch, so the retried drain appends nothing.
+    first.run()
+    try writer.perform {}
+    writer.submit(
+      .failure(operation: "sync.run", errorCode: "sync.accessDenied", visibility: .user), at: now)
+    XCTAssertEqual(try clock.next().delay, 0.1, accuracy: 0.001,
+      "Only a successful append resets the backoff")
+  }
+
   func testContinuousProducerAllowsExportAndRecordingControlToFinish() throws {
     var policy = AppDiagnosticRetentionPolicy()
     policy.contextCount = 0

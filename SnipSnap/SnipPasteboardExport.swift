@@ -3,6 +3,12 @@ import Darwin
 import Foundation
 
 final class SnipPasteboardMarkdownFile: @unchecked Sendable {
+    private enum Lifetime {
+        case staged
+        case retainedUntilPasteboardChanges(cleanup: Task<Void, Never>)
+        case removed
+    }
+
     static let privateType = NSPasteboard.PasteboardType(
         "world.sree.snipsnap.generated-markdown"
     )
@@ -12,9 +18,7 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
 
     private let fileManager: FileManager
     private let lock = NSLock()
-    private var isRemoved = false
-    private var isPasteboardRetentionArmed = false
-    private var cleanupTask: Task<Void, Never>?
+    private var lifetime = Lifetime.staged
 
     init(markdown: String, fileManager: FileManager = .default) throws {
         let directory = fileManager.temporaryDirectory
@@ -45,45 +49,44 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
         changeCount: Int
     ) {
         let pasteboardName = pasteboard.name
-        let task = Task { @MainActor [self] in
-            let observedPasteboard = NSPasteboard(name: pasteboardName)
-            while !Task.isCancelled, observedPasteboard.changeCount == changeCount {
-                do {
-                    try await Task.sleep(for: .milliseconds(250))
-                } catch {
-                    return
+        lock.withLock {
+            guard case .staged = lifetime else { return }
+            // The task never runs inline, so its later `remove()` cannot deadlock on this lock.
+            let cleanup = Task { @MainActor [self] in
+                let observedPasteboard = NSPasteboard(name: pasteboardName)
+                while !Task.isCancelled, observedPasteboard.changeCount == changeCount {
+                    do {
+                        try await Task.sleep(for: .milliseconds(250))
+                    } catch {
+                        return
+                    }
                 }
+                guard !Task.isCancelled else { return }
+                remove()
             }
-            guard !Task.isCancelled else { return }
-            remove()
-        }
-        let shouldCancel = lock.withLock {
-            guard !isRemoved, cleanupTask == nil else { return true }
-            isPasteboardRetentionArmed = true
-            cleanupTask = task
-            return false
-        }
-        if shouldCancel {
-            task.cancel()
+            lifetime = .retainedUntilPasteboardChanges(cleanup: cleanup)
         }
     }
 
-    func remove() {
-        let removal = lock.withLock { () -> (Bool, Task<Void, Never>?) in
-            guard !isRemoved else { return (false, nil) }
-            isRemoved = true
-            let task = cleanupTask
-            cleanupTask = nil
-            return (true, task)
+    private func remove() {
+        let previous = lock.withLock {
+            let previous = lifetime
+            lifetime = .removed
+            return previous
         }
-        guard removal.0 else { return }
-        removal.1?.cancel()
+        switch previous {
+        case .staged:
+            break
+        case .retainedUntilPasteboardChanges(let cleanup):
+            cleanup.cancel()
+        case .removed:
+            return
+        }
         try? fileManager.removeItem(at: directory)
     }
 
     deinit {
-        let shouldRemove = lock.withLock { !isPasteboardRetentionArmed }
-        if shouldRemove {
+        if case .staged = lock.withLock({ lifetime }) {
             remove()
         }
     }

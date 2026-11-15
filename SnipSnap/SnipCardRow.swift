@@ -11,12 +11,14 @@ struct SnipCardRow: View {
     let isEditing: Bool
     let commandNumber: Int?
     let onPickCommandNumber: () -> Void
-    @Binding var editAttachments: [URL]
-    @Binding var isSaving: Bool
+    let editAttachments: [URL]
+    let isSaving: Bool
     let attachmentURL: (SnipAttachment) -> URL?
     let onPreviewSavedAttachments: ([SnipAttachment], SnipAttachment) -> Void
     let onPreviewLocalAttachments: ([URL], URL) -> Void
     let onRemovePreviewURL: (URL) -> Void
+    let onAddEditAttachments: ([URL]) -> Void
+    let onRemoveEditAttachment: (URL) -> Void
     let onSelect: () -> Void
     let onSelectForExpansion: (_ isPointerClick: Bool) -> Bool
     let onOpen: () -> Void
@@ -25,7 +27,7 @@ struct SnipCardRow: View {
     let onChooseFiles: () -> Void
     let onCaptureScreenArea: (@escaping @MainActor (URL?) -> Void) -> Void
     let onCancelEdit: () -> Void
-    let onSaveEdit: (String, [URL]) async -> Bool
+    let onSaveEdit: (String) async -> Bool
     let onEditError: (String) -> Void
 
     @State private var isCopied = false
@@ -193,7 +195,7 @@ struct SnipCardRow: View {
                     onRemove: { item in
                         guard let url = item.url else { return }
                         onRemovePreviewURL(url)
-                        editAttachments.removeAll { $0 == url }
+                        onRemoveEditAttachment(url)
                     }
                 )
             }
@@ -241,16 +243,6 @@ struct SnipCardRow: View {
         editAttachments.map(AttachmentPreviewItem.init(url:))
     }
 
-    private func addEditAttachments(_ urls: [URL]) {
-        guard !isSaving else { return }
-        editAttachments.append(
-            contentsOf: PanelFileDropValidation.newFiles(
-                in: urls,
-                excluding: editAttachments
-            )
-        )
-    }
-
     @MainActor
     private func pasteLargeTextIntoEdit(_ text: String) {
         guard !isSaving else { return }
@@ -266,7 +258,7 @@ struct SnipCardRow: View {
                     return
                 }
                 temporaryAttachmentURLs.insert(url)
-                addEditAttachments([url])
+                onAddEditAttachments([url])
             case .failure:
                 onEditError(
                     String(localized: "Couldn’t prepare pasted text. Try again.")
@@ -290,7 +282,7 @@ struct SnipCardRow: View {
                     return
                 }
                 temporaryAttachmentURLs.formUnion(urls)
-                addEditAttachments(urls)
+                onAddEditAttachments(urls)
             case .failure(let error):
                 onEditError(error.localizedDescription)
             }
@@ -307,7 +299,7 @@ struct SnipCardRow: View {
                 return
             }
             temporaryAttachmentURLs.insert(url)
-            addEditAttachments([url])
+            onAddEditAttachments([url])
         }
     }
 
@@ -380,13 +372,9 @@ struct SnipCardRow: View {
 
     private func saveEdit() {
         guard canSaveEdit else { return }
-        isSaving = true
         let text = editText
-        let attachments = editAttachments
         Task { @MainActor in
-            let saved = await onSaveEdit(text, attachments)
-            isSaving = false
-            if saved {
+            if await onSaveEdit(text) {
                 editorFocused = false
             }
         }
