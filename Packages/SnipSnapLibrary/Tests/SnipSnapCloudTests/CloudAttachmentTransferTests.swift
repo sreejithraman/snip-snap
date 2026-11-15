@@ -2,10 +2,11 @@ import CloudKit
 import CryptoKit
 import Foundation
 import SnipSnapCore
-import SnipSnapPersistence
+import SwiftData
 import XCTest
 
 @testable import SnipSnapCloud
+@testable import SnipSnapPersistence
 
 final class CloudAttachmentTransferTests: XCTestCase {
   func testNormalSyncPublishesPayloadBeforeMetadataAndRemoteClientSeesAttachment() async throws {
@@ -3092,9 +3093,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await pair.receiver.sync()
     let published = try await snapshot(pair.receiverLibrary, pair.namespace)
     XCTAssertTrue(published.publications.allSatisfy(\.metadataAccepted))
+    var acceptedCounts: [CloudRecordID: Int] = [:]
+    for attachment in [pair.first, pair.second] {
+      let id = CloudAttachmentRecordCodec.recordID(attachment.metadataIdentity)
+      acceptedCounts[id] = await pair.server.acceptedOperationCount(for: id)
+    }
 
     try await pair.sender.sync()
     try await pair.sender.sync()
+    for (id, count) in acceptedCounts {
+      let afterAdoption = await pair.server.acceptedOperationCount(for: id)
+      XCTAssertEqual(afterAdoption, count, "Adopting the order must not save identical metadata.")
+    }
     try await pair.receiver.fetchRemote()
 
     for library in [pair.senderLibrary, pair.receiverLibrary] {
@@ -3118,6 +3128,53 @@ final class CloudAttachmentTransferTests: XCTestCase {
       let next = try await store.pendingChanges()
       XCTAssertFalse(next.operations.contains(where: { metadataIDs.contains($0.id) }))
     }
+  }
+
+  func testConcurrentAttachmentReordersPersistUniquePositionsAndAllowALaterRemoteReorder() async throws {
+    let first = try await makeAttachmentClient(fileNames: ["a", "b", "c"])
+    defer { try? FileManager.default.removeItem(at: first.root) }
+    try await first.sync.sync()
+    try await first.sync.sync()
+    let published = try await snapshot(first.library, first.namespace)
+    let a = try XCTUnwrap(published.publications.first(where: { $0.metadata.fileName == "a.txt" }))
+      .metadata.attachmentID
+    let b = try XCTUnwrap(published.publications.first(where: { $0.metadata.fileName == "b.txt" }))
+      .metadata.attachmentID
+    let c = try XCTUnwrap(published.publications.first(where: { $0.metadata.fileName == "c.txt" }))
+      .metadata.attachmentID
+    XCTAssertTrue(published.publications.allSatisfy(\.metadataAccepted))
+    XCTAssertEqual(published.publications.sorted { $0.metadata.position < $1.metadata.position }
+      .map(\.metadata.attachmentID), [a, b, c])
+    let second = try attachmentClient(
+      root: first.root,
+      storeURL: first.root.appendingPathComponent("other.store"),
+      namespace: first.namespace,
+      server: first.server,
+      snipID: first.snipID
+    )
+    try await second.sync.fetchRemote()
+    try await keepAttachments([b, a, c], ofSnip: first.snipID, in: first.library)
+    try await keepAttachments([c, a, b], ofSnip: second.snipID, in: second.library)
+    try await second.sync.sync()
+
+    for _ in 0..<2 {
+      try await first.sync.sync()
+      try await second.sync.sync()
+    }
+
+    let attachmentIDs: Set<UUID> = [a, b, c]
+    let settledOrder = try await assertSettledAttachmentOrder(attachmentIDs, between: first, and: second)
+    XCTAssertEqual(settledOrder, [b, c, a], "The local B must precede adopted C when their positions tie.")
+    let latestOrder = settledOrder == [c, b, a] ? [b, c, a] : [c, b, a]
+    try await keepAttachments(latestOrder, ofSnip: second.snipID, in: second.library)
+    try await second.sync.sync()
+    for _ in 0..<2 {
+      try await first.sync.sync()
+      try await second.sync.sync()
+    }
+
+    let afterRemoteReorder = try await assertSettledAttachmentOrder(attachmentIDs, between: first, and: second)
+    XCTAssertEqual(afterRemoteReorder, latestOrder, "D2's later order must survive D1's fetch and reconcile.")
   }
 
   func testARemoteRenameSurvivesRemovingALocalSiblingBeforeReconcile() async throws {
@@ -5297,6 +5354,45 @@ final class CloudAttachmentTransferTests: XCTestCase {
     _ = try await library.perform(.replaceAll(snips), sortedBy: .manual)
   }
 
+  private func assertSettledAttachmentOrder(
+    _ expectedIDs: Set<UUID>,
+    between first: AttachmentClient,
+    and second: AttachmentClient,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws -> [UUID] {
+    let firstSnapshot = try await first.library.checkedSnapshot(sortedBy: .manual)
+    let firstSnip = try XCTUnwrap(firstSnapshot.snips.first(where: { $0.id == first.snipID }),
+      file: file, line: line)
+    let order = firstSnip.attachments.map(\.id)
+    XCTAssertEqual(Set(order), expectedIDs, file: file, line: line)
+    for client in [first, second] {
+      let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = try XCTUnwrap(local.snips.first(where: { $0.id == client.snipID }), file: file, line: line)
+      XCTAssertEqual(snip.attachments.map(\.id), order, file: file, line: line)
+      let positions = try await client.library.storedAttachmentReferencePositions(for: client.snipID)
+      XCTAssertEqual(Set(positions.keys), expectedIDs, file: file, line: line)
+      XCTAssertEqual(Set(positions.values), Set(0..<expectedIDs.count),
+        "Stored reference positions must be unique and contiguous.", file: file, line: line)
+      let storage = try await snapshot(client.library, client.namespace)
+      XCTAssertEqual(Set(storage.publications.map(\.metadata.attachmentID)), expectedIDs, file: file, line: line)
+      for (position, id) in order.enumerated() {
+        let row = try publication(of: id, in: storage)
+        XCTAssertTrue(row.metadataAccepted, file: file, line: line)
+        XCTAssertNil(row.lastFailure, file: file, line: line)
+        XCTAssertEqual(positions[id], position, file: file, line: line)
+        let remote = await client.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(row.metadataIdentity))
+        XCTAssertEqual(remote?.encryptedFields["position"], .int64(Int64(position)), file: file, line: line)
+      }
+      let next = try await client.store.pendingChanges()
+      XCTAssertFalse(next.operations.contains(where: { operation in
+        guard case .save(let draft) = operation else { return false }
+        return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
+      }), "A settled order must plan no attachment metadata save.", file: file, line: line)
+    }
+    return order
+  }
+
   private func assertSyncedAttachments(
     _ expected: [(id: UUID, fileName: String)],
     in pair: DownloadedAttachmentPair,
@@ -5892,6 +5988,16 @@ final class CloudAttachmentTransferTests: XCTestCase {
       lists: [.inbox],
       attachmentURLs: urls
     )
+  }
+}
+
+private extension SwiftDataSnipLibrary {
+  func storedAttachmentReferencePositions(for snipID: UUID) throws -> [UUID: Int] {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> { $0.snipID == snipID }
+    ))
+    return Dictionary(uniqueKeysWithValues: references.map { ($0.attachmentID, $0.position) })
   }
 }
 
