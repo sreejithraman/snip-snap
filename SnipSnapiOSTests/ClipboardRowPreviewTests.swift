@@ -221,6 +221,8 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
     @Published var content = SnipTextContent.literal(ExpandableTextTransitionProbe.longText("First"))
     private(set) var activations = 0
     private(set) var heights: [CGFloat] = []
+    /// What the hosted text reads for Reduce Motion, once the view appears.
+    var reducesMotion: Bool?
     private var replacements = 0
 
     var height: CGFloat { heights.last ?? 0 }
@@ -240,6 +242,7 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
 
 private struct ExpandableTextTransitionView: View {
     @ObservedObject var probe: ExpandableTextTransitionProbe
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ExpandableSnipText(
@@ -248,6 +251,7 @@ private struct ExpandableTextTransitionView: View {
             onActivate: { _ in probe.activate() }
         )
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.record(height: $0) }
+        .onChange(of: reduceMotion, initial: true) { _, value in probe.reducesMotion = value }
         .frame(width: 300)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -348,18 +352,23 @@ private struct HostedExpandableText {
     /// Mounts the row, then expands and collapses it once to measure the full height and to
     /// check that a collapsed row renders the truncated preview again.
     static func mount(for test: XCTestCase) async throws -> HostedExpandableText {
-        // With Reduce Motion on, the text toggles without animation and never reports a mid-animation height.
-        guard !UIAccessibility.isReduceMotionEnabled else {
-            throw TransitionTestFailure(description:
-                "Reduce Motion is on, so the text toggles without animation; turn it off to run these tests."
-            )
-        }
         try ApplicationAccessibility.enable(for: test)
         // UIKit loads its accessibility support after the switch flips; mount the row afterward.
         try await Task.sleep(for: .milliseconds(300))
         let probe = ExpandableTextTransitionProbe()
-        let window = try mountTransitionWindow(ExpandableTextTransitionView(probe: probe))
+        // CI runners may have Reduce Motion on, which makes the text toggle without animation.
+        let window = try mountTransitionWindow(
+            ExpandableTextTransitionView(probe: probe).environment(\._accessibilityReduceMotion, false)
+        )
         let hostView = try XCTUnwrap(window.rootViewController?.view)
+        _ = await TestReadiness.wait { probe.reducesMotion != nil }
+        guard probe.reducesMotion == false else {
+            window.isHidden = true
+            throw TransitionTestFailure(description:
+                "The hosted text reads Reduce Motion as \(String(describing: probe.reducesMotion)), "
+                    + "so it would toggle without animation and never report a mid-animation height."
+            )
+        }
         let exposed = await TestReadiness.wait {
             hostView.layoutIfNeeded()
             return findButton(in: window, label: probe.content.accessibilityText) != nil && probe.height > 0

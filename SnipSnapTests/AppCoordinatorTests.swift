@@ -2272,6 +2272,8 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
     private(set) var activationTimes: [ContinuousClock.Instant] = []
     private var replacements = 0
     var height: CGFloat = 0
+    /// What the hosted text reads for Reduce Motion, once the view appears.
+    var reducesMotion: Bool?
 
     var activations: Int { activationTimes.count }
 
@@ -2290,6 +2292,7 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
 
 private struct ExpandableTextTransitionView: View {
     @ObservedObject var probe: ExpandableTextTransitionProbe
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ExpandableSnipText(
@@ -2298,6 +2301,7 @@ private struct ExpandableTextTransitionView: View {
             onActivate: { _ in probe.activate() }
         )
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.height = $0 }
+        .onChange(of: reduceMotion, initial: true) { _, value in probe.reducesMotion = value }
         .frame(width: 300)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -2321,14 +2325,19 @@ private struct HostedExpandableText {
     let collapsedHeight: CGFloat
 
     static func mount() async throws -> HostedExpandableText {
-        // With Reduce Motion on, the text toggles without animation, so nothing could be interrupted.
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        let probe = ExpandableTextTransitionProbe()
+        // CI runners may have Reduce Motion on, which makes the text toggle without animation.
+        let panel = try await mountTransitionPanel(
+            ExpandableTextTransitionView(probe: probe).environment(\._accessibilityReduceMotion, false)
+        )
+        _ = await waitForTransition { probe.reducesMotion != nil }
+        guard probe.reducesMotion == false else {
+            panel.orderOut(nil)
             throw TransitionTestFailure(description:
-                "Reduce Motion is on, so the text toggles without animation; turn it off to run these tests."
+                "The hosted text reads Reduce Motion as \(String(describing: probe.reducesMotion)), "
+                    + "so it would toggle without animation and nothing could be interrupted."
             )
         }
-        let probe = ExpandableTextTransitionProbe()
-        let panel = try await mountTransitionPanel(ExpandableTextTransitionView(probe: probe))
         let accessibility = try MountedAccessibility(root: try XCTUnwrap(panel.contentView))
         _ = try await accessibility.button(identifier: ExpandableTextTransitionProbe.identifier)
         _ = await waitForTransition { probe.height > 0 }
@@ -2351,12 +2360,13 @@ private struct HostedExpandableText {
         return probe.activationTimes[previous]
     }
 
-    /// Presses the text, then runs `interrupt` a frame or two later. Mac renders opening like open
-    /// and closing like closed, and its row geometry may report only end values, so nothing here
-    /// shows the first transition still pending. The gap check only shows `interrupt` acted sooner
-    /// than the animation can finish. Proof that stale completions are ignored comes from the iOS
-    /// tests, which run the same `toggleExpansion`/`settleExpansion` code and act on mid-animation
-    /// heights; these tests prove ordering and Mac rendering. A slow runner gets another attempt
+    /// Presses the text, then runs `interrupt` a frame or two later. With Reduce Motion pinned off
+    /// in the host, the gap check shows `interrupt` acted before a real 0.18 s animation could
+    /// finish. Mac renders opening like open and closing like closed, and its row geometry may
+    /// report only end values, so nothing here shows the first transition still pending. Proof
+    /// that stale completions are ignored comes from the iOS tests, which run the same
+    /// `toggleExpansion`/`settleExpansion` code and act on mid-animation heights; these tests
+    /// prove ordering and Mac rendering. A slow runner gets another attempt
     /// after the row settles; when no attempt lands in time, this throws.
     func pressAndInterrupt(
         settled: () async throws -> Bool,
