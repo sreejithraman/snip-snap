@@ -8,7 +8,7 @@ extension SwiftDataSnipLibrary {
     transitions: [CloudAttachmentTransition],
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
-  ) throws -> [UUID: CloudAttachmentAdoption] {
+  ) throws -> CloudAttachmentRemoteChanges {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
@@ -24,7 +24,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
-    var adoptions: [UUID: CloudAttachmentAdoption] = [:]
+    var changes = CloudAttachmentRemoteChanges()
     var materializedAttachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
@@ -94,6 +94,7 @@ extension SwiftDataSnipLibrary {
     /// Drops a publication another device deleted, with its download and its place on the snip.
     /// Queues no payload cleanup.
     func removeRemotelyDeleted(_ row: StoredCloudAttachmentPublication) {
+      changes.removedSnipIDs.insert(row.snipID)
       removeCache(for: row.attachmentID)
       removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
       context.delete(row)
@@ -119,12 +120,12 @@ extension SwiftDataSnipLibrary {
           if row.lifecycle.isLocallyPresent {
             let base = row.acknowledgedMetadata(acknowledgedValues)
             // A commit's first adoption of a row keeps the base from before the commit.
-            let commitBase = if let earlier = adoptions[metadata.attachmentID] {
+            let commitBase = if let earlier = changes.adoptions[metadata.attachmentID] {
               earlier.base
             } else {
               base
             }
-            adoptions[metadata.attachmentID] = CloudAttachmentAdoption(
+            changes.adoptions[metadata.attachmentID] = CloudAttachmentAdoption(
               base: commitBase, record: metadata
             )
             // A published row already equals its base, so only a pending edit keeps fields.
@@ -361,7 +362,7 @@ extension SwiftDataSnipLibrary {
         try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
-    return adoptions
+    return changes
   }
 
   package func commitCloudAttachmentTransitions(
@@ -397,7 +398,7 @@ extension SwiftDataSnipLibrary {
       transitions: transitions,
       context: context
     )
-    let adoptions = try applyCloudAttachmentTransitions(
+    let attachmentChanges = try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
       acknowledgedValues: acknowledgedValues,
@@ -405,8 +406,7 @@ extension SwiftDataSnipLibrary {
     )
     try materializeCloudAttachments(
       namespaceKey: namespaceKey,
-      adoptions: adoptions,
-      metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(in: transitions),
+      changes: attachmentChanges,
       acknowledgedValues: acknowledgedValues,
       context: context
     )
@@ -418,15 +418,6 @@ extension SwiftDataSnipLibrary {
       if (try? lock.check()) == nil { break }
       CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
-  }
-
-  static func metadataAcknowledgedAttachmentIDs(
-    in transitions: [CloudAttachmentTransition]
-  ) -> Set<UUID> {
-    Set(transitions.compactMap { transition in
-      guard case .metadataAccepted(let attachmentID, _, _, _) = transition else { return nil }
-      return attachmentID
-    })
   }
 
 }

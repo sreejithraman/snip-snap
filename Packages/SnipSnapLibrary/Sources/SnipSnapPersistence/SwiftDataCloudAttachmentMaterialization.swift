@@ -3,13 +3,15 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
+  /// Shows fetched attachments on their snips, then merges the order of every snip another
+  /// device's change touched. This device's own acknowledgements touch no snip (ADR 0028).
   func materializeCloudAttachments(
     namespaceKey: String,
-    adoptions: [UUID: CloudAttachmentAdoption],
-    metadataAcknowledgedAttachmentIDs: Set<UUID>,
+    changes: CloudAttachmentRemoteChanges,
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
   ) throws {
+    let adoptions = changes.adoptions
     let allPublications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
@@ -18,10 +20,7 @@ extension SwiftDataSnipLibrary {
       $0.lifecycle.materializesFromCloud
         || ($0.lifecycle.isLocallyPresent && adoptions[$0.attachmentID] != nil)
     }
-    let metadataAcknowledgedSnipIDs = Set(allPublications.filter {
-      metadataAcknowledgedAttachmentIDs.contains($0.attachmentID)
-    }.map(\.snipID))
-    let snipIDs = Array(Set(publications.map(\.snipID)).union(metadataAcknowledgedSnipIDs))
+    let snipIDs = Array(Set(publications.map(\.snipID)).union(changes.removedSnipIDs))
     guard !snipIDs.isEmpty else { return }
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
     let storedSnipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>(
@@ -42,12 +41,9 @@ extension SwiftDataSnipLibrary {
       }.map(\.attachmentID)
     }
     var references = Dictionary(uniqueKeysWithValues: storedReferences.map { ($0.id, $0) })
-    let presentRowsBySnip = Dictionary(
-      grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
-    )
-    var adoptedOrInsertedSnipIDs = Set(
+    var touchedSnipIDs = Set(
       publications.filter { adoptions[$0.attachmentID] != nil }.map(\.snipID)
-    )
+    ).union(changes.removedSnipIDs)
     let cacheEntries = Dictionary(uniqueKeysWithValues:
       try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
@@ -107,37 +103,42 @@ extension SwiftDataSnipLibrary {
         )
         context.insert(reference)
         references[referenceID] = reference
-        adoptedOrInsertedSnipIDs.insert(publication.snipID)
+        touchedSnipIDs.insert(publication.snipID)
       }
     }
-    let touchedSnipIDs = metadataAcknowledgedSnipIDs.union(adoptedOrInsertedSnipIDs)
-    // Adoptions and inserts compare shared order, acknowledgement-only restores require the whole
-    // list to match, and pending published edits block both.
-    let snipsAdoptingOrder = Set(touchedSnipIDs.filter { snipID in
-      let presentRows = presentRowsBySnip[snipID] ?? []
-      guard !presentRows.contains(where: {
-        $0.lifecycle.isPresentAwaitingMetadata && $0.lifecycle.hasPublishedMetadata
-      }) else {
-        return false
-      }
+    let presentRows = Dictionary(uniqueKeysWithValues:
+      allPublications.filter { $0.lifecycle.isLocallyPresent }.map { ($0.attachmentID, $0) }
+    )
+    let membersBySnip = Dictionary(grouping: references.values, by: \.snipID)
+    for snipID in touchedSnipIDs {
+      let members = membersBySnip[snipID] ?? []
       let localOrder = localOrdersBySnip[snipID] ?? []
-      let baseOrder = presentRows.sorted { lhs, rhs in
-        let lhsPosition = adoptions[lhs.attachmentID]?.base?.position ?? lhs.position
-        let rhsPosition = adoptions[rhs.attachmentID]?.base?.position ?? rhs.position
-        if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
-        return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
-      }.map(\.attachmentID)
-      if !adoptedOrInsertedSnipIDs.contains(snipID) { return localOrder == baseOrder }
-      let sharedIDs = Set(localOrder).intersection(baseOrder)
-      return localOrder.filter { sharedIDs.contains($0) }
-        == baseOrder.filter { sharedIDs.contains($0) }
-    })
-    for snipID in snipsAdoptingOrder {
-      for row in presentRowsBySnip[snipID] ?? [] {
+      var basePositions: [UUID: Int] = [:]
+      var remotePositions: [UUID: Int] = [:]
+      for member in members {
+        guard let row = presentRows[member.attachmentID], row.snipID == snipID else { continue }
+        if let adoption = adoptions[row.attachmentID] {
+          basePositions[row.attachmentID] = adoption.base?.position
+          remotePositions[row.attachmentID] = adoption.record.position
+        } else if let acknowledged = row.acknowledgedMetadata(acknowledgedValues) {
+          basePositions[row.attachmentID] = acknowledged.position
+          remotePositions[row.attachmentID] = acknowledged.position
+        }
+      }
+      let order = CloudAttachmentMerge.order(
+        local: localOrder,
+        arrived: members.map(\.attachmentID).filter { !localOrder.contains($0) },
+        base: basePositions,
+        remote: remotePositions
+      )
+      // Stored positions are local order; the shadows hold the cloud coordinates.
+      for (position, attachmentID) in order.enumerated() {
         let referenceID = StoredSnipAttachmentReference.identifier(
-          snipID: snipID, attachmentID: row.attachmentID
+          snipID: snipID, attachmentID: attachmentID
         )
-        references[referenceID]?.update(position: row.position)
+        if let reference = references[referenceID], reference.position != position {
+          reference.update(position: position)
+        }
       }
     }
   }

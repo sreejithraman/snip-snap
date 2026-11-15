@@ -27,6 +27,62 @@ enum CloudAttachmentMerge {
       payloadIdentity: remote.payloadIdentity
     )
   }
+
+  /// Merges a snip's attachment order as one field and returns every member in its final order.
+  ///
+  /// The shared members are those in `local` with both a base and a remote position. Adds and
+  /// removals stay outside them, so they never count as a reorder. If only the remote side
+  /// reordered them, the remote order wins; otherwise the local order does. A member the other
+  /// side lacks keeps its index in its own side's sequence (SM33 D-F2-6).
+  ///
+  /// - Parameters:
+  ///   - local: the snip's stored order before this commit inserted references.
+  ///   - arrived: the members this commit inserted.
+  ///   - base: acknowledged positions before this commit.
+  ///   - remote: acknowledged positions after this commit.
+  static func order(
+    local: [UUID],
+    arrived: [UUID],
+    base: [UUID: Int],
+    remote: [UUID: Int]
+  ) -> [UUID] {
+    let shared = local.filter { base[$0] != nil && remote[$0] != nil }
+    let sharedIDs = Set(shared)
+    let baseOrder = sorted(shared, by: base)
+    let remoteSequence = sorted((local + arrived).filter { remote[$0] != nil }, by: remote)
+    let remoteOrder = remoteSequence.filter { sharedIDs.contains($0) }
+    if remoteOrder != baseOrder && shared == baseOrder {
+      return inserting(local.filter { remote[$0] == nil }, at: local, into: remoteSequence)
+    }
+    return inserting(arrived, at: remoteSequence, into: local)
+  }
+
+  private static func sorted(_ ids: [UUID], by positions: [UUID: Int]) -> [UUID] {
+    ids.sorted { lhs, rhs in
+      let lhsPosition = positions[lhs] ?? .max
+      let rhsPosition = positions[rhs] ?? .max
+      if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
+      return lhs.uuidString < rhs.uuidString
+    }
+  }
+
+  /// Inserts each member at its index in `source`, lowest index first, clamped to the end.
+  private static func inserting(_ members: [UUID], at source: [UUID], into sequence: [UUID]) -> [UUID] {
+    var result = sequence
+    let placements = members.map { (index: source.firstIndex(of: $0) ?? .max, id: $0) }
+      .sorted { $0.index < $1.index }
+    for placement in placements {
+      result.insert(placement.id, at: min(placement.index, result.count))
+    }
+    return result
+  }
+}
+
+/// What another device's changes did to locally present attachments in one commit.
+struct CloudAttachmentRemoteChanges {
+  var adoptions: [UUID: CloudAttachmentAdoption] = [:]
+  /// Snips that lost an attachment to another device's delete.
+  var removedSnipIDs: Set<UUID> = []
 }
 
 /// A fetched record applied to a locally present publication in one commit.
