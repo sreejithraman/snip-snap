@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SnipSnapCore
 import SwiftData
@@ -6,6 +7,245 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class CloudCorruptShadowRecoveryTests: XCTestCase {
+  func testCorruptShadowRowsKeepTheirStoredKeysAndFieldsThroughEachStage() async throws {
+    for kind: CloudEntityKind in [.snip, .list] {
+      let fixture = try await Fixture()
+      defer { fixture.remove() }
+      let snapshot = try await fixture.stored()
+      let accepted = try XCTUnwrap(snapshot.readyEntities.first { $0.reference.kind == kind })
+      let kindName = kind == .snip ? "snip" : "list"
+      let domainID = accepted.reference.domainID.uuidString.lowercased()
+      let digest = SHA256.hash(data: accepted.shadowData).prefix(8)
+        .map { String(format: "%02x", $0) }.joined()
+      let archiveKey = "corrupt-shadow-\(kindName)-\(domainID)-\(digest)"
+      let namespaceKey = fixture.namespace.namespaceKey.rawValue
+      func expectRows(_ keys: [String], _ stage: String) throws {
+        let rows = try fixture.quarantineRows()
+        let label = "\(kindName) \(stage)"
+        XCTAssertEqual(rows.map(\.id), keys.map { "\(namespaceKey)|quarantine|\($0)" }.sorted(), label)
+        for row in rows {
+          XCTAssertEqual(row.namespaceKey, namespaceKey, label)
+          XCTAssertEqual(row.kind, kindName, label)
+          XCTAssertEqual(row.domainID, accepted.reference.domainID, label)
+          XCTAssertEqual(row.zoneName, "SnipSnap", label)
+          XCTAssertEqual(row.ownerName, "owner", label)
+          XCTAssertEqual(row.recordName, "\(kind == .snip ? "s-" : "l-")\(domainID)", label)
+          XCTAssertEqual(row.format, "legacyBindingV1", label)
+          XCTAssertEqual(row.payload, accepted.shadowData, label)
+        }
+      }
+
+      try await fixture.library.quarantineCorruptCloudEntities(
+        namespaceKey: fixture.namespace.namespaceKey, values: [accepted])
+      try expectRows([archiveKey], "archive")
+      try await prepareFreshEngine(fixture.store)
+      try expectRows([archiveKey, "recovering-\(archiveKey)"], "recovery attempt")
+      try await fixture.coordinator.prepareManualRetry()
+      try await fixture.coordinator.fetchRemote()
+      try expectRows(["resolved-\(archiveKey)"], "resolution marker")
+    }
+  }
+
+  func testArchiveKeyOfFixedShadowBytesStaysStable() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let goldenBytes = Data("snip-snap corrupt shadow golden".utf8)
+    let context = try fixture.context()
+    let record = try XCTUnwrap(try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+      .first { $0.kind == CloudEntityKind.snip.rawValue })
+    let domainID = record.domainID.uuidString.lowercased()
+    record.shadowData = goldenBytes
+    try context.save()
+    let snapshot = try await fixture.stored()
+    let accepted = try XCTUnwrap(snapshot.readyEntities.first { $0.reference.kind == .snip })
+
+    try await fixture.library.quarantineCorruptCloudEntities(
+      namespaceKey: fixture.namespace.namespaceKey, values: [accepted])
+
+    let rows = try fixture.quarantineRows()
+    XCTAssertEqual(rows.map(\.id), [
+      "\(fixture.namespace.namespaceKey.rawValue)|quarantine|corrupt-shadow-snip-\(domainID)-18bf38994062a72c",
+    ])
+    XCTAssertEqual(rows.map(\.payload), [goldenBytes])
+  }
+
+  func testEachRecoveryStageKeepsItsBlocksAndAttentionAcrossReopen() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let archived = try await fixture.quarantineAcceptedRecord()
+    let recordID = CloudFullSyncPersistence.recordID(archived.identity)
+
+    var reopened = try fixture.reopenedStore()
+    try await expectRecoveryReads(reopened, recordID: recordID,
+      blocked: true, attention: true, resetNeeded: true, "archive")
+    let archivedState = try await reopened.loadEngineState()
+    XCTAssertNil(archivedState)
+    try await prepareFreshEngine(reopened)
+
+    reopened = try fixture.reopenedStore()
+    let prepared = try await fixture.stored()
+    XCTAssertEqual(Set(prepared.quarantines.map(\.key)), [archived.key, "recovering-\(archived.key)"])
+    XCTAssertTrue(prepared.readyEntities.contains { $0.reference == archived.reference })
+    try await expectRecoveryReads(reopened, recordID: recordID,
+      blocked: true, attention: true, resetNeeded: true, "recovery attempt")
+    // Preparing again binds nothing new and restores nothing twice.
+    try await prepareFreshEngine(reopened)
+    let repeated = try await fixture.stored()
+    XCTAssertEqual(repeated.quarantines, prepared.quarantines)
+    XCTAssertEqual(repeated.readyEntities, prepared.readyEntities)
+
+    // A restart resumes the full fetch from a fresh engine.
+    let restarted = CloudFullSyncCoordinator(store: reopened,
+      transport: FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace))
+    try await restarted.fetchRemote()
+    reopened = try fixture.reopenedStore()
+    let resolved = try await fixture.stored()
+    XCTAssertEqual(resolved.quarantines.map(\.key), ["resolved-\(archived.key)"])
+    try await expectRecoveryReads(reopened, recordID: recordID,
+      blocked: false, attention: false, resetNeeded: false, "resolution marker")
+    let resolvedState = try await reopened.loadEngineState()
+    XCTAssertNotNil(resolvedState)
+  }
+
+  func testFailedSaveBeforeEachRecoveryStageKeepsThePriorStage() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let crash = ResolutionWriteFailure()
+    let library = try SwiftDataSnipLibrary(storeURL: fixture.url,
+      afterMutationBeforeSave: { try crash.hit() })
+    let store = CloudFullSyncPersistence(library: library, namespace: fixture.namespace, dataZone: fixture.zone)
+    let original = try await fixture.stored()
+    let accepted = try XCTUnwrap(original.readyEntities.first { $0.reference.kind == .snip })
+
+    crash.failOnWrite(1)
+    await XCTAssertThrowsErrorAsync {
+      try await library.quarantineCorruptCloudEntities(
+        namespaceKey: fixture.namespace.namespaceKey, values: [accepted])
+    }
+    let afterArchiveFailure = try await fixture.stored()
+    XCTAssertEqual(afterArchiveFailure, original)
+
+    try await library.quarantineCorruptCloudEntities(
+      namespaceKey: fixture.namespace.namespaceKey, values: [accepted])
+    let archived = try await fixture.stored()
+    let archive = try XCTUnwrap(archived.quarantines.first)
+    crash.failOnWrite(1)
+    await XCTAssertThrowsErrorAsync { try await prepareFreshEngine(store) }
+    let afterAttemptFailure = try await fixture.stored()
+    XCTAssertEqual(afterAttemptFailure, archived)
+
+    try await prepareFreshEngine(fixture.reopenedStore())
+    let prepared = try await fixture.stored()
+    XCTAssertEqual(Set(prepared.quarantines.map(\.key)), [archive.key, "recovering-\(archive.key)"])
+    XCTAssertTrue(prepared.readyEntities.contains { $0.reference == accepted.reference })
+  }
+
+  func testOrphanAttemptAndUnrelatedQuarantineNeedAttentionWithoutBlockingOrRecovery() async throws {
+    for row in ["orphan attempt", "unrelated quarantine"] {
+      let fixture = try await Fixture()
+      defer { fixture.remove() }
+      let archived = try await fixture.quarantineAcceptedRecord()
+      let identity = archived.identity
+      let key = row == "orphan attempt"
+        ? "recovering-\(archived.key)"
+        : "legacy|\(identity.ownerName)|\(identity.zoneName)|\(identity.recordName)"
+      let context = try fixture.context()
+      for archive in try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>()) {
+        context.delete(archive)
+      }
+      context.insert(StoredCloudMappingQuarantine(namespaceKey: fixture.namespace.namespaceKey.rawValue,
+        value: CloudQuarantineInput(key: key, reference: archived.reference,
+          identity: identity, payload: archived.payload)))
+      try context.save()
+      let before = try await fixture.stored()
+
+      try await expectRecoveryReads(fixture.store, recordID: CloudFullSyncPersistence.recordID(identity),
+        blocked: false, attention: true, resetNeeded: false, row)
+      let state = try await fixture.store.loadEngineState()
+      try await fixture.applyCleanCompletion()
+
+      let after = try await fixture.stored()
+      XCTAssertNotNil(state, row)
+      XCTAssertEqual(before.quarantines.map(\.key), [key], row)
+      XCTAssertEqual(after.quarantines, before.quarantines, row)
+    }
+  }
+
+  func testMismatchedRecoveryAttemptKeepsItsArchiveUnpreparedAndStopsPreparation() async throws {
+    for failure in ["payload", "identity", "reference", "format"] {
+      let fixture = try await Fixture()
+      defer { fixture.remove() }
+      let archived = try await fixture.quarantineAcceptedRecord()
+      let context = try fixture.context()
+      let attempt = StoredCloudMappingQuarantine(namespaceKey: fixture.namespace.namespaceKey.rawValue,
+        value: CloudQuarantineInput(key: "recovering-\(archived.key)", reference: archived.reference,
+          identity: archived.identity, payload: archived.payload))
+      switch failure {
+      case "payload": attempt.payload = Data("changed attempt".utf8)
+      case "identity": attempt.recordName += "-other"
+      case "reference": attempt.domainID = UUID()
+      case "format": attempt.format = CloudConflictFormat.snipMergeV1.rawValue
+      default: XCTFail("Unknown test case")
+      }
+      context.insert(attempt)
+      try context.save()
+      let before = try await fixture.stored()
+
+      try await expectRecoveryReads(fixture.store, recordID: CloudFullSyncPersistence.recordID(archived.identity),
+        blocked: true, attention: true, resetNeeded: true, failure)
+      // Binding the archive's own attempt collides with the changed row.
+      await XCTAssertThrowsErrorAsync { try await prepareFreshEngine(fixture.store) }
+      try await fixture.applyCleanCompletion()
+
+      let after = try await fixture.stored()
+      XCTAssertEqual(Set(before.quarantines.map(\.key)), [archived.key, "recovering-\(archived.key)"], failure)
+      XCTAssertEqual(after.quarantines, before.quarantines, failure)
+      XCTAssertFalse(after.readyEntities.contains { $0.reference == archived.reference }, failure)
+    }
+  }
+
+  /// SM27-L2-R1 (fails at base). Staged recovery reads the engine state, and that read prepares
+  /// recovery again, which restarts the initial-fetch inventory while the engine keeps its
+  /// place. The completing batch then treats the record the fetch already delivered as absent
+  /// and deletes the local snip, although the server still has it.
+  func testRecoveredStagedBatchDuringTheRecoveryFetchKeepsRecordsTheFetchAlreadyDelivered() async throws {
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let archived = try await fixture.quarantineAcceptedRecord()
+    let recordID = CloudFullSyncPersistence.recordID(archived.identity)
+    let serverValue = await fixture.server.fullSnapshot(for: recordID)
+    let serverRecord = try XCTUnwrap(serverValue)
+    let transport = AutomaticSyncTransportProbe()
+    let coordinator = CloudFullSyncCoordinator(store: fixture.store, transport: transport)
+    try await coordinator.prepareManualRetry()
+    try await coordinator.prepareAutomaticSync()
+    let partial = CloudEngineStateEnvelope(namespace: fixture.namespace,
+      serialization: Data("partial".utf8), requiresInitialFetch: true)
+
+    let delivered = CloudFetchedBatch(id: UUID(), items: [.record(serverRecord)],
+      engineState: partial, isInitialFetch: true)
+    await transport.enqueue(.batch(CloudPendingBatch(batch: .fetched(delivered), outbound: nil)))
+    try await coordinator.processAutomaticChanges()
+    // Staging alone stands in for an apply that failed after its stage commit.
+    let interrupted = CloudFetchedBatch(id: UUID(), items: [], engineState: partial, isInitialFetch: true)
+    try await fixture.store.stage(.fetched(interrupted))
+    await transport.enqueue(.batch(CloudPendingBatch(batch: .fetched(interrupted), outbound: nil)))
+    try await coordinator.processAutomaticChanges()
+    let completed = CloudFetchedBatch(id: UUID(), items: [], zoneEvents: [.fetched(fixture.zone)],
+      engineState: CloudEngineStateEnvelope(namespace: fixture.namespace,
+        serialization: Data("complete".utf8), requiresInitialFetch: false),
+      isInitialFetch: true)
+    await transport.enqueue(.batch(CloudPendingBatch(batch: .fetched(completed), outbound: nil)))
+    try await coordinator.processAutomaticChanges()
+
+    let remote = await fixture.server.fullSnapshot(for: recordID)
+    let hasLocal = try await fixture.hasLocal(archived.reference)
+    let stored = try await fixture.stored()
+    XCTAssertNotNil(remote)
+    XCTAssertTrue(hasLocal)
+    XCTAssertTrue(stored.readyEntities.contains { $0.reference == archived.reference })
+  }
+
   func testFetchedLegacyListKeepsCanonicalSnipPlacementThroughCleanCompletion() async throws {
     for listInEarlierBatch in [false, true] {
       let fixture = try await Fixture()
@@ -660,6 +900,47 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
   }
 }
 
+/// The store calls a fresh engine start makes: read the engine state, then reset app evidence.
+private func prepareFreshEngine(_ store: CloudFullSyncPersistence) async throws {
+  _ = try await store.loadEngineState()
+  try await store.prepareInitialFetch()
+}
+
+private func expectRecoveryReads(
+  _ store: CloudFullSyncPersistence,
+  recordID: CloudRecordID,
+  blocked: Bool,
+  attention: Bool,
+  resetNeeded: Bool,
+  _ stage: String,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async throws {
+  let admission = try await store.outboundAdmission()
+  let issue = try await store.unresolvedSyncIssue()
+  let status = try await store.statusEvidence()
+  let reset = try await store.prepareManualRetry()
+  XCTAssertEqual(admission.blockedRecordIDs.contains(recordID), blocked, "\(stage): blocked",
+    file: file, line: line)
+  XCTAssertEqual(issue, attention ? SyncedContentSyncIssue.appDataIssue : nil, "\(stage): issue",
+    file: file, line: line)
+  XCTAssertEqual(status.needsAttention, attention, "\(stage): attention", file: file, line: line)
+  XCTAssertEqual(reset, resetNeeded, "\(stage): reset", file: file, line: line)
+}
+
+/// A stored quarantine row's columns, copied while its context is alive.
+private struct QuarantineRow: Equatable {
+  let id: String
+  let namespaceKey: String
+  let kind: String
+  let domainID: UUID
+  let zoneName: String
+  let ownerName: String
+  let recordName: String
+  let format: String
+  let payload: Data
+}
+
 private final class ResolutionWriteFailure: @unchecked Sendable {
   enum Failure: Error { case injected }
   private let lock = NSLock()
@@ -718,6 +999,20 @@ private struct Fixture {
 
   func stored() async throws -> CloudFullStorageSnapshot {
     try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+  }
+
+  func reopenedStore() throws -> CloudFullSyncPersistence {
+    CloudFullSyncPersistence(library: try SwiftDataSnipLibrary(storeURL: url),
+      namespace: namespace, dataZone: zone)
+  }
+
+  func quarantineRows() throws -> [QuarantineRow] {
+    let context = try self.context()
+    return try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>()).map {
+      QuarantineRow(id: $0.id, namespaceKey: $0.namespaceKey, kind: $0.kind, domainID: $0.domainID,
+        zoneName: $0.zoneName, ownerName: $0.ownerName, recordName: $0.recordName,
+        format: $0.format, payload: $0.payload)
+    }.sorted { $0.id < $1.id }
   }
 
   func quarantineAcceptedRecord() async throws -> CloudStoredQuarantine {
