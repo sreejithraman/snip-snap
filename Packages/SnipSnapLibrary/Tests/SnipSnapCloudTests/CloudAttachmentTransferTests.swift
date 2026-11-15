@@ -1,3 +1,4 @@
+import CloudKit
 import CryptoKit
 import Foundation
 import SnipSnapCore
@@ -1275,6 +1276,227 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertEqual(after.cleanups.first(where: {
       $0.identity == deletedPayloadIdentity
     })?.blockedByAttachmentID, remappedAttachmentID)
+  }
+
+  // DC3, across batches: the stored cleanup was blocked by the replacement in an earlier batch,
+  // so the later remap must move that stored blocker too.
+  func testMetadataIdentityRemapInALaterBatchMovesTheStoredCleanupBlocker() async throws {
+    let setup = try await makeRemovedPublishedAttachmentFixture()
+    let fixture = setup.fixture
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let removed = setup.removed
+    let remaining = setup.remaining
+    let cleanupRecordID = CloudAttachmentRecordCodec.recordID(removed.metadata.payloadIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [
+        .metadataDeleteAccepted(
+          attachmentID: removed.metadata.attachmentID,
+          expectedRevision: removed.revision
+        ),
+        .operationFailed(
+          attachmentID: remaining.metadata.attachmentID,
+          expectedRevision: remaining.revision,
+          failure: .retryable
+        ),
+      ]
+    )
+    let blocked = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertEqual(blocked.cleanups.first(where: {
+      $0.identity == removed.metadata.payloadIdentity
+    })?.blockedByAttachmentID, remaining.metadata.attachmentID)
+    let retryBatch = try await fixture.store.pendingChanges()
+    XCTAssertTrue(retryBatch.operations.contains(where: {
+      $0.id == CloudAttachmentRecordCodec.recordID(remaining.metadataIdentity)
+    }))
+    XCTAssertFalse(retryBatch.operations.contains(where: { $0.id == cleanupRecordID }))
+    let retrying = try await snapshot(fixture.library, fixture.namespace)
+    let retryingReplacement = try XCTUnwrap(retrying.publications.first(where: {
+      $0.metadata.attachmentID == remaining.metadata.attachmentID
+    }))
+    let remappedAttachmentID = UUID()
+    let remappedMetadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(remappedAttachmentID.uuidString.lowercased())"
+    )
+
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.metadataUnknown(
+        attachmentID: remaining.metadata.attachmentID,
+        expectedRevision: retryingReplacement.revision,
+        replacementAttachmentID: remappedAttachmentID,
+        replacementMetadataIdentity: remappedMetadataIdentity
+      )]
+    )
+
+    try await assertCleanupWaitsForRemappedReplacement(
+      fixture,
+      removedPayload: removed.metadata.payloadIdentity,
+      replacedAttachmentID: remaining.metadata.attachmentID,
+      remappedAttachmentID: remappedAttachmentID,
+      remappedMetadataIdentity: remappedMetadataIdentity
+    )
+  }
+
+  // DC3, one batch: results run in record-name order, so the delete can precede the remap and
+  // insert a cleanup that still names the replacement's old ID.
+  func testMetadataIdentityRemapAfterTheDeleteInOneBatchMovesTheNewCleanupBlocker() async throws {
+    let setup = try await makeRemovedPublishedAttachmentFixture()
+    let fixture = setup.fixture
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let removed = setup.removed
+    let remaining = setup.remaining
+    let remappedAttachmentID = UUID()
+    let remappedMetadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(remappedAttachmentID.uuidString.lowercased())"
+    )
+
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [
+        .metadataDeleteAccepted(
+          attachmentID: removed.metadata.attachmentID,
+          expectedRevision: removed.revision
+        ),
+        .metadataUnknown(
+          attachmentID: remaining.metadata.attachmentID,
+          expectedRevision: remaining.revision,
+          replacementAttachmentID: remappedAttachmentID,
+          replacementMetadataIdentity: remappedMetadataIdentity
+        ),
+      ]
+    )
+
+    try await assertCleanupWaitsForRemappedReplacement(
+      fixture,
+      removedPayload: removed.metadata.payloadIdentity,
+      replacedAttachmentID: remaining.metadata.attachmentID,
+      remappedAttachmentID: remappedAttachmentID,
+      remappedMetadataIdentity: remappedMetadataIdentity
+    )
+  }
+
+  func testRemovingAndRestoringADownloadedAttachmentKeepsItsPublishedMetadata() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let added = try await library.perform(
+      .add(
+        content: "downloaded attachment",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: [],
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = added.outcome else {
+      return XCTFail("Expected a saved snip")
+    }
+    let namespace = namespaceValue()
+    let store = CloudFullSyncPersistence(
+      library: library,
+      namespace: namespace,
+      dataZone: CloudZoneID(name: "data", ownerName: "owner"),
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner")
+    )
+    let attachmentID = UUID()
+    let metadataIdentity = CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+    let payloadIdentity = CloudTextStorageIdentity(
+      zoneName: "payload",
+      ownerName: "owner",
+      recordName: UUID().uuidString.lowercased()
+    )
+    let bytes = Data("downloaded, removed, and restored".utf8)
+    let shadow = try metadataShadow(metadataIdentity)
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace.namespaceKey,
+      transitions: [.remoteMetadataAccepted(
+        metadata: CloudAttachmentMetadataValue(
+          attachmentID: attachmentID,
+          snipID: snipID,
+          position: 0,
+          fileName: "downloaded.txt",
+          contentType: "text/plain",
+          byteCount: Int64(bytes.count),
+          sha256: Data(SHA256.hash(data: bytes)),
+          payloadIdentity: payloadIdentity
+        ),
+        metadataIdentity: metadataIdentity,
+        shadowData: shadow.data,
+        systemFields: shadow.systemFields
+      )]
+    )
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(
+      namespaceKey: namespace.namespaceKey
+    )
+    let staged = stagingRoot.appendingPathComponent("restore/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    _ = try await library.installCloudAttachmentDownload(
+      namespaceKey: namespace.namespaceKey,
+      attachmentID: attachmentID,
+      expectedPayloadIdentity: payloadIdentity,
+      expectedField: CloudAttachmentRecordCodec.assetField,
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: payloadIdentity,
+        field: CloudAttachmentRecordCodec.assetField,
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
+      maximumBytes: 1_024,
+      now: .distantPast
+    )
+    let metadataRecordID = CloudAttachmentRecordCodec.recordID(metadataIdentity)
+    let publishedStorage = try await snapshot(library, namespace)
+    let published = try XCTUnwrap(publishedStorage.publications.first)
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: { $0.id == snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), [attachmentID])
+    XCTAssertTrue(snip.attachments.first?.relativePath.hasPrefix("CloudDownloads/") == true)
+
+    _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .manual)
+    let removalBatch = try await store.pendingChanges()
+
+    let removedStorage = try await snapshot(library, namespace)
+    let removed = try XCTUnwrap(removedStorage.publications.first)
+    XCTAssertFalse(removed.isLocallyPresent)
+    XCTAssertTrue(removed.metadataAccepted)
+    XCTAssertNil(removed.lastFailure)
+    XCTAssertEqual(removed.revision, published.revision + 1)
+    let plansMetadataDelete = removalBatch.operations.contains(where: { operation in
+      guard case .delete(let id, _) = operation else { return false }
+      return id == metadataRecordID
+    })
+    XCTAssertTrue(plansMetadataDelete)
+
+    _ = try await library.perform(.restore(snips: [snip]), sortedBy: .manual)
+    let restoreBatch = try await store.pendingChanges()
+
+    let restoredStorage = try await snapshot(library, namespace)
+    let restored = try XCTUnwrap(restoredStorage.publications.first)
+    XCTAssertTrue(restored.isLocallyPresent)
+    XCTAssertTrue(restored.payloadAccepted)
+    XCTAssertTrue(restored.metadataAccepted)
+    XCTAssertNil(restored.lastFailure)
+    XCTAssertFalse(restoreBatch.operations.contains(where: { $0.id == metadataRecordID }))
+    let restoredLocal = try await library.checkedSnapshot(sortedBy: .manual)
+    let restoredURL = try XCTUnwrap(restoredLocal.attachmentURLs[attachmentID])
+    XCTAssertEqual(try Data(contentsOf: restoredURL), bytes)
   }
 
   func testPendingMetadataDoesNotDelayUnrelatedPayloadCleanup() async throws {
@@ -2845,6 +3067,158 @@ final class CloudAttachmentTransferTests: XCTestCase {
     _ namespace: CloudSyncNamespace
   ) async throws -> CloudAttachmentStorageSnapshot {
     try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+  }
+
+  /// A metadata shadow that decodes like one CloudKit returned, so planned deletes keep it.
+  private func metadataShadow(_ identity: CloudTextStorageIdentity) throws -> CloudRecordShadow {
+    try CloudRecordShadow.archive(CKRecord(
+      recordType: CloudAttachmentRecordCodec.metadataRecordType,
+      recordID: CloudKitRecordMapper.recordID(for: CloudAttachmentRecordCodec.recordID(identity))
+    ))
+  }
+
+  /// Publishes two local-source attachments, removes the one at position 0, and plans the
+  /// batch that deletes its metadata while the other moves to position 0 with metadata pending.
+  private func makeRemovedPublishedAttachmentFixture() async throws -> (
+    fixture: PendingAttachmentFixture,
+    removed: CloudAttachmentPublication,
+    remaining: CloudAttachmentPublication
+  ) {
+    let fixture = try await makePendingAttachmentFixture(names: ["removed", "remaining"])
+    let pending = try await snapshot(fixture.library, fixture.namespace)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: pending.publications.map {
+        .payloadAccepted(
+          attachmentID: $0.metadata.attachmentID,
+          expectedRevision: $0.revision,
+          shadowData: Data("payload-shadow".utf8),
+          systemFields: Data()
+        )
+      }
+    )
+    let payloadsAccepted = try await snapshot(fixture.library, fixture.namespace)
+    var acceptMetadata: [CloudAttachmentTransition] = []
+    for publication in payloadsAccepted.publications {
+      let shadow = try metadataShadow(publication.metadataIdentity)
+      acceptMetadata.append(.metadataAccepted(
+        attachmentID: publication.metadata.attachmentID,
+        expectedRevision: publication.revision,
+        shadowData: shadow.data,
+        systemFields: shadow.systemFields
+      ))
+    }
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: acceptMetadata
+    )
+    let published = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertTrue(published.publications.allSatisfy(\.metadataAccepted))
+    let removedPublished = try XCTUnwrap(published.publications.first(where: {
+      $0.metadata.fileName == "removed.txt"
+    }))
+    let remainingPublished = try XCTUnwrap(published.publications.first(where: {
+      $0.metadata.fileName == "remaining.txt"
+    }))
+    XCTAssertEqual(removedPublished.metadata.position, 0)
+    XCTAssertEqual(remainingPublished.metadata.position, 1)
+    let local = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first(where: {
+      $0.id == remainingPublished.metadata.snipID
+    }))
+    _ = try await fixture.library.perform(
+      .editAttachments(
+        snipID: snip.id,
+        content: snip.content,
+        edits: [.existing(attachmentID: remainingPublished.metadata.attachmentID)],
+        expectedUpdatedAt: snip.updatedAt,
+        now: Date(timeIntervalSince1970: 2)
+      ),
+      sortedBy: .manual
+    )
+    let sent = try await fixture.store.pendingChanges()
+    XCTAssertTrue(sent.operations.contains(where: {
+      $0.id == CloudAttachmentRecordCodec.recordID(removedPublished.metadataIdentity)
+    }))
+    XCTAssertTrue(sent.operations.contains(where: {
+      $0.id == CloudAttachmentRecordCodec.recordID(remainingPublished.metadataIdentity)
+    }))
+    let planned = try await snapshot(fixture.library, fixture.namespace)
+    let removed = try XCTUnwrap(planned.publications.first(where: {
+      $0.metadata.attachmentID == removedPublished.metadata.attachmentID
+    }))
+    let remaining = try XCTUnwrap(planned.publications.first(where: {
+      $0.metadata.attachmentID == remainingPublished.metadata.attachmentID
+    }))
+    XCTAssertFalse(removed.isLocallyPresent)
+    XCTAssertTrue(remaining.isLocallyPresent)
+    XCTAssertEqual(remaining.metadata.position, 0)
+    XCTAssertFalse(remaining.metadataAccepted)
+    return (fixture, removed, remaining)
+  }
+
+  private func assertCleanupWaitsForRemappedReplacement(
+    _ fixture: PendingAttachmentFixture,
+    removedPayload: CloudTextStorageIdentity,
+    replacedAttachmentID: UUID,
+    remappedAttachmentID: UUID,
+    remappedMetadataIdentity: CloudTextStorageIdentity,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let cleanupRecordID = CloudAttachmentRecordCodec.recordID(removedPayload)
+    let remappedMetadataRecordID = CloudAttachmentRecordCodec.recordID(remappedMetadataIdentity)
+    let remapped = try await snapshot(fixture.library, fixture.namespace)
+    XCTAssertNil(remapped.publications.first(where: {
+      $0.metadata.attachmentID == replacedAttachmentID
+    }), file: file, line: line)
+    let replacement = try XCTUnwrap(remapped.publications.first(where: {
+      $0.metadata.attachmentID == remappedAttachmentID
+    }), file: file, line: line)
+    XCTAssertFalse(replacement.metadataAccepted, file: file, line: line)
+    XCTAssertEqual(
+      remapped.cleanups.first(where: { $0.identity == removedPayload })?.blockedByAttachmentID,
+      remappedAttachmentID,
+      "The stored cleanup must wait for the remapped replacement.",
+      file: file,
+      line: line
+    )
+
+    let remappedBatch = try await fixture.store.pendingChanges()
+
+    XCTAssertTrue(
+      remappedBatch.operations.contains(where: { $0.id == remappedMetadataRecordID }),
+      file: file,
+      line: line
+    )
+    XCTAssertFalse(
+      remappedBatch.operations.contains(where: { $0.id == cleanupRecordID }),
+      "The old payload must stay until the replacement's metadata is accepted.",
+      file: file,
+      line: line
+    )
+    let ready = try await snapshot(fixture.library, fixture.namespace)
+    let readyReplacement = try XCTUnwrap(ready.publications.first(where: {
+      $0.metadata.attachmentID == remappedAttachmentID
+    }), file: file, line: line)
+    let shadow = try metadataShadow(remappedMetadataIdentity)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.metadataAccepted(
+        attachmentID: remappedAttachmentID,
+        expectedRevision: readyReplacement.revision,
+        shadowData: shadow.data,
+        systemFields: shadow.systemFields
+      )]
+    )
+
+    let releasedBatch = try await fixture.store.pendingChanges()
+
+    XCTAssertTrue(
+      releasedBatch.operations.contains(where: { $0.id == cleanupRecordID }),
+      file: file,
+      line: line
+    )
   }
 
   private func makeAvailableCacheFixture(
