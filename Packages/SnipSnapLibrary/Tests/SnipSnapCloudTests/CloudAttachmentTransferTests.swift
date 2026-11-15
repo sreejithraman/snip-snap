@@ -3625,6 +3625,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let before = try await snapshot(pair.receiverLibrary, pair.namespace)
     let oldPayload = try publication(of: pair.second.id, in: before).metadata.payloadIdentity
     try await editDownloadedAttachments(pair, keeping: [pair.first.id])
+    _ = try await pair.receiverStore.pendingChanges()
     for _ in 0..<3 { try await pair.receiver.sync() }
     let deletedMetadata = await pair.server.fullSnapshot(
       for: CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
@@ -3811,6 +3812,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
       let oldPayload = try publication(of: pair.second.id, in: initial).metadata.payloadIdentity
       let oldPayloadID = CloudAttachmentRecordCodec.recordID(oldPayload)
       try await editDownloadedAttachments(pair, keeping: [pair.first.id])
+      _ = try await pair.receiverStore.pendingChanges()
       try await pair.receiver.sync()
       // D2 only fetched metadata, so its first cleanup send learns the payload's shadow.
       try await pair.receiver.sendPending()
