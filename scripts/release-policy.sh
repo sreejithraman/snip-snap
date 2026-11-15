@@ -546,6 +546,19 @@ release_policy_appcast_item_hashes() {
     /usr/bin/ruby -rdigest -e '
         INDENTATION = /\A[ \t]*\r?\n[ \t\r\n]*\z/
         NAME = /[A-Za-z_:][A-Za-z0-9._:-]*/
+        REFERENCE = /&(?:#([0-9]+)|#x([0-9A-Fa-f]+)|(amp|lt|gt|apos|quot));/
+        NAMED_CHARACTERS = { "amp" => "&", "lt" => "<", "gt" => ">", "apos" => "\x27", "quot" => "\"" }
+        TEXT_ESCAPES = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;" }
+
+        # Sparkle rewrites text with its own escaping, such as "\x27" for "&#39;".
+        def canonical_text(text)
+          text.gsub(REFERENCE) do
+            name = $3
+            next NAMED_CHARACTERS.fetch(name) if name
+
+            [$1 ? $1.to_i : $2.to_i(16)].pack("U").b
+          end.gsub(/[&<>]/, TEXT_ESCAPES)
+        end
 
         def token_at(xml, offset)
           return [:text, xml[offset..], xml.bytesize] unless xml.getbyte(offset) == 60
@@ -610,14 +623,14 @@ release_policy_appcast_item_hashes() {
           if !next_markup || next_markup > offset
             finish = next_markup || xml.bytesize
             text = xml[offset...finish]
-            item << text if item && !(depth == 1 && INDENTATION.match?(text))
+            item << canonical_text(text) if item && !(depth == 1 && INDENTATION.match?(text))
             offset = finish
             next
           end
 
           type, markup, offset = token_at(xml, offset)
           if type == :text
-            item << markup if item && !(depth == 1 && INDENTATION.match?(markup))
+            item << canonical_text(markup) if item && !(depth == 1 && INDENTATION.match?(markup))
             next
           end
 

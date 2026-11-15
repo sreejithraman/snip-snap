@@ -1,7 +1,6 @@
 require 'open3'
 require 'fileutils'
 require 'rexml/document'
-require 'cgi'
 require 'time'
 
 # Keep release notes tied to the tested commit, even when main moves during delivery.
@@ -166,7 +165,8 @@ module ReleaseNotes
   end
 
   # Embed the Mac notes so an update never depends on a separate notes URL.
-  # Preserve enclosure signatures and every other release item.
+  # Preserve enclosure signatures and every other release item. Escape the
+  # notes the way generate_appcast writes text, so its next rewrite keeps them byte for byte.
   def self.set_appcast_notes(path, version, build, notes_path)
     notes = File.read(notes_path)
     raise 'Release notes are empty' if notes.strip.empty?
@@ -177,7 +177,7 @@ module ReleaseNotes
       count += 1
       item = item.gsub(/\s*<sparkle:releaseNotesLink\b[^>]*>.*?<\/sparkle:releaseNotesLink>/m, '')
       item = item.gsub(/\s*<description\b[^>]*>.*?<\/description>/m, '')
-      item.sub('</item>', "    <description sparkle:format=\"plain-text\">#{CGI.escapeHTML(notes)}</description>\n        </item>")
+      item.sub('</item>', "    <description sparkle:format=\"plain-text\">#{notes.encode(xml: :text)}</description>\n        </item>")
     end
     raise 'Expected exactly one release notes item in appcast' unless count == 1
     REXML::Document.new(xml)
