@@ -168,6 +168,41 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertTrue(hidden.snips.isEmpty, "The prior account's content must stay hidden")
   }
 
+  func testFailedKeepLeavesTheAccountChoiceOpen() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let firstLibrary = try await fixture.session.activeLibrary().library
+    try await Self.add("account content", to: firstLibrary)
+    await fixture.account.set(.noAccount)
+    fixture.swapFault.failNextSwap()
+    do {
+      _ = try await fixture.handler.refreshAppleAccountNotice()
+      XCTFail("The full disk must fail the isolation's pointer swap")
+    } catch SyncModePersistenceError.storageFailure {}
+
+    fixture.swapFault.failNextSwap()
+    do {
+      try await fixture.handler.resolveAppleAccountCache(.keepLocalCopy)
+      XCTFail("Keep Local Copy must report the failed swap")
+    } catch {
+      XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+    }
+
+    let notice = try await fixture.handler.refreshAppleAccountNotice()
+    XCTAssertEqual(notice, .signedOut)
+    let afterFailedKeep = try await fixture.persistence.snapshot()
+    XCTAssertEqual(
+      afterFailedKeep.accountIsolation?.resolution, .undecided, "A failed Keep must not be stored")
+
+    try await fixture.handler.resolveAppleAccountCache(.remove)
+    let removed = try await fixture.persistence.snapshot()
+    XCTAssertNil(removed.accountIsolation)
+    XCTAssertEqual(removed.activeStore.kind, .localOnly)
+    let local = try await fixture.session.activeLibrary().library
+    let remaining = try await local.checkedSnapshot(sortedBy: .manual)
+    XCTAssertTrue(remaining.snips.isEmpty)
+  }
+
   func testHandlerReadsCannotRecoverAnotherLiveRecordReservation() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
