@@ -613,7 +613,6 @@ package actor SwiftDataSyncModePersistence {
     } catch {
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
-        try? await currentLibrary.removeRecoveryQuarantineCompleteMarker()
       }
       var restored = manifest
       restored.stores.removeAll { $0.id == candidate.id }
@@ -820,7 +819,7 @@ package actor SwiftDataSyncModePersistence {
       id: id,
       kind: kind,
       namespace: namespace,
-      relativeRoot: "stores/\(kind.rawValue)-\(id.uuidString.lowercased())",
+      relativeRoot: canonicalRelativeRoot(kind: kind, id: id),
       syncProtocol: syncProtocol,
       revision: 0,
       lifecycle: .creating

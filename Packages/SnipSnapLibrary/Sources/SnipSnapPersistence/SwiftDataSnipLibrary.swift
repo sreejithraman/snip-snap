@@ -289,10 +289,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     try DurableFile.write(Data("1".utf8), to: retirementMarkers.quarantineURL)
   }
 
-  package func removeRecoveryQuarantineCompleteMarker() throws {
-    try StoreRetirementMarkers.removeIfPresent(retirementMarkers.quarantineURL)
-  }
-
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
     _ = try? checkedSnapshot(sortedBy: sortMode)
     return makeSnapshot(state: lastKnownState, sortedBy: sortMode)

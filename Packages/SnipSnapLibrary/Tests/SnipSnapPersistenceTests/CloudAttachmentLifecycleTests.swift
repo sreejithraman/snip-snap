@@ -1,0 +1,1253 @@
+import CryptoKit
+import Foundation
+import SnipSnapCore
+import XCTest
+
+@testable import SnipSnapPersistence
+
+final class CloudAttachmentLifecycleTests: XCTestCase {
+  // MARK: Publication lifecycle
+
+  func testReplayedPayloadAndMetadataAcceptanceChangesNothing() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+    let acceptPayload = CloudAttachmentTransition.payloadAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("payload-shadow".utf8),
+      systemFields: Data("payload-fields".utf8)
+    )
+
+    try await commit(fixture.library, [acceptPayload])
+    let payloadStorage = try await attachmentStorage(fixture.library)
+    let payloadPublication = try XCTUnwrap(payloadStorage.publications.first)
+    XCTAssertTrue(payloadPublication.payloadAccepted)
+    XCTAssertFalse(payloadPublication.metadataAccepted)
+    XCTAssertEqual(payloadPublication.revision, pending.revision + 1)
+    XCTAssertNil(payloadPublication.sourceURL)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: queuedUpload.path))
+
+    try await commit(fixture.library, [acceptPayload])
+    let payloadReplay = try await attachmentStorage(fixture.library)
+    XCTAssertEqual(payloadReplay, payloadStorage)
+
+    let acceptMetadata = CloudAttachmentTransition.metadataAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: payloadPublication.revision,
+      shadowData: Data("metadata-shadow".utf8),
+      systemFields: Data("metadata-fields".utf8)
+    )
+    try await commit(fixture.library, [acceptMetadata])
+    let publishedStorage = try await attachmentStorage(fixture.library)
+    let published = try XCTUnwrap(publishedStorage.publications.first)
+    XCTAssertTrue(published.metadataAccepted)
+    XCTAssertEqual(published.revision, payloadPublication.revision + 1)
+
+    try await commit(fixture.library, [acceptMetadata, acceptPayload])
+    let publishedReplay = try await attachmentStorage(fixture.library)
+    XCTAssertEqual(publishedReplay, publishedStorage)
+  }
+
+  func testStaleAttachmentTransitionsThrowAndLeaveStorageUnchanged() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let attachmentID = pending.metadata.attachmentID
+    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+
+    try await assertStaleTransition(
+      fixture.library,
+      .payloadAccepted(
+        attachmentID: attachmentID,
+        expectedRevision: pending.revision + 1,
+        shadowData: Data("payload-shadow".utf8),
+        systemFields: Data()
+      )
+    )
+    XCTAssertTrue(FileManager.default.fileExists(atPath: queuedUpload.path))
+    try await assertStaleTransition(
+      fixture.library,
+      .metadataAccepted(
+        attachmentID: attachmentID,
+        expectedRevision: pending.revision,
+        shadowData: Data("metadata-shadow".utf8),
+        systemFields: Data()
+      )
+    )
+    try await assertStaleTransition(
+      fixture.library,
+      .metadataDeleteAccepted(attachmentID: attachmentID, expectedRevision: pending.revision)
+    )
+
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("payload-shadow".utf8),
+      systemFields: Data()
+    )])
+    try await assertStaleTransition(
+      fixture.library,
+      .payloadCollision(
+        attachmentID: attachmentID,
+        expectedRevision: pending.revision + 1,
+        replacementIdentity: CloudTextStorageIdentity(
+          zoneName: "payload",
+          ownerName: "owner",
+          recordName: UUID().uuidString.lowercased()
+        )
+      )
+    )
+  }
+
+  func testRemovingAnAttachmentWithAPendingPayloadDropsItsPublicationAndQueuedUpload() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let queuedUpload = try XCTUnwrap(fixture.publication.sourceURL)
+    _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
+
+    try await reconcile(fixture.library)
+
+    let removed = try await attachmentStorage(fixture.library)
+    XCTAssertTrue(removed.publications.isEmpty)
+    XCTAssertTrue(removed.cleanups.isEmpty)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path)
+    )
+    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [])
+  }
+
+  func testRemovingAnAttachmentWithAnAcceptedPayloadQueuesOneCleanupWithItsShadow() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("payload-shadow".utf8),
+      systemFields: Data("payload-fields".utf8)
+    )])
+    _ = try await fixture.library.perform(.delete(ids: [fixture.snipID]), sortedBy: .manual)
+
+    try await reconcile(fixture.library)
+
+    let removed = try await attachmentStorage(fixture.library)
+    XCTAssertTrue(removed.publications.isEmpty)
+    XCTAssertEqual(removed.cleanups.count, 1)
+    let cleanup = try XCTUnwrap(removed.cleanups.first)
+    XCTAssertEqual(cleanup.identity, pending.metadata.payloadIdentity)
+    XCTAssertEqual(cleanup.shadowData, Data("payload-shadow".utf8))
+    XCTAssertNil(cleanup.blockedByAttachmentID)
+    XCTAssertNil(cleanup.lastFailure)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path)
+    )
+    XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [])
+  }
+
+  func testTransitionSaveFailureLeavesPublicationsCleanupsAndQueuedUploadUnchanged() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+    let removedRemotely = try await acceptRemoteAttachment(
+      fixture.library,
+      snipID: UUID(),
+      position: 0,
+      fileName: "removed.txt",
+      bytes: Data("removed on another device".utf8)
+    )
+    try await commit(fixture.library, [.remoteMetadataDeleted(
+      metadataIdentity: remoteMetadataIdentity(for: removedRemotely.attachmentID)
+    )])
+    let before = try await attachmentStorage(fixture.library)
+    let cleanup = try XCTUnwrap(before.cleanups.first)
+    XCTAssertEqual(cleanup.identity, removedRemotely.payloadIdentity)
+    let transitions: [CloudAttachmentTransition] = [
+      .payloadAccepted(
+        attachmentID: pending.metadata.attachmentID,
+        expectedRevision: pending.revision,
+        shadowData: Data("payload-shadow".utf8),
+        systemFields: Data()
+      ),
+      .cleanupAccepted(identity: cleanup.identity, expectedRevision: cleanup.revision),
+    ]
+    let failing = try failingLibrary(storeURL: fixture.storeURL)
+
+    do {
+      try await commit(failing, transitions)
+      XCTFail("The injected save failure must abort the transition commit.")
+    } catch is InjectedSaveFailure {}
+
+    let afterFailure = try await attachmentStorage(fixture.library)
+    XCTAssertEqual(afterFailure, before)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: queuedUpload.path))
+
+    try await commit(fixture.library, transitions)
+
+    let afterRetry = try await attachmentStorage(fixture.library)
+    let accepted = try XCTUnwrap(afterRetry.publications.first)
+    XCTAssertTrue(accepted.payloadAccepted)
+    XCTAssertEqual(accepted.revision, pending.revision + 1)
+    XCTAssertTrue(afterRetry.cleanups.isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: queuedUpload.path))
+  }
+
+  func testReconcileSaveFailureCreatesNoPublicationOrQueuedUpload() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("queued only after a saved reconcile".utf8)
+    let source = root.appendingPathComponent("local.txt")
+    try bytes.write(to: source)
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    try await addSnip(to: library, attaching: [source])
+    let failing = try failingLibrary(storeURL: storeURL)
+
+    do {
+      try await reconcile(failing)
+      XCTFail("The injected save failure must abort the reconcile.")
+    } catch is InjectedSaveFailure {}
+
+    let afterFailure = try await attachmentStorage(library)
+    XCTAssertTrue(afterFailure.publications.isEmpty)
+    XCTAssertTrue(afterFailure.cleanups.isEmpty)
+    XCTAssertEqual(uploadDirectoryNames(root: root), [])
+
+    try await reconcile(library)
+
+    let afterRetry = try await attachmentStorage(library)
+    XCTAssertEqual(afterRetry.publications.count, 1)
+    let publication = try XCTUnwrap(afterRetry.publications.first)
+    XCTAssertFalse(publication.payloadAccepted)
+    let queuedUpload = try XCTUnwrap(publication.sourceURL)
+    XCTAssertEqual(try Data(contentsOf: queuedUpload), bytes)
+    XCTAssertEqual(
+      uploadDirectoryNames(root: root),
+      [queuedUpload.deletingLastPathComponent().lastPathComponent]
+    )
+  }
+
+  func testClearingManuallyRetryableFailuresKeepsAutomaticAndBlockedFailures() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let failures: [CloudAttachmentFailure] = [
+      .retryable, .quotaExceeded, .updateRequired, .accessDenied, .rejected,
+      .attachmentMissing, .invalidRecord, .zoneMissing, .localStorage,
+    ]
+    let clearedFailures: Set<CloudAttachmentFailure> = [
+      .quotaExceeded, .rejected, .attachmentMissing, .invalidRecord, .zoneMissing, .localStorage,
+    ]
+    var publicationFailures: [UUID: CloudAttachmentFailure] = [:]
+    var cleanupFailures: [CloudTextStorageIdentity: CloudAttachmentFailure] = [:]
+    var deletedRemotely: [CloudAttachmentTransition] = []
+    for failure in failures {
+      let published = try await acceptRemoteAttachment(
+        library,
+        snipID: UUID(),
+        position: 0,
+        fileName: "\(failure.rawValue).txt",
+        bytes: Data(failure.rawValue.utf8)
+      )
+      publicationFailures[published.attachmentID] = failure
+      let removed = try await acceptRemoteAttachment(
+        library,
+        snipID: UUID(),
+        position: 0,
+        fileName: "removed-\(failure.rawValue).txt",
+        bytes: Data("removed \(failure.rawValue)".utf8)
+      )
+      cleanupFailures[removed.payloadIdentity] = failure
+      deletedRemotely.append(.remoteMetadataDeleted(
+        metadataIdentity: remoteMetadataIdentity(for: removed.attachmentID)
+      ))
+    }
+    try await commit(library, deletedRemotely)
+    let queued = try await attachmentStorage(library)
+    XCTAssertEqual(queued.publications.count, failures.count)
+    XCTAssertEqual(queued.cleanups.count, failures.count)
+    var failedTransitions: [CloudAttachmentTransition] = []
+    for publication in queued.publications {
+      let failure = try XCTUnwrap(publicationFailures[publication.metadata.attachmentID])
+      failedTransitions.append(.operationFailed(
+        attachmentID: publication.metadata.attachmentID,
+        expectedRevision: publication.revision,
+        failure: failure
+      ))
+    }
+    for cleanup in queued.cleanups {
+      let failure = try XCTUnwrap(cleanupFailures[cleanup.identity])
+      failedTransitions.append(.cleanupFailed(
+        identity: cleanup.identity,
+        expectedRevision: cleanup.revision,
+        failure: failure
+      ))
+    }
+    try await commit(library, failedTransitions)
+    let failed = try await attachmentStorage(library)
+
+    try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespace)
+
+    let cleared = try await attachmentStorage(library)
+    XCTAssertEqual(cleared.publications.count, failures.count)
+    XCTAssertEqual(cleared.cleanups.count, failures.count)
+    for publication in cleared.publications {
+      let attachmentID = publication.metadata.attachmentID
+      let failure = try XCTUnwrap(publicationFailures[attachmentID])
+      let before = try XCTUnwrap(failed.publications.first(where: {
+        $0.metadata.attachmentID == attachmentID
+      }))
+      XCTAssertEqual(before.lastFailure, failure)
+      if clearedFailures.contains(failure) {
+        XCTAssertNil(publication.lastFailure, "\(failure)")
+        XCTAssertEqual(publication.revision, before.revision + 1, "\(failure)")
+      } else {
+        XCTAssertEqual(publication.lastFailure, failure)
+        XCTAssertEqual(publication.revision, before.revision, "\(failure)")
+      }
+    }
+    for cleanup in cleared.cleanups {
+      let failure = try XCTUnwrap(cleanupFailures[cleanup.identity])
+      let before = try XCTUnwrap(failed.cleanups.first(where: { $0.identity == cleanup.identity }))
+      XCTAssertEqual(before.lastFailure, failure)
+      if clearedFailures.contains(failure) {
+        XCTAssertNil(cleanup.lastFailure, "\(failure)")
+        XCTAssertEqual(cleanup.revision, before.revision + 1, "\(failure)")
+      } else {
+        XCTAssertEqual(cleanup.lastFailure, failure)
+        XCTAssertEqual(cleanup.revision, before.revision, "\(failure)")
+      }
+    }
+
+    try await library.clearManuallyRetryableCloudAttachmentFailures(namespaceKey: namespace)
+
+    let clearedAgain = try await attachmentStorage(library)
+    XCTAssertEqual(clearedAgain, cleared)
+  }
+
+  func testChangedBytesOfAPublishedAttachmentQueueOneCleanupForTheOldPayloadAfterReopen() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("local.txt")
+    try Data("published bytes".utf8).write(to: source)
+    let storeURL = root.appendingPathComponent("store")
+    let attachmentID: UUID
+    let oldPayload: CloudTextStorageIdentity
+    do {
+      let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+      try await addSnip(to: library, attaching: [source])
+      try await reconcile(library)
+      let pendingStorage = try await attachmentStorage(library)
+      let pending = try XCTUnwrap(pendingStorage.publications.first)
+      attachmentID = pending.metadata.attachmentID
+      oldPayload = pending.metadata.payloadIdentity
+      try await commit(library, [.payloadAccepted(
+        attachmentID: attachmentID,
+        expectedRevision: pending.revision,
+        shadowData: Data("old-payload-shadow".utf8),
+        systemFields: Data("old-payload-fields".utf8)
+      )])
+      try await commit(library, [.metadataAccepted(
+        attachmentID: attachmentID,
+        expectedRevision: pending.revision + 1,
+        shadowData: Data("old-metadata-shadow".utf8),
+        systemFields: Data("old-metadata-fields".utf8)
+      )])
+      let publishedStorage = try await attachmentStorage(library)
+      let published = try XCTUnwrap(publishedStorage.publications.first)
+      XCTAssertTrue(published.metadataAccepted)
+      let durableFile = try XCTUnwrap(published.localSourceURL)
+      try Data("bytes changed in place after publishing".utf8).write(to: durableFile)
+
+      try await reconcile(library)
+
+      let changedStorage = try await attachmentStorage(library)
+      let changed = try XCTUnwrap(changedStorage.publications.first)
+      XCTAssertEqual(changed.priorPayloadIdentity, oldPayload)
+      XCTAssertEqual(changed.priorPayloadShadowData, Data("old-payload-shadow".utf8))
+      XCTAssertNotEqual(changed.metadata.payloadIdentity, oldPayload)
+      XCTAssertFalse(changed.payloadAccepted)
+      XCTAssertFalse(changed.metadataAccepted)
+      XCTAssertNotNil(changed.sourceURL)
+      XCTAssertTrue(changedStorage.cleanups.isEmpty)
+    }
+
+    let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let reopenedStorage = try await attachmentStorage(reopened)
+    let replacement = try XCTUnwrap(reopenedStorage.publications.first)
+    XCTAssertEqual(replacement.priorPayloadIdentity, oldPayload)
+    try await commit(reopened, [.payloadAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: replacement.revision,
+      shadowData: Data("new-payload-shadow".utf8),
+      systemFields: Data("new-payload-fields".utf8)
+    )])
+    let payloadStorage = try await attachmentStorage(reopened)
+    XCTAssertTrue(payloadStorage.cleanups.isEmpty)
+    XCTAssertEqual(payloadStorage.publications.first?.priorPayloadIdentity, oldPayload)
+
+    try await commit(reopened, [.metadataAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: replacement.revision + 1,
+      shadowData: Data("new-metadata-shadow".utf8),
+      systemFields: Data("new-metadata-fields".utf8)
+    )])
+
+    let republishedStorage = try await attachmentStorage(reopened)
+    XCTAssertEqual(republishedStorage.cleanups.map(\.identity), [oldPayload])
+    XCTAssertEqual(
+      republishedStorage.cleanups.first?.shadowData,
+      Data("old-payload-shadow".utf8)
+    )
+    let republished = try XCTUnwrap(republishedStorage.publications.first)
+    XCTAssertTrue(republished.metadataAccepted)
+    XCTAssertNil(republished.priorPayloadIdentity)
+    XCTAssertNil(republished.priorPayloadShadowData)
+  }
+
+  // Before its first metadata publish, no metadata names an accepted payload, so new bytes queue
+  // the old payload's cleanup at once instead of keeping it as the replaced payload.
+  func testChangedBytesBeforeTheMetadataPublishesQueueTheOldPayloadCleanupAtOnce() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let oldPayload = pending.metadata.payloadIdentity
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: pending.metadata.attachmentID,
+      expectedRevision: pending.revision,
+      shadowData: Data("old-payload-shadow".utf8),
+      systemFields: Data("old-payload-fields".utf8)
+    )])
+    let acceptedStorage = try await attachmentStorage(fixture.library)
+    let accepted = try XCTUnwrap(acceptedStorage.publications.first)
+    XCTAssertTrue(accepted.payloadAccepted)
+    XCTAssertFalse(accepted.metadataAccepted)
+    let durableFile = try XCTUnwrap(accepted.localSourceURL)
+    try Data("bytes changed before the metadata published".utf8).write(to: durableFile)
+
+    try await reconcile(fixture.library)
+
+    let changedStorage = try await attachmentStorage(fixture.library)
+    let changed = try XCTUnwrap(changedStorage.publications.first)
+    XCTAssertNotEqual(changed.metadata.payloadIdentity, oldPayload)
+    XCTAssertFalse(changed.payloadAccepted)
+    XCTAssertNotNil(changed.sourceURL, "The new bytes must queue an upload.")
+    XCTAssertNil(changed.priorPayloadIdentity, "Only published metadata defers the cleanup.")
+    XCTAssertEqual(changedStorage.cleanups.map(\.identity), [oldPayload])
+    let cleanup = try XCTUnwrap(changedStorage.cleanups.first)
+    XCTAssertEqual(cleanup.shadowData, Data("old-payload-shadow".utf8))
+    XCTAssertNil(cleanup.blockedByAttachmentID)
+    XCTAssertNil(cleanup.lastFailure)
+  }
+
+  // MARK: Cache install
+
+  func testCacheInstallSaveFailureDiscardsTheStagedFileAndLeavesNoCacheEntry() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let snipID = try await addSnip(to: library)
+    let bytes = Data("downloaded once the save works".utf8)
+    let metadata = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: "download.txt",
+      bytes: bytes
+    )
+    let filesDirectory = try await cacheFilesDirectory(library, attachmentID: metadata.attachmentID)
+    let failing = try failingLibrary(storeURL: storeURL)
+    let staged = try await stageDownload(bytes, in: failing)
+
+    do {
+      _ = try await installDownload(metadata, bytes: bytes, staged: staged, in: failing)
+      XCTFail("The injected save failure must abort the cache install.")
+    } catch is InjectedSaveFailure {}
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+    XCTAssertEqual(regularFileNames(under: filesDirectory), [])
+    let afterFailure = try await attachmentStorage(library)
+    XCTAssertTrue(afterFailure.cacheEntries.isEmpty)
+    let unavailable = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertNil(unavailable.url)
+
+    let retryStaged = try await stageDownload(bytes, in: library)
+    let installed = try await installDownload(
+      metadata,
+      bytes: bytes,
+      staged: retryStaged,
+      in: library
+    )
+
+    XCTAssertEqual(try Data(contentsOf: installed), bytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: retryStaged.path))
+    XCTAssertEqual(regularFileNames(under: filesDirectory), [installed.lastPathComponent])
+    let afterRetry = try await attachmentStorage(library)
+    XCTAssertEqual(afterRetry.cacheEntries.map(\.attachmentID), [metadata.attachmentID])
+    let available = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertEqual(available.url?.path, installed.path)
+  }
+
+  func testCacheInstallKeepsOnlyTheNewestDownloadAndEvictsOlderEntries() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let snipID = try await addSnip(to: library)
+    let olderBytes = Data("older and larger cached attachment".utf8)
+    let newerBytes = Data("newer attachment".utf8)
+    XCTAssertGreaterThan(olderBytes.count, newerBytes.count)
+    let older = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: "older.txt",
+      bytes: olderBytes
+    )
+    let newer = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 1,
+      fileName: "newer.txt",
+      bytes: newerBytes
+    )
+    let olderFiles = try await cacheFilesDirectory(library, attachmentID: older.attachmentID)
+    let firstStaged = try await stageDownload(olderBytes, in: library)
+    let firstDownload = try await installDownload(
+      older,
+      bytes: olderBytes,
+      staged: firstStaged,
+      in: library,
+      now: Date(timeIntervalSince1970: 1)
+    )
+    let secondStaged = try await stageDownload(olderBytes, in: library)
+
+    let secondDownload = try await installDownload(
+      older,
+      bytes: olderBytes,
+      staged: secondStaged,
+      in: library,
+      now: Date(timeIntervalSince1970: 2)
+    )
+
+    XCTAssertNotEqual(firstDownload.path, secondDownload.path)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: firstDownload.path))
+    XCTAssertEqual(try Data(contentsOf: secondDownload), olderBytes)
+    XCTAssertEqual(regularFileNames(under: olderFiles), [secondDownload.lastPathComponent])
+    let reinstalled = try await attachmentStorage(library)
+    XCTAssertEqual(reinstalled.cacheEntries.map(\.attachmentID), [older.attachmentID])
+    XCTAssertEqual(reinstalled.cacheEntries.first?.fileURL.path, secondDownload.path)
+
+    let newerStaged = try await stageDownload(newerBytes, in: library)
+    let newerDownload = try await installDownload(
+      newer,
+      bytes: newerBytes,
+      staged: newerStaged,
+      in: library,
+      maximumBytes: Int64(newerBytes.count),
+      now: Date(timeIntervalSince1970: 3)
+    )
+
+    XCTAssertEqual(try Data(contentsOf: newerDownload), newerBytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: secondDownload.path))
+    XCTAssertEqual(regularFileNames(under: olderFiles), [])
+    let evicted = try await attachmentStorage(library)
+    XCTAssertEqual(evicted.cacheEntries.map(\.attachmentID), [newer.attachmentID])
+    XCTAssertEqual(
+      Set(evicted.publications.map(\.metadata.attachmentID)),
+      [older.attachmentID, newer.attachmentID]
+    )
+  }
+
+  // MARK: Durable copy
+
+  func testDurableCopySaveFailureRollsBackAndALaterCopyIsKeptOnce() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let snipID = try await addSnip(to: library)
+    let bytes = Data("downloaded bytes kept for a local copy".utf8)
+    let metadata = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: "kept.txt",
+      bytes: bytes
+    )
+    let staged = try await stageDownload(bytes, in: library)
+    let cachedURL = try await installDownload(metadata, bytes: bytes, staged: staged, in: library)
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    let failing = try failingLibrary(storeURL: storeURL)
+
+    do {
+      _ = try await failing.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace,
+        attachmentID: metadata.attachmentID
+      )
+      XCTFail("The injected save failure must abort the durable copy.")
+    } catch is InjectedSaveFailure {}
+
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: durableURL.deletingLastPathComponent().path)
+    )
+    let rolledBack = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertTrue(rolledBack.attachment.relativePath.hasPrefix("CloudDownloads/"))
+    XCTAssertEqual(try Data(contentsOf: cachedURL), bytes)
+
+    let copied = try await library.materializeCloudAttachmentForLocalCopy(
+      namespaceKey: namespace,
+      attachmentID: metadata.attachmentID
+    )
+
+    XCTAssertTrue(copied)
+    let durable = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertFalse(durable.attachment.relativePath.hasPrefix("CloudDownloads/"))
+    XCTAssertEqual(durable.url?.path, durableURL.path)
+    XCTAssertEqual(try Data(contentsOf: durableURL), bytes)
+    let storageAfterCopy = try await attachmentStorage(library)
+
+    let copiedAgain = try await library.materializeCloudAttachmentForLocalCopy(
+      namespaceKey: namespace,
+      attachmentID: metadata.attachmentID
+    )
+
+    XCTAssertTrue(copiedAgain)
+    let unchanged = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertEqual(unchanged.attachment, durable.attachment)
+    XCTAssertEqual(try Data(contentsOf: durableURL), bytes)
+    let storageAfterSecondCopy = try await attachmentStorage(library)
+    XCTAssertEqual(storageAfterSecondCopy, storageAfterCopy)
+  }
+
+  func testICloudDataResetSaveFailureRollsBackDurableCopiesAndKeepsPublications() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let snipID = try await addSnip(to: library)
+    let firstBytes = Data("first downloaded attachment".utf8)
+    let secondBytes = Data("second downloaded attachment".utf8)
+    let first = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: "first.txt",
+      bytes: firstBytes
+    )
+    let second = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 1,
+      fileName: "second.txt",
+      bytes: secondBytes
+    )
+    let firstStaged = try await stageDownload(firstBytes, in: library)
+    let firstCache = try await installDownload(
+      first,
+      bytes: firstBytes,
+      staged: firstStaged,
+      in: library
+    )
+    let secondStaged = try await stageDownload(secondBytes, in: library)
+    let secondCache = try await installDownload(
+      second,
+      bytes: secondBytes,
+      staged: secondStaged,
+      in: library
+    )
+    let removedRemotely = try await acceptRemoteAttachment(
+      library,
+      snipID: UUID(),
+      position: 0,
+      fileName: "removed.txt",
+      bytes: Data("removed on another device".utf8)
+    )
+    try await commit(library, [.remoteMetadataDeleted(
+      metadataIdentity: remoteMetadataIdentity(for: removedRemotely.attachmentID)
+    )])
+    let before = try await attachmentStorage(library)
+    XCTAssertEqual(before.publications.count, 2)
+    XCTAssertEqual(before.cleanups.count, 1)
+    XCTAssertEqual(before.cacheEntries.count, 2)
+    let failing = try failingLibrary(storeURL: storeURL)
+
+    do {
+      try await failing.quarantineCloudNamespaceState(namespaceKey: namespace)
+      XCTFail("The injected save failure must abort iCloud data reset recovery.")
+    } catch is InjectedSaveFailure {}
+
+    let afterFailure = try await attachmentStorage(library)
+    XCTAssertEqual(afterFailure, before)
+    for metadata in [first, second] {
+      let durableDirectory = durableCopyURL(storeURL: storeURL, metadata: metadata)
+        .deletingLastPathComponent()
+      XCTAssertFalse(FileManager.default.fileExists(atPath: durableDirectory.path))
+      let rolledBack = try await storedAttachment(library, metadata.attachmentID)
+      XCTAssertTrue(rolledBack.attachment.relativePath.hasPrefix("CloudDownloads/"))
+    }
+    XCTAssertEqual(try Data(contentsOf: firstCache), firstBytes)
+    XCTAssertEqual(try Data(contentsOf: secondCache), secondBytes)
+
+    try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+
+    let isolated = try await attachmentStorage(library)
+    XCTAssertTrue(isolated.publications.isEmpty)
+    XCTAssertTrue(isolated.cleanups.isEmpty)
+    XCTAssertTrue(isolated.cacheEntries.isEmpty)
+    for (metadata, bytes) in [(first, firstBytes), (second, secondBytes)] {
+      let kept = try await storedAttachment(library, metadata.attachmentID)
+      XCTAssertFalse(kept.attachment.relativePath.hasPrefix("CloudDownloads/"))
+      let keptURL = try XCTUnwrap(kept.url)
+      XCTAssertEqual(keptURL.path, durableCopyURL(storeURL: storeURL, metadata: metadata).path)
+      XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: firstCache.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: secondCache.path))
+  }
+
+  // MARK: Defect regressions
+
+  // DC1: a copy killed midway leaves a partial file at the durable destination. No stored
+  // attachment references it, so after a restart it must not block keeping a local copy
+  // (opt-out and account isolation's Keep Local Copy both prepare this way).
+  func testInterruptedDurableCopyDoesNotBlockKeepingALocalCopyAfterRestart() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let bytes = Data("bytes an interrupted durable copy only half wrote".utf8)
+    let metadata: CloudAttachmentMetadataValue
+    do {
+      let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+      metadata = try await makeDownloadedAttachment(
+        in: library,
+        fileName: "interrupted.txt",
+        bytes: bytes
+      )
+    }
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    try seedInterruptedDurableCopy(at: durableURL, bytes: bytes)
+    let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+
+    do {
+      try await reopened.prepareCloudAttachmentsForLocalCopy(namespaceKey: namespace)
+    } catch {
+      return XCTFail(
+        "A partial file from an interrupted durable copy must not block keeping a local copy: \(error)"
+      )
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), bytes)
+    let durable = try await storedAttachment(reopened, metadata.attachmentID)
+    XCTAssertEqual(durable.url?.path, durableURL.path)
+  }
+
+  // DC1 through iCloud data reset recovery, which makes the same durable copy before it
+  // clears the namespace.
+  func testInterruptedDurableCopyDoesNotBlockICloudDataResetRecoveryAfterRestart() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let bytes = Data("bytes an interrupted durable copy only half wrote".utf8)
+    let metadata: CloudAttachmentMetadataValue
+    do {
+      let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+      metadata = try await makeDownloadedAttachment(
+        in: library,
+        fileName: "interrupted.txt",
+        bytes: bytes
+      )
+    }
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    try seedInterruptedDurableCopy(at: durableURL, bytes: bytes)
+    let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+
+    do {
+      try await reopened.quarantineCloudNamespaceState(namespaceKey: namespace)
+    } catch {
+      return XCTFail(
+        "A partial file from an interrupted durable copy must not block iCloud data reset recovery: \(error)"
+      )
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), bytes)
+    let durable = try await storedAttachment(reopened, metadata.attachmentID)
+    XCTAssertEqual(durable.url?.path, durableURL.path)
+    let recovered = try await attachmentStorage(reopened)
+    XCTAssertTrue(recovered.publications.isEmpty)
+  }
+
+  // Guard for the DC1 fix: an invalid file that a stored attachment references holds that
+  // attachment's bytes, so the durable copy must still refuse and leave it alone.
+  func testDurableCopyRefusesAnInvalidDestinationThatAnotherAttachmentReferences() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("downloaded bytes that must not replace another attachment".utf8)
+    let metadata = try await makeDownloadedAttachment(
+      in: library,
+      fileName: "shared.txt",
+      bytes: bytes
+    )
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    let referencedBytes = Data("bytes another attachment owns".utf8)
+    try FileManager.default.createDirectory(
+      at: durableURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try referencedBytes.write(to: durableURL)
+    let referencingID = UUID()
+    _ = try await library.perform(
+      .restore(snips: [Snip(
+        content: "references the durable destination",
+        origin: .quickEntry,
+        attachments: [SnipAttachment(
+          id: referencingID,
+          fileName: metadata.fileName,
+          relativePath: "\(metadata.attachmentID.uuidString)/\(metadata.fileName)",
+          contentType: "text/plain",
+          byteCount: Int64(referencedBytes.count)
+        )]
+      )]),
+      sortedBy: .manual
+    )
+    let referencing = try await storedAttachment(library, referencingID)
+    XCTAssertEqual(referencing.url?.path, durableURL.path)
+    let before = try await attachmentStorage(library)
+
+    do {
+      _ = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace,
+        attachmentID: metadata.attachmentID
+      )
+      XCTFail("The durable copy must not replace bytes another attachment references.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let downloaded = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
+
+    do {
+      try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+      XCTFail("iCloud data reset recovery must not replace bytes another attachment references.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let afterRecovery = try await attachmentStorage(library)
+    XCTAssertEqual(afterRecovery, before)
+  }
+
+  // Guard for the DC1 fix: on a case-insensitive volume, a stored path that differs only in
+  // letter case names the same file. The check compares strings, so it refuses on any volume.
+  func testDurableCopyRefusesADestinationReferencedInAnotherLetterCase() async throws {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let bytes = Data("downloaded bytes that must not replace a differently cased reference".utf8)
+    let metadata = try await makeDownloadedAttachment(
+      in: library,
+      fileName: "shared.txt",
+      bytes: bytes
+    )
+    let destinationPath = "\(metadata.attachmentID.uuidString)/\(metadata.fileName)"
+    let referencePath = destinationPath.uppercased()
+    XCTAssertNotEqual(referencePath, destinationPath)
+    let referencedBytes = Data("bytes another attachment owns".utf8)
+    let referencingID = UUID()
+    _ = try await library.perform(
+      .restore(snips: [Snip(
+        content: "references the durable destination in another letter case",
+        origin: .quickEntry,
+        attachments: [SnipAttachment(
+          id: referencingID,
+          fileName: metadata.fileName,
+          relativePath: referencePath,
+          contentType: "text/plain",
+          byteCount: Int64(referencedBytes.count)
+        )]
+      )]),
+      sortedBy: .manual
+    )
+    let referencing = try await storedAttachment(library, referencingID)
+    XCTAssertEqual(referencing.attachment.relativePath, referencePath)
+    let durableURL = durableCopyURL(storeURL: storeURL, metadata: metadata)
+    try FileManager.default.createDirectory(
+      at: durableURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try referencedBytes.write(to: durableURL)
+    let before = try await attachmentStorage(library)
+
+    do {
+      _ = try await library.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace,
+        attachmentID: metadata.attachmentID
+      )
+      XCTFail("The durable copy must not replace a differently cased reference.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let downloaded = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
+
+    do {
+      try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+      XCTFail("iCloud data reset recovery must not replace a differently cased reference.")
+    } catch {
+      XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: durableURL), referencedBytes)
+    let afterRecovery = try await attachmentStorage(library)
+    XCTAssertEqual(afterRecovery, before)
+  }
+
+  // DC2 invariant: an accepted payload releases its queued upload copy. Adopting remote
+  // metadata whose hash matches the local bytes is the path that skips this today.
+  func testAcceptedPayloadReleasesItsQueuedUploadCopy() async throws {
+    let fixture = try await makeLocalAttachmentFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = fixture.publication
+    let queuedUpload = try XCTUnwrap(pending.sourceURL)
+    let remotePayload = CloudTextStorageIdentity(
+      zoneName: "payload",
+      ownerName: "owner",
+      recordName: UUID().uuidString.lowercased()
+    )
+    XCTAssertNotEqual(remotePayload, pending.metadata.payloadIdentity)
+    try await commit(fixture.library, [.remoteMetadataAccepted(
+      metadata: CloudAttachmentMetadataValue(
+        attachmentID: pending.metadata.attachmentID,
+        snipID: pending.metadata.snipID,
+        position: pending.metadata.position,
+        fileName: pending.metadata.fileName,
+        contentType: pending.metadata.contentType,
+        byteCount: pending.metadata.byteCount,
+        sha256: pending.metadata.sha256,
+        payloadIdentity: remotePayload
+      ),
+      metadataIdentity: pending.metadataIdentity,
+      shadowData: Data("remote-metadata-shadow".utf8),
+      systemFields: Data("remote-metadata-fields".utf8)
+    )])
+
+    try await reconcile(fixture.library)
+
+    let adoptedStorage = try await attachmentStorage(fixture.library)
+    let adopted = try XCTUnwrap(adoptedStorage.publications.first)
+    XCTAssertEqual(adopted.metadata.payloadIdentity, remotePayload)
+    XCTAssertTrue(adopted.payloadAccepted)
+    XCTAssertTrue(adopted.metadataAccepted)
+    XCTAssertNotNil(adopted.localSourceURL)
+    XCTAssertNil(adopted.sourceURL, "An accepted payload must not keep a queued upload.")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: queuedUpload.deletingLastPathComponent().path),
+      "The queued upload copy must not outlive the payload's acceptance."
+    )
+  }
+
+  // MARK: Helpers
+
+  private var namespace: CloudSyncNamespaceKey {
+    CloudSyncNamespaceKey(rawValue: "attachment-lifecycle")
+  }
+
+  private func makeLocalAttachmentFixture() async throws -> LocalAttachmentFixture {
+    let root = temporaryDirectory()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("local.txt")
+    try Data("local attachment bytes".utf8).write(to: source)
+    let storeURL = root.appendingPathComponent("store")
+    let library = try SwiftDataSnipLibrary(storeURL: storeURL)
+    let snipID = try await addSnip(to: library, attaching: [source])
+    try await reconcile(library)
+    let pendingStorage = try await attachmentStorage(library)
+    let publication = try XCTUnwrap(pendingStorage.publications.first)
+    return LocalAttachmentFixture(
+      root: root,
+      storeURL: storeURL,
+      library: library,
+      snipID: snipID,
+      publication: publication
+    )
+  }
+
+  @discardableResult
+  private func addSnip(
+    to library: SwiftDataSnipLibrary,
+    attaching sources: [URL] = []
+  ) async throws -> UUID {
+    let update = try await library.perform(
+      .add(
+        content: "attachment lifecycle",
+        origin: .quickEntry,
+        source: nil,
+        listID: SnipList.inbox.id,
+        attachmentURLs: sources,
+        requestID: UUID(),
+        now: .distantPast
+      ),
+      sortedBy: .manual
+    )
+    guard case .add(.added(let snipID)) = update.outcome else {
+      throw LifecycleFixtureError.missingSnip
+    }
+    return snipID
+  }
+
+  private func failingLibrary(storeURL: URL) throws -> SwiftDataSnipLibrary {
+    try SwiftDataSnipLibrary(
+      storeURL: storeURL,
+      afterMutationBeforeSave: { throw InjectedSaveFailure.beforeSave }
+    )
+  }
+
+  private func reconcile(_ library: SwiftDataSnipLibrary) async throws {
+    try await library.reconcileCloudAttachments(
+      namespaceKey: namespace,
+      metadataZoneName: "data",
+      metadataOwnerName: "owner",
+      payloadZoneName: "payload",
+      payloadOwnerName: "owner"
+    )
+  }
+
+  private func commit(
+    _ library: SwiftDataSnipLibrary,
+    _ transitions: [CloudAttachmentTransition]
+  ) async throws {
+    try await library.commitCloudAttachmentTransitions(
+      namespaceKey: namespace,
+      transitions: transitions
+    )
+  }
+
+  private func attachmentStorage(
+    _ library: SwiftDataSnipLibrary
+  ) async throws -> CloudAttachmentStorageSnapshot {
+    try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
+  }
+
+  private func assertStaleTransition(
+    _ library: SwiftDataSnipLibrary,
+    _ transition: CloudAttachmentTransition,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let before = try await attachmentStorage(library)
+    do {
+      try await commit(library, [transition])
+      XCTFail("Expected a stale transition: \(transition)", file: file, line: line)
+    } catch {
+      XCTAssertEqual(
+        error as? CloudAttachmentStorageError,
+        .staleTransition,
+        file: file,
+        line: line
+      )
+    }
+    let after = try await attachmentStorage(library)
+    XCTAssertEqual(after, before, file: file, line: line)
+  }
+
+  private func remoteMetadataIdentity(for attachmentID: UUID) -> CloudTextStorageIdentity {
+    CloudTextStorageIdentity(
+      zoneName: "data",
+      ownerName: "owner",
+      recordName: "a-\(attachmentID.uuidString.lowercased())"
+    )
+  }
+
+  /// Commits remote metadata the way a fetch does, so the attachment appears on its snip
+  /// with a `CloudDownloads` path and no local bytes.
+  private func acceptRemoteAttachment(
+    _ library: SwiftDataSnipLibrary,
+    snipID: UUID,
+    position: Int,
+    fileName: String,
+    bytes: Data
+  ) async throws -> CloudAttachmentMetadataValue {
+    let attachmentID = UUID()
+    let metadata = CloudAttachmentMetadataValue(
+      attachmentID: attachmentID,
+      snipID: snipID,
+      position: position,
+      fileName: fileName,
+      contentType: "text/plain",
+      byteCount: Int64(bytes.count),
+      sha256: Data(SHA256.hash(data: bytes)),
+      payloadIdentity: CloudTextStorageIdentity(
+        zoneName: "payload",
+        ownerName: "owner",
+        recordName: UUID().uuidString.lowercased()
+      )
+    )
+    try await commit(library, [.remoteMetadataAccepted(
+      metadata: metadata,
+      metadataIdentity: remoteMetadataIdentity(for: attachmentID),
+      shadowData: Data("metadata-shadow".utf8),
+      systemFields: Data("metadata-fields".utf8)
+    )])
+    return metadata
+  }
+
+  /// A snip whose only attachment is a remote one with verified bytes in the download cache.
+  private func makeDownloadedAttachment(
+    in library: SwiftDataSnipLibrary,
+    fileName: String,
+    bytes: Data
+  ) async throws -> CloudAttachmentMetadataValue {
+    let snipID = try await addSnip(to: library)
+    let metadata = try await acceptRemoteAttachment(
+      library,
+      snipID: snipID,
+      position: 0,
+      fileName: fileName,
+      bytes: bytes
+    )
+    let staged = try await stageDownload(bytes, in: library)
+    _ = try await installDownload(metadata, bytes: bytes, staged: staged, in: library)
+    let downloaded = try await storedAttachment(library, metadata.attachmentID)
+    XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
+    return metadata
+  }
+
+  private func stageDownload(_ bytes: Data, in library: SwiftDataSnipLibrary) async throws -> URL {
+    let stagingRoot = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+    let staged = stagingRoot.appendingPathComponent("\(UUID().uuidString.lowercased())/payload")
+    try FileManager.default.createDirectory(
+      at: staged.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try bytes.write(to: staged)
+    return staged
+  }
+
+  private func installDownload(
+    _ metadata: CloudAttachmentMetadataValue,
+    bytes: Data,
+    staged: URL,
+    in library: SwiftDataSnipLibrary,
+    maximumBytes: Int64 = 1_024,
+    now: Date = .distantPast
+  ) async throws -> URL {
+    try await library.installCloudAttachmentDownload(
+      namespaceKey: namespace,
+      attachmentID: metadata.attachmentID,
+      expectedPayloadIdentity: metadata.payloadIdentity,
+      expectedField: "asset",
+      download: CloudAttachmentCacheDownload(
+        payloadIdentity: metadata.payloadIdentity,
+        field: "asset",
+        fileURL: staged,
+        byteCount: Int64(bytes.count),
+        sha256: Data(SHA256.hash(data: bytes))
+      ),
+      maximumBytes: maximumBytes,
+      now: now
+    )
+  }
+
+  private func storedAttachment(
+    _ library: SwiftDataSnipLibrary,
+    _ attachmentID: UUID
+  ) async throws -> (attachment: SnipAttachment, url: URL?) {
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let attachment = try XCTUnwrap(
+      local.snips.flatMap(\.attachments).first(where: { $0.id == attachmentID })
+    )
+    return (attachment, local.attachmentURLs[attachmentID])
+  }
+
+  /// The cache directory that holds an attachment's installed download files.
+  private func cacheFilesDirectory(
+    _ library: SwiftDataSnipLibrary,
+    attachmentID: UUID
+  ) async throws -> URL {
+    try await library.cloudAttachmentStagingRoot(namespaceKey: namespace)
+      .deletingLastPathComponent()
+      .appendingPathComponent("Files", isDirectory: true)
+      .appendingPathComponent(attachmentID.uuidString.lowercased(), isDirectory: true)
+  }
+
+  /// The durable destination rule in `copyCloudAttachmentToDurableStorage`.
+  private func durableCopyURL(storeURL: URL, metadata: CloudAttachmentMetadataValue) -> URL {
+    SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: storeURL)
+      .appendingPathComponent(metadata.attachmentID.uuidString, isDirectory: true)
+      .appendingPathComponent(metadata.fileName, isDirectory: false)
+  }
+
+  private func seedInterruptedDurableCopy(at url: URL, bytes: Data) throws {
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try bytes.prefix(bytes.count / 2).write(to: url)
+  }
+
+  private func uploadDirectoryNames(root: URL) -> [String] {
+    let uploadRoot = root
+      .appendingPathComponent("CloudAttachmentUploads", isDirectory: true)
+      .appendingPathComponent(
+        CloudAttachmentCacheFiles.namespaceDigest(namespace.rawValue),
+        isDirectory: true
+      )
+    return ((try? FileManager.default.contentsOfDirectory(atPath: uploadRoot.path)) ?? []).sorted()
+  }
+
+  private func regularFileNames(under directory: URL) -> [String] {
+    guard let enumerator = FileManager.default.enumerator(
+      at: directory,
+      includingPropertiesForKeys: [.isRegularFileKey]
+    ) else { return [] }
+    var names: [String] = []
+    for case let url as URL in enumerator
+    where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+      names.append(url.lastPathComponent)
+    }
+    return names.sorted()
+  }
+
+  private func temporaryDirectory() -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("CloudAttachmentLifecycleTests-\(UUID().uuidString)", isDirectory: true)
+  }
+}
+
+private enum InjectedSaveFailure: Error {
+  case beforeSave
+}
+
+private enum LifecycleFixtureError: Error {
+  case missingSnip
+}
+
+private struct LocalAttachmentFixture {
+  let root: URL
+  let storeURL: URL
+  let library: SwiftDataSnipLibrary
+  let snipID: UUID
+  let publication: CloudAttachmentPublication
+}
