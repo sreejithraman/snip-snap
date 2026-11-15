@@ -10,7 +10,7 @@ final class CloudFullReenablePlanDigestTests: XCTestCase {
   func testPlanWithManyApprovedAndRecoveredSnipsRestoresFromItsStagedForm() throws {
     let plan = try makePlan(
       approved: Set((0..<8).map { _ in UUID() }),
-      recovered: Set((0..<2).map { _ in UUID() })
+      recovered: Set((0..<6).map { _ in UUID() })
     )
 
     let restored = try stageAndRestore(plan)
