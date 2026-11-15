@@ -7,7 +7,8 @@ extension SwiftDataSyncModePersistence.Manifest {
   enum AccountIsolationPhase {
     case none
     /// The local replacement is declared while the iCloud cache is still active. Reopen, or the
-    /// next isolation or reconcile in this process, finishes the swap.
+    /// next isolate, reconcile, Keep, or Remove in this process, finishes the swap. Older builds
+    /// could also store a choice here; reopen swaps it like any other.
     case declared(ICloudAccountIsolation)
     /// The replacement is active. The iCloud cache stays hidden until the user keeps or removes it.
     case isolated(ICloudAccountIsolation)
@@ -99,13 +100,14 @@ extension SwiftDataSyncModePersistence.Manifest {
     stores[sourceIndex].lifecycle = .isolated
   }
 
-  /// Records Keep Local Copy or Remove, in either phase.
+  /// Records Keep Local Copy or Remove once the replacement is active, so a failed swap never
+  /// leaves a stored choice.
   mutating func chooseAccountIsolationResolution(
     _ resolution: ICloudAccountIsolationResolution
   ) throws {
-    guard var isolation = accountIsolation, isolation.resolution == .undecided else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
+    guard case .isolated(var isolation) = try accountIsolationPhase(),
+      isolation.resolution == .undecided
+    else { throw SyncModePersistenceError.transitionInProgress }
     isolation.resolution = resolution
     accountIsolation = isolation
   }
@@ -182,8 +184,9 @@ extension SwiftDataSyncModePersistence {
 
   /// Finishes a declaration whose swap failed or was interrupted in this process. Isolate and
   /// reconcile only report the isolation, so they ignore a failure: the account notice still
-  /// shows, and the next call retries. Keep and Remove need the swap, so they surface its
-  /// failure, including `transitionInProgress` while another writer holds the store.
+  /// shows, and the next call retries. Keep and Remove run the swap before storing the choice,
+  /// so a failed swap, or `transitionInProgress` while another writer holds the store, throws
+  /// and leaves the isolation undecided.
   private func resumeDeclaredAccountIsolation() async throws {
     guard case .declared(let isolation) = try manifest.accountIsolationPhase() else { return }
     try beginStoreReplacement()
@@ -194,6 +197,7 @@ extension SwiftDataSyncModePersistence {
   package func resolveAccountIsolation(
     _ choice: ICloudAccountIsolationChoice
   ) async throws {
+    try await resumeDeclaredAccountIsolation()
     guard let isolation = manifest.accountIsolation else {
       throw SyncModePersistenceError.transitionInProgress
     }
@@ -205,7 +209,6 @@ extension SwiftDataSyncModePersistence {
       try commit(intended)
       try crashHook(.afterAccountResolutionIntent)
     }
-    try await resumeDeclaredAccountIsolation()
     try await reconcileAccountIsolationResolution()
   }
 
