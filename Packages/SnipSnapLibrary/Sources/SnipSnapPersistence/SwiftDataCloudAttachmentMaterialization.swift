@@ -44,6 +44,8 @@ extension SwiftDataSnipLibrary {
         .map { ($0.attachmentID, $0) }
     )
     let namespaceDigest = CloudAttachmentCacheFiles.namespaceDigest(namespaceKey)
+    var writtenReferenceIDs: Set<String> = []
+    var touchedSnipIDs: Set<UUID> = []
     for publication in publications {
       guard storedSnipIDs.contains(publication.snipID) else { continue }
       let referenceID = StoredSnipAttachmentReference.identifier(
@@ -62,6 +64,8 @@ extension SwiftDataSnipLibrary {
         }
         if reference.position == base.position {
           reference.update(position: publication.position)
+          writtenReferenceIDs.insert(referenceID)
+          touchedSnipIDs.insert(publication.snipID)
         }
       }
       guard publication.lifecycle.materializesFromCloud else { continue }
@@ -99,6 +103,26 @@ extension SwiftDataSnipLibrary {
         )
         context.insert(reference)
         references[referenceID] = reference
+        writtenReferenceIDs.insert(referenceID)
+        touchedSnipIDs.insert(publication.snipID)
+      }
+    }
+    guard !touchedSnipIDs.isEmpty else { return }
+    let affectedSnipIDs = Array(touchedSnipIDs)
+    let affectedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> { affectedSnipIDs.contains($0.snipID) }
+    ))
+    for snipReferences in Dictionary(grouping: affectedReferences, by: \.snipID).values {
+      let ordered = snipReferences.sorted { lhs, rhs in
+        if lhs.position != rhs.position { return lhs.position < rhs.position }
+        // Local positions win ties with adopted positions; attachment IDs settle other ties.
+        let lhsWasWritten = writtenReferenceIDs.contains(lhs.id)
+        let rhsWasWritten = writtenReferenceIDs.contains(rhs.id)
+        if lhsWasWritten != rhsWasWritten { return !lhsWasWritten }
+        return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
+      }
+      for (position, reference) in ordered.enumerated() where reference.position != position {
+        reference.update(position: position)
       }
     }
   }
