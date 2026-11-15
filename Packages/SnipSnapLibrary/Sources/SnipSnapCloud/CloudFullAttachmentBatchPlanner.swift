@@ -91,6 +91,14 @@ struct CloudFullAttachmentBatchPlanner {
           shadowData: snapshot.shadow.data,
           systemFields: snapshot.shadow.systemFields
         ))
+      } else if case .conflict? = sentItemResults[snapshot.id], local.isLocallyPresent,
+        local.payloadAccepted, local.priorPayloadIdentity == nil,
+        metadata.payloadIdentity == local.metadata.payloadIdentity
+      {
+        // ADR 0028: another device's change merges like a fetched record (SM33 D-F2-1). A row
+        // still owed its replaced payload's cleanup keeps the conflict path, whose next
+        // acknowledged save releases that cleanup.
+        return .handled(remoteAcceptance)
       }
       return .handled(.metadataConflict(
         attachmentID: local.metadata.attachmentID,
