@@ -210,10 +210,7 @@ package enum ClipboardBindingResetStep: Sendable {
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
-        if hadBinding {
-            try quarantineHistory()
-            try await store.save(ClipboardHistoryState())
-        }
+        if hadBinding { try await store.setAside() }
         try removeBinding()
         await worker.reset()
     }
@@ -225,19 +222,11 @@ package enum ClipboardBindingResetStep: Sendable {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         settingAside()
-        try quarantineHistory()
-        try await store.save(ClipboardHistoryState())
+        try await store.setAside()
         try await resetStep(.historyCleared)
         try removeBinding()
         try await resetStep(.bindingRemoved)
         await worker.reset()
-    }
-    private func quarantineHistory() throws {
-        let source = store.url
-        if FileManager.default.fileExists(atPath: source.path) {
-            let backup = source.deletingLastPathComponent().appendingPathComponent("clipboard-quarantine-\(UUID().uuidString).json")
-            try FileManager.default.copyItem(at: source, to: backup)
-        }
     }
     private func removeBinding() throws {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
