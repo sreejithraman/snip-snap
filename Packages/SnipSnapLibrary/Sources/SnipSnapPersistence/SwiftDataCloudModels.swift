@@ -123,7 +123,7 @@ final class StoredCloudNamespaceState {
       throw SnipLibraryError.invalidStore
     }
     return try CloudNamespaceStateStorage(
-      phase: phase,
+      storedPhase: phase,
       approvedSnipIDs: JSONDecoder().decode(Set<UUID>.self, from: approvedSnipIDs),
       excludedSnipIDs: JSONDecoder().decode(Set<UUID>.self, from: excludedSnipIDs),
       zoneCreationPending: zoneCreationPending

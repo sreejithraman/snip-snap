@@ -261,8 +261,7 @@ extension SwiftDataSnipLibrary {
     let candidateCounts = Dictionary(grouping: candidates, by: { $0.archive.reference }).mapValues(\.count)
     for candidate in candidates {
       let value = candidate.archive
-      guard value.format == .legacyBindingV1,
-        value.key == CloudStoredQuarantine.corruptShadowKey(reference: value.reference, payload: value.payload),
+      guard value.corruptShadowMarker == .archive,
         candidate.accepted.reference == value.reference,
         candidate.accepted.identity == value.identity,
         candidate.accepted.shadowData == value.payload,
@@ -303,9 +302,7 @@ extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: container)
     let records = try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
     for value in expected {
-      guard value.format == .legacyBindingV1,
-        value.key == CloudStoredQuarantine.corruptShadowKey(
-          reference: value.reference, payload: value.payload),
+      guard value.corruptShadowMarker == .archive,
         let record = records.first(where: {
           $0.id == StoredCloudMappingQuarantine.key(namespaceKey: namespaceKey.rawValue, key: value.key)
         }),
@@ -441,18 +438,9 @@ extension SwiftDataSnipLibrary {
     let current = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
       .first(where: { $0.namespaceKey == namespaceKey })
     let prior = try Self.fullEnrollmentState(from: current?.referencesData)
-    let phase: CloudNamespaceBootstrapPhase = prior.namespaceState.phase == .active
-      ? .active : .seeding
-    let state = CloudFullNamespaceState(
-      revision: prior.namespaceState.revision + 1,
-      phase: phase,
-      zoneCreationPending: prior.namespaceState.phase == .remoteCheckedMissingZone
-        || prior.namespaceState.zoneCreationPending,
-      initialFetchInventory: prior.namespaceState.initialFetchInventory
-    )
-    let data = try JSONEncoder().encode(
-      CloudFullEnrollmentState(namespaceState: state, references: references)
-    )
+    let data = try JSONEncoder().encode(CloudFullEnrollmentState(
+      namespaceState: prior.namespaceState.approvingEnrollment(), references: references
+    ))
     if let current {
       current.referencesData = data
     } else {

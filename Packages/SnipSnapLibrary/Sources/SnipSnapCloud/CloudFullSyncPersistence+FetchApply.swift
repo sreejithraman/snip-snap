@@ -11,6 +11,7 @@ extension CloudFullSyncPersistence {
     let wire = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let recovery = corruptShadowRecovery(in: stored)
     let attachmentStorage = try await library.cloudAttachmentStorageSnapshot(
       namespaceKey: namespaceKey
     )
@@ -24,8 +25,8 @@ extension CloudFullSyncPersistence {
       attachmentStorage: attachmentStorage,
       recoveryEvents: try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     ).plan(
-      recoveryFetchBatch(batch, stored: stored), inventorySource: batch,
-      blockedReplayIDs: unpreparedCorruptShadowRecordIDs(stored),
+      recoveryFetchBatch(batch, stored: stored, recovery: recovery), inventorySource: batch,
+      blockedReplayIDs: recovery.unpreparedRecordIDs,
       outbound: outbound, rawBatchData: rawBatchData
     )
   }

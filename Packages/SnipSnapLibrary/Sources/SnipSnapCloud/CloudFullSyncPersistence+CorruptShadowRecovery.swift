@@ -2,42 +2,30 @@ import Foundation
 import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
+  func corruptShadowRecovery(in stored: CloudFullStorageSnapshot) -> CloudCorruptShadowRecovery {
+    CloudCorruptShadowRecovery(stored.quarantines, dataZone: dataZone)
+  }
+
   /// Ordinary state reads must not wait for a mutation that is paused elsewhere.
   func needsCorruptShadowRecovery() async throws -> Bool {
     let snapshot = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    return !unresolvedCorruptShadows(snapshot.quarantines).isEmpty
+    return corruptShadowRecovery(in: snapshot).needsRecovery
   }
 
-  /// Runs before a fresh engine starts, including after a crash during recovery.
-  /// Rechecks the current archives under the mutation lease before saving candidates.
-  func prepareCorruptShadowRecovery() async throws -> Bool {
+  /// Moves every unresolved archive to recovering, before a fresh engine starts, including
+  /// after a crash during recovery. Runs under the mutation lease, so it reads the current
+  /// archives before saving candidates. With none, it writes nothing.
+  func prepareCorruptShadowRecovery() async throws {
     let snapshot = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let archives = unresolvedCorruptShadows(snapshot.quarantines)
+    let archives = corruptShadowRecovery(in: snapshot).unresolvedArchives
     let candidates = try archives.map { value in
       CloudCorruptShadowRecoveryCandidate(archive: value, accepted: try acceptedCorruptShadow(value))
     }
     try await library.beginCorruptCloudShadowRecovery(namespaceKey: namespaceKey, candidates: candidates)
-    return !archives.isEmpty
   }
 
-  func hasUnresolvedQuarantines(_ values: [CloudStoredQuarantine]) -> Bool {
-    let keys = Set(values.map(\.key))
-    return values.contains {
-      !isValidCorruptShadow($0, resolved: true)
-        || keys.contains(String($0.key.dropFirst("resolved-".count)))
-    }
-  }
-
-  func unresolvedCorruptShadows(_ values: [CloudStoredQuarantine]) -> [CloudStoredQuarantine] {
-    values.filter { isValidCorruptShadow($0) }
-  }
-
-  /// A recovery mark is valid only for a canonical record in this metadata zone.
-  func isValidCorruptShadow(_ value: CloudStoredQuarantine, resolved: Bool = false) -> Bool {
-    let archiveKey = CloudStoredQuarantine.corruptShadowKey(reference: value.reference, payload: value.payload)
-    guard value.format == .legacyBindingV1,
-      value.key == (resolved ? "resolved-\(archiveKey)" : archiveKey)
-    else { return false }
+  /// A recovery row is valid only for a canonical record in this metadata zone.
+  static func isValidCorruptShadowRevision(_ value: CloudStoredQuarantine, dataZone: CloudZoneID) -> Bool {
     do {
       let shadow = try CloudRecordShadow(data: value.payload)
       let snapshot = try CloudKitRecordMapper.snapshot(shadow.record())
@@ -59,18 +47,22 @@ extension CloudFullSyncPersistence {
     }
   }
 
+  /// Moves recovering archives to resolved after a clean first fetch.
   func resolveCorruptShadowsAfterFetch(_ batch: CloudSyncBatch) async throws {
     guard Self.isCleanInitialMetadataFetch(batch, dataZone: dataZone) else { return }
     let snapshot = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard snapshot.namespaceState.initialFetchInventory?.canProveAbsence == true else { return }
     try await library.resolveCorruptCloudShadows(namespaceKey: namespaceKey,
-      expected: matchingRecoveryArchives(snapshot.quarantines))
+      expected: corruptShadowRecovery(in: snapshot).recoveringArchives)
   }
 
-  func recoveryFetchBatch(_ batch: CloudSyncBatch, stored: CloudFullStorageSnapshot) -> CloudSyncBatch {
+  func recoveryFetchBatch(
+    _ batch: CloudSyncBatch,
+    stored: CloudFullStorageSnapshot,
+    recovery: CloudCorruptShadowRecovery
+  ) -> CloudSyncBatch {
     guard case .fetched(let fetched) = batch else { return batch }
-    let prepared = matchingRecoveryArchives(stored.quarantines)
-    let unpreparedIDs = unpreparedCorruptShadowRecordIDs(stored)
+    let unpreparedIDs = recovery.unpreparedRecordIDs
     // An unresolved archive without a bound base must not become a new local item.
     let applicable = fetched.items.filter { item in
       switch item {
@@ -79,27 +71,20 @@ extension CloudFullSyncPersistence {
       case .failed: return true
       }
     }
-    let inventory = CloudFullFetchInventory.after(
-      batch, current: stored.namespaceState.initialFetchInventory,
-      startsWithoutToken: false, dataZone: dataZone
-    )
+    let inventory = stored.namespaceState.inventory(after: CloudFullInitialFetchStep(
+      batch, startsWithoutToken: false, dataZone: dataZone
+    ))
     let observed = Set(fetched.items.compactMap(\.id))
       .union((inventory?.observed ?? []).map(Self.recordID))
     let absent = inventory?.canProveAbsence == true
       && Self.isCleanInitialMetadataFetch(batch, dataZone: dataZone)
-      ? prepared.map { Self.recordID($0.identity) }
+      ? recovery.recoveringArchives.map { Self.recordID($0.identity) }
         .filter { !observed.contains($0) && !unpreparedIDs.contains($0) }
       : []
     return .fetched(CloudFetchedBatch(id: fetched.id,
       items: applicable + absent.map(CloudFetchItemResult.deleted),
       databaseEvents: fetched.databaseEvents, zoneEvents: fetched.zoneEvents,
       engineState: fetched.engineState, isInitialFetch: fetched.isInitialFetch))
-  }
-
-  func unpreparedCorruptShadowRecordIDs(_ stored: CloudFullStorageSnapshot) -> Set<CloudRecordID> {
-    let preparedKeys = Set(matchingRecoveryArchives(stored.quarantines).map(\.key))
-    return Set(unresolvedCorruptShadows(stored.quarantines)
-      .filter { !preparedKeys.contains($0.key) }.map { Self.recordID($0.identity) })
   }
 
   static func isCleanInitialMetadataFetch(
@@ -115,16 +100,6 @@ extension CloudFullSyncPersistence {
       return zone
     })
     return fetched.engineState?.requiresInitialFetch == false && completedZones.contains(dataZone)
-  }
-
-  private func matchingRecoveryArchives(_ values: [CloudStoredQuarantine]) -> [CloudStoredQuarantine] {
-    let byKey = Dictionary(uniqueKeysWithValues: values.map { ($0.key, $0) })
-    return unresolvedCorruptShadows(values).filter { archive in
-      let expected = archive.corruptShadowRecoveryMarker
-      guard let attempt = byKey[expected.key] else { return false }
-      return attempt.reference == expected.reference && attempt.identity == expected.identity
-        && attempt.format == expected.format && attempt.payload == expected.payload
-    }
   }
 
   private func acceptedCorruptShadow(_ value: CloudStoredQuarantine) throws -> CloudAcceptedEntityInput {
