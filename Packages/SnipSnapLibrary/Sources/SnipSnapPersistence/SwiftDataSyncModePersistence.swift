@@ -365,9 +365,16 @@ package actor SwiftDataSyncModePersistence {
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
-    guard store.lifecycle != .creating else { throw SyncModePersistenceError.missingStore }
+    guard store.lifecycle != .creating, store.lifecycle != .deleting else {
+      throw SyncModePersistenceError.missingStore
+    }
+    let storeFileURL = storeURL(store).appendingPathComponent("snips.store", isDirectory: false)
+    // The active store keeps open-or-create so the app and its recovery paths stay usable.
+    guard store.id == manifest.activeStoreID
+      || FileManager.default.fileExists(atPath: storeFileURL.path)
+    else { throw SyncModePersistenceError.missingStore }
     return try SwiftDataSnipLibrary(
-      storeURL: storeURL(store).appendingPathComponent("snips.store"),
+      storeURL: storeFileURL,
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
