@@ -159,8 +159,26 @@ final class CloudKitTransportCallBoundTests: XCTestCase {
     }
 }
 
+/// Each bound ends only its own kind fast. A read backstopped with the other kind waits about
+/// 30 s, past every stall test's limit.
+private extension CloudKitCallBound {
+    static let smallEndsFast = CloudKitCallBound(
+        idle: .milliseconds(100),
+        smallTotal: .milliseconds(200),
+        transferTotal: .seconds(30),
+        backstopMargin: .milliseconds(100)
+    )
+
+    static let transferEndsFast = CloudKitCallBound(
+        idle: .milliseconds(100),
+        smallTotal: .seconds(30),
+        transferTotal: .milliseconds(200),
+        backstopMargin: .milliseconds(100)
+    )
+}
+
 private func makeControlTransport(
-    bound: CloudKitCallBound = .shortForTests,
+    bound: CloudKitCallBound = .smallEndsFast,
     calls: CloudKitDatabaseCalls
 ) -> CloudKitCollectionControlTransport {
     let clock = RetryClock()
@@ -177,7 +195,7 @@ private func makeControlTransport(
 }
 
 private func makeClipboardTransport(
-    bound: CloudKitCallBound = .shortForTests,
+    bound: CloudKitCallBound = .transferEndsFast,
     calls: CloudKitDatabaseCalls
 ) -> CloudKitClipboardTransport {
     CloudKitClipboardTransport(generation: "call-bound-test", bound: bound, calls: calls)
