@@ -525,6 +525,197 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         XCTAssertEqual(result.items[0].id, savedID)
         XCTAssertEqual(result.items[1], .deleted(deletedID))
     }
+
+    // MARK: SM33-F2A atomic order writes
+
+    func testAnOrderWriteWithAStaleMemberWritesNoMemberAndLeavesTheOthersUnsent() async throws {
+        let fixture = try await OrderWriteFixture.published()
+        try await fixture.moveOnAnotherDevice(fixture.a, to: 2)
+        let reorder = CloudOutboundBatch(operations: [
+            .save(fixture.draft(fixture.a, position: 1)),
+            .save(fixture.draft(fixture.b, position: 0)),
+        ])
+
+        let sent = try await fixture.transport.send(reorder)
+
+        XCTAssertEqual(sent.items.map(\.id), [fixture.a], "B failed only with its batch, so it reports nothing.")
+        guard case .conflict(_, let current)? = sent.items.first else {
+            return XCTFail("The stale member must report the server record.")
+        }
+        XCTAssertEqual(current.encryptedFields["position"], .int64(2))
+        let b = await fixture.server.fullSnapshot(for: fixture.b)
+        XCTAssertEqual(b?.shadow, fixture.shadows[fixture.b], "iCloud must apply no member of a failed group.")
+        guard case .batch(let pending)? = await fixture.transport.pendingEvent() else {
+            return XCTFail("The send must commit through its reported records.")
+        }
+        XCTAssertEqual(pending.batch.id, sent.id)
+        XCTAssertEqual(pending.outbound?.operations.map(\.id), [fixture.a])
+        let events = await fixture.transport.events()
+        XCTAssertTrue(events.contains(.sentAtomic(fixture.snipID, [fixture.a, fixture.b])))
+        try await fixture.transport.confirmApplied(sent.id)
+        let afterConfirm = await fixture.transport.pendingEvent()
+        XCTAssertNil(afterConfirm)
+    }
+
+    func testAnOrderWriteReportsEachMembersOwnErrorAndWritesNothing() async throws {
+        let fixture = try await OrderWriteFixture.published()
+        let missing = CloudRecordID(zone: fixture.zone, name: "deleted-elsewhere")
+        await fixture.transport.failNextSentItem(fixture.b, failure: .quotaExceeded)
+        let reorder = CloudOutboundBatch(operations: [
+            .save(fixture.draft(fixture.a, position: 1)),
+            .save(fixture.draft(fixture.b, position: 0)),
+            .save(fixture.draft(missing, position: 2, base: fixture.shadows[fixture.a])),
+        ])
+
+        let sent = try await fixture.transport.send(reorder)
+
+        XCTAssertEqual(sent.items, [.failed(fixture.b, .quotaExceeded), .unknownItem(missing)])
+        for id in [fixture.a, fixture.b] {
+            let current = await fixture.server.fullSnapshot(for: id)
+            XCTAssertEqual(current?.shadow, fixture.shadows[id])
+        }
+    }
+
+    func testAnOrderWriteCanReportOnlyItsFirstFailingMember() async throws {
+        let fixture = try await OrderWriteFixture.published()
+        try await fixture.moveOnAnotherDevice(fixture.a, to: 3)
+        try await fixture.moveOnAnotherDevice(fixture.b, to: 2)
+        await fixture.transport.reportOnlyFirstAtomicFailure()
+        let reorder = CloudOutboundBatch(operations: [
+            .save(fixture.draft(fixture.a, position: 1)),
+            .save(fixture.draft(fixture.b, position: 0)),
+        ])
+
+        let sent = try await fixture.transport.send(reorder)
+
+        XCTAssertEqual(sent.items.map(\.id), [fixture.a], "The other stale member fails with its batch.")
+        guard case .batch(let pending)? = await fixture.transport.pendingEvent() else {
+            return XCTFail("The send must commit through its reported records.")
+        }
+        XCTAssertEqual(pending.outbound?.operations.map(\.id), [fixture.a])
+    }
+
+    func testAnOrderWriteNeitherFailsNorIsFailedByUnrelatedRecordsInTheSameSend() async throws {
+        let fixture = try await OrderWriteFixture.published()
+        let text = CloudRecordID(zone: fixture.zone, name: "text")
+        let other = CloudRecordID(zone: fixture.zone, name: "other-snip")
+        let seeded = try await fixture.transport.send(CloudOutboundBatch(operations: [
+            .save(.text(id: text, snipID: UUID(), text: "seed")),
+        ]))
+        try await fixture.transport.confirmApplied(seeded.id)
+        let succeeding = CloudOutboundBatch(operations: [
+            .save(.text(id: text, snipID: UUID(), text: "stale")),
+            .save(fixture.draft(fixture.a, position: 1)),
+            .save(fixture.draft(fixture.b, position: 0)),
+        ])
+
+        let first = try await fixture.transport.send(succeeding)
+
+        XCTAssertEqual(first.items.map(\.id), [text, fixture.a, fixture.b])
+        guard case .conflict = first.items[0], case .saved = first.items[1],
+              case .saved(let savedB) = first.items[2] else {
+            return XCTFail("Only the stale text record may fail. Got \(first.items).")
+        }
+        let noPendingEvent = await fixture.transport.pendingEvent()
+        XCTAssertNil(noPendingEvent, "A send that reported every record commits directly.")
+        try await fixture.transport.confirmApplied(first.id)
+        let failing = CloudOutboundBatch(operations: [
+            .save(fixture.draft(fixture.a, position: 2)),
+            .save(.text(id: other, snipID: UUID(), text: "unrelated")),
+            .save(fixture.draft(fixture.b, position: 1, base: savedB.shadow)),
+        ])
+
+        let second = try await fixture.transport.send(failing)
+
+        XCTAssertEqual(second.items.map(\.id), [fixture.a, other], "B failed only with its batch.")
+        guard case .conflict = second.items[0], case .saved = second.items[1] else {
+            return XCTFail("The failed group must not fail the unrelated save. Got \(second.items).")
+        }
+    }
+
+    func testASaveThatKeepsItsPositionIsNotAnOrderWrite() async throws {
+        let fixture = try await OrderWriteFixture.published()
+        var fields = fixture.draft(fixture.a, position: 0).encryptedFields
+        fields["fileName"] = .string("renamed")
+        let rename = CloudRecordDraft(id: fixture.a, recordType: CloudAttachmentRecordCodec.metadataRecordType,
+            schemaVersion: 1, routingFields: ["schemaVersion": .int64(1)], encryptedFields: fields,
+            base: fixture.shadows[fixture.a])
+
+        XCTAssertFalse(CloudAttachmentOrderWrite.changesOrder(rename))
+        XCTAssertTrue(CloudAttachmentOrderWrite.groups(in: [.save(rename)]).isEmpty)
+        XCTAssertTrue(CloudAttachmentOrderWrite.changesOrder(fixture.draft(fixture.a, position: 1)))
+        XCTAssertEqual(CloudAttachmentOrderWrite.groups(in: [
+            .save(rename),
+            .save(fixture.draft(fixture.b, position: 0)),
+        ]), [fixture.snipID: [fixture.a, fixture.b]], "Every metadata save of a reordered snip joins its write.")
+    }
+}
+
+/// One snip with attachment metadata records A0 and B1, published on a fake server.
+private struct OrderWriteFixture {
+    let server: FakeCloudServer
+    let transport: FakeCloudRecordTransport
+    let zone = CloudZoneID(name: "data", ownerName: "owner")
+    let snipID: UUID
+    let a: CloudRecordID
+    let b: CloudRecordID
+    let shadows: [CloudRecordID: CloudRecordShadow]
+
+    static func published() async throws -> Self {
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server)
+        let zone = CloudZoneID(name: "data", ownerName: "owner")
+        let snipID = UUID()
+        let a = CloudRecordID(zone: zone, name: "a-1")
+        let b = CloudRecordID(zone: zone, name: "a-2")
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(metadataDraft(a, snipID: snipID, position: 0, base: nil)),
+            .save(metadataDraft(b, snipID: snipID, position: 1, base: nil)),
+        ]))
+        try await transport.confirmApplied(sent.id)
+        var shadows: [CloudRecordID: CloudRecordShadow] = [:]
+        for item in sent.items {
+            guard case .saved(let snapshot) = item else { throw CloudTransportError.invalidRecord }
+            shadows[snapshot.id] = snapshot.shadow
+        }
+        return Self(server: server, transport: transport, snipID: snipID, a: a, b: b, shadows: shadows)
+    }
+
+    func draft(_ id: CloudRecordID, position: Int64, base: CloudRecordShadow? = nil) -> CloudRecordDraft {
+        Self.metadataDraft(id, snipID: snipID, position: position, base: base ?? shadows[id])
+    }
+
+    /// Another device's save lands first, so this device's base for the record goes stale.
+    func moveOnAnotherDevice(_ id: CloudRecordID, to position: Int64) async throws {
+        let other = FakeCloudRecordTransport(server: server)
+        var fields = draft(id, position: position).encryptedFields
+        fields["fileName"] = .string("moved elsewhere")
+        _ = try await other.send(CloudOutboundBatch(operations: [
+            .save(CloudRecordDraft(id: id, recordType: CloudAttachmentRecordCodec.metadataRecordType,
+                schemaVersion: 1, routingFields: ["schemaVersion": .int64(1)], encryptedFields: fields,
+                base: shadows[id])),
+        ]))
+    }
+
+    private static func metadataDraft(
+        _ id: CloudRecordID,
+        snipID: UUID,
+        position: Int64,
+        base: CloudRecordShadow?
+    ) -> CloudRecordDraft {
+        CloudRecordDraft(
+            id: id,
+            recordType: CloudAttachmentRecordCodec.metadataRecordType,
+            schemaVersion: 1,
+            routingFields: ["schemaVersion": .int64(1)],
+            encryptedFields: [
+                "snipID": .string(snipID.uuidString.lowercased()),
+                "position": .int64(position),
+                "fileName": .string(id.name),
+            ],
+            base: base
+        )
+    }
 }
 
 private extension CloudFetchedBatch {

@@ -1009,9 +1009,13 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       })?.lastFailure,
       .rejected
     )
-    XCTAssertTrue(afterFailure.publications.first(where: {
+    // SM33-F2A: the snip's first publication is one atomic order write, so the sibling failed
+    // only with its batch. It records no failure and stays unpublished.
+    let sibling = afterFailure.publications.first(where: {
       $0.metadata.attachmentID == removable.metadata.attachmentID
-    })?.metadataAccepted == true)
+    })
+    XCTAssertEqual(sibling?.metadataAccepted, false)
+    XCTAssertNil(sibling?.lastFailure)
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(local.snips.first(where: { $0.id == snipID }))
     _ = try await library.perform(

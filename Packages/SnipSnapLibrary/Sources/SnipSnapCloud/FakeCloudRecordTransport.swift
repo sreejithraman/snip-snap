@@ -10,6 +10,8 @@ package enum FakeCloudTransportEvent: Equatable, Sendable {
     case started
     case fetched
     case sent([CloudRecordID])
+    /// One snip's attachment order write, sent all or nothing (SM33-F2A).
+    case sentAtomic(UUID, [CloudRecordID])
     case confirmed(UUID)
 }
 
@@ -65,14 +67,16 @@ package actor FakeCloudServer {
         try? FileManager.default.removeItem(at: assetRoot)
     }
 
-    private func save(_ draft: CloudRecordDraft) throws -> CloudSendItemResult {
+    /// Why iCloud would refuse this save, or nil when it would accept it.
+    private func rejection(of draft: CloudRecordDraft) -> CloudSendItemResult? {
         if let current = records[draft.id] {
-            guard draft.base == current.shadow else {
-                return .conflict(draft.id, server: current)
-            }
-        } else if draft.base != nil {
-            return .unknownItem(draft.id)
+            return draft.base == current.shadow ? nil : .conflict(draft.id, server: current)
         }
+        return draft.base == nil ? nil : .unknownItem(draft.id)
+    }
+
+    private func save(_ draft: CloudRecordDraft) throws -> CloudSendItemResult {
+        if let rejection = rejection(of: draft) { return rejection }
 
         let snapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft))
         var storedAssets: [String: URL] = [:]
@@ -103,26 +107,50 @@ package actor FakeCloudServer {
         return .deleted(id)
     }
 
+    /// Applies each operation on its own, except that each atomic group is written whole or not
+    /// at all. When a group fails, its members with their own error report it, and the rest fail
+    /// with `batchRequestFailed`, which reports no result.
     package func send(
         _ batch: CloudOutboundBatch,
-        failures: [CloudRecordID: CloudOperationFailure]
+        failures: [CloudRecordID: CloudOperationFailure],
+        atomicGroups: [UUID: [CloudRecordID]] = [:],
+        reportsOnlyFirstAtomicFailure: Bool = false
     ) throws -> CloudSentBatch {
         guard Set(batch.operations.map(\.id)).count == batch.operations.count else {
             throw CloudTransportError.invalidRecord
         }
         zones.formUnion(batch.zonesToSave)
-        let items = try batch.operations.map { operation in
+        let grouped = Set(atomicGroups.values.joined())
+        var results: [CloudRecordID: CloudSendItemResult] = [:]
+        for operation in batch.operations where !grouped.contains(operation.id) {
             if let failure = failures[operation.id] {
-                return CloudSendItemResult.failed(operation.id, failure)
+                results[operation.id] = .failed(operation.id, failure)
+                continue
             }
             switch operation {
-            case .save(let draft): return try save(draft)
-            case .delete(let id, let base): return delete(id, base: base)
+            case .save(let draft): results[draft.id] = try save(draft)
+            case .delete(let id, let base): results[id] = delete(id, base: base)
             }
+        }
+        for (_, ids) in atomicGroups.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            let drafts = batch.operations.compactMap { operation -> CloudRecordDraft? in
+                guard case .save(let draft) = operation, ids.contains(draft.id) else { return nil }
+                return draft
+            }
+            let rejections = drafts.compactMap { draft -> CloudSendItemResult? in
+                failures[draft.id].map { CloudSendItemResult.failed(draft.id, $0) } ?? rejection(of: draft)
+            }
+            guard rejections.isEmpty else {
+                for rejection in reportsOnlyFirstAtomicFailure ? Array(rejections.prefix(1)) : rejections {
+                    results[rejection.id] = rejection
+                }
+                continue
+            }
+            for draft in drafts { results[draft.id] = try save(draft) }
         }
         return CloudSentBatch(
             id: UUID(),
-            items: items,
+            items: batch.operations.compactMap { results[$0.id] },
             databaseEvents: batch.zonesToSave.map(CloudDatabaseEvent.zoneSaved),
             engineState: nil
         )
@@ -393,6 +421,9 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
     private var fetchZoneFailures: [CloudZoneID: CloudOperationFailure] = [:]
     private var sendItemFailures: [CloudRecordID: CloudOperationFailure] = [:]
     private var nextOmittedSentResult: CloudRecordID?
+    private var reportsOnlyFirstAtomicFailure = false
+    /// The operations a pending send reported, when an atomic failure left some unsent.
+    private var pendingReportedOutbound: CloudOutboundBatch?
     private var eventLog: [FakeCloudTransportEvent] = []
     private var fetchScopeLog: [CloudFetchScope] = []
     private var shouldPauseNextFetch = false
@@ -438,6 +469,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         requiresInitialFetch = true
         committedCursors = [:]
         pending = nil
+        pendingReportedOutbound = nil
     }
 
     package func failNextFetch() { nextFetchFailure = .fetchFailed }
@@ -492,6 +524,19 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
 
     package func omitNextSentResult(_ id: CloudRecordID) {
         nextOmittedSentResult = id
+    }
+
+    /// Models CloudKit reporting only one failing member of an atomic batch. The other stale
+    /// members then fail with `batchRequestFailed` too.
+    package func reportOnlyFirstAtomicFailure() {
+        reportsOnlyFirstAtomicFailure = true
+    }
+
+    /// A send that left records unsent commits with only the records it reported, as
+    /// `CloudKitRecordTransport`'s mailbox does.
+    package func pendingEvent() -> CloudRecordTransportEvent? {
+        guard let pending, case .sent = pending, let pendingReportedOutbound else { return nil }
+        return .batch(CloudPendingBatch(batch: pending, outbound: pendingReportedOutbound))
     }
 
     package func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
@@ -571,13 +616,20 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         if case .sent(let result)? = pending { return result }
         if pending != nil { throw FakeCloudError.wrongBatchConfirmation }
         eventLog.append(.sent(batch.operations.map(\.id).sorted { $0.name < $1.name }))
+        let atomicGroups = CloudAttachmentOrderWrite.groups(in: batch.operations)
+            .filter { $0.value.count <= CloudAttachmentOrderWrite.requestRecordLimit }
+        for (snipID, ids) in atomicGroups.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            eventLog.append(.sentAtomic(snipID, ids.sorted { $0.name < $1.name }))
+        }
         if let failure = nextSendFailure {
             nextSendFailure = nil
             throw failure
         }
         let failures = sendItemFailures
         sendItemFailures = [:]
-        let serverResult = try await server.send(batch, failures: failures)
+        let serverResult = try await server.send(batch, failures: failures, atomicGroups: atomicGroups,
+            reportsOnlyFirstAtomicFailure: reportsOnlyFirstAtomicFailure)
+        let reportedIDs = Set(serverResult.items.map(\.id))
         var items = serverResult.items
         if let id = nextOmittedSentResult {
             items.removeAll { $0.id == id }
@@ -591,6 +643,12 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
             engineState: envelope(for: committedCursors)
         )
         pending = .sent(result)
+        if reportedIDs.count < batch.operations.count {
+            pendingReportedOutbound = CloudOutboundBatch(
+                operations: batch.operations.filter { reportedIDs.contains($0.id) },
+                zonesToSave: batch.zonesToSave
+            )
+        }
         return result
     }
 
@@ -603,6 +661,7 @@ package actor FakeCloudRecordTransport: CloudRecordTransport {
         }
         self.pending = nil
         pendingCursors = nil
+        pendingReportedOutbound = nil
     }
 
     package func fetchRecord(

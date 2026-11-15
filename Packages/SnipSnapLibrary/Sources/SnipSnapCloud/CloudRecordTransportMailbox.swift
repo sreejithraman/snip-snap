@@ -188,6 +188,13 @@ package struct CloudRecordOutboundQueue: Sendable {
       guard case .open(let cycle, let supplied) = self else { return }
       self = .open(cycle, supplied: supplied.union(ids))
     }
+
+    /// Records iCloud never applied leave the acknowledgement and aren't supplied again.
+    mutating func withdraw(_ ids: Set<CloudRecordID>) {
+      guard case .open(var cycle, let supplied) = self else { return }
+      cycle.withhold(ids)
+      self = .open(cycle, supplied: supplied.subtracting(ids))
+    }
   }
 
   /// A stop lasts for the queue's lifetime. Record blocks stay tracked after a stop
@@ -245,6 +252,10 @@ package struct CloudRecordOutboundQueue: Sendable {
   package var cycle: CloudRecordSendCycle? {
     guard case .open(let cycle, _) = sendCycle else { return nil }
     return cycle
+  }
+  package var suppliedIDs: Set<CloudRecordID> {
+    guard case .open(_, let supplied) = sendCycle else { return [] }
+    return supplied
   }
   package var admission: CloudRecordOutboundAdmission { gate.admission }
   package var current: CloudOutboundBatch { desired }
@@ -337,6 +348,17 @@ package struct CloudRecordOutboundQueue: Sendable {
 
   package mutating func recordSupplied(_ ids: Set<CloudRecordID>) {
     sendCycle.recordSupplied(ids)
+  }
+
+  /// Keeps unsupplied records out of the rest of this cycle. They stay desired for the next one.
+  package mutating func withhold(_ ids: Set<CloudRecordID>) {
+    sendCycle.withholdUnsupplied { ids.contains($0.id) }
+  }
+
+  /// SM33-F2A: a supplied record that failed only because its atomic batch failed counts as
+  /// never sent. It stays desired, so the next schedule supplies it again with its group.
+  package mutating func withdraw(_ ids: Set<CloudRecordID>) {
+    sendCycle.withdraw(ids)
   }
 
   package mutating func finishCycle(_ id: UUID) -> CloudOutboundBatch {

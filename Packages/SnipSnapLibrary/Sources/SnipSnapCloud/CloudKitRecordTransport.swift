@@ -168,9 +168,11 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         } catch {
             guard isCurrent(running) else { throw CloudTransportError.notStarted }
             CloudSyncDiagnostics.record(error, operation: "record send")
-            running.sentBatch.databaseEvents.append(.failed(nil, Self.failure(error)))
-            if outboundQueue.cycle == nil { outboundQueue.beginCycle() }
-            finishSentBatch(of: running)
+            if !(Self.summarizesRecordResults(error) && reportedEveryRecord(of: running)) {
+                running.sentBatch.databaseEvents.append(.failed(nil, Self.failure(error)))
+                if outboundQueue.cycle == nil { outboundQueue.beginCycle() }
+                finishSentBatch(of: running)
+            }
         }
         guard isCurrent(running) else { throw CloudTransportError.notStarted }
         if let result = running.explicitTransfer.sentResult { return result }
@@ -394,6 +396,12 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
             for failure in failedRecordSaves {
                 let id = CloudKitRecordMapper.id(for: failure.recordID)
+                // iCloud applied nothing for a record that failed only with its atomic batch.
+                if failure.error.code == .batchRequestFailed, running.sentBatch.atomicIDs.contains(id) {
+                    outboundQueue.withdraw([id])
+                    running.sentBatch.results[id] = nil
+                    continue
+                }
                 if Self.isEncryptedDataReset(failure.error) {
                     running.sentBatch.databaseEvents.append(.zoneDeleted(id.zone, reason: .encryptedDataReset))
                 }
@@ -465,16 +473,53 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
         })
         guard let sendCycle = outboundQueue.cycle else { return nil }
-        let pendingChanges: [CKSyncEngine.PendingRecordZoneChange] = sendCycle.operations(
-            pendingIDs: pendingIDs
-        ).map { operation in
+        let available = sendCycle.operations(pendingIDs: pendingIDs)
+        let groups = CloudAttachmentOrderWrite.groups(in: sendCycle.outbound.operations)
+        // D-A4: a group too large for one request goes out as ordinary work.
+        let atomicGroups = groups.filter { $0.value.count <= CloudAttachmentOrderWrite.requestRecordLimit }
+        if atomicGroups.count < groups.count, !running.sentBatch.reportedOversizedOrderWrite {
+            running.sentBatch.reportedOversizedOrderWrite = true
+            diagnostics.record(.failure(operation: "sync.provider", errorCode: "sync.orderWriteTooLarge",
+                visibility: .background))
+        }
+        let groupedIDs = Set(atomicGroups.values.joined())
+        let ungrouped = available.filter { !groupedIDs.contains($0.id) }
+        if !ungrouped.isEmpty {
+            return await recordZoneChangeBatch(ungrouped, atomic: false, in: sendCycle, of: running,
+                from: syncEngine)
+        }
+        let availableIDs = Set(available.map(\.id))
+        for (_, ids) in atomicGroups.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            let members = Set(ids)
+            // A group goes once per cycle, whole. One missing a member waits for the next schedule.
+            if members.isSubset(of: availableIDs), members.isDisjoint(with: outboundQueue.suppliedIDs),
+               let batch = await recordZoneChangeBatch(available.filter { members.contains($0.id) },
+                   atomic: true, in: sendCycle, of: running, from: syncEngine) {
+                return batch
+            }
+            guard isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
+                  !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
+            outboundQueue.withhold(members)
+        }
+        return nil
+    }
+
+    /// Builds one batch of these operations. An atomic batch must hold exactly them.
+    private func recordZoneChangeBatch(
+        _ operations: [CloudOutboundOperation],
+        atomic: Bool,
+        in sendCycle: CloudRecordSendCycle,
+        of running: RunningEngine,
+        from syncEngine: any CloudKitRecordEngine
+    ) async -> CKSyncEngine.RecordZoneChangeBatch? {
+        let pendingChanges: [CKSyncEngine.PendingRecordZoneChange] = operations.map { operation in
             let id = CloudKitRecordMapper.recordID(for: operation.id)
             return switch operation {
             case .save: .saveRecord(id)
             case .delete: .deleteRecord(id)
             }
         }
-        let batch = await CKSyncEngine.RecordZoneChangeBatch(
+        let built = await CKSyncEngine.RecordZoneChangeBatch(
             pendingChanges: pendingChanges,
             recordProvider: { [weak self] recordID in
                 guard let draft = sendCycle.draft(CloudKitRecordMapper.id(for: recordID))
@@ -487,12 +532,17 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
                 }
             }
         )
-        guard let batch, isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
+        guard var batch = built, isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
               !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
         let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
             .map(CloudKitRecordMapper.id(for:)))
         guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs
         else { return nil }
+        if atomic {
+            guard suppliedIDs == Set(operations.map(\.id)) else { return nil }
+            batch.atomicByZone = true
+            running.sentBatch.atomicIDs.formUnion(suppliedIDs)
+        }
         outboundQueue.recordSupplied(suppliedIDs)
         return batch
     }
@@ -526,6 +576,19 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         guard let running = runningEngine else { return [] }
         return running.explicitTransfer.fetchZones
             ?? automaticallyFetchedZones.map(CloudKitRecordMapper.zoneID(for:))
+    }
+
+    /// Errors that only restate per-record results the engine reports one by one.
+    private nonisolated static func summarizesRecordResults(_ error: Error) -> Bool {
+        guard let error = error as? CKError else { return false }
+        return [.partialFailure, .batchRequestFailed, .serverRecordChanged].contains(error.code)
+    }
+
+    /// Whether the engine reported a result for every record it was supplied this send.
+    private func reportedEveryRecord(of running: RunningEngine) -> Bool {
+        if let finished = running.explicitTransfer.reportedEveryRecord { return finished }
+        let supplied = outboundQueue.suppliedIDs
+        return !supplied.isEmpty && supplied.isSubset(of: Set(running.sentBatch.results.keys))
     }
 
     private func recordMappingFailed(_ id: CloudRecordID, cycleID: UUID, from source: any CloudKitRecordEngine) {
@@ -630,7 +693,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             engineState: running.cycles.isRunning(.fetch) ? nil : envelope(of: running)
         )
         mailbox.append(.batch(CloudPendingBatch(batch: .sent(batch), outbound: sent)))
-        running.explicitTransfer.recordFinished(batch)
+        running.explicitTransfer.recordFinished(batch, reportedEveryRecord: !sent.operations.isEmpty
+            && sent.operations.allSatisfy { draft.results[$0.id] != nil })
         recordDiagnosticSnapshot()
         return batch
     }
@@ -714,7 +778,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         case .assetNotAvailable: .attachmentUnavailable
         case .changeTokenExpired: .changeTokenExpired
         case .zoneNotFound: .zoneMissing
-        case .operationCancelled: .retryable
+        case .operationCancelled, .batchRequestFailed: .retryable
         case let code where CloudKitRetryPolicy.isTransient(code): .retryable
         default: .rejected
         }
@@ -817,7 +881,7 @@ private enum EngineCycles {
 private enum ExplicitTransfer {
     case idle
     case fetching(zones: [CKRecordZone.ID], result: CloudFetchedBatch?)
-    case sending(result: CloudSentBatch?)
+    case sending(result: CloudSentBatch?, reportedEveryRecord: Bool = false)
 
     var fetchZones: [CKRecordZone.ID]? {
         guard case .fetching(let zones, _) = self else { return nil }
@@ -830,8 +894,14 @@ private enum ExplicitTransfer {
     }
 
     var sentResult: CloudSentBatch? {
-        guard case .sending(let result) = self else { return nil }
+        guard case .sending(let result, _) = self else { return nil }
         return result
+    }
+
+    /// Whether the finished send reported a result for every supplied record, or nil before it finishes.
+    var reportedEveryRecord: Bool? {
+        guard case .sending(.some, let reported) = self else { return nil }
+        return reported
     }
 
     mutating func recordFinished(_ batch: CloudFetchedBatch) {
@@ -839,9 +909,9 @@ private enum ExplicitTransfer {
         self = .fetching(zones: zones, result: batch)
     }
 
-    mutating func recordFinished(_ batch: CloudSentBatch) {
+    mutating func recordFinished(_ batch: CloudSentBatch, reportedEveryRecord: Bool) {
         guard case .sending = self else { return }
-        self = .sending(result: batch)
+        self = .sending(result: batch, reportedEveryRecord: reportedEveryRecord)
     }
 }
 
@@ -857,4 +927,7 @@ private struct SentBatchDraft {
     let id = UUID()
     var results: [CloudRecordID: CloudSendItemResult] = [:]
     var databaseEvents: [CloudDatabaseEvent] = []
+    /// Records supplied in an atomic order-write batch this cycle (SM33-F2A).
+    var atomicIDs: Set<CloudRecordID> = []
+    var reportedOversizedOrderWrite = false
 }
