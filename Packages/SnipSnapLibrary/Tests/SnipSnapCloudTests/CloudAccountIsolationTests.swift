@@ -553,6 +553,66 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(finalCreatedGenerations, [first.generation, second.generation])
     }
 
+    func testResolvedIsolationRebuildsTheSyncCoordinatorForTheNextStore() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let ownerName = CloudCollectionAssembly.productionControlID.zone.ownerName
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: ownerName)
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
+        let binding = ICloudSyncNamespaceBinding(
+            scope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            generation: namespace.generation,
+            zones: Set(namespace.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        try await persistence.activateEmptyCollection(namespace: binding)
+        let control = FakeCloudControlTransport(server: FakeCloudServer())
+        await control.seedControl(descriptor)
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let syncProbe = SyncCoordinatorConstructionProbe()
+        let handler = AppleAccountCacheCoordinatorHandler(
+            persistence: { persistence },
+            controlTransport: control,
+            accountStateSource: account,
+            makeSyncCoordinator: { persistence, resolvedNamespace, resolvedDescriptor in
+                await syncProbe.record(resolvedNamespace.generation)
+                return makeInjectedSyncCoordinator(
+                    persistence: persistence,
+                    namespace: resolvedNamespace,
+                    descriptor: resolvedDescriptor
+                )
+            },
+            makeAttachmentCoordinator: { _, _, _ in
+                AttachmentTransferProbe(preparedURL: root.appendingPathComponent("unused"))
+            }
+        )
+
+        let firstNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertNil(firstNotice)
+        await account.setState(.noAccount)
+        let signedOutNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertEqual(signedOutNotice, .signedOut)
+        try await handler.resolveAppleAccountCache(.remove)
+        let resolvedGenerations = await syncProbe.generations()
+        XCTAssertEqual(resolvedGenerations, [descriptor.generation])
+
+        await account.setState(.available(accountLineage: namespace.accountLineage))
+        try await persistence.activateEmptyCollection(namespace: binding)
+        let returnedNotice = try await handler.refreshAppleAccountNotice()
+        XCTAssertNil(returnedNotice)
+        let finalGenerations = await syncProbe.generations()
+        XCTAssertEqual(
+            finalGenerations,
+            [descriptor.generation, descriptor.generation],
+            "The next iCloud store needs its own sync coordinator."
+        )
+    }
+
     func testTemporaryAccountFailurePausesWithoutReclassifyingTheCache() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1019,6 +1079,110 @@ extension ICloudSyncModeCoordinatorTests {
             let library = try await reopened.activeLibrary()
             let visible = await library.snapshot(sortedBy: .chronological)
             XCTAssertTrue(visible.snips.isEmpty, "point: \(point)")
+        }
+    }
+
+    func testFailedIsolationSwapFinishesOnTheNextAccountRefresh() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let swapFault = AccountIsolationSwapFault()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            manifestWriter: swapFault.write,
+            writeHook: swapFault.arm
+        )
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        swapFault.failNextSwap()
+        do {
+            _ = try await coordinator.refreshAccountState()
+            XCTFail("The full disk must fail the isolation's pointer swap")
+        } catch SyncModePersistenceError.storageFailure {}
+
+        let signedOut = try await coordinator.refreshAccountState()
+        XCTAssertEqual(signedOut.state, .needsAttention)
+        XCTAssertEqual(signedOut.attentionReason, .accountSignedOut)
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        XCTAssertNotNil(isolated.accountIsolation)
+        let hidden = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertTrue(hidden.snips.isEmpty, "The prior account's work must stay hidden")
+
+        let kept = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+        XCTAssertEqual(kept.state, .off)
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testInterruptedIsolationFinishesWithoutRelaunch() async throws {
+        let points: [SyncModeCrashPoint] = [
+            .afterAccountIsolationManifest,
+            .beforeAccountIsolationDurability,
+            .afterAccountIsolationDurability,
+            .beforeAccountIsolationPointerSwap,
+        ]
+        for point in points {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let crash = CrashInjector(point: point)
+            let persistence = try SwiftDataSyncModePersistence(
+                rootURL: root,
+                crashHook: crash.hit
+            )
+            let namespace = makeNamespace()
+            let account = InjectedICloudAccountStateSource(
+                state: .available(accountLineage: namespace.accountLineage)
+            )
+            let coordinator = ICloudSyncModeCoordinator(
+                persistence: persistence,
+                namespace: namespace,
+                textZone: textZone(namespace),
+                makeTransport: {
+                    FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+                },
+                accountStateSource: account
+            )
+            _ = try await coordinator.enableOrRetry()
+            try await add("hidden without relaunch", to: persistence.activeLibrary())
+            await account.setState(.noAccount)
+            do {
+                _ = try await coordinator.refreshAccountState()
+                XCTFail("Expected interruption at \(point)")
+            } catch is CrashInjector.Failure {}
+
+            _ = try await coordinator.refreshAccountState()
+            let storage = try await persistence.snapshot()
+            XCTAssertEqual(storage.activeStore.kind, .localOnly, "point: \(point)")
+            XCTAssertNotNil(storage.accountIsolation, "point: \(point)")
+            let library = try await persistence.activeLibrary()
+            let visible = await library.snapshot(sortedBy: .chronological)
+            XCTAssertTrue(visible.snips.isEmpty, "point: \(point)")
+
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+            let reopenedStorage = try await reopened.snapshot()
+            XCTAssertEqual(reopenedStorage.activeStore.id, storage.activeStore.id, "point: \(point)")
+            XCTAssertEqual(
+                reopenedStorage.accountIsolation,
+                storage.accountIsolation,
+                "point: \(point)"
+            )
         }
     }
 
