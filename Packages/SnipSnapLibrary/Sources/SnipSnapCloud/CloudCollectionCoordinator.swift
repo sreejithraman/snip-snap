@@ -747,21 +747,20 @@ package actor CloudCollectionCoordinator {
   }
 
   /// Overlays Delete Synced Content progress on the caller's result, and completes a pending
-  /// deletion once its old zones are gone.
+  /// deletion once its old zones are gone. Only the call that completes it reports the
+  /// deletion; later calls report their own result.
   private func deletionStatusIfNeeded(
     _ deletionState: CloudCollectionDeletionState,
     _ namespace: CloudSyncNamespace,
     fallback: CloudCollectionStatus
   ) async throws -> CloudCollectionStatus {
     switch try await deletionProgress(deletionState, in: namespace) {
-    case .notDeleting:
+    case .notDeleting, .completed:
       return fallback
     case .removingOldContent:
       return .oldSyncedContentRemovalPending(namespace)
     case .removed:
       try await localStore.markDeletionCompleted()
-      return .deletedSyncedContent(namespace)
-    case .completed:
       return .deletedSyncedContent(namespace)
     }
   }
