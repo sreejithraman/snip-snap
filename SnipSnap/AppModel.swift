@@ -302,8 +302,7 @@ final class AppModel: ObservableObject {
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
     private let publishShareDestinations: (([SnipList]) -> Void)?
-    private var clipboardWriteGeneration = 0
-    private var pendingClipboardWriteTask: Task<Bool, Never>?
+    private let clipboardWrites = ClipboardWriteSequence()
     private var initialLoadTask: Task<Void, Never>?
     let clipboardHistory: ClipboardHistory
 
@@ -1660,9 +1659,7 @@ final class AppModel: ObservableObject {
         mutation: @MainActor @Sendable () async -> Bool
     ) async -> Bool {
         guard !snips.isEmpty else { return false }
-        let task = startClipboardWrite(snips, feedback: .silent, to: pasteboard)
-        let generation = clipboardWriteGeneration
-        pendingClipboardWriteTask = task
+        let (token, task) = startClipboardWrite(snips, feedback: .silent, to: pasteboard)
         let copied = await withTaskCancellationHandler {
             await task.value
         } onCancel: {
@@ -1670,11 +1667,11 @@ final class AppModel: ObservableObject {
         }
         guard copied else { return false }
         guard requiresMutation else {
-            if generation == clipboardWriteGeneration { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
+            if clipboardWrites.isCurrent(token) { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
             return true
         }
         return await withCommandLock {
-            guard generation == clipboardWriteGeneration else { return true }
+            guard clipboardWrites.isCurrent(token) else { return true }
             let failureID = latestFailure?.id
             let markedDone = await mutation()
             if latestFailure?.id == failureID { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
@@ -1691,14 +1688,14 @@ final class AppModel: ObservableObject {
         switch placement {
         case .snips(let snips):
             guard !snips.isEmpty else { return false }
-            pendingClipboardWriteTask = startClipboardWrite(
+            _ = startClipboardWrite(
                 snips,
                 feedback: feedback,
                 to: pasteboard
             )
             return true
         case .clipboardEntry(let entry):
-            _ = nextClipboardWriteGeneration()
+            clipboardWrites.supersede()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -1716,15 +1713,14 @@ final class AppModel: ObservableObject {
                 snips,
                 feedback: feedback,
                 to: pasteboard
-            )
-            pendingClipboardWriteTask = task
+            ).task
             return await withTaskCancellationHandler {
                 await task.value
             } onCancel: {
                 task.cancel()
             }
         case .clipboardEntry(let entry):
-            _ = nextClipboardWriteGeneration()
+            clipboardWrites.supersede()
             return placeClipboardEntry(entry, feedback: feedback)
         }
     }
@@ -1753,30 +1749,31 @@ final class AppModel: ObservableObject {
         _ snips: [Snip],
         feedback: ClipboardPlacementFeedback,
         to pasteboard: NSPasteboard
-    ) -> Task<Bool, Never> {
+    ) -> (token: ClipboardWriteSequence.Token, task: Task<Bool, Never>) {
         let changeCount = pasteboard.changeCount
-        let generation = nextClipboardWriteGeneration()
-        let failureID = latestFailure?.id
-        return Task {
-            let copied = await placeSnipsOnClipboard(
-                snips,
-                to: pasteboard,
-                generation: generation,
+        return clipboardWrites.begin { token in
+            let write = SnipClipboardWrite(
+                token: token,
+                pasteboard: pasteboard,
                 expectedChangeCount: changeCount
             )
-            guard copied, !Task.isCancelled, generation == clipboardWriteGeneration else { return copied }
-            dismissCopyFailure(matching: failureID)
-            if feedback == .notify { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
-            return copied
+            let failureID = latestFailure?.id
+            return Task {
+                defer { clipboardWrites.finish(token) }
+                let copied = await placeSnipsOnClipboard(snips, with: write)
+                guard copied, !Task.isCancelled, clipboardWrites.isCurrent(token) else { return copied }
+                dismissCopyFailure(matching: failureID)
+                if feedback == .notify { snackbarAndErrors.showUnlessActionable(.copied(count: snips.count)) }
+                return copied
+            }
         }
     }
 
     private func placeSnipsOnClipboard(
         _ snips: [Snip],
-        to pasteboard: NSPasteboard,
-        generation: Int,
-        expectedChangeCount: Int
+        with write: SnipClipboardWrite
     ) async -> Bool {
+        let pasteboard = write.pasteboard
         guard !snips.isEmpty else { return false }
         let attachments = attachmentPreparation.unique(snips.flatMap(\.attachments))
         let prepared: [UUID: URL]
@@ -1785,11 +1782,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return false
         } catch {
-            if shouldPresentClipboardError(
-                generation: generation,
-                pasteboard: pasteboard,
-                expectedChangeCount: expectedChangeCount
-            ) {
+            if shouldPresentClipboardError(for: write) {
                 presentError(error, operation: "attachment.prepare")
             }
             return false
@@ -1797,8 +1790,8 @@ final class AppModel: ObservableObject {
         let export: SnipPasteboardExport
         do {
             let text = SnipFormatter.formatForClipboard(snips: snips)
-            guard generation == clipboardWriteGeneration,
-                  pasteboard.changeCount == expectedChangeCount else { return false }
+            guard clipboardWrites.isCurrent(write.token),
+                  write.leavesPasteboardUnchanged else { return false }
             export = try await preparePasteboardExport(
                 text,
                 attachments.compactMap { prepared[$0.id] }
@@ -1806,18 +1799,14 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return false
         } catch {
-            if shouldPresentClipboardError(
-                generation: generation,
-                pasteboard: pasteboard,
-                expectedChangeCount: expectedChangeCount
-            ) {
+            if shouldPresentClipboardError(for: write) {
                 presentError(error, operation: "clipboard.export")
             }
             return false
         }
         guard !Task.isCancelled,
-              generation == clipboardWriteGeneration,
-              pasteboard.changeCount == expectedChangeCount else { return false }
+              clipboardWrites.isCurrent(write.token),
+              write.leavesPasteboardUnchanged else { return false }
         let objects = export.pasteboardWriters()
         let writeChangeCount = pasteboard.clearContents()
         let copied = pasteboard.writeObjects(objects)
@@ -1836,24 +1825,14 @@ final class AppModel: ObservableObject {
         return copied
     }
 
-    private func shouldPresentClipboardError(
-        generation: Int,
-        pasteboard: NSPasteboard,
-        expectedChangeCount: Int
-    ) -> Bool {
+    private func shouldPresentClipboardError(for write: SnipClipboardWrite) -> Bool {
         !Task.isCancelled
-            && generation == clipboardWriteGeneration
-            && pasteboard.changeCount == expectedChangeCount
-    }
-
-    private func nextClipboardWriteGeneration() -> Int {
-        pendingClipboardWriteTask?.cancel()
-        clipboardWriteGeneration += 1
-        return clipboardWriteGeneration
+            && clipboardWrites.isCurrent(write.token)
+            && write.leavesPasteboardUnchanged
     }
 
     func waitForPendingClipboardWrite() async {
-        _ = await pendingClipboardWriteTask?.value
+        _ = await clipboardWrites.pendingTask?.value
     }
 
     func clearDownloadedFiles() async throws {

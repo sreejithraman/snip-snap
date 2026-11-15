@@ -144,6 +144,33 @@ final class CloudKitOperationRetryTests: XCTestCase {
     XCTAssertEqual(requestTime, .zero)
   }
 
+  func testPermanentFailureAfterARecoveredBackoffRecordsTheSameEventAsAFreshRetry() async throws {
+    let fresh = try await permissionFailureEvents(afterRecoveredBackoff: false)
+    let afterRecovery = try await permissionFailureEvents(afterRecoveredBackoff: true)
+
+    XCTAssertEqual(fresh.map(\.errorCode), ["cloudkit.10"])
+    XCTAssertEqual(afterRecovery, fresh)
+  }
+
+  private func permissionFailureEvents(afterRecoveredBackoff: Bool) async throws -> [AppDiagnosticEvent] {
+    let clock = RetryClock()
+    let events = Mutex<[AppDiagnosticEvent]>([])
+    let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) },
+      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } })
+    if afterRecoveredBackoff {
+      let attempts = Mutex(0)
+      try await retry.run(operationName: "control save") {
+        if attempts.withLock({ $0 += 1; return $0 }) == 1 { throw Self.cloudError(.zoneBusy) }
+      }
+      events.withLock { $0.removeAll() }
+    }
+    do {
+      try await retry.run(operationName: "control save") { throw Self.cloudError(.permissionFailure) }
+      XCTFail("Expected the permission failure")
+    } catch {}
+    return events.withLock { $0 }
+  }
+
   func testPartialFailureKeepsLongestNestedCooldownWithoutRepeatingPartialWork() async throws {
     let clock = RetryClock()
     let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) })

@@ -101,6 +101,138 @@ final class CloudRecordTransportMailboxTests: XCTestCase {
     _ = try mailbox.confirm(second)
   }
 
+  func testResetDuringARunningNotificationKeepsOneConsumer() async throws {
+    let mailbox = CloudRecordTransportMailbox()
+    let pause = MailboxControlPause()
+    let deliveries = MailboxDeliveryLog()
+    let overlap = expectation(description: "The new engine's event does not start a second consumer")
+    overlap.isInverted = true
+    let followup = expectation(description: "The new engine's event gets one follow-up")
+    let unexpected = expectation(description: "The follow-up is the last delivery")
+    unexpected.isInverted = true
+    mailbox.configure {
+      let delivery = await deliveries.begin(head: mailbox.first?.id)
+      if delivery.concurrent > 1 { overlap.fulfill() }
+      switch delivery.call {
+      case 1:
+        await pause.suspend()
+      case 2:
+        followup.fulfill()
+      default:
+        unexpected.fulfill()
+      }
+      await deliveries.end()
+    }
+    let old = UUID()
+    mailbox.append(.accountChange(old))
+    await pause.waitUntilSuspended()
+    // The transport resets inside a delivery when a commit requires a new engine.
+    mailbox.reset()
+    let fresh = UUID()
+    mailbox.append(.accountChange(fresh))
+    await fulfillment(of: [overlap], timeout: 0.1)
+    await pause.resume()
+    await fulfillment(of: [followup], timeout: 2)
+    await fulfillment(of: [unexpected], timeout: 0.1)
+    let heads = await deliveries.heads
+    let maximumConcurrent = await deliveries.maximumConcurrent
+    XCTAssertEqual(heads, [old, fresh])
+    XCTAssertEqual(maximumConcurrent, 1)
+    XCTAssertEqual(mailbox.first?.id, fresh)
+    _ = try mailbox.confirm(fresh)
+    XCTAssertNil(mailbox.first)
+  }
+
+  func testNotificationThatConfirmsOnlyItsHeadDeliversTheNextEvent() async throws {
+    let mailbox = CloudRecordTransportMailbox()
+    let deliveries = MailboxDeliveryLog()
+    let drained = expectation(description: "Each event gets its own delivery")
+    let unexpected = expectation(description: "An empty mailbox gets no delivery")
+    unexpected.isInverted = true
+    let first = UUID()
+    let second = UUID()
+    mailbox.append(.accountChange(first))
+    mailbox.append(.accountChange(second))
+    mailbox.configure {
+      let delivery = await deliveries.begin(head: mailbox.first?.id)
+      if let head = mailbox.first { _ = try? mailbox.confirm(head.id) }
+      switch delivery.call {
+      case 1:
+        break
+      case 2:
+        drained.fulfill()
+      default:
+        unexpected.fulfill()
+      }
+      await deliveries.end()
+    }
+    mailbox.notify()
+    await fulfillment(of: [drained], timeout: 2)
+    await fulfillment(of: [unexpected], timeout: 0.1)
+    let heads = await deliveries.heads
+    XCTAssertEqual(heads, [first, second])
+    XCTAssertNil(mailbox.first)
+  }
+
+  func testSeveralEventsDuringOneNotificationRequestOneFollowup() async throws {
+    let mailbox = CloudRecordTransportMailbox()
+    let pause = MailboxControlPause()
+    let deliveries = MailboxDeliveryLog()
+    let followup = expectation(description: "Events during a delivery request a follow-up")
+    let unexpected = expectation(description: "Those events share one follow-up")
+    unexpected.isInverted = true
+    mailbox.configure {
+      switch await deliveries.begin(head: mailbox.first?.id).call {
+      case 1:
+        await pause.suspend()
+      case 2:
+        followup.fulfill()
+      default:
+        unexpected.fulfill()
+      }
+      await deliveries.end()
+      // An apply failure returns without confirming the head.
+    }
+    let ids = (0..<4).map { _ in UUID() }
+    mailbox.append(.accountChange(ids[0]))
+    await pause.waitUntilSuspended()
+    for id in ids.dropFirst() { mailbox.append(.accountChange(id)) }
+    await pause.resume()
+    await fulfillment(of: [followup], timeout: 2)
+    await fulfillment(of: [unexpected], timeout: 0.1)
+    let heads = await deliveries.heads
+    XCTAssertEqual(heads, [ids[0], ids[0]])
+    for id in ids { XCTAssertEqual(try mailbox.confirm(id)?.id, id) }
+    XCTAssertNil(mailbox.first)
+  }
+
+  func testOverlappingAcknowledgementsHoldNewEngineWorkUntilEachCommits() {
+    let zone = CloudZoneID(name: "metadata", ownerName: "owner")
+    let x = CloudRecordID(zone: zone, name: "x")
+    let y = CloudRecordID(zone: zone, name: "y")
+    let snipID = UUID()
+    let original = CloudRecordDraft.text(id: x, snipID: snipID, text: "original")
+    let edited = CloudRecordDraft.text(id: x, snipID: snipID, text: "edited")
+    let first = CloudOutboundBatch(operations: [.save(original), .delete(y, base: nil)])
+    let later = CloudOutboundBatch(operations: [.save(edited)])
+    var queue = CloudRecordOutboundQueue()
+    XCTAssertEqual(queue.schedule(first), first)
+    queue.beginCycle()
+    queue.recordSupplied([x])
+    let firstSendID = UUID()
+    XCTAssertEqual(queue.finishCycle(firstSendID).operations, [.save(original)])
+    // The engine can freeze the next send cycle while the first send awaits its commit.
+    queue.beginCycle()
+    queue.recordSupplied([y])
+    let secondSendID = UUID()
+    XCTAssertEqual(queue.finishCycle(secondSendID).operations, [.delete(y, base: nil)])
+
+    queue.confirm(CloudSentBatch(id: secondSendID, items: [.deleted(y)], engineState: nil))
+    XCTAssertNil(queue.schedule(later))
+    queue.confirm(CloudSentBatch(id: firstSendID, items: [], engineState: nil))
+    XCTAssertEqual(queue.schedule(later), later)
+  }
+
   func testFailedFetchWithholdsQueuedAndFrozenWorkUntilFreshScheduling() {
     let zone = CloudZoneID(name: "metadata", ownerName: "owner")
     let saveID = CloudRecordID(zone: zone, name: "save")
@@ -265,6 +397,23 @@ private actor MailboxDeliveryCount {
   func next() -> Int {
     value += 1
     return value
+  }
+}
+
+private actor MailboxDeliveryLog {
+  private(set) var heads: [UUID?] = []
+  private(set) var maximumConcurrent = 0
+  private var active = 0
+
+  func begin(head: UUID?) -> (call: Int, concurrent: Int) {
+    heads.append(head)
+    active += 1
+    maximumConcurrent = max(maximumConcurrent, active)
+    return (heads.count, active)
+  }
+
+  func end() {
+    active -= 1
   }
 }
 

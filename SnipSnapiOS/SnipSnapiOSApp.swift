@@ -19,6 +19,7 @@ struct SnipSnapiOSApp: App {
         AppRuntimeTrace.applicationState(
             .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
         )
+        AppTerminationDiagnostics.startRecording()
         UINavigationBar.appearance().titleTextAttributes = [.font: UIFont.rounded(size: 17, weight: .semibold)]
         UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFont.rounded(size: 34, weight: .bold)]
         let startup = Self.makeLibrary()

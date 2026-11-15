@@ -3,7 +3,7 @@ import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
   package func freezeSource() throws -> SyncModeFreezeToken {
-    guard manifest.writeReservation == nil, !writeAdmissionInProgress else {
+    guard writeAdmissionIsIdle() else {
       throw SyncModePersistenceError.transitionInProgress
     }
     var next = manifest

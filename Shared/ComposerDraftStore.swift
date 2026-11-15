@@ -23,8 +23,9 @@ final class ComposerDraftStore {
     private var textWriteTask: Task<Void, Never>?
     private var attachmentsByList: [UUID: [URL]] = [:]
     private var attachmentsByScope: [String: [UUID: [URL]]] = [:]
-    private var temporaryAttachments: Set<URL> = []
-    private var inFlightCounts: [URL: Int] = [:]
+    /// Files the store owns, each with the number of saves holding it. A file is removed once no
+    /// draft references it and no save holds it.
+    private var temporaryFiles: [URL: Int] = [:]
 
     init(
         defaults: UserDefaults = .standard,
@@ -72,7 +73,7 @@ final class ComposerDraftStore {
         if let temporaryRootDirectory {
             try? FileManager.default.removeItem(at: temporaryRootDirectory)
         } else {
-            for url in temporaryAttachments {
+            for url in temporaryFiles.keys {
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -142,7 +143,7 @@ final class ComposerDraftStore {
     }
 
     func addTemporary(_ url: URL, to listID: UUID) {
-        temporaryAttachments.insert(url)
+        if temporaryFiles[url] == nil { temporaryFiles[url] = 0 }
         add([url], to: listID)
     }
 
@@ -176,8 +177,8 @@ final class ComposerDraftStore {
     func beginSave(listID: UUID, content: String? = nil) -> SaveSnapshot {
         var draft = draft(for: listID)
         if let content { draft.text = content }
-        for url in draft.attachments where temporaryAttachments.contains(url) {
-            inFlightCounts[url, default: 0] += 1
+        for url in draft.attachments {
+            temporaryFiles[url]? += 1
         }
         return SaveSnapshot(listID: listID, draft: draft)
     }
@@ -192,13 +193,8 @@ final class ComposerDraftStore {
             }
         }
 
-        for url in snapshot.draft.attachments where inFlightCounts[url] != nil {
-            let remaining = (inFlightCounts[url] ?? 1) - 1
-            if remaining > 0 {
-                inFlightCounts[url] = remaining
-            } else {
-                inFlightCounts.removeValue(forKey: url)
-            }
+        for url in snapshot.draft.attachments {
+            if let holds = temporaryFiles[url], holds > 0 { temporaryFiles[url] = holds - 1 }
         }
         removeTemporaryFilesIfUnused(Set(snapshot.draft.attachments))
     }
@@ -223,12 +219,9 @@ final class ComposerDraftStore {
     private func removeTemporaryFilesIfUnused(_ urls: Set<URL>) {
         let draftedURLs = Set(attachmentsByList.values.flatMap { $0 })
             .union(attachmentsByScope.values.flatMap { $0.values.flatMap { $0 } })
-        for url in urls
-        where temporaryAttachments.contains(url)
-            && inFlightCounts[url] == nil
-            && !draftedURLs.contains(url) {
+        for url in urls where temporaryFiles[url] == 0 && !draftedURLs.contains(url) {
             try? FileManager.default.removeItem(at: url)
-            temporaryAttachments.remove(url)
+            temporaryFiles.removeValue(forKey: url)
         }
     }
 }
