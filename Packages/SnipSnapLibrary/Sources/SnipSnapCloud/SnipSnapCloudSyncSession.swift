@@ -214,7 +214,7 @@ public actor SnipSnapCloudSyncSession {
   }
 
   /// Requests waiting for the next batch, not counting the batch that is running.
-  package var queuedRequestCount: Int { requestQueue.queuedCount }
+  var queuedRequestCount: Int { requestQueue.queuedCount }
 
   private func request(_ kind: RequestKind) async throws -> SnipSnapCloudSyncResult {
     let id = UUID()
