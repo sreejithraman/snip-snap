@@ -5041,6 +5041,62 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await assertPlacementSettlesKeepingCRename(expected, between: clients)
   }
 
+  // P6-1 (sm33-rfl-2 pass 6): a partial fetch delivers B1 while A's fetch fails, and the plan
+  // records B0. An unreconciled append is present when B0's acknowledgement applies. Once that
+  // append is removed, the next append must still follow B.
+  func testAHeldSparseAcknowledgementLeavesNoStaleCoordinateForALaterAppend() async throws {
+    let holder = try await makeAttachmentEditHolder(attachmentCount: 2)
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let receiver = try attachmentClient(root: holder.root,
+      storeURL: holder.root.appendingPathComponent("sparse.store"), namespace: holder.namespace,
+      server: holder.server, snipID: holder.snipID)
+    let a = AttachmentMatrixMember.a.id
+    let b = AttachmentMatrixMember.b.id
+    let n = AttachmentMatrixMember.n.id
+    let z = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    let published = try await snapshot(holder.library, holder.namespace)
+    let aRow = try publication(of: a, in: published)
+    await receiver.transport.failNextFetchedItem(
+      CloudAttachmentRecordCodec.recordID(aRow.metadataIdentity), failure: .retryable
+    )
+    try await receiver.sync.fetchRemote()
+    let outbound = try await receiver.store.pendingChanges()
+    let partialStorage = try await snapshot(receiver.library, receiver.namespace)
+    let bRow = try publication(of: b, in: partialStorage)
+    let bID = CloudAttachmentRecordCodec.recordID(bRow.metadataIdentity)
+    XCTAssertTrue(outbound.operations.contains(where: { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.id == bID && draft.encryptedFields["position"] == .int64(0)
+    }), "The partial plan must record B0.")
+    let sent = try await receiver.transport.send(outbound)
+    try await insertUnreconciledAttachment(id: n, fileName: "N.txt", at: 1, in: receiver)
+
+    try await receiver.store.stage(.sent(sent), outbound: outbound)
+    try await receiver.store.applyStaged(sent.id)
+    try await receiver.transport.confirmApplied(sent.id)
+    try await keepAttachments([b], ofSnip: receiver.snipID, in: receiver.library)
+    try await insertUnreconciledAttachment(id: z, fileName: "Z.txt", at: 1, in: receiver)
+
+    let immediate = try await receiver.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == receiver.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), [b, z], "The append must follow B.")
+    let positions = try await receiver.library.storedAttachmentReferencePositions(for: receiver.snipID)
+    XCTAssertEqual(positions, [b: 0, z: 1], "Stored positions must be canonical.")
+    let acknowledged = try await snapshot(receiver.library, receiver.namespace)
+    XCTAssertTrue(try publication(of: b, in: acknowledged).metadataAccepted, "B0 must be acknowledged.")
+    let remote = await holder.server.fullSnapshot(for: bID)
+    XCTAssertEqual(remote?.encryptedFields["position"], .int64(Int64(positions[b] ?? -1)),
+      "B's stored position must match iCloud's.")
+
+    for _ in 0..<3 {
+      try await receiver.sync.sync()
+      try await holder.sync.sync()
+    }
+    let order = try await assertSettledAttachmentOrder([a, b, z], between: receiver, and: holder)
+    XCTAssertLessThan(try XCTUnwrap(order.firstIndex(of: b)), try XCTUnwrap(order.firstIndex(of: z)),
+      "B must stay before Z on both devices and in iCloud.")
+  }
+
   func testRevertingAReorderDuringItsSaveKeepsTheRevertAfterTheAcknowledgement() async throws {
     let clients = try await makeAttachmentEditClients()
     let holder = clients.holder
