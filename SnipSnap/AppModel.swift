@@ -272,6 +272,11 @@ final class AppModel: ObservableObject {
         isSearchExpanded ? .search : (isShowingClipboard ? .clipboard : .list)
     }
 
+    var focusTargetAfterInlineEdit: PanelFocusTarget {
+        guard isSearchExpanded else { return restingFocusTarget }
+        return filteredSnips.isEmpty && clipboardSearchMatches.isEmpty ? .search : .list
+    }
+
     var hasActiveQuery: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

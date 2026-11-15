@@ -536,6 +536,18 @@ struct ContentView: View {
         }
     }
 
+    /// Header controls stay disabled until the closed editor's update renders,
+    /// so focus waits one turn, as in `collapseSearch`.
+    private func restoreFocusAfterInlineEdit() {
+        guard model.editingID == nil else { return }
+        focusedTarget = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard model.editingID == nil else { return }
+            focusedTarget = model.focusTargetAfterInlineEdit
+        }
+    }
+
     @ViewBuilder
     private func tabPage(_ page: PanelTabPage, isInteractive: Bool) -> some View {
         ZStack(alignment: .bottom) {
@@ -645,7 +657,8 @@ struct ContentView: View {
             clipboardEntries: model.clipboardSearchMatches,
             clipboardFilePreviewRevision: clipboardHistory.filePreviewRevision,
             onPreviewAttachments: openAttachmentPreview,
-            onRemovePreviewURL: removePreviewURL
+            onRemovePreviewURL: removePreviewURL,
+            onInlineEditEnd: restoreFocusAfterInlineEdit
         )
     }
 
