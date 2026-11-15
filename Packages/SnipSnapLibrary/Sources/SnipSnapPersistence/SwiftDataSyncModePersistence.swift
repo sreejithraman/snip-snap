@@ -369,9 +369,11 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.missingStore
     }
     let fileURL = storeFileURL(store)
-    // A mode change could swap in, or merge from, an empty recreate of its inactive source or
-    // candidate, so those must have their files. Every other store keeps open-or-create:
-    // recreating it can't replace user data, and refusing it would strand the user.
+    // A mode change's inactive candidate before the swap, and its retired source after it, must
+    // have their files, so an empty recreate never stands in for either. The active store keeps
+    // open-or-create so the app stays usable, though that can't protect a swapped-in candidate
+    // whose files vanish. Recovery, isolated, and other inactive stores are exempt: recreating
+    // them can't replace user data, and refusing them would strand the user.
     let isModeChangeStore = manifest.transition.map {
       [$0.sourceStoreID, $0.candidateStoreID].contains(store.id)
     } ?? false
@@ -427,8 +429,10 @@ package actor SwiftDataSyncModePersistence {
       {
         // Before the swap, the source still holds the library, so a fresh candidate loses
         // nothing.
-        diagnostics.record(.missing(operation: "sync.setup"))
         try abortUnactivatedCandidate(reason: nil)
+        let operation: StaticString = transition.targetKind == .iCloudSync
+          ? "sync.setup" : "sync.disable"
+        diagnostics.record(.missing(operation: operation))
       } else {
         // Finish only a rollback this process couldn't commit, so another operation's work in
         // flight is never undone.
