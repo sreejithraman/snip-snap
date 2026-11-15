@@ -993,9 +993,10 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
   }
 
   /// JSON text with sorted keys and sorted set-valued arrays, so equal stored forms compare equal.
-  fileprivate static func canonicalText(_ value: Any) throws -> String {
+  /// Pass `key` when `value` is that key's value, so a set-valued array sorts at the top too.
+  fileprivate static func canonicalText(_ value: Any, under key: String? = nil) throws -> String {
     let data = try JSONSerialization.data(
-      withJSONObject: sortingSets(value, under: nil),
+      withJSONObject: sortingSets(value, under: key),
       options: [.sortedKeys, .fragmentsAllowed]
     )
     return String(decoding: data, as: UTF8.self)
@@ -1082,14 +1083,19 @@ private struct StoredTransitionTrail {
         expected = last[key]
       }
       XCTAssertEqual(
-        try current[key].map(SyncModeTransitionStoredFormTests.canonicalText) ?? "absent",
-        try expected.map(SyncModeTransitionStoredFormTests.canonicalText) ?? "absent",
+        try Self.text(of: current[key], under: key),
+        try Self.text(of: expected, under: key),
         "\(step): \(key)",
         file: file,
         line: line
       )
     }
     last = current
+  }
+
+  private static func text(of value: Any?, under key: String) throws -> String {
+    guard let value else { return "absent" }
+    return try SyncModeTransitionStoredFormTests.canonicalText(value, under: key)
   }
 }
 
