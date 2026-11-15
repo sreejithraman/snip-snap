@@ -41,11 +41,44 @@ private final class IOSClipboardGenerationGate {
     }
 }
 
-/// Holds the first upload until the test resumes it; a cancelled run then uploads nothing.
+/// The saved-snips namespace key the app passes as the clipboard generation, for a new sync
+/// generation in one account.
+private func clipboardSyncGeneration() -> String {
+    let generation = UUID()
+    let value = generation.uuidString.lowercased()
+    let namespace = ICloudSyncNamespaceBinding(
+        scope: "private",
+        accountLineage: "account-A",
+        generation: generation,
+        zones: [
+            ICloudSyncZoneBinding(name: "snips-\(value)", ownerName: "_defaultOwner"),
+            ICloudSyncZoneBinding(name: "payloads-\(value)", ownerName: "_defaultOwner"),
+        ]
+    )
+    return SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)!.rawValue
+}
+
+/// The sync generation the app reports; a test changes it to adopt a new one.
+@MainActor
+private final class IOSClipboardSyncGenerationSource {
+    var current: String
+
+    init(_ current: String) {
+        self.current = current
+    }
+
+    func generation() async -> String? { current }
+}
+
+/// Holds the first upload, if asked, until the test resumes it; a cancelled run then uploads nothing.
 private actor IOSClipboardHeldUploadCloud: ClipboardCloudTransport {
     private var snapshot = ClipboardCloudSnapshot()
-    private var holdsNextSave = true
+    private var holdsNextSave: Bool
     private var heldSave: CheckedContinuation<Void, Never>?
+
+    init(holdsFirstUpload: Bool = true) {
+        holdsNextSave = holdsFirstUpload
+    }
 
     var uploadedEntryIDs: Set<UUID> { Set(snapshot.entries.keys) }
 
@@ -199,6 +232,58 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(model.syncErrorMessage)
         finishDelete.finish()
         await deleting.value
+    }
+
+    func testClipboardSyncSetsAsideHistoryAndFollowsANewSyncGeneration() async throws {
+        let firstGeneration = clipboardSyncGeneration()
+        let secondGeneration = clipboardSyncGeneration()
+        let firstCloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let secondCloud = IOSClipboardHeldUploadCloud(holdsFirstUpload: false)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "syncClipboardHistory")
+        let source = IOSClipboardSyncGenerationSource(firstGeneration)
+        var madeStore: ClipboardHistoryStore?
+        let model = IOSClipboardModel(
+            rootURL: root,
+            settings: SyncedContentSettingsModel(mode: .iCloudSync),
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            preferences: preferences,
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRootURL in
+                madeStore = store
+                return ClipboardCloudSyncService(store: store, syncRootURL: syncRootURL,
+                                                 makeTransport: { $0 == firstGeneration ? firstCloud : secondCloud })
+            }
+        )
+        let store = try XCTUnwrap(madeStore)
+        let older = textEntry("first generation")
+        _ = try await store.insert(older)
+        await model.synchronize()
+        let firstUpload = await firstCloud.uploadedEntryIDs
+        XCTAssertEqual(firstUpload, [older.id])
+
+        source.current = secondGeneration
+        await model.synchronize()
+
+        XCTAssertNil(model.syncErrorMessage)
+        XCTAssertFalse(model.entries.contains { $0.id == older.id })
+        let setAside = try FileManager.default
+            .contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+        XCTAssertEqual(setAside.count, 1)
+        let setAsideURL = try XCTUnwrap(setAside.first)
+        let setAsideHistory = try await ClipboardHistoryStore(url: setAsideURL).load()
+        XCTAssertEqual(setAsideHistory.entries.map(\.id), [older.id])
+
+        let newer = textEntry("second generation")
+        _ = try await store.insert(newer)
+        await model.synchronize()
+
+        let secondUpload = await secondCloud.uploadedEntryIDs
+        XCTAssertEqual(secondUpload, [newer.id])
+        XCTAssertNil(model.syncErrorMessage)
     }
 
     func testOverlappingClipboardSyncsStartOneRun() async throws {
@@ -489,6 +574,12 @@ final class IOSClipboardModelTests: IOSModelTestCase {
             ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data("stays local".utf8))
         ])]))
         return (model, service, cloud)
+    }
+
+    private func textEntry(_ text: String) -> ClipboardEntry {
+        ClipboardEntry(items: [ClipboardPayloadItem(representations: [
+            ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data(text.utf8))
+        ])])
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
