@@ -106,7 +106,9 @@ if [[ "$run_ios_app_tests" == YES ]]; then
         -parallel-testing-enabled NO \
         -test-timeouts-enabled YES \
         -default-test-execution-time-allowance 180 \
-        -only-testing:SnipSnapiOSTests \
+        -only-testing:SnipSnapiOSTests/IOSFoldContinuitySidebarTests/testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps \
+        -only-testing:SnipSnapiOSTests/IOSFoldContinuityTests/testSelectedPageSearchAndGatheredSnipsSurviveSizeClassSwaps \
+        -test-iterations 30 \
         test; then
         :
     else
