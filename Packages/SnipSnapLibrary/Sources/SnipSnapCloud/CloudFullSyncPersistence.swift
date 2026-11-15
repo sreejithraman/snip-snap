@@ -326,7 +326,8 @@ package actor CloudFullSyncCoordinator {
 
   private func recoverStaged(beforeApply: @escaping @Sendable () async throws -> Void) async throws {
     let staged = try await store.stagedBatches()
-    if !staged.isEmpty { try await beforeApply() }
+    guard !staged.isEmpty else { return }
+    try await beforeApply()
     for batch in staged {
       let observed = diagnosticBatch(in: batch)
       do {
@@ -345,28 +346,19 @@ package actor CloudFullSyncCoordinator {
         recordCommittedBatch(observed)
       }
     }
-    guard !staged.isEmpty else { return }
     let state: CloudEngineStateEnvelope?
     do {
       state = try await store.loadEngineState()
-    } catch CloudTransportError.invalidEngineState {
-      try await restartUnreadableEngine()
-      return
-    } catch CloudTransportError.stateNamespaceMismatch {
-      try await restartUnreadableEngine()
+    } catch let error as CloudTransportError
+      where !session.isRunning && (error == .invalidEngineState || error == .stateNamespaceMismatch)
+    {
+      // Nothing has started or queued yet: start the empty engine `ensureStarted` would.
+      // A running engine's reset would drop the events queued behind these batches, so
+      // there the error fails the run and the next run drains the queue (ADR 0028).
+      try await restartEmptyEngine()
       return
     }
     if let state { session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch) }
-  }
-
-  /// A stored state no engine can resume: drop a running engine and start an empty one,
-  /// as `ensureStarted` does, so this run's `ensureStarted` keeps it.
-  private func restartUnreadableEngine() async throws {
-    if session.isRunning {
-      await transport.reset()
-      session.reset()
-    }
-    try await restartEmptyEngine()
   }
 
   @discardableResult
