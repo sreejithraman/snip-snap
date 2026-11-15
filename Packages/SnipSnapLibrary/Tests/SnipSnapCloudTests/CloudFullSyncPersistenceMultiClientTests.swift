@@ -52,6 +52,64 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertNil(cleared.lists.first { $0.id == list.id }?.color)
   }
 
+  func testOldDefaultAndNoIconListsSyncAsLettersWithTheSameAutomaticColor() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let namespace = makeNamespace()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let server = FakeCloudServer()
+    let older = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("older.store"))
+    let newer = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("newer.store"))
+    // An older build saved its default symbol; this build saves an empty icon.
+    guard case .listCreated(let oldDefault) = try await older.perform(
+      .createList(name: "Groceries", systemImage: "list.bullet"), sortedBy: .manual).outcome,
+      case .listCreated(let noIcon) = try await older.perform(
+        .createList(name: "Reading list", systemImage: ""), sortedBy: .manual).outcome
+    else { return XCTFail("Expected lists") }
+    let olderStore = CloudFullSyncPersistence(library: older, namespace: namespace, dataZone: zone)
+    let newerStore = CloudFullSyncPersistence(library: newer, namespace: namespace, dataZone: zone)
+    try await olderStore.approveEnrollment(references: [
+      CloudEntityReference(kind: .list, domainID: SnipList.inboxID),
+      CloudEntityReference(kind: .list, domainID: oldDefault.id),
+      CloudEntityReference(kind: .list, domainID: noIcon.id),
+    ])
+    let olderClient = CloudFullSyncCoordinator(store: olderStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace))
+    let newerClient = CloudFullSyncCoordinator(store: newerStore,
+      transport: FakeCloudRecordTransport(server: server, namespace: namespace))
+    try await olderClient.sync()
+    try await newerClient.fetchRemote()
+
+    let received = await newer.snapshot(sortedBy: .manual).lists
+    let groceries = try XCTUnwrap(received.first { $0.id == oldDefault.id })
+    let reading = try XCTUnwrap(received.first { $0.id == noIcon.id })
+    XCTAssertEqual(groceries.systemImage, "list.bullet", "Syncing must not rewrite the stored icon.")
+    XCTAssertEqual(reading.systemImage, "", "An empty icon must arrive, not be dropped as a missing field.")
+    XCTAssertEqual(groceries.mark(), .letters("G"))
+    XCTAssertEqual(reading.mark(), .letters("RL"))
+    XCTAssertNil(groceries.color)
+    XCTAssertEqual(groceries.tint, oldDefault.tint)
+    XCTAssertEqual(reading.tint, noIcon.tint)
+
+    // Choosing an icon and color on one device reaches the other; clearing the icon round-trips too.
+    _ = try await newer.perform(
+      .updateList(id: noIcon.id, name: "Reading list", systemImage: "book.fill", color: .set(.teal)), sortedBy: .manual)
+    try await newerClient.sync()
+    try await olderClient.fetchRemote()
+    let olderLists = await older.snapshot(sortedBy: .manual).lists
+    let chosen = try XCTUnwrap(olderLists.first { $0.id == noIcon.id })
+    XCTAssertEqual(chosen.mark(), .icon("book.fill"))
+    XCTAssertEqual(chosen.tint, .teal)
+    _ = try await older.perform(
+      .updateList(id: noIcon.id, name: "Reading list", systemImage: ""), sortedBy: .manual)
+    try await olderClient.sync()
+    try await newerClient.fetchRemote()
+    let newerLists = await newer.snapshot(sortedBy: .manual).lists
+    let cleared = try XCTUnwrap(newerLists.first { $0.id == noIcon.id })
+    XCTAssertEqual(cleared.systemImage, "")
+    XCTAssertEqual(cleared.tint, .teal)
+  }
+
   func testMoveIntoDeletedListConvergesToInboxForFetchFirstAndSendFirst() async throws {
     for fetchFirst in [true, false] {
       let root = FileManager.default.temporaryDirectory
