@@ -39,7 +39,7 @@ package struct CloudNamespaceStateStorage: Equatable, Sendable {
   package static let notEnrolled = CloudNamespaceStateStorage(.notEnrolled)
 
   /// Reads the stored columns. Each phase keeps only the fields it holds; no event writes others.
-  package init(
+  init(
     storedPhase phase: CloudNamespaceBootstrapPhase,
     approvedSnipIDs: Set<UUID>,
     excludedSnipIDs: Set<UUID>,

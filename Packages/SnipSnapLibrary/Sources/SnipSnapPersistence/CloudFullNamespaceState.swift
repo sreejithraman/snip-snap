@@ -4,8 +4,8 @@ import Foundation
 package enum CloudFullFetchOutcome: Equatable, Sendable {
   case destructiveReset
   case ownedZoneMissing
-  case complete(hasRecords: Bool)
   case incomplete
+  case complete(hasRecords: Bool)
 }
 
 /// What a committed full-record send showed, in precedence order.
@@ -15,8 +15,8 @@ package enum CloudFullSendOutcome: Equatable, Sendable {
   case delivered(needsRetry: Bool, savedDataZone: Bool)
 }
 
-/// The full-record namespace's enrollment, with the inventory of one fresh-token initial
-/// fetch beside it. Each event advances `revision` by one, the step a commit requires.
+/// The full-record namespace's enrollment and, beside it, one fresh-token initial fetch
+/// attempt. Each event advances `revision` by one, the step a commit requires.
 package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
   private enum Enrollment: Equatable, Sendable {
     case notEnrolled
@@ -92,6 +92,69 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
     }
   }
 
+  /// One fresh-token initial fetch attempt. Its lifetime overlaps enrollment, so it is a
+  /// separate machine. With proof, the attempt can show that a record absent from it is gone.
+  private enum InitialFetch: Equatable, Sendable {
+    case absent
+    case collectingWithProof(observed: Set<CloudTextStorageIdentity>)
+    case collectingWithoutProof(observed: Set<CloudTextStorageIdentity>)
+
+    /// A fresh token opens an attempt that has observed nothing and can prove absence.
+    static let started = InitialFetch.collectingWithProof(observed: [])
+
+    init(_ inventory: CloudFullFetchInventory?) {
+      guard let inventory else {
+        self = .absent
+        return
+      }
+      self = inventory.canProveAbsence
+        ? .collectingWithProof(observed: inventory.observed)
+        : .collectingWithoutProof(observed: inventory.observed)
+    }
+
+    var inventory: CloudFullFetchInventory? {
+      switch self {
+      case .absent:
+        nil
+      case .collectingWithProof(let observed):
+        CloudFullFetchInventory(observed: observed, canProveAbsence: true)
+      case .collectingWithoutProof(let observed):
+        CloudFullFetchInventory(observed: observed, canProveAbsence: false)
+      }
+    }
+
+    func after(_ step: CloudFullInitialFetchStep) -> InitialFetch {
+      switch step {
+      case .unchanged:
+        return self
+      case .ended:
+        return .absent
+      case .observed(let observations, let isClean, let tokenless):
+        return observing(observations, isClean: isClean, tokenless: tokenless)
+      }
+    }
+
+    /// An initial batch with no open attempt opens one, which can prove absence only when
+    /// tokenless. A batch with an issue ends the proof for the rest of the attempt.
+    private func observing(
+      _ observations: [CloudFullFetchObservation],
+      isClean: Bool,
+      tokenless: Bool
+    ) -> InitialFetch {
+      let current = inventory
+      var observed = current?.observed ?? []
+      for observation in observations {
+        switch observation {
+        case .present(let identity): observed.insert(identity)
+        case .absent(let identity): observed.remove(identity)
+        }
+      }
+      return (current?.canProveAbsence ?? tokenless) && isClean
+        ? .collectingWithProof(observed: observed)
+        : .collectingWithoutProof(observed: observed)
+    }
+  }
+
   /// The JSON form, unchanged from the flat struct this type replaced.
   private struct StoredForm: Codable {
     let storageVersion: Int
@@ -105,33 +168,34 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
   package let storageVersion: Int
   package let revision: UInt64
   private let enrollment: Enrollment
-  package let initialFetchInventory: CloudFullFetchInventory?
+  private let initialFetch: InitialFetch
 
   private init(
     storageVersion: Int = 1,
     revision: UInt64,
     enrollment: Enrollment,
-    initialFetchInventory: CloudFullFetchInventory?
+    initialFetch: InitialFetch
   ) {
     self.storageVersion = storageVersion
     self.revision = revision
     self.enrollment = enrollment
-    self.initialFetchInventory = initialFetchInventory
+    self.initialFetch = initialFetch
   }
 
   package static let notEnrolled = CloudFullNamespaceState(
-    revision: 0, enrollment: .notEnrolled, initialFetchInventory: nil
+    revision: 0, enrollment: .notEnrolled, initialFetch: .absent
   )
 
   /// A references-only row from before namespace revisions. Any reference means it was active.
-  package static func legacy(hasReferences: Bool) -> CloudFullNamespaceState {
+  static func legacy(hasReferences: Bool) -> CloudFullNamespaceState {
     CloudFullNamespaceState(
-      revision: 0, enrollment: hasReferences ? .active : .notEnrolled, initialFetchInventory: nil
+      revision: 0, enrollment: hasReferences ? .active : .notEnrolled, initialFetch: .absent
     )
   }
 
   package var phase: CloudNamespaceBootstrapPhase { enrollment.phase }
   package var zoneCreationPending: Bool { enrollment.zoneCreationPending }
+  package var initialFetchInventory: CloudFullFetchInventory? { initialFetch.inventory }
 
   /// Approval seeds the namespace, and an active one stays active. Callers check for
   /// attention first, so this does not refuse a blocked namespace.
@@ -143,30 +207,42 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
     case .remoteCheckedMissingZone: .seeding(zoneCreationPending: true)
     case .active: .active
     }
-    return advanced(to: next, inventory: initialFetchInventory)
+    return advanced(to: next, initialFetch: initialFetch)
   }
 
-  package func startingInitialFetch() -> CloudFullNamespaceState {
-    advanced(to: enrollment, inventory: .fresh)
+  /// Opens a fresh-token initial fetch attempt. `nil` when one is already open.
+  package func startingInitialFetch() -> CloudFullNamespaceState? {
+    guard case .absent = initialFetch else { return nil }
+    return advanced(to: enrollment, initialFetch: .started)
+  }
+
+  /// Replaces any open attempt with a fresh one.
+  package func restartingInitialFetch() -> CloudFullNamespaceState {
+    advanced(to: enrollment, initialFetch: .started)
+  }
+
+  /// The initial-fetch inventory a batch would leave, read before its commit is planned.
+  package func inventory(after step: CloudFullInitialFetchStep) -> CloudFullFetchInventory? {
+    initialFetch.after(step).inventory
   }
 
   package func committingFetch(
     _ outcome: CloudFullFetchOutcome,
-    inventory: CloudFullFetchInventory?
+    initialFetch step: CloudFullInitialFetchStep
   ) -> CloudFullNamespaceState {
-    advanced(to: enrollment.afterFetch(outcome), inventory: inventory)
+    advanced(to: enrollment.afterFetch(outcome), initialFetch: initialFetch.after(step))
   }
 
   package func committingSend(_ outcome: CloudFullSendOutcome) -> CloudFullNamespaceState {
-    advanced(to: enrollment.afterSend(outcome), inventory: initialFetchInventory)
+    advanced(to: enrollment.afterSend(outcome), initialFetch: initialFetch)
   }
 
   private func advanced(
     to enrollment: Enrollment,
-    inventory: CloudFullFetchInventory?
+    initialFetch: InitialFetch
   ) -> CloudFullNamespaceState {
     CloudFullNamespaceState(
-      revision: revision + 1, enrollment: enrollment, initialFetchInventory: inventory
+      revision: revision + 1, enrollment: enrollment, initialFetch: initialFetch
     )
   }
 
@@ -186,7 +262,7 @@ package struct CloudFullNamespaceState: Codable, Equatable, Sendable {
       storageVersion: stored.storageVersion,
       revision: stored.revision,
       enrollment: enrollment,
-      initialFetchInventory: stored.initialFetchInventory
+      initialFetch: InitialFetch(stored.initialFetchInventory)
     )
   }
 

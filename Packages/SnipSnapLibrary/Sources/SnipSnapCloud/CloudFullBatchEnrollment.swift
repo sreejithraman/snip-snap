@@ -2,19 +2,20 @@ import Foundation
 import SnipSnapPersistence
 
 extension CloudFullBatchPlanner {
-  /// `initialFetchInventory` is the fetch's next inventory; a send keeps the stored one.
+  /// `initialFetch` comes from the batch before corrupt-shadow recovery adjusted it. A send
+  /// keeps the open attempt.
   static func nextNamespaceState(
     current: CloudFullNamespaceState,
     batch: CloudSyncBatch,
     dataZone: CloudZoneID,
     ownedZones: Set<CloudZoneID>,
     attachmentOperationIDs: Set<CloudRecordID>,
-    initialFetchInventory: CloudFullFetchInventory?
+    initialFetch: CloudFullInitialFetchStep
   ) -> CloudFullNamespaceState {
     switch batch {
     case .fetched(let fetched):
       return current.committingFetch(
-        fetchOutcome(fetched, ownedZones: ownedZones), inventory: initialFetchInventory
+        fetchOutcome(fetched, ownedZones: ownedZones), initialFetch: initialFetch
       )
     case .sent(let sent):
       return current.committingSend(sendOutcome(

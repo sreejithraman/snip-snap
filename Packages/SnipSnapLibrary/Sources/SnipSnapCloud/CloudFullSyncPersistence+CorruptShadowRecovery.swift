@@ -79,10 +79,9 @@ extension CloudFullSyncPersistence {
       case .failed: return true
       }
     }
-    let inventory = CloudFullFetchInventory.after(
-      batch, current: stored.namespaceState.initialFetchInventory,
-      startsWithoutToken: false, dataZone: dataZone
-    )
+    let inventory = stored.namespaceState.inventory(after: CloudFullInitialFetchStep(
+      batch, startsWithoutToken: false, dataZone: dataZone
+    ))
     let observed = Set(fetched.items.compactMap(\.id))
       .union((inventory?.observed ?? []).map(Self.recordID))
     let absent = inventory?.canProveAbsence == true
