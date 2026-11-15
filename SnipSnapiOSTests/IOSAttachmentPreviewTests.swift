@@ -1072,8 +1072,7 @@ final class ImageViewerZoomTests: XCTestCase {
         XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
     }
 
-    /// The drag may pass back through its start point after the pinch ends. It is still
-    /// the same drag, so it still pans.
+    /// Within one drag, a pinch that ends at base zoom still makes the drag a pan.
     func testPinchedDragStillPansAfterThePinchEndsAtBaseZoom() {
         var zoom = ImageViewerZoom()
         zoom.dragStarted()
@@ -1099,8 +1098,8 @@ final class ImageViewerZoomTests: XCTestCase {
         var zoom = ImageViewerZoom()
         zoom.dragStarted()
         zoom.pinchChanged(whileDragging: true)
-        // The system takes the touches, so the drag stops without ending. Commit b2c756c4
-        // proved this sequence fails when nothing resets the mark at cancel.
+        // The system takes the touches, so the drag stops without ending. Before this fix,
+        // nothing cleared the pinch mark at a cancel, and this swipe panned.
         zoom.dragStopped()
 
         zoom.dragStarted()
