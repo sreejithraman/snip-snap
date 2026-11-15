@@ -45,7 +45,7 @@ extension SwiftDataSnipLibrary {
     let presentRowsBySnip = Dictionary(
       grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
     )
-    var touchedSnipIDs = metadataAcknowledgedSnipIDs.union(
+    var adoptedOrInsertedSnipIDs = Set(
       publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID)
     )
     let cacheEntries = Dictionary(uniqueKeysWithValues:
@@ -105,11 +105,12 @@ extension SwiftDataSnipLibrary {
         )
         context.insert(reference)
         references[referenceID] = reference
-        touchedSnipIDs.insert(publication.snipID)
+        adoptedOrInsertedSnipIDs.insert(publication.snipID)
       }
     }
-    // On fetches and metadata acknowledgements, a snip adopts its shared attachment order as a whole
-    // unless the local sequence changed or a previously published row is pending.
+    let touchedSnipIDs = metadataAcknowledgedSnipIDs.union(adoptedOrInsertedSnipIDs)
+    // Adoptions and inserts compare shared order, acknowledgement-only restores require the whole
+    // list to match, and pending published edits block both.
     let snipsAdoptingOrder = Set(touchedSnipIDs.filter { snipID in
       let presentRows = presentRowsBySnip[snipID] ?? []
       guard !presentRows.contains(where: {
@@ -124,6 +125,7 @@ extension SwiftDataSnipLibrary {
         if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
         return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
       }.map(\.attachmentID)
+      if !adoptedOrInsertedSnipIDs.contains(snipID) { return localOrder == baseOrder }
       let sharedIDs = Set(localOrder).intersection(baseOrder)
       return localOrder.filter { sharedIDs.contains($0) }
         == baseOrder.filter { sharedIDs.contains($0) }
