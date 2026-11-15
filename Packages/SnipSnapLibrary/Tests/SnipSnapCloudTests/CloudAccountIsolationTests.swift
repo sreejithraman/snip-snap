@@ -2048,8 +2048,16 @@ extension ICloudSyncModeCoordinatorTests {
             defer { removeEnded.set() }
             return try await coordinator.resolveAccountIsolation(.remove)
         }
-        // Bounded: old code finishes the Remove at once, and fixed code holds it at the turn.
-        _ = await removeEnded.wait(within: .seconds(2))
+        // Bounded: the Remove must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let removeStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .removing
+        }
+        if !removeStored { XCTFail("The user's Remove must be stored during the download") }
+        let removeEndedEarly = await removeEnded.wait(within: .seconds(2))
+        XCTAssertFalse(removeEndedEarly, "The user's Remove must wait for the download's turn")
         fixture.fetchPause.release()
 
         do {
@@ -2082,8 +2090,16 @@ extension ICloudSyncModeCoordinatorTests {
             defer { keepEnded.set() }
             return try await coordinator.resolveAccountIsolation(.keepLocalCopy)
         }
-        // Bounded: old code fails the Keep at once, and fixed code holds it at the turn.
-        _ = await keepEnded.wait(within: .seconds(2))
+        // Bounded: the Keep must be stored, then still be waiting at the turn after 2 s.
+        let persistence = fixture.persistence
+        let keepStored = await poll(within: .seconds(5)) {
+            guard let storage = try? await persistence.snapshot() else { return false }
+            return storage.accountIsolation == nil
+                || storage.accountIsolation?.resolution == .keepingLocalCopy
+        }
+        if !keepStored { XCTFail("The user's Keep must be stored during the download") }
+        let keepEndedEarly = await keepEnded.wait(within: .seconds(2))
+        XCTAssertFalse(keepEndedEarly, "The user's Keep must wait for the download's turn")
         fixture.fetchPause.release()
 
         do {

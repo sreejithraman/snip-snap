@@ -136,10 +136,11 @@ final class TaskEndMark: Sendable {
   }
 }
 
-private func poll(within timeout: Duration, until condition: () -> Bool) async -> Bool {
+/// Checks `condition` until it holds or `timeout` passes, and returns whether it holds.
+func poll(within timeout: Duration, until condition: () async -> Bool) async -> Bool {
   let deadline = ContinuousClock.now + timeout
-  while !condition(), ContinuousClock.now < deadline {
+  while !(await condition()), ContinuousClock.now < deadline {
     try? await Task.sleep(for: .milliseconds(5))
   }
-  return condition()
+  return await condition()
 }
