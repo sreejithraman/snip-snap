@@ -706,7 +706,7 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertTrue(focused, "User focus must still reach SwiftUI")
 
         // UIKit applies SwiftUI's focus after the update, so count echoes until it settles.
-        func update(expectingFirstResponder expected: Bool, line: UInt = #line) async {
+        func update(expectingFirstResponder expected: Bool, file: StaticString = #filePath, line: UInt = #line) async {
             isUpdating = true
             defer { isUpdating = false }
             host.rootView = input()
@@ -716,7 +716,7 @@ final class IOSComposerTests: IOSModelTestCase {
             XCTAssertTrue(
                 settled,
                 "First responder never became \(expected). \(composerFocusDiagnostics(host, focused: focused))",
-                line: line
+                file: file, line: line
             )
         }
         focused = false
@@ -1184,19 +1184,6 @@ final class IOSComposerTests: IOSModelTestCase {
             previous = input
         }
     }
-}
-
-/// Names which focus step failed: each composer's mount and first-responder state, the focus binding,
-/// and whether the host's window is key.
-@MainActor
-func composerFocusDiagnostics(_ host: UIViewController, focused: Bool) -> String {
-    func composers(in view: UIView) -> [ComposerTextView] {
-        (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap { composers(in: $0) }
-    }
-    let states = composers(in: host.view).map {
-        "mounted=\($0.window != nil) firstResponder=\($0.isFirstResponder) canBecome=\($0.canBecomeFirstResponder)"
-    }
-    return "composers=\(states) binding=\(focused) keyWindow=\(host.view.window?.isKeyWindow ?? false)"
 }
 
 /// Mirrors `IOSAppRootView.appNavigation`: each size class owns its own composer.

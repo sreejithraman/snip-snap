@@ -52,7 +52,7 @@ enum TestReadiness {
 
     /// Polls `condition`, suspending between checks, until it holds or the bound passes.
     @MainActor
-    static func wait(until condition: () async -> Bool) async -> Bool {
+    static func wait(timeout: TimeInterval = TestReadiness.timeout, until condition: () async -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(timeout)
         while await !condition() {
             guard ContinuousClock.now < deadline else { return false }
@@ -62,11 +62,14 @@ enum TestReadiness {
     }
 }
 
-/// Brings up the keyboard once per test process. On CI, focus waits timed out in a host's first keyboard
-/// session after launch, so focus tests warm it up before they measure anything.
+/// Brings up the keyboard once per test process. CI's focus timeouts have come in a host's first keyboard
+/// session after launch (a correlation, not a proven cause), so focus tests warm it up first.
 @MainActor
 enum TestKeyboard {
     private static var isWarm = false
+    /// Long enough for CI's slowest observed show (about 7 s); short enough that a Simulator with a
+    /// hardware keyboard, where the keyboard never shows, doesn't pay the full readiness bound.
+    private static let showTimeout: TimeInterval = 15
 
     /// Logs whether the keyboard showed, so CI logs can tell a warmed run from one where it never appeared,
     /// for example with a hardware keyboard connected. Never fails the test.
@@ -95,7 +98,7 @@ enum TestKeyboard {
 
         let start = ContinuousClock.now
         let tookFocus = field.becomeFirstResponder()
-        let didShow = await TestReadiness.wait { shown.value }
+        let didShow = await TestReadiness.wait(timeout: showTimeout) { shown.value }
         let elapsed = ContinuousClock.now - start
         if didShow {
             NSLog("TestKeyboard: keyboard showed after %@", "\(elapsed)")
@@ -108,6 +111,19 @@ enum TestKeyboard {
             NSLog("TestKeyboard: keyboard did not hide after the warm-up")
         }
     }
+}
+
+/// Names which focus step failed: each composer's mount and first-responder state, the focus binding,
+/// and whether the host's window is key.
+@MainActor
+func composerFocusDiagnostics(_ host: UIViewController, focused: Bool) -> String {
+    func composers(in view: UIView) -> [ComposerTextView] {
+        (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap { composers(in: $0) }
+    }
+    let states = composers(in: host.view).map {
+        "mounted=\($0.window != nil) firstResponder=\($0.isFirstResponder) canBecome=\($0.canBecomeFirstResponder)"
+    }
+    return "composers=\(states) binding=\(focused) keyWindow=\(host.view.window?.isKeyWindow ?? false)"
 }
 
 private final class KeyboardFlag: @unchecked Sendable {
