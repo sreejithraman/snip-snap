@@ -37,6 +37,32 @@ private struct ClipboardCloudUnwindingRun {
     let waiter: CheckedContinuation<Void, Never>
 }
 
+/// The sync generation this service is bound to and the transport scoped to it.
+private struct ClipboardCloudBinding {
+    let generation: String
+    let transport: any ClipboardCloudTransport
+}
+
+/// How the stored binding relates to the generation a sync asks for.
+private enum ClipboardStoredBinding {
+    /// No readable binding file.
+    case unbound
+    case current
+    /// Both are namespace keys with the same cloud scope and account lineage.
+    case newSyncGeneration
+    case otherAccount
+
+    init(stored: String?, requested: String) {
+        guard let stored else { self = .unbound; return }
+        if stored == requested { self = .current; return }
+        guard let old = ICloudSyncNamespaceBinding(namespaceKey: CloudSyncNamespaceKey(rawValue: stored)),
+              let new = ICloudSyncNamespaceBinding(namespaceKey: CloudSyncNamespaceKey(rawValue: requested)),
+              old.scope == new.scope, old.accountLineage == new.accountLineage
+        else { self = .otherAccount; return }
+        self = .newSyncGeneration
+    }
+}
+
 /// Shares the saved-snips account/generation scope, but requires its own opt-in.
 @MainActor public final class ClipboardCloudSyncService {
     public var isSyncing: Bool {
@@ -49,8 +75,7 @@ private struct ClipboardCloudUnwindingRun {
     private let bindingURL: URL
     private let makeTransport: @Sendable (String) -> any ClipboardCloudTransport
     private let retry: CloudKitOperationRetry
-    private var transport: (any ClipboardCloudTransport)?
-    private var scope: String?
+    private var binding: ClipboardCloudBinding?
     private var lifecycle = ClipboardCloudLifecycle.idle
 
     public convenience init(store: ClipboardHistoryStore,
@@ -116,8 +141,7 @@ private struct ClipboardCloudUnwindingRun {
     private func beginRun(generation: String) throws -> (ClipboardCloudOperation, any ClipboardCloudTransport) {
         guard case .idle = lifecycle else { throw ClipboardCloudError.busy }
         guard !generation.isEmpty else { throw ClipboardCloudError.unavailable }
-        try bind(to: generation)
-        guard let transport else { throw ClipboardCloudError.unavailable }
+        let transport = try bind(to: generation)
         let run = ClipboardCloudOperation()
         lifecycle = .syncing(run); lastError = nil
         return (run, transport)
@@ -174,8 +198,8 @@ private struct ClipboardCloudUnwindingRun {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
-        try bind(to: generation)
-        if let transport { try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() } }
+        let transport = try bind(to: generation)
+        try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
         if hadBinding {
             try quarantineHistory()
             try await store.save(ClipboardHistoryState())
@@ -203,7 +227,7 @@ private struct ClipboardCloudUnwindingRun {
     }
     private func removeBinding() throws {
         if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
-        scope = nil; transport = nil
+        binding = nil
     }
 
     private func stopAndLoadLocalHistory() async throws -> ClipboardHistoryState {
@@ -276,14 +300,21 @@ private struct ClipboardCloudUnwindingRun {
         guard case .unbinding(let unbinding, _) = lifecycle, unbinding.id == id else { return }
         lifecycle = .idle
     }
-    private func bind(to generation: String) throws {
-        if let data = try? Data(contentsOf: bindingURL) {
-            guard try JSONDecoder().decode(String.self, from: data) == generation else { throw ClipboardCloudError.accountChanged }
-        } else {
+    private func bind(to generation: String) throws -> any ClipboardCloudTransport {
+        let stored = try (try? Data(contentsOf: bindingURL)).map { try JSONDecoder().decode(String.self, from: $0) }
+        switch ClipboardStoredBinding(stored: stored, requested: generation) {
+        case .unbound:
             try FileManager.default.createDirectory(at: bindingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(generation).write(to: bindingURL, options: .atomic)
+        case .current:
+            break
+        case .newSyncGeneration, .otherAccount:
+            throw ClipboardCloudError.accountChanged
         }
-        if scope != generation { transport = makeTransport(generation); scope = generation }
+        if let binding, binding.generation == generation { return binding.transport }
+        let transport = makeTransport(generation)
+        binding = ClipboardCloudBinding(generation: generation, transport: transport)
+        return transport
     }
     /// Keeps retries scoped to the owning cloud operation so `stop()` can cancel a pending delay.
     private func performWithRetry<Value: Sendable>(
