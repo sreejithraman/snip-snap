@@ -126,12 +126,27 @@ struct AppToast: Identifiable {
 @MainActor
 @Observable
 final class AppToastLifetime {
+    /// Interaction owners exist only while paused; VoiceOver can also hold an actionable toast.
+    private enum Countdown {
+        case running(pausedDuration: Duration)
+        case paused(since: ContinuousClock.Instant, pausedDuration: Duration, interactionOwners: Set<UUID>)
+
+        var pausedDuration: Duration {
+            switch self {
+            case .running(let pausedDuration), .paused(_, let pausedDuration, _): pausedDuration
+            }
+        }
+
+        var interactionOwners: Set<UUID> {
+            if case .paused(_, _, let interactionOwners) = self { return interactionOwners }
+            return []
+        }
+    }
+
     private let expiresAt: ContinuousClock.Instant
     private let isActionable: Bool
-    private var pausedAt: ContinuousClock.Instant?
-    private var pausedDuration: Duration = .zero
+    private var countdown = Countdown.running(pausedDuration: .zero)
     @ObservationIgnored private var voiceOverEnabled = false
-    @ObservationIgnored private var interactionOwners: Set<UUID> = []
 
     nonisolated init(expiresAt: ContinuousClock.Instant, isActionable: Bool) {
         self.expiresAt = expiresAt
@@ -139,36 +154,45 @@ final class AppToastLifetime {
     }
 
     var deadline: ContinuousClock.Instant {
-        expiresAt.advanced(by: pausedDuration)
+        expiresAt.advanced(by: countdown.pausedDuration)
     }
 
-    var isPaused: Bool { pausedAt != nil }
+    var isPaused: Bool {
+        if case .paused = countdown { return true }
+        return false
+    }
 
     func setVoiceOverEnabled(_ enabled: Bool, at now: ContinuousClock.Instant = ContinuousClock().now) {
         voiceOverEnabled = enabled
-        reconcilePause(at: now)
+        reconcilePause(interactionOwners: countdown.interactionOwners, at: now)
     }
 
     func setInteractionPaused(
         _ paused: Bool, owner: UUID,
         at now: ContinuousClock.Instant = ContinuousClock().now
     ) {
-        if paused { interactionOwners.insert(owner) }
-        else { interactionOwners.remove(owner) }
-        reconcilePause(at: now)
+        var owners = countdown.interactionOwners
+        if paused { owners.insert(owner) }
+        else { owners.remove(owner) }
+        reconcilePause(interactionOwners: owners, at: now)
     }
 
     func canExpire(at now: ContinuousClock.Instant = ContinuousClock().now) -> Bool {
         !isPaused && now >= deadline
     }
 
-    private func reconcilePause(at now: ContinuousClock.Instant) {
-        let shouldPause = (voiceOverEnabled && isActionable) || !interactionOwners.isEmpty
-        if shouldPause, pausedAt == nil {
-            pausedAt = now
-        } else if !shouldPause, let pausedAt {
-            pausedDuration += pausedAt.duration(to: now)
-            self.pausedAt = nil
+    private func reconcilePause(interactionOwners owners: Set<UUID>, at now: ContinuousClock.Instant) {
+        let shouldPause = (voiceOverEnabled && isActionable) || !owners.isEmpty
+        switch countdown {
+        case .running(let pausedDuration):
+            guard shouldPause else { return }
+            countdown = .paused(since: now, pausedDuration: pausedDuration, interactionOwners: owners)
+        case .paused(let since, let pausedDuration, let currentOwners):
+            if !shouldPause {
+                countdown = .running(pausedDuration: pausedDuration + since.duration(to: now))
+            } else if owners != currentOwners {
+                countdown = .paused(since: since, pausedDuration: pausedDuration, interactionOwners: owners)
+            }
         }
     }
 }
