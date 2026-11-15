@@ -304,14 +304,14 @@ extension CloudFullSyncPersistenceTests {
       let states = await transport.startedEngineStates()
       let resets = await transport.resetCount()
       let fetches = await transport.fetchCount()
-      let waiting = await transport.pendingEvent()
+      let waiting = await queuedEventID(transport)
       let clears = await store.engineStateClearCount()
       let staged = await store.stagedBatchCount()
       let expectedStates: [CloudEngineStateEnvelope?] = wasRunning ? [stored] : []
       XCTAssertEqual(states, expectedStates, label)
       XCTAssertEqual(resets, 0, label)
       XCTAssertEqual(fetches, 0, label)
-      XCTAssertEqual(waiting?.id, queuedID, label)
+      XCTAssertEqual(waiting, queuedID, label)
       XCTAssertEqual(clears, 0, label)
       XCTAssertEqual(staged, 0, label)
     }
@@ -347,7 +347,7 @@ extension CloudFullSyncPersistenceTests {
 
     let engineState = try await library.cloudTextSyncSnapshot(
       namespaceKey: samples.namespace.namespaceKey).engineState
-    let waiting = await transport.pendingEvent()
+    let waiting = await queuedEventID(transport)
     let confirmed = await transport.confirmedBatchIDs()
     let resets = await transport.resetCount()
     let starts = await transport.startCount()
@@ -372,6 +372,13 @@ extension CloudFullSyncPersistenceTests {
       XCTFail("A purged source must reject content edits")
     } catch SnipLibraryError.modeTransitionInProgress {}
   }
+}
+
+/// The queue head as the coordinator sees it. Called on the concrete probe, whose
+/// `pendingEvent()` is synchronous, an async caller gets the protocol's `async` default,
+/// which always returns nil.
+private func queuedEventID(_ transport: any CloudRecordTransport) async -> UUID? {
+  await transport.pendingEvent()?.id
 }
 
 private struct EngineSessionSamples {
