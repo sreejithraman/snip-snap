@@ -130,7 +130,7 @@ extension CloudFullSyncPersistence {
       needsAttention: stored.namespaceState.phase == .blocked
         || recovery.contains { !Self.isRetryableRecovery($0) }
         || !stored.conflicts.isEmpty
-        || hasUnresolvedQuarantines(stored.quarantines),
+        || corruptShadowRecovery(in: stored).needsAttention,
       blocksSending: stored.namespaceState.phase == .blocked
     )
   }
@@ -147,7 +147,7 @@ extension CloudFullSyncPersistence {
       needsAttention: stored.namespaceState.phase == .blocked
         || recovery.contains { !Self.isRetryableRecovery($0) }
         || !stored.conflicts.isEmpty
-        || hasUnresolvedQuarantines(stored.quarantines),
+        || corruptShadowRecovery(in: stored).needsAttention,
       blocksSending: stored.namespaceState.phase == .blocked
     )
   }

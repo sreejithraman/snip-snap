@@ -166,6 +166,13 @@ package struct CloudQuarantineInput: Codable, Equatable, Sendable {
   }
 }
 
+/// The corrupt-shadow recovery row a quarantine row's stored form names.
+package enum CloudCorruptShadowMarker: Equatable, Sendable {
+  case archive
+  case recoveryAttempt
+  case resolution
+}
+
 package struct CloudStoredQuarantine: Equatable, Sendable {
   package let key: String
   package let reference: CloudEntityReference
@@ -179,16 +186,37 @@ package struct CloudStoredQuarantine: Equatable, Sendable {
     return "corrupt-shadow-\(reference.kind.rawValue)-\(reference.domainID.uuidString.lowercased())-\(digest)"
   }
 
+  /// The archive key this row's own reference and payload name.
+  package var corruptShadowArchiveKey: String {
+    Self.corruptShadowKey(reference: reference, payload: payload)
+  }
+
+  /// Which recovery row this is, when its key and format match its own reference and payload.
+  /// It says nothing about whether the payload is a valid record.
+  package var corruptShadowMarker: CloudCorruptShadowMarker? {
+    guard format == .legacyBindingV1 else { return nil }
+    let archiveKey = corruptShadowArchiveKey
+    switch key {
+    case archiveKey: return .archive
+    case Self.recoveryKey(archiveKey): return .recoveryAttempt
+    case Self.resolutionKey(archiveKey): return .resolution
+    default: return nil
+    }
+  }
+
   /// Uses a known format so older readers can still open the store.
   package var corruptShadowResolutionMarker: CloudQuarantineInput {
-    CloudQuarantineInput(key: "resolved-\(key)", reference: reference,
+    CloudQuarantineInput(key: Self.resolutionKey(key), reference: reference,
       identity: identity, format: .legacyBindingV1, payload: payload)
   }
 
   package var corruptShadowRecoveryMarker: CloudQuarantineInput {
-    CloudQuarantineInput(key: "recovering-\(key)", reference: reference,
+    CloudQuarantineInput(key: Self.recoveryKey(key), reference: reference,
       identity: identity, format: .legacyBindingV1, payload: payload)
   }
+
+  private static func recoveryKey(_ archiveKey: String) -> String { "recovering-\(archiveKey)" }
+  private static func resolutionKey(_ archiveKey: String) -> String { "resolved-\(archiveKey)" }
 }
 
 package struct CloudCorruptShadowRecoveryCandidate: Sendable {

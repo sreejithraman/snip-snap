@@ -753,6 +753,24 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await client.store.load().entries.isEmpty)
     }
 
+    @Test func accountResetStopsWhenSettingAsideThrows() async throws {
+        struct SettingAsideFailure: Error {}
+        let client = ClipboardClient(ClipboardTestCloud())
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let synced = entry("synced")
+        try await client.store.insert(synced); try await client.run()
+        let binding = try Data(contentsOf: bindingURL)
+
+        await #expect(throws: SettingAsideFailure.self) {
+            try await client.sync.resetAccountBinding(settingAside: { throw SettingAsideFailure() })
+        }
+
+        #expect(try Data(contentsOf: bindingURL) == binding)
+        #expect(try await client.store.load().entries.map(\.id) == [synced.id])
+        #expect(try await setAsideEntryIDs(in: client.root) == [])
+    }
+
     @Test func unchangedSyncDoesNotWriteAnotherManifest() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
