@@ -1,6 +1,23 @@
 import SnipSnapCore
 import SwiftUI
 
+private enum SnipTextExpansion: Equatable {
+    case closed
+    case opening(UUID)
+    case open
+    case closing(UUID)
+
+    var isExpanded: Bool {
+        switch self {
+        case .opening, .open: true
+        case .closed, .closing: false
+        }
+    }
+
+    /// iOS keeps the full text laid out until the collapse finishes, so it can clip it closed.
+    var keepsFullText: Bool { self != .closed }
+}
+
 struct ExpandableSnipText: View {
     let content: SnipTextContent
     let lineLimit: Int
@@ -13,25 +30,22 @@ struct ExpandableSnipText: View {
     var onDoubleClick: (() -> Void)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isExpanded = false
+    @State private var expansion = SnipTextExpansion.closed
     @State private var limitedHeight: CGFloat = 0
     @State private var previewHeight: CGFloat = 0
-#if os(iOS)
-    @State private var keepsFullText = false
-    @State private var expansionID = UUID()
-#endif
 
     var body: some View {
         let presentation = content.presentation(lineLimit: lineLimit)
         let canExpand = allowsExpansion && !presentation.isLoading
             && (presentation.isTruncated || previewHeight > limitedHeight + 1)
+        let isExpanded = expansion.isExpanded
         Group {
             if canExpand || isExpanded {
                 Button(action: { toggleExpansion(isPointerClick: false) }) {
 #if os(iOS)
                     ExpandingSnipTextLayout(collapsedHeight: limitedHeight, expansion: isExpanded ? 1 : 0) {
-                        snipText(keepsFullText ? presentation.fullText : presentation.preview)
-                            .lineLimit(keepsFullText ? nil : lineLimit)
+                        snipText(expansion.keepsFullText ? presentation.fullText : presentation.preview)
+                            .lineLimit(expansion.keepsFullText ? nil : lineLimit)
                             .fixedSize(horizontal: false, vertical: true)
                             .transaction { $0.animation = nil }
                     }
@@ -92,31 +106,26 @@ struct ExpandableSnipText: View {
             .lineSpacing(lineSpacing)
     }
 
+    // On iOS the full text swaps in inside this animated write. Its `.transaction`
+    // drops the animation, so only the reveal height animates.
     private func toggleExpansion(isPointerClick: Bool) {
         guard onActivate(isPointerClick) else { return }
-#if os(iOS)
-        let currentExpansionID = UUID()
-        expansionID = currentExpansionID
-        keepsFullText = true
+        let token = UUID()
+        let phase: SnipTextExpansion = expansion.isExpanded ? .closing(token) : .opening(token)
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.18), completionCriteria: .removed) {
-            isExpanded.toggle()
+            expansion = phase
         } completion: {
-            guard expansionID == currentExpansionID, !isExpanded else { return }
-            keepsFullText = false
+            settleExpansion(after: phase)
         }
-#else
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
-            isExpanded.toggle()
-        }
-#endif
+    }
+
+    private func settleExpansion(after phase: SnipTextExpansion) {
+        guard expansion == phase else { return }
+        expansion = phase.isExpanded ? .open : .closed
     }
 
     private func resetExpansion() {
-        isExpanded = false
-#if os(iOS)
-        expansionID = UUID()
-        keepsFullText = false
-#endif
+        expansion = .closed
     }
 }
 

@@ -149,6 +149,7 @@ private struct GlassMenuHost: ViewModifier {
                                 GlassMenuSurface(
                                     anchor: anchor, source: geometry[anchor.bounds],
                                     availableSize: geometry.size, isPresented: presented,
+                                    isActive: anchor.id == presentation.activeID,
                                     finishPresentation: { presentation.finish(id: anchor.id) }
                                 )
                                 projectedControl(anchor, in: geometry)
@@ -192,20 +193,38 @@ private struct GlassMenuHost: ViewModifier {
     }
 }
 
+private enum GlassMenuTransition: Equatable {
+    case closed
+    case opening(UUID)
+    case open
+    case closing(UUID)
+
+    var isMounted: Bool { self != .closed }
+    var isInteractive: Bool { self == .open }
+
+    var isExpanded: Bool {
+        switch self {
+        case .opening, .open: true
+        case .closed, .closing: false
+        }
+    }
+}
+
 private struct GlassMenuSurface: View {
     let anchor: GlassMenuAnchor
     let source: CGRect
     let availableSize: CGSize
     let isPresented: Bool
+    /// The host's presentation belongs to this menu, whether or not its source still asks for it.
+    let isActive: Bool
     let finishPresentation: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.layoutDirection) private var layoutDirection
-    @State private var isMounted = false
-    @State private var isExpanded = false
-    @State private var isInteractive = false
-    @State private var transitionID = UUID()
+    @State private var transition = GlassMenuTransition.closed
     @AccessibilityFocusState private var menuIsFocused: Bool
+
+    private var isInteractive: Bool { transition.isInteractive }
 
     private let edgeInset: CGFloat = 12
     private let menuGap: CGFloat = 8
@@ -229,7 +248,7 @@ private struct GlassMenuSurface: View {
             source: source, availableSize: availableSize, layout: anchor.layout,
             layoutDirection: layoutDirection
         ) {
-            if isPresented || isMounted {
+            if isPresented || transition.isMounted {
                 Group {
                     switch anchor.layout {
                     case .attached:
@@ -248,11 +267,11 @@ private struct GlassMenuSurface: View {
                     }
                 }
                 .modifier(GlassMenuReveal(
-                    isExpanded: isExpanded, reduceMotion: reduceMotion,
+                    isExpanded: transition.isExpanded, reduceMotion: reduceMotion,
                     reduceTransparency: reduceTransparency, source: source, layout: anchor.layout,
                     layoutDirection: layoutDirection, cornerRadius: cornerRadius
                 ))
-                .opacity(isPresented || isExpanded ? 1 : 0)
+                .opacity(isPresented || transition.isExpanded ? 1 : 0)
                 .allowsHitTesting(isPresented && isInteractive)
                 .accessibilityHidden(!isPresented || !isInteractive)
                 .accessibilityElement(children: .contain)
@@ -263,41 +282,59 @@ private struct GlassMenuSurface: View {
             }
         }
         .onChange(of: isPresented, initial: true) { _, presented in
-            animatePresentation(presented)
+            if presented { beginOpening() } else { beginClosing() }
+        }
+        .onChange(of: isActive) { _, active in
+            if active && !isPresented { releaseUnshownPresentation() }
         }
         .onDisappear(perform: finishPresentation)
-        .onChange(of: reduceMotion) { _, _ in
-            transitionID = UUID()
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                isExpanded = isPresented
-                isMounted = isPresented
-                isInteractive = isPresented
-                menuIsFocused = isPresented
-            }
-            if !isPresented { finishPresentation() }
+        .onChange(of: reduceMotion) { _, _ in settleWithoutAnimation() }
+    }
+
+    private var transitionAnimation: Animation? {
+        reduceMotion ? nil : .spring(duration: 0.28, bounce: 0.06)
+    }
+
+    // Mounting and interactivity do not change visibly inside these animated writes:
+    // `isPresented` already mounts an opening menu, and interactivity only gates input.
+    private func beginOpening() {
+        let token = UUID()
+        withAnimation(transitionAnimation, completionCriteria: .removed) {
+            transition = .opening(token)
+        } completion: {
+            guard transition == .opening(token) else { return }
+            transition = .open
+            menuIsFocused = true
         }
     }
 
-    private func animatePresentation(_ presented: Bool) {
-        guard presented || isExpanded else { return }
-        if presented { isMounted = true }
-        isInteractive = false
-        if !presented { menuIsFocused = false }
-        let id = UUID()
-        transitionID = id
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.28, bounce: 0.06), completionCriteria: .removed) {
-            isExpanded = presented
+    private func beginClosing() {
+        guard transition.isExpanded else { return }
+        menuIsFocused = false
+        let token = UUID()
+        withAnimation(transitionAnimation, completionCriteria: .removed) {
+            transition = .closing(token)
         } completion: {
-            guard transitionID == id else { return }
-            isInteractive = presented
-            if presented { menuIsFocused = true }
-            else {
-                isMounted = false
-                finishPresentation()
-            }
+            guard transition == .closing(token) else { return }
+            transition = .closed
+            finishPresentation()
         }
+    }
+
+    /// A dismissal can land between the source claiming the host and this surface seeing it.
+    private func releaseUnshownPresentation() {
+        guard transition == .closed else { return }
+        finishPresentation()
+    }
+
+    private func settleWithoutAnimation() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            transition = isPresented ? .open : .closed
+            menuIsFocused = isPresented
+        }
+        if !isPresented { finishPresentation() }
     }
 }
 
