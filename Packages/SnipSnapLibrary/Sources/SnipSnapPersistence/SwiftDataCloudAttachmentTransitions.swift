@@ -89,6 +89,14 @@ extension SwiftDataSnipLibrary {
         context.delete(attachment)
       }
     }
+    /// Drops a publication another device deleted, with its download and its place on the snip.
+    /// Queues no payload cleanup.
+    func removeRemotelyDeleted(_ row: StoredCloudAttachmentPublication) {
+      removeCache(for: row.attachmentID)
+      removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
+      context.delete(row)
+      byAttachment.removeValue(forKey: row.attachmentID)
+    }
     for transition in transitions {
       switch transition {
       case .remoteMetadataAccepted(
@@ -196,6 +204,11 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
+        guard row.lifecycle.republishesUnknownMetadata else {
+          // The device that deleted it owns the payload's cleanup.
+          removeRemotelyDeleted(row)
+          continue
+        }
         let oldAttachments = storedAttachments.removeValue(forKey: attachmentID) ?? []
         var newAttachments: [StoredAttachmentRecord] = []
         for attachment in oldAttachments {
@@ -291,10 +304,7 @@ extension SwiftDataSnipLibrary {
         guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
         cleanupQueue.queue(row.lifecycle.payloadCleanup)
-        removeCache(for: row.attachmentID)
-        removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
-        context.delete(row)
-        byAttachment.removeValue(forKey: row.attachmentID)
+        removeRemotelyDeleted(row)
       case .cleanupAccepted(let identity, let expected):
         try cleanupQueue.acceptDeletion(of: identity, expectedRevision: expected)
       case .cleanupConflict(let identity, let expected, let shadow):
