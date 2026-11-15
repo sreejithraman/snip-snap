@@ -303,7 +303,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     let fixture = try await Fixture()
     defer { fixture.remove() }
     let original = try await fixture.quarantineAcceptedRecord()
-    _ = try await fixture.store.loadEngineState()
+    try await prepareFreshEngine(fixture.store)
     let prepared = try await fixture.stored()
     XCTAssertTrue(prepared.readyEntities.contains { $0.reference == original.reference })
     let before = try await fixture.library.checkedSnapshot(sortedBy: .manual)
@@ -399,7 +399,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       defer { fixture.remove() }
       let archive = try await fixture.removeLocalAndArchive(kind)
       try await fixture.coordinator.prepareManualRetry()
-      _ = try await fixture.store.loadEngineState()
+      try await prepareFreshEngine(fixture.store)
       let restored = try await fixture.stored()
       XCTAssertTrue(restored.readyEntities.contains { $0.reference == archive.reference })
       let hasRestoredLocal = try await fixture.hasLocal(archive.reference)
@@ -465,7 +465,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       defer { fixture.remove() }
       let archive = try await fixture.removeLocalAndArchive(kind)
       try await fixture.changeServer(archive, delete: true)
-      _ = try await fixture.store.loadEngineState()
+      try await prepareFreshEngine(fixture.store)
       // A fresh CloudKit fetch may report absence without an old deletion event.
       try await fixture.applyCleanCompletion()
       let stored = try await fixture.stored()
@@ -481,7 +481,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       let fixture = try await Fixture()
       defer { fixture.remove() }
       let archive = try await fixture.removeLocalAndArchive(kind)
-      _ = try await fixture.store.loadEngineState()
+      try await prepareFreshEngine(fixture.store)
       let reader = FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace)
       try await reader.start(state: nil)
       let fetched = try await reader.fetch(scope: .all)
@@ -509,9 +509,9 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     let fixture = try await Fixture()
     defer { fixture.remove() }
     let first = try await fixture.quarantineAcceptedRecord()
-    _ = try await fixture.store.loadEngineState()
+    try await prepareFreshEngine(fixture.store)
     let before = try await fixture.stored()
-    _ = try await fixture.store.loadEngineState()
+    try await prepareFreshEngine(fixture.store)
     let repeated = try await fixture.stored()
     XCTAssertEqual(repeated.readyEntities, before.readyEntities)
     XCTAssertEqual(repeated.quarantines, before.quarantines)
@@ -561,7 +561,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       afterMutationBeforeSave: { try crash.hit() })
     let store = CloudFullSyncPersistence(library: library, namespace: fixture.namespace, dataZone: fixture.zone)
     let reader = FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace)
-    _ = try await store.loadEngineState()
+    try await prepareFreshEngine(store)
     try await reader.start(state: nil)
     let fetched = try await reader.fetch(scope: .all)
     XCTAssertTrue(fetched.isInitialFetch)
@@ -676,6 +676,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     try await fixture.coordinator.prepareManualRetry()
     let resetState = try await fixture.store.loadEngineState()
     XCTAssertNil(resetState)
+    try await fixture.store.prepareInitialFetch()
     let prepared = try await fixture.stored()
     XCTAssertEqual(Set(prepared.quarantines.map(\.key)), [archived.key, archived.corruptShadowRecoveryMarker.key])
     try await fixture.coordinator.fetchRemote()

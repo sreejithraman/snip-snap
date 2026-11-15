@@ -614,10 +614,9 @@ extension CloudFullSyncPersistence {
     return try await operation()
   }
 
+  /// Reads only. While a corrupt shadow needs recovery, no stored token may resume.
   package func loadEngineState() async throws -> CloudEngineStateEnvelope? {
-    if try await needsCorruptShadowRecovery(),
-      try await mutate({ try await self.prepareCorruptShadowRecovery() })
-    { return nil }
+    if try await needsCorruptShadowRecovery() { return nil }
     let stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey).engineState
     guard let stored else { return nil }
     let value: CloudEngineStateEnvelope
@@ -649,7 +648,11 @@ extension CloudFullSyncPersistence {
     try await mutate { try await self.clearEngineStateWithinMutation() }
   }
 
+  /// Recovery starts only with a fresh engine that has no token, never during a fetch.
   package func prepareInitialFetch() async throws {
+    if try await needsCorruptShadowRecovery() {
+      _ = try await mutate { try await self.prepareCorruptShadowRecovery() }
+    }
     try await clearEngineState()
   }
 
