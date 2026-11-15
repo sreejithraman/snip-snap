@@ -361,6 +361,28 @@ final class ShortcutTests: StoreBackedTestCase {
         XCTAssertTrue(occupied.isAvailableToRegister)
     }
 
+    @MainActor
+    func testRegisteredKeyChordRunsItsActionUnlessRecording() throws {
+        let chord = ShortcutKeyChord.globalShortcutTestChord(keyCode: kVK_ANSI_P, keyLabel: "P")
+        try requireAvailableChords(chord)
+        var actions: [GlobalHotKeyAction] = []
+        let manager = GlobalHotKeyManager { actions.append($0) }
+        var configuration = GlobalShortcutConfiguration.snipSnapDefaults
+        configuration.set(.keyChord(chord), for: .togglePanel)
+        try manager.register(configuration: configuration)
+        defer { manager.unregister() }
+
+        XCTAssertEqual(try sendHotKeyPressed(.togglePanel), OSStatus(noErr))
+        XCTAssertEqual(actions, [.togglePanel])
+
+        let recorder = NSObject()
+        ShortcutRecordingState.begin(recorder)
+        defer { ShortcutRecordingState.end(recorder) }
+        XCTAssertEqual(try sendHotKeyPressed(.togglePanel), OSStatus(noErr))
+        XCTAssertEqual(actions, [.togglePanel], "Recording must suspend global key chords")
+        ShortcutRecordingState.end(recorder)
+    }
+
     func testKeyReleaseBetweenShiftTapsCancelsDoubleShift() {
         let left = DoubleShiftGesture(side: .left, modifier: .none)
         var router = DoubleShiftRouter(gestures: [left])
@@ -947,4 +969,22 @@ func requireAvailableChords(_ chords: ShortcutKeyChord...) throws {
 func releaseHeldChord(_ reference: inout EventHotKeyRef?) {
     if let reference { UnregisterEventHotKey(reference) }
     reference = nil
+}
+
+func sendHotKeyPressed(_ action: GlobalHotKeyAction) throws -> OSStatus {
+    var created: EventRef?
+    let creation = CreateEvent(
+        nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed),
+        GetCurrentEventTime(), EventAttributes(kEventAttributeNone), &created
+    )
+    XCTAssertEqual(creation, OSStatus(noErr))
+    let event = try XCTUnwrap(created)
+    defer { ReleaseEvent(event) }
+    var identifier = EventHotKeyID(signature: OSType(0x53504F4C), id: action.rawValue)
+    let parameter = SetEventParameter(
+        event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+        MemoryLayout<EventHotKeyID>.size, &identifier
+    )
+    XCTAssertEqual(parameter, OSStatus(noErr))
+    return SendEventToEventTarget(event, GetApplicationEventTarget())
 }

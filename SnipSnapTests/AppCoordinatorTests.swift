@@ -147,7 +147,11 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         var occupant: EventHotKeyRef? = try XCTUnwrap(occupied.hold())
         defer { releaseHeldChord(&occupant) }
 
-        XCTAssertThrowsError(try coordinator.setShortcut(.keyChord(occupied), for: .togglePanel))
+        XCTAssertThrowsError(try coordinator.setShortcut(.keyChord(occupied), for: .togglePanel)) { error in
+            guard case GlobalHotKeyError.registration = error else {
+                return XCTFail("Expected a registration failure, got \(error)")
+            }
+        }
 
         XCTAssertFalse(previous.isAvailableToRegister, "A failed change must restore the previous chord")
         XCTAssertEqual(settings.configuration.togglePanel, .keyChord(previous))
