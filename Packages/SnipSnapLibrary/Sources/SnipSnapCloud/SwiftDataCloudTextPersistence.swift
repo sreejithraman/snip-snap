@@ -238,10 +238,15 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
                 liveSnipIDs: localIDs,
                 deletionRecoveryData: try Self.encode(.modeRetryDeletion)
             )
+            // Only a row with server state links its snip: seeding reserves placeholder rows
+            // before anything reaches iCloud.
+            let sentSnipIDs = Set(snapshot.records.filter {
+                $0.acceptedText != nil || $0.shadowData != nil || $0.systemFields != nil
+            }.map(\.snipID))
             guard let next = snapshot.namespaceState.replacingSeedApproval(
                 with: snipIDs,
                 liveSnipIDs: localIDs,
-                linkedSnipIDs: Set(snapshot.records.map(\.snipID))
+                linkedSnipIDs: sentSnipIDs
             ) else {
                 return
             }
