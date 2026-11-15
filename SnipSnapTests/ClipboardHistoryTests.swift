@@ -155,7 +155,7 @@ private actor ClipboardHeldUploadCloud: ClipboardCloudTransport {
     func deleteAll() { snapshot = ClipboardCloudSnapshot() }
 }
 
-/// Holds or fails one step of a clipboard binding reset.
+/// Holds a step of a clipboard binding reset, fails one once, or holds a step and then fails it.
 @MainActor
 private final class ClipboardBindingResetGate {
     private var holdsStep: ClipboardBindingResetStep?
@@ -168,13 +168,14 @@ private final class ClipboardBindingResetGate {
     }
 
     func reach(_ step: ClipboardBindingResetStep) async throws {
+        if step == holdsStep {
+            holdsStep = nil
+            await withCheckedContinuation { heldStep = $0 }
+        }
         if step == failsStep {
             failsStep = nil
             throw ClipboardSyncTestFailure()
         }
-        guard step == holdsStep else { return }
-        holdsStep = nil
-        await withCheckedContinuation { heldStep = $0 }
     }
 
     /// Waits for the step to be held. On timeout it stops holding, so no later reset hangs.
@@ -789,6 +790,7 @@ final class ClipboardHistoryTests: XCTestCase {
     func testWritesDuringTheSetAsideKeepOldHistoryOutOfTheNewSyncGeneration() async throws {
         let copied = clipboardEntry("copied again")
         let deleted = clipboardEntry("deleted")
+        let oldIDs: Set<UUID> = [copied.id, deleted.id]
         let gate = ClipboardBindingResetGate(holding: .historyCleared)
         let fixture = try await makeHistoryAdoptingANewSyncGeneration(
             syncing: [copied, deleted], resetStep: { try await gate.reach($0) }
@@ -797,17 +799,21 @@ final class ClipboardHistoryTests: XCTestCase {
         let run = Task { await history.syncNow() }
         let held = await gate.stepHeld()
         XCTAssertTrue(held, "The set-aside never cleared the stored history")
+        XCTAssertFalse(history.entries.contains { oldIDs.contains($0.id) })
 
         history.delete(id: deleted.id)
         XCTAssertTrue(history.restore(copied))
+        XCTAssertEqual(fixture.pasteboard.string(forType: .string), "copied again")
         let snapshot = Task { try await history.checkedCLISnapshot() }
+        // Lets the snapshot request its turn before the reset resumes.
+        for _ in 0..<5 { await Task.yield() }
         gate.release()
         await run.value
-        _ = try await snapshot.value
+        let snapshotEntries = try await snapshot.value
         await history.flushPersistence()
         history.stopSync()
 
-        let oldIDs: Set<UUID> = [copied.id, deleted.id]
+        XCTAssertFalse(snapshotEntries.contains { oldIDs.contains($0.id) })
         let uploaded = await fixture.secondCloud.uploadedEntryIDs
         let uploadedTombstones = await fixture.secondCloud.uploadedTombstoneIDs
         XCTAssertTrue(uploaded.isDisjoint(with: oldIDs))
@@ -821,16 +827,29 @@ final class ClipboardHistoryTests: XCTestCase {
     func testSetAsideFailureAfterRemovingTheBindingKeepsOldHistoryOutOfTheNewSyncGeneration() async throws {
         let first = clipboardEntry("first")
         let second = clipboardEntry("second")
-        let gate = ClipboardBindingResetGate(failingOnce: .bindingRemoved)
+        let oldIDs: Set<UUID> = [first.id, second.id]
+        let gate = ClipboardBindingResetGate(holding: .bindingRemoved, failingOnce: .bindingRemoved)
         let fixture = try await makeHistoryAdoptingANewSyncGeneration(
             syncing: [first, second], resetStep: { try await gate.reach($0) }
         )
         let history = fixture.history
-        await history.syncNow()
+        let run = Task { await history.syncNow() }
+        let held = await gate.stepHeld()
+        XCTAssertTrue(held, "The set-aside never removed the binding")
+        // An unreadable store also fails the reload after the failed reset.
+        let storeURL = history.sharedStore.url
+        try FileManager.default.removeItem(at: storeURL)
+        try FileManager.default.createDirectory(at: storeURL, withIntermediateDirectories: false)
+        XCTAssertTrue(history.restore(first))
+        gate.release()
+        await run.value
 
-        let oldIDs: Set<UUID> = [first.id, second.id]
         XCTAssertFalse(history.entries.contains { oldIDs.contains($0.id) })
         XCTAssertNotNil(history.syncError)
+        try FileManager.default.removeItem(at: storeURL)
+        await history.flushPersistence()
+        let stored = try await history.sharedStore.load()
+        XCTAssertFalse(stored.entries.contains { oldIDs.contains($0.id) })
         let uploadedAfterFailure = await fixture.secondCloud.uploadedEntryIDs
         XCTAssertEqual(uploadedAfterFailure, [])
 
@@ -863,6 +882,40 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.bindingURL), try JSONEncoder().encode(fixture.secondGeneration))
         let uploaded = await fixture.secondCloud.uploadedEntryIDs
         XCTAssertEqual(uploaded, [])
+    }
+
+    func testAccountResetWithoutAClipboardBindingKeepsAnEditMadeDuringIt() async throws {
+        let kept = clipboardEntry("kept")
+        let deleted = clipboardEntry("deleted")
+        let context = try makeContext(persistedEntries: [kept, deleted])
+        let history = context.history
+        let syncRoot = context.storeURL.deletingLastPathComponent()
+            .appendingPathComponent("SyncMode", isDirectory: true)
+        let service = ClipboardCloudSyncService(
+            store: history.sharedStore, syncRootURL: syncRoot,
+            makeTransport: { _ in ClipboardHeldUploadCloud(holdsFirstUpload: false) }
+        )
+        history.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: syncRoot,
+            mainEnabled: { true },
+            generation: { nil },
+            makeCloudService: { _, _, _ in service }
+        )
+        await history.flushPersistence()
+        XCTAssertEqual(Set(history.entries.map(\.id)), [kept.id, deleted.id])
+
+        // The reset suspends before its turn in the history queue, so the delete lands first.
+        let reset = Task.immediate { await history.resetCloudAccount() }
+        history.delete(id: deleted.id)
+        await reset.value
+        await history.flushPersistence()
+
+        XCTAssertEqual(history.entries.map(\.id), [kept.id])
+        let stored = try await history.sharedStore.load()
+        XCTAssertEqual(stored.entries.map(\.id), [kept.id])
+        XCTAssertNotNil(stored.tombstones[deleted.id])
+        XCTAssertNil(history.syncError)
     }
 
     func testPauseSurvivesRelaunch() throws {

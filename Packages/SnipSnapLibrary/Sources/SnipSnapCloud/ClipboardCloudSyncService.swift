@@ -219,10 +219,12 @@ package enum ClipboardBindingResetStep: Sendable {
     }
 
     /// Keep the previous account's history on disk but never upload it to another account.
-    public func resetAccountBinding() async throws {
+    /// Calls `settingAside` once, just before setting history aside, and only when a binding exists.
+    public func resetAccountBinding(settingAside: @MainActor () -> Void = {}) async throws {
         guard FileManager.default.fileExists(atPath: bindingURL.path) else { return }
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
+        settingAside()
         try quarantineHistory()
         try await store.save(ClipboardHistoryState())
         try await resetStep(.historyCleared)
