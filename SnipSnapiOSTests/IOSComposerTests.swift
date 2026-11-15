@@ -1,5 +1,6 @@
 import Observation
 import ImageIO
+import PhotosUI
 import SnipSnapCore
 import SnipSnapCloud
 import SnipSnapPersistence
@@ -132,6 +133,192 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: staging.path).isEmpty)
     }
 
+    func testComposerPasteCancelledBeforeItStartsNeverLoadsItsProviders() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let loads = ProviderHandlerCounter()
+        let text = NSItemProvider()
+        text.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            loads.record()
+            completion(Data("hello".utf8), nil)
+            return nil
+        }
+        let photo = NSItemProvider()
+        photo.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            loads.record()
+            completion(nil, false, CocoaError(.fileReadNoSuchFile))
+            return nil
+        }
+        let staging = root.appendingPathComponent("Draft")
+        let task = Task { try await ComposerPasteboard.stage([text, photo], in: staging) }
+        task.cancel()
+        let settled = await settledResult(of: task)
+        let result = try XCTUnwrap(settled)
+        do {
+            _ = try result.get()
+            XCTFail("Cancelled paste must not succeed")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        XCTAssertEqual(loads.count, 0)
+        XCTAssertEqual(stagedEntries(in: staging), [])
+    }
+
+    func testPhotoImportCancelledBeforeItStartsThrowsCancellation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let task = Task {
+            try await AttachmentMediaStager.stagePhotos([PhotosPickerItem(itemIdentifier: UUID().uuidString)], in: root)
+        }
+        task.cancel()
+        let settled = await settledResult(of: task)
+        let result = try XCTUnwrap(settled)
+        do {
+            _ = try result.get()
+            XCTFail("Cancelled photo import must not succeed")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        XCTAssertEqual(stagedEntries(in: root), [])
+    }
+
+    func testComposerPasteCancelledWhileTextIsLoadingThrowsAndCancelsItsProgress() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let started = expectation(description: "Text provider began loading")
+        let cancelled = expectation(description: "Text provider progress cancelled")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let progress = Progress(totalUnitCount: 1)
+        progress.cancellationHandler = { cancelled.fulfill() }
+        let text = NSItemProvider()
+        text.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            started.fulfill()
+            DispatchQueue.global().async {
+                release.wait()
+                completion(Data("late".utf8), nil)
+            }
+            return progress
+        }
+        let task = Task { try await ComposerPasteboard.stage([text], in: root.appendingPathComponent("Draft")) }
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
+        task.cancel()
+        let settled = await settledResult(of: task)
+        let result = try XCTUnwrap(settled, "Cancellation must finish without waiting for the provider")
+        do {
+            _ = try result.get()
+            XCTFail("Cancelled paste must not succeed")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        await fulfillment(of: [cancelled], timeout: TestReadiness.timeout)
+        XCTAssertTrue(progress.isCancelled)
+    }
+
+    func testComposerPasteKeepsNothingWhenCancelledAfterAnEarlierLoadCompletes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: photo)
+        let started = expectation(description: "Photo began loading")
+        let cancelled = expectation(description: "Photo progress cancelled")
+        let delivered = expectation(description: "Photo provider called back late")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let progress = Progress(totalUnitCount: 1)
+        progress.cancellationHandler = { cancelled.fulfill() }
+        let slow = NSItemProvider()
+        slow.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            started.fulfill()
+            DispatchQueue.global().async {
+                release.wait()
+                completion(photo, false, nil)
+                delivered.fulfill()
+            }
+            return progress
+        }
+        let staging = root.appendingPathComponent("Draft")
+        let task = Task { try await ComposerPasteboard.stage([NSItemProvider(object: "hello" as NSString), slow], in: staging) }
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
+        task.cancel()
+        let settled = await settledResult(of: task)
+        let result = try XCTUnwrap(settled)
+        do {
+            _ = try result.get()
+            XCTFail("Cancelled paste must not succeed")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        await fulfillment(of: [cancelled], timeout: TestReadiness.timeout)
+        release.signal()
+        await fulfillment(of: [delivered], timeout: TestReadiness.timeout)
+        XCTAssertEqual(stagedEntries(in: staging), [])
+    }
+
+    func testComposerPasteResumesOnceWhenAProviderCallsBackTwice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("photo.png")
+        try Data([1, 2, 3]).write(to: photo)
+        let file = NSItemProvider()
+        file.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            DispatchQueue.global().async { completion(photo, false, nil) }
+            DispatchQueue.global().async { completion(photo, false, nil) }
+            return nil
+        }
+        let text = NSItemProvider()
+        text.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            DispatchQueue.global().async { completion(Data("first".utf8), nil) }
+            DispatchQueue.global().async { completion(Data("second".utf8), nil) }
+            return nil
+        }
+        let task = Task { try await ComposerPasteboard.stage([text, file], in: root.appendingPathComponent("Draft")) }
+        let settled = await settledResult(of: task)
+        let pasted = try XCTUnwrap(settled).get()
+        XCTAssertTrue(["first", "second"].contains(pasted.text), "Only one callback's text is kept, got \(pasted.text)")
+        XCTAssertEqual(pasted.files.count, 1)
+    }
+
+    func testComposerPasteResumesOnceWhenCancellationRacesCompletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for iteration in 0..<20 {
+            let photo = root.appendingPathComponent("photo-\(iteration).png")
+            try Data([1, 2, 3]).write(to: photo)
+            let started = expectation(description: "Photo \(iteration) began loading")
+            let provider = NSItemProvider()
+            provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+                started.fulfill()
+                DispatchQueue.global().async { completion(photo, false, nil) }
+                return nil
+            }
+            let staging = root.appendingPathComponent("Draft-\(iteration)")
+            let task = Task { try await ComposerPasteboard.stage([provider], in: staging) }
+            await fulfillment(of: [started], timeout: TestReadiness.timeout)
+            task.cancel()
+            guard let result = await settledResult(of: task) else { return }
+            switch result {
+            case .success(let pasted):
+                XCTAssertEqual(pasted.files.count, 1, "Iteration \(iteration)")
+            case .failure(let error) where error is CancellationError:
+                XCTAssertEqual(stagedEntries(in: staging), [], "Iteration \(iteration)")
+            case .failure(let error):
+                XCTFail("Iteration \(iteration): expected success or cancellation, got \(error)")
+            }
+        }
+    }
+
+    /// Waits for `task` with a timeout, so a load that never resumes fails the test instead of hanging the suite.
+    private func settledResult<Success: Sendable>(of task: Task<Success, any Error>) async -> Result<Success, any Error>? {
+        let settled = expectation(description: "Task settled")
+        var result: Result<Success, any Error>?
+        Task {
+            result = await task.result
+            settled.fulfill()
+        }
+        await fulfillment(of: [settled], timeout: TestReadiness.timeout)
+        return result
+    }
+
+    private func stagedEntries(in directory: URL) -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    }
+
     func testProviderLoadDeliversACompletionThatArrivesBeforeItsProgress() async throws {
         let progress = Progress(totalUnitCount: 1)
         let value = try await ProviderLoad<Int>.run { finish in
@@ -185,8 +372,9 @@ final class IOSComposerTests: IOSModelTestCase {
 
     func testProviderLoadCancelledBeforeItBeginsNeverStartsTheProvider() async {
         let task = Task {
-            try await ProviderLoad<Int>.run { _ in
+            try await ProviderLoad<Int>.run { finish in
                 XCTFail("A cancelled load must not start its provider")
+                finish { 0 }
                 return Progress()
             }
         }
@@ -210,6 +398,39 @@ final class IOSComposerTests: IOSModelTestCase {
             XCTFail("Cancelled load must not return a value")
         } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
         XCTAssertTrue(progress.isCancelled)
+    }
+
+    func testProviderLoadCancellationThatArrivesDuringTheResultBodyKeepsTheCompletion() async throws {
+        let progress = Progress(totalUnitCount: 1)
+        let inBody = expectation(description: "Result body running")
+        let finished = expectation(description: "Load settled")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        var outcome: Result<Int, any Error>?
+        let task = Task {
+            do {
+                let value = try await ProviderLoad<Int>.run { finish in
+                    DispatchQueue.global().async {
+                        finish {
+                            inBody.fulfill()
+                            release.wait()
+                            return 7
+                        }
+                    }
+                    return progress
+                }
+                outcome = .success(value)
+            } catch {
+                outcome = .failure(error)
+            }
+            finished.fulfill()
+        }
+        await fulfillment(of: [inBody], timeout: TestReadiness.timeout)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { release.signal() }
+        task.cancel()
+        await fulfillment(of: [finished], timeout: TestReadiness.timeout)
+        XCTAssertEqual(try XCTUnwrap(outcome).get(), 7)
+        XCTAssertFalse(progress.isCancelled)
     }
 
     func testMixedComposerPasteWaitsForDelayedTextAndKeepsItsCapturedSelection() async throws {
@@ -850,5 +1071,18 @@ private struct SizeClassComposerSwap: View {
 
     private var input: some View {
         ComposerTextInput(prompt: "Add", text: $text, isFocused: $isFocused, onPasteAttachments: { _, _ in })
+    }
+}
+
+private final class ProviderHandlerCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func record() {
+        lock.withLock { value += 1 }
+    }
+
+    var count: Int {
+        lock.withLock { value }
     }
 }
