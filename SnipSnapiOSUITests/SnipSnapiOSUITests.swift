@@ -647,12 +647,14 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(clipboard.isSelected)
 
         // Tab moves focus between the window's groups until it reaches the rail.
-        let rail = app.scrollViews["library-rail"]
-        XCTAssertTrue(rail.waitForExistence(timeout: 3))
-        for _ in 0..<6 where rail.value(forKey: "hasFocus") as? Bool != true {
+        func railHasFocus() -> Bool {
+            [clipboard, inbox, work].contains { $0.value(forKey: "hasFocus") as? Bool == true }
+        }
+        for _ in 0..<6 where !railHasFocus() {
             app.typeKey(.tab, modifierFlags: [])
         }
-        XCTAssertEqual(rail.value(forKey: "hasFocus") as? Bool, true, "Tab must reach the rail.")
+        XCTAssertTrue(railHasFocus(), "Tab must reach the rail.")
+        XCTAssertTrue(clipboard.isSelected)
 
         app.typeKey(.downArrow, modifierFlags: [])
         waitForSelection(inbox, "Down arrow selects Inbox")
