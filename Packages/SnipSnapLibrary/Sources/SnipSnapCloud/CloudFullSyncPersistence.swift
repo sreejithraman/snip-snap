@@ -345,9 +345,28 @@ package actor CloudFullSyncCoordinator {
         recordCommittedBatch(observed)
       }
     }
-    if !staged.isEmpty, let state = try await store.loadEngineState() {
-      session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch)
+    guard !staged.isEmpty else { return }
+    let state: CloudEngineStateEnvelope?
+    do {
+      state = try await store.loadEngineState()
+    } catch CloudTransportError.invalidEngineState {
+      try await restartUnreadableEngine()
+      return
+    } catch CloudTransportError.stateNamespaceMismatch {
+      try await restartUnreadableEngine()
+      return
     }
+    if let state { session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch) }
+  }
+
+  /// A stored state no engine can resume: drop a running engine and start an empty one,
+  /// as `ensureStarted` does, so this run's `ensureStarted` keeps it.
+  private func restartUnreadableEngine() async throws {
+    if session.isRunning {
+      await transport.reset()
+      session.reset()
+    }
+    try await restartEmptyEngine()
   }
 
   @discardableResult

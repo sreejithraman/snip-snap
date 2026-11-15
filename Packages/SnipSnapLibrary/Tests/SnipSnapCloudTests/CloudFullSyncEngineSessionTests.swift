@@ -181,7 +181,7 @@ extension CloudFullSyncPersistenceTests {
     let stored = samples.state(requiresInitialFetch: false)
     for failsWhileRunning in [false, true] {
       let label = "fails while running: \(failsWhileRunning)"
-      let store = OutboundPlanFailureStore(engineState: stored)
+      let store = ScriptedSessionStore(engineState: stored)
       let transport = AutomaticSyncTransportProbe()
       let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
       if failsWhileRunning { try await coordinator.prepareAutomaticSync() }
@@ -258,8 +258,8 @@ extension CloudFullSyncPersistenceTests {
     }
   }
 
-  /// SM27-L2-C1 (fails at base): `ensureStarted` restarts an empty engine over an unreadable
-  /// stored state, but the read after staged recovery throws, failing the whole run.
+  /// SM27-L2-C1: before the fix, the read after staged recovery threw and failed the run,
+  /// though `ensureStarted` restarts an empty engine over the same stored state.
   func testStagedBatchRecoveredOverAnUnreadableEngineStateRestartsAnEmptyEngine() async throws {
     let fixture = try EngineSessionFixture(name: "StagedOverUnreadableState", namespace: makeNamespace())
     defer { fixture.remove() }
@@ -277,6 +277,35 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(staged.isEmpty)
     XCTAssertEqual(events, [.started, .fetched])
     XCTAssertEqual(stored?.namespace, fixture.namespace)
+  }
+
+  /// SM27-L2-C1: the restart replaces a running engine, and the run's own start keeps it.
+  func testStagedRecoveryOverAnUnreadableEngineStateStartsOneEmptyEngine() async throws {
+    let samples = EngineSessionSamples(namespace: makeNamespace())
+    let stored = samples.state(requiresInitialFetch: false)
+    for wasRunning in [false, true] {
+      let label = "was running: \(wasRunning)"
+      let store = ScriptedSessionStore(engineState: stored)
+      let transport = AutomaticSyncTransportProbe(fetched: samples.fetched(requiresInitialFetch: false))
+      let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+      if wasRunning { try await coordinator.prepareAutomaticSync() }
+      await store.leaveStagedBatchOverUnreadableEngineState()
+
+      let outcome = try await coordinator.fetchRemote()
+
+      let states = await transport.startedEngineStates()
+      let resets = await transport.resetCount()
+      let fetches = await transport.fetchCount()
+      let clears = await store.engineStateClearCount()
+      let staged = await store.stagedBatchCount()
+      let expectedStates: [CloudEngineStateEnvelope?] = wasRunning ? [stored, nil] : [nil]
+      XCTAssertEqual(states, expectedStates, label)
+      XCTAssertEqual(resets, wasRunning ? 1 : 0, label)
+      XCTAssertEqual(fetches, 1, label)
+      XCTAssertEqual(clears, 1, label)
+      XCTAssertEqual(staged, 0, label)
+      XCTAssertFalse(outcome.blocksOutbound, label)
+    }
   }
 }
 
@@ -331,10 +360,12 @@ private struct EngineSessionFixture {
   }
 }
 
-/// A store whose outbound plan can fail once with a record error.
-private actor OutboundPlanFailureStore: CloudFullSyncStore {
+/// A store whose outbound plan, engine-state read, and staged batches a test scripts.
+private actor ScriptedSessionStore: CloudFullSyncStore {
   private var engineState: CloudEngineStateEnvelope?
+  private var staged: [CloudFullBatchCommit] = []
   private var failsNextPlan = false
+  private var engineStateIsUnreadable = false
   private var clears = 0
 
   init(engineState: CloudEngineStateEnvelope?) {
@@ -342,18 +373,34 @@ private actor OutboundPlanFailureStore: CloudFullSyncStore {
   }
 
   func failNextPlan() { failsNextPlan = true }
-  func engineStateClearCount() -> Int { clears }
 
-  func loadEngineState() -> CloudEngineStateEnvelope? { engineState }
-  func saveEngineState(_ state: CloudEngineStateEnvelope) { engineState = state }
+  /// A batch whose apply failed after its stage commit, over a stored state no engine reads.
+  func leaveStagedBatchOverUnreadableEngineState() {
+    staged.append(CloudFullBatchCommit(namespaceKey: "test", batchID: UUID(),
+      expectedEngineState: nil, nextEngineState: nil, items: []))
+    engineStateIsUnreadable = true
+  }
+
+  func engineStateClearCount() -> Int { clears }
+  func stagedBatchCount() -> Int { staged.count }
+
+  func loadEngineState() throws -> CloudEngineStateEnvelope? {
+    if engineStateIsUnreadable { throw CloudTransportError.invalidEngineState }
+    return engineState
+  }
+  func saveEngineState(_ state: CloudEngineStateEnvelope) {
+    engineState = state
+    engineStateIsUnreadable = false
+  }
   func clearEngineState() {
     engineState = nil
+    engineStateIsUnreadable = false
     clears += 1
   }
   func prepareInitialFetch() {}
-  func stagedBatches() -> [CloudFullBatchCommit] { [] }
+  func stagedBatches() -> [CloudFullBatchCommit] { staged }
   func stage(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) {}
-  func applyStaged(_ id: UUID) {}
+  func applyStaged(_ id: UUID) { staged.removeAll { $0.batchID == id } }
   func pendingChanges() throws -> CloudOutboundBatch {
     if failsNextPlan {
       failsNextPlan = false
