@@ -228,6 +228,15 @@ package actor SwiftDataSyncModePersistence {
         forKey: .writeReservation
       )
     }
+
+    mutating func updateTransition(
+      orThrow missing: SyncModePersistenceError = .transitionInProgress,
+      _ event: (inout SyncModeTransition) throws -> Void
+    ) throws {
+      guard var current = transition else { throw missing }
+      try event(&current)
+      transition = current
+    }
   }
 
   let rootURL: URL
@@ -438,7 +447,7 @@ package actor SwiftDataSyncModePersistence {
       try crashHook(.afterCandidateDurability)
       var ready = manifest
       ready.stores[try storeIndex(id: candidate.id)].lifecycle = .ready
-      ready.transition?.phase = .candidateReady
+      try ready.updateTransition { try $0.markCandidateReady() }
       try commit(ready)
       return try currentTransition()
     } catch {
@@ -448,25 +457,18 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func recordPreparationComplete() throws {
-    guard manifest.transition?.phase == .candidateReady else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
     var next = manifest
-    next.transition?.phase = .remoteFetched
+    try next.updateTransition { try $0.recordPreparationComplete() }
     next.attentionReason = nil
     try commit(next)
   }
 
   package func retryRemoteFetch() throws {
-    guard let transition = manifest.transition,
-      transition.phase == .remoteFetched,
-      transition.sourceStoreID == manifest.activeStoreID,
-      transition.freezeToken == nil,
-      !transition.freezeSnapshotTaken,
-      transition.mergeIntent == nil
-    else { throw SyncModePersistenceError.transitionInProgress }
     var next = manifest
-    next.transition?.phase = .candidateReady
+    try next.updateTransition { try $0.retryRemoteFetch() }
+    guard manifest.transition?.sourceStoreID == manifest.activeStoreID else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
     if next.attentionReason == .enrollmentBlocked {
       next.attentionReason = nil
     }
@@ -474,15 +476,14 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func swapPointer() throws {
-    guard let transition = manifest.transition, transition.phase == .firstSendComplete,
+    var next = manifest
+    try next.updateTransition { try $0.swapPointer() }
+    guard let transition = manifest.transition,
       store(id: transition.candidateStoreID)?.lifecycle == .ready
     else { throw SyncModePersistenceError.transitionInProgress }
     try crashHook(.beforePointerSwap)
-    var next = manifest
     next.activeStoreID = transition.candidateStoreID
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
-    next.transition?.phase = .pointerSwapped
-    next.transition?.freezeToken = nil
     try commit(next)
     try crashHook(.afterPointerSwap)
   }
@@ -510,15 +511,7 @@ package actor SwiftDataSyncModePersistence {
       ].contains(transition.phase)
     else { return }
     var next = manifest
-    if next.transition?.mergeIntent != nil {
-      Self.absorbMergeIntent(&next.transition!)
-      next.transition?.phase = .candidateReady
-    } else {
-      next.transition?.phase = .remoteFetched
-    }
-    next.transition?.freezeToken = nil
-    next.transition?.freezeSnapshotTaken = false
-    next.transition?.approvedSnipIDs = []
+    try next.updateTransition { try $0.unfreeze() }
     next.attentionReason = reason
     try commit(next)
   }

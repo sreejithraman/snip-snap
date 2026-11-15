@@ -3,80 +3,37 @@ import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
   package func recordEnrollmentApproved(expected: Set<UUID>) throws {
-    guard manifest.transition?.phase == .recordsMerged,
-      manifest.transition?.approvedSnipIDs == expected
-    else { throw SyncModePersistenceError.transitionInProgress }
+    var next = manifest
+    try next.updateTransition { try $0.approveEnrollment(expected: expected) }
     try crashHook(.afterEnrollmentApproval)
-    try changeTransition(from: .recordsMerged, to: .enrollmentApproved)
+    try commit(next)
   }
 
   package func recordFirstSendStarted() throws {
     try crashHook(.afterFirstSendStarted)
-    guard manifest.transition?.phase == .enrollmentApproved else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
     var next = manifest
-    next.transition?.phase = .firstSendStarted
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
+    try next.updateTransition { try $0.startFirstSend() }
     try commit(next)
   }
 
   package func recordSendAttempt(_ attempt: SyncModeSendAttempt) throws {
-    guard let transition = manifest.transition,
-      transition.phase == .firstSendStarted,
-      transition.namespace == attempt.namespace
-    else { throw SyncModePersistenceError.namespaceMismatch }
-    let allowedZones = attempt.namespace.zones
-    guard attempt.operations.allSatisfy({ operation in
-      allowedZones.contains(
-        ICloudSyncZoneBinding(
-          name: operation.recordIdentity.zoneName,
-          ownerName: operation.recordIdentity.ownerName
-        )
-      )
-    }) else { throw SyncModePersistenceError.namespaceMismatch }
-
-    var operations = transition.sendAttempt?.operations ?? []
-    for operation in attempt.operations {
-      if let existing = operations.first(where: {
-        $0.recordIdentity == operation.recordIdentity
-      }) {
-        guard existing == operation else { throw SyncModePersistenceError.invalidManifest }
-      } else {
-        operations.append(operation)
-      }
-    }
-    operations.sort {
-      if $0.reference?.kind != $1.reference?.kind {
-        return ($0.reference?.kind.rawValue ?? "") < ($1.reference?.kind.rawValue ?? "")
-      }
-      if $0.reference?.domainID != $1.reference?.domainID {
-        return ($0.reference?.domainID.uuidString ?? "")
-          < ($1.reference?.domainID.uuidString ?? "")
-      }
-      return $0.recordIdentity.key < $1.recordIdentity.key
-    }
     var next = manifest
-    let saved = SyncModeSendAttempt(namespace: attempt.namespace, operations: operations)
-    next.transition?.sendAttempt = saved
-    next.transition?.pendingSettlementSnipIDs = Set(operations.compactMap {
-      $0.reference?.kind == .snip ? $0.reference?.domainID : nil
-    })
+    try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
   }
 
   package func recordFirstSendComplete() throws {
     try crashHook(.afterFirstSendComplete)
-    try changeTransition(from: .firstSendStarted, to: .firstSendComplete)
+    var next = manifest
+    try next.updateTransition { try $0.completeFirstSend() }
+    try commit(next)
   }
 
   package func recordNoSendRequired() throws {
-    guard manifest.transition?.targetKind == .localOnly else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    try changeTransition(from: .enrollmentApproved, to: .firstSendComplete)
+    var next = manifest
+    try next.updateTransition { try $0.skipFirstSend() }
+    try commit(next)
   }
 
   package func restartAfterFirstSendFailure(
@@ -96,16 +53,12 @@ extension SwiftDataSyncModePersistence {
       settlement: settlement
     )
     var next = manifest
-    next.transition?.supersededApprovedSnipIDs.formUnion(transition.approvedSnipIDs)
-    next.transition?.serverAcceptedSeedSnipIDs.formUnion(settledState.acceptedSeedIDs)
-    next.transition?.seedProvenance = settledState.provenance
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
-    next.transition?.captureAcceptedServerProvenance = false
-    next.transition?.phase = .candidateReady
-    next.transition?.freezeToken = nil
-    next.transition?.freezeSnapshotTaken = false
-    next.transition?.approvedSnipIDs = []
+    try next.updateTransition {
+      try $0.restartAfterFirstSendFailure(
+        acceptedSeedIDs: settledState.acceptedSeedIDs,
+        provenance: settledState.provenance
+      )
+    }
     next.attentionReason = reason
     try commit(next)
   }
@@ -161,9 +114,9 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func prepareRetryFetch(settlement: SyncModeSeedSettlementProof) async throws {
-    guard let transition = manifest.transition, transition.phase == .candidateReady,
-      transition.mergeIntent == nil
-    else { return }
+    guard let transition = manifest.transition, transition.phase == .candidateReady else {
+      return
+    }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     if transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace {
       // A new merge may have a different plan. Only pending merge intents need
@@ -173,7 +126,7 @@ extension SwiftDataSyncModePersistence {
         transitionID: transition.id
       )
     }
-    guard transition.captureAcceptedServerProvenance else { return }
+    guard transition.awaitsAcceptedServerCapture else { return }
     try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     let settledState = try await settledSeedState(
       transition: transition,
@@ -181,11 +134,12 @@ extension SwiftDataSyncModePersistence {
       settlement: settlement
     )
     var next = manifest
-    next.transition?.serverAcceptedSeedSnipIDs.formUnion(settledState.acceptedSeedIDs)
-    next.transition?.seedProvenance = settledState.provenance
-    next.transition?.pendingSettlementSnipIDs = []
-    next.transition?.sendAttempt = nil
-    next.transition?.captureAcceptedServerProvenance = false
+    try next.updateTransition {
+      try $0.settleInterruptedUpload(
+        acceptedSeedIDs: settledState.acceptedSeedIDs,
+        provenance: settledState.provenance
+      )
+    }
     try crashHook(.beforeRetryFetchSettlementCommit)
     try commit(next)
   }
@@ -194,13 +148,6 @@ extension SwiftDataSyncModePersistence {
     guard let active = store(id: manifest.activeStoreID), active.kind == .iCloudSync,
       active.namespace == namespace
     else { throw SyncModePersistenceError.namespaceMismatch }
-  }
-
-  private func changeTransition(from: SyncModeTransitionPhase, to: SyncModeTransitionPhase) throws {
-    guard manifest.transition?.phase == from else { throw SyncModePersistenceError.transitionInProgress }
-    var next = manifest
-    next.transition?.phase = to
-    try commit(next)
   }
 
   private func settledSeedState(
