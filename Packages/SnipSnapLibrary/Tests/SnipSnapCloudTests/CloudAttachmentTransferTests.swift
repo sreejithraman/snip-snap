@@ -5148,6 +5148,32 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     }
   }
 
+  // Primary-2-R1 (sm33-rfl-3 pass 2): the recovery fetch brings back B's stored save while A's
+  // record fails, so only part of the unacknowledged order returns. The undone order must stand.
+  func testAnUndoneReorderSurvivesAPartialFetchOfItsUnacknowledgedSaveOnTheDeviceHoldingTheFiles() async throws {
+    try await assertAnUndoneEditSurvivesFetchingItsUnacknowledgedSave(on: .holder, failingFirstFetchOf: .a) { client in
+      try await self.keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: client.snipID,
+        in: client.library)
+    }
+  }
+
+  func testAnUndoneReorderSurvivesAPartialFetchOfItsUnacknowledgedSaveOnADownloadOnlyDevice() async throws {
+    try await assertAnUndoneEditSurvivesFetchingItsUnacknowledgedSave(on: .downloaded, failingFirstFetchOf: .a) { client in
+      try await self.keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: client.snipID,
+        in: client.library)
+    }
+  }
+
+  // Adversarial F1 (sm33-rfl-3 pass 2): a new attachment still waiting for its upload has no
+  // acknowledged base, so it must not stop the fetched save from serving as the order's base.
+  func testAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSaveOnTheDeviceHoldingTheFiles() async throws {
+    try await assertAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSave(on: .holder)
+  }
+
+  func testAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSaveOnADownloadOnlyDevice() async throws {
+    try await assertAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSave(on: .downloaded)
+  }
+
   // SM33 D7b known gap: once reconcile records the undo, nothing shows what was sent, so the
   // fetched save can replace the undo. This guard checks only that both devices and iCloud agree
   // and go quiet. It doesn't assert which name wins.
@@ -5940,8 +5966,11 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     XCTAssertEqual(record?.encryptedFields["fileName"], .string("renamed C.txt"))
   }
 
+  /// - Parameter failedMember: an attachment whose record the first fetch after the relaunch
+  ///   fails to bring back, so only part of the stored save returns.
   private func assertAnUndoneEditSurvivesFetchingItsUnacknowledgedSave(
     on role: AttachmentMatrixRole,
+    failingFirstFetchOf failedMember: AttachmentMatrixMember? = nil,
     file: StaticString = #filePath,
     line: UInt = #line,
     edit: (AttachmentClient) async throws -> Void
@@ -5957,6 +5986,12 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     let relaunched = try await relaunchAfterCloudKitStoresAnUnacknowledgedEdit(editor, file: file, line: line)
     let library = relaunched.library
     let undone = try await snips(restoring: original, in: relaunched)
+    if let failedMember {
+      let storage = try await snapshot(library, relaunched.namespace)
+      let row = try publication(of: failedMember.id, in: storage)
+      await relaunched.transport.failNextFetchedItem(CloudAttachmentRecordCodec.recordID(row.metadataIdentity),
+        failure: .retryable)
+    }
 
     // The undo lands after the engine starts and before the fetched save commits, so reconcile
     // never records it.
@@ -5971,8 +6006,68 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       "Fetching the unacknowledged save must keep the undone order.", file: file, line: line)
     XCTAssertEqual(shown.map(\.fileName), original.map(\.fileName),
       "Fetching the unacknowledged save must keep the undone names.", file: file, line: line)
+    if failedMember != nil {
+      let positions = try await library.storedAttachmentReferencePositions(for: relaunched.snipID)
+      XCTAssertEqual(positions, canonicalPositions(original.map(\.id)),
+        "The partial fetch must leave the undone order's coordinates.", file: file, line: line)
+    }
     try await assertAttachmentsSettle(original.map { (id: $0.id, fileName: $0.fileName) },
       between: relaunched, and: peer, file: file, line: line)
+  }
+
+  /// Like the undone-reorder check, with a new attachment whose upload fails before Snip Snap
+  /// quits, so iCloud never holds its metadata.
+  private func assertAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSave(
+    on role: AttachmentMatrixRole,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let editor = role == .holder ? clients.holder : clients.downloaded
+    let peer = role == .holder ? clients.downloaded : clients.holder
+    let before = try await editor.library.checkedSnapshot(sortedBy: .manual)
+    let original = try XCTUnwrap(before.snips.first(where: { $0.id == editor.snipID }),
+      file: file, line: line).attachments
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: editor.snipID, in: editor.library)
+    try await appendAttachment(.n, to: editor)
+    let planned = try await editor.store.pendingChanges()
+    let uploads = planned.operations.compactMap { operation -> CloudRecordID? in
+      guard case .save(let draft) = operation,
+        draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
+      else { return nil }
+      return draft.id
+    }
+    XCTAssertEqual(uploads.count, 1, "N's upload must be planned with the reorder.", file: file, line: line)
+    for upload in uploads { await editor.transport.failNextSentItem(upload, failure: .retryable) }
+    let relaunched = try await relaunchAfterCloudKitStoresAnUnacknowledgedEdit(editor, file: file, line: line)
+    let library = relaunched.library
+    let current = try await library.checkedSnapshot(sortedBy: .manual)
+    let added = try XCTUnwrap(current.snips.first(where: { $0.id == relaunched.snipID })?.attachments
+      .first(where: { $0.id == AttachmentMatrixMember.n.id }), file: file, line: line)
+    let storage = try await snapshot(library, relaunched.namespace)
+    XCTAssertFalse(try publication(of: added.id, in: storage).metadataAccepted,
+      "N must still wait for its upload.", file: file, line: line)
+    let expected = original + [added]
+    let undone = try await snips(restoring: expected, in: relaunched)
+
+    try await relaunched.sync.fetchRemote(beforeApply: {
+      _ = try await library.perform(.replaceAll(undone), sortedBy: .manual)
+    })
+
+    let local = try await library.checkedSnapshot(sortedBy: .manual)
+    let shown = try XCTUnwrap(local.snips.first(where: { $0.id == relaunched.snipID }),
+      file: file, line: line).attachments
+    XCTAssertEqual(shown.map(\.id), expected.map(\.id),
+      "Fetching the unacknowledged save must keep the undone order beside N.", file: file, line: line)
+    let positions = try await library.storedAttachmentReferencePositions(for: relaunched.snipID)
+    XCTAssertEqual(positions, canonicalPositions(expected.map(\.id)), file: file, line: line)
+    try await assertAttachmentsSettle(expected.map { (id: $0.id, fileName: $0.fileName) },
+      between: relaunched, and: peer, file: file, line: line)
+  }
+
+  private func canonicalPositions(_ order: [UUID]) -> [UUID: Int] {
+    Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
   }
 
   /// CloudKit stores the client's pending attachment edit, but Snip Snap quits before applying the
@@ -7221,8 +7316,8 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
 
     try await receiver.sync.fetchRemote()
 
-    // B's shadow is the B1 record just fetched, so no shadow check here could fail. The final
-    // A,B checks carry R3-1; these pin stored positions as local order.
+    // The final A,B checks carry R3-1. These pin B's stored position as local order, then the
+    // row planning writes: B waits at 0 against the B1 record just fetched.
     let partial = try await receiver.library.storedAttachmentReferencePositions(for: holder.snipID)
     #expect(partial == [b: 0], "\(scenario) partial fetch stores B at local index 0")
     let plan = try await receiver.store.pendingChanges()
@@ -7230,8 +7325,12 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
       guard case .save(let draft) = operation else { return false }
       return draft.id == metadataID(.b) && draft.encryptedFields["position"] == .int64(0)
     }), "\(scenario) the partial plan records B0")
-    let afterPlan = try await receiver.library.storedAttachmentReferencePositions(for: holder.snipID)
-    #expect(afterPlan == [b: 0], "\(scenario) planning leaves B at local index 0")
+    let plannedRow = try await snapshot(receiver.library, receiver.namespace).publications
+      .first(where: { $0.metadata.attachmentID == b })
+    #expect(plannedRow?.metadata.position == 0 && plannedRow?.metadataAccepted == false,
+      "\(scenario) planning records B's row pending at 0")
+    let plannedBase = try await shadowMetadata(of: b, in: receiver)
+    #expect(plannedBase?.position == 1, "\(scenario) B's base stays the fetched B1")
     if acknowledgedBeforeRetry { try await receiver.sync.sendPending() }
 
     try await receiver.sync.fetchRemote()
