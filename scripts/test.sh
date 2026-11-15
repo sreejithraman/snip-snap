@@ -92,31 +92,19 @@ elif [[ "$run_common_tests" == YES ]]; then
 fi
 
 if [[ "$run_ios_app_tests" == YES ]]; then
-    # DO NOT MERGE: W13 cold-launch loop. Each iteration reboots the Simulator and runs IOSComposerTests once.
+    # DO NOT MERGE: W13 cold-launch loop. Each repetition of IOSComposerTests runs in a freshly launched host.
     udid="$("$script_dir/ci-boot-ios-simulator.sh" "$ios_test_device")"
-    ios_args=(-project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS -configuration Debug
-        -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$derived_data/ios"
-        CODE_SIGNING_ALLOWED=NO SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= -parallel-testing-enabled NO)
-    xcodebuild "${ios_args[@]}" build-for-testing
-    passed=0 failed=0 iteration=0
-    while (( iteration < 15 && SECONDS < 1250 )); do
-        iteration=$(( iteration + 1 ))
-        xcrun simctl shutdown "$udid" || true
-        "$script_dir/ci-boot-ios-simulator.sh" "$ios_test_device" >/dev/null
-        bundle="$derived_data/ios/Logs/Test/cold-$iteration.xcresult"
-        print "W13-COLD iteration $iteration start at ${SECONDS}s"
-        if xcodebuild "${ios_args[@]}" -test-timeouts-enabled YES -default-test-execution-time-allowance 180 \
-            -resultBundlePath "$bundle" -only-testing:SnipSnapiOSTests/IOSComposerTests test-without-building; then
-            passed=$(( passed + 1 )); /bin/rm -rf "$bundle"
-            print "W13-COLD iteration $iteration passed"
-        else
-            failed=$(( failed + 1 ))
-            print "W13-COLD iteration $iteration FAILED"
-        fi
-    done
-    print "W13-COLD summary: $iteration iterations, $passed passed, $failed failed"
-    if (( failed > 0 )); then
+    if xcodebuild -project "$repo_dir/SnipSnap.xcodeproj" -scheme SnipSnapiOS -configuration Debug \
+        -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$derived_data/ios" \
+        CODE_SIGNING_ALLOWED=NO SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= -parallel-testing-enabled NO \
+        -test-timeouts-enabled YES -default-test-execution-time-allowance 180 \
+        -test-iterations 15 -test-repetition-relaunch-enabled YES \
+        -only-testing:SnipSnapiOSTests/IOSComposerTests test; then
+        print "W13-COLD all repetitions passed"
+    else
+        test_status=$?
+        print "W13-COLD some repetitions failed"
         snip_snap_preserve_test_failure "$derived_data/ios" ios || print -u2 'Could not preserve iOS test failure evidence.'
-        exit 1
+        exit "$test_status"
     fi
 fi
