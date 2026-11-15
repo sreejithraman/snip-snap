@@ -124,6 +124,14 @@ extension CloudKitCallBound {
         transferTotal: .milliseconds(200),
         backstopMargin: .milliseconds(100)
     )
+
+    /// Long enough that the backstop can't end a call while a test watches it.
+    static let longForTests = CloudKitCallBound(
+        idle: .seconds(10),
+        smallTotal: .seconds(10),
+        transferTotal: .seconds(10),
+        backstopMargin: .seconds(1)
+    )
 }
 
 /// A record transport whose reads go to `readRecords`. Asset fetches never start its engine.
@@ -241,6 +249,58 @@ extension CloudKitCallBoundTests {
         let elapsed = started.duration(to: ContinuousClock.now)
         XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(500), "Wait for the total plus the margin")
         XCTAssertLessThan(elapsed, .seconds(5), "A small call must not use the transfer total")
+    }
+
+    func testReadWaitsForItsOperationAfterTheCallerCancels() async {
+        let stall = CloudKitCallStall()
+        addTeardownBlock { stall.release() }
+        let ended = TaskEndMark()
+        let caller = Task {
+            defer { ended.set() }
+            return try await CloudKitCallBound.longForTests.read(.small) { () async throws -> Int in
+                await stall.enter()
+                throw CloudKitCallStall.Released()
+            }
+        }
+        let entered = await stall.waitUntilEntered(within: .seconds(5))
+        XCTAssertTrue(entered, "The read must start its operation")
+
+        caller.cancel()
+        let endedEarly = await ended.wait(within: .milliseconds(300))
+        XCTAssertFalse(endedEarly, "A caller's cancel must not end the read before its operation")
+        stall.release()
+        let endedAfterRelease = await ended.wait(within: .seconds(5))
+        XCTAssertTrue(endedAfterRelease, "The read must end once its operation does")
+        guard endedAfterRelease else { return }
+        do {
+            _ = try await caller.value
+            XCTFail("The operation's error must reach the caller")
+        } catch {
+            XCTAssertTrue(error is CloudKitCallStall.Released, "\(error)")
+        }
+    }
+
+    func testReadForwardsACancelThatComesBeforeItsCallStarts() async {
+        let operationCancelled = TaskEndMark()
+        let ended = TaskEndMark()
+        Task {
+            defer { ended.set() }
+            await withUnsafeCurrentTask { $0?.cancel() }
+            return try await CloudKitCallBound.longForTests.read(.small) { () async throws -> Int in
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    if error is CancellationError { operationCancelled.set() }
+                    throw error
+                }
+                return 0
+            }
+        }
+
+        let cancelled = await operationCancelled.wait(within: .seconds(2))
+        XCTAssertTrue(cancelled, "A cancel from before the call started must reach its operation")
+        let stopped = await ended.wait(within: .seconds(2))
+        XCTAssertTrue(stopped, "The caller must end once its operation does")
     }
 
     func testConfigurationsCarryTheIdleAndTotalLimits() {
