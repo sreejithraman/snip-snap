@@ -12,6 +12,19 @@ import SwiftUI
 private var processLifetimePanelSearchWindows: [NSWindow] = []
 
 @MainActor
+private struct HostedPanelFixture {
+    let model: AppModel
+    let panel: SnipSnapPanel
+    let hostingView: NSView
+
+    func close() {
+        panel.makeFirstResponder(nil)
+        panel.orderOut(nil)
+        processLifetimePanelSearchWindows.append(panel)
+    }
+}
+
+@MainActor
 private final class PanelPagerProbe: ObservableObject {
     @Published var selection = PanelTabPage.clipboard
     @Published var pages = [PanelTabPage.clipboard, .list(SnipList.inboxID)]
@@ -826,11 +839,86 @@ final class PanelTests: StoreBackedTestCase {
 
     @MainActor
     func testSearchKeepsFocusAfterSaveLeavesNoResults() async throws {
-        let defaultsName = "SnipSnapSearchSaveFocus-\(UUID().uuidString)"
+        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
+        let fixture = try await makeHostedPanel(snip: snip, searchQuery: "quokkaword")
+        defer { fixture.close() }
+
+        let editor = try await openEditor(for: snip, in: fixture)
+        replaceText(in: editor, with: "Plan the beach trip")
+        try pressEditorShortcut(.save, in: fixture)
+        try await waitForEditorToClose(in: fixture)
+
+        XCTAssertEqual(fixture.model.snips.map(\.content), ["Plan the beach trip"])
+        XCTAssertTrue(fixture.model.isSearchExpanded)
+        XCTAssertTrue(fixture.model.filteredSnips.isEmpty && fixture.model.clipboardSearchMatches.isEmpty)
+        let searchField = try XCTUnwrap(findTextField(in: fixture.hostingView, placeholder: "Search"))
+        let searchFieldEditor = try XCTUnwrap(
+            fixture.panel.firstResponder as? NSTextView,
+            "Focus must stay in search when a save leaves no results."
+        )
+        XCTAssertTrue((searchFieldEditor.delegate as AnyObject?) === searchField)
+        searchFieldEditor.insertText(
+            "s",
+            replacementRange: NSRange(location: searchFieldEditor.string.utf16.count, length: 0)
+        )
+        XCTAssertEqual(fixture.model.query, "quokkawords")
+    }
+
+    @MainActor
+    func testCancelInSearchWithResultsReturnsFocusToTheList() async throws {
+        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
+        let fixture = try await makeHostedPanel(snip: snip, searchQuery: "quokkaword")
+        defer { fixture.close() }
+
+        _ = try await openEditor(for: snip, in: fixture)
+        try pressEditorShortcut(.cancel, in: fixture)
+        try await waitForEditorToClose(in: fixture)
+
+        XCTAssertTrue(fixture.model.isSearchExpanded)
+        XCTAssertEqual(fixture.model.filteredSnips.map(\.id), [snip.id])
+        try await assertListHasFocus(in: fixture, listing: snip)
+    }
+
+    @MainActor
+    func testSaveWithSearchClosedReturnsFocusToTheList() async throws {
+        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
+        let fixture = try await makeHostedPanel(snip: snip, searchQuery: nil)
+        defer { fixture.close() }
+
+        let editor = try await openEditor(for: snip, in: fixture)
+        replaceText(in: editor, with: "Plan the beach trip")
+        try pressEditorShortcut(.save, in: fixture)
+        try await waitForEditorToClose(in: fixture)
+
+        XCTAssertEqual(fixture.model.snips.map(\.content), ["Plan the beach trip"])
+        XCTAssertFalse(fixture.model.isSearchExpanded)
+        try await assertListHasFocus(in: fixture, listing: snip)
+    }
+
+    @MainActor
+    func testSaveInSearchWithResultsLeftReturnsFocusToTheList() async throws {
+        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
+        let fixture = try await makeHostedPanel(snip: snip, searchQuery: "quokkaword")
+        defer { fixture.close() }
+
+        let editor = try await openEditor(for: snip, in: fixture)
+        replaceText(in: editor, with: "Plan the quokkaword beach trip")
+        try pressEditorShortcut(.save, in: fixture)
+        try await waitForEditorToClose(in: fixture)
+
+        XCTAssertEqual(fixture.model.snips.map(\.content), ["Plan the quokkaword beach trip"])
+        XCTAssertTrue(fixture.model.isSearchExpanded)
+        XCTAssertEqual(fixture.model.filteredSnips.map(\.id), [snip.id])
+        try await assertListHasFocus(in: fixture, listing: snip)
+    }
+
+    @MainActor
+    private func makeHostedPanel(snip: Snip, searchQuery: String?) async throws -> HostedPanelFixture {
+        let defaultsName = "SnipSnapHostedPanelFocus-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
         addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
         let pasteboard = NSPasteboard(
-            name: .init("world.sree.snipsnap.search-save-focus-tests.\(UUID().uuidString)")
+            name: .init("world.sree.snipsnap.hosted-panel-focus-tests.\(UUID().uuidString)")
         )
         addTeardownBlock { pasteboard.releaseGlobally() }
         let history = ClipboardHistory(
@@ -839,15 +927,16 @@ final class PanelTests: StoreBackedTestCase {
             storeURL: try storeURL().deletingLastPathComponent().appendingPathComponent("clipboard.json")
         )
         await history.waitForInitialLoad()
-        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
         let model = AppModel(
             library: InMemorySnipLibrary(snips: [snip]),
             defaults: defaults,
             clipboardHistory: history
         )
         await model.waitForInitialLoad()
-        model.enterSearch()
-        model.query = "quokkaword"
+        if let searchQuery {
+            model.enterSearch()
+            model.query = searchQuery
+        }
         let settings = ShortcutSettings(defaults: defaults)
         let coordinator = AppCoordinator(
             model: model,
@@ -876,52 +965,109 @@ final class PanelTests: StoreBackedTestCase {
         )
         coordinator.attachPanelWindow(panel)
         panel.makeKeyAndOrderFront(nil)
-        defer {
-            panel.makeFirstResponder(nil)
-            panel.orderOut(nil)
-            processLifetimePanelSearchWindows.append(panel)
-        }
+        let fixture = HostedPanelFixture(model: model, panel: panel, hostingView: hostingView)
         try await Task.sleep(for: .milliseconds(100))
+        return fixture
+    }
 
-        let opened = await model.beginEditing(snip.id)
+    @MainActor
+    private func openEditor(for snip: Snip, in fixture: HostedPanelFixture) async throws -> NSTextView {
+        let opened = await fixture.model.beginEditing(snip.id)
         XCTAssertTrue(opened)
-        let editor = try XCTUnwrap(waitForTextField(in: hostingView, placeholder: "Snip text"))
-        XCTAssertTrue(panel.makeFirstResponder(editor))
-        let editorFieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
-        editorFieldEditor.insertText(
-            "Plan the beach trip",
-            replacementRange: NSRange(location: 0, length: editorFieldEditor.string.utf16.count)
+        let editor = try XCTUnwrap(waitForTextField(in: fixture.hostingView, placeholder: "Snip text"))
+        XCTAssertTrue(fixture.panel.makeFirstResponder(editor))
+        return try XCTUnwrap(fixture.panel.firstResponder as? NSTextView)
+    }
+
+    @MainActor
+    private func replaceText(in fieldEditor: NSTextView, with text: String) {
+        fieldEditor.insertText(
+            text,
+            replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count)
         )
-        let save = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-            windowNumber: panel.windowNumber, context: nil, characters: "s",
-            charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1
+    }
+
+    private enum EditorShortcut {
+        case save
+        case cancel
+    }
+
+    @MainActor
+    private func pressEditorShortcut(_ shortcut: EditorShortcut, in fixture: HostedPanelFixture) throws {
+        let characters: String
+        let modifiers: NSEvent.ModifierFlags
+        let keyCode: UInt16
+        switch shortcut {
+        case .save:
+            characters = "s"
+            modifiers = .command
+            keyCode = 1
+        case .cancel:
+            characters = String(KeyEquivalent.escape.character)
+            modifiers = []
+            keyCode = 53
+        }
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+            windowNumber: fixture.panel.windowNumber, context: nil, characters: characters,
+            charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode
         ))
-        XCTAssertTrue(hostingView.performKeyEquivalent(with: save))
+        XCTAssertTrue(fixture.hostingView.performKeyEquivalent(with: event))
+    }
+
+    @MainActor
+    private func waitForEditorToClose(in fixture: HostedPanelFixture) async throws {
         let deadline = Date().addingTimeInterval(2)
-        while model.editingID != nil, Date() < deadline {
+        while fixture.model.editingID != nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertNil(model.editingID, "Cmd-S must save and close the editor.")
+        XCTAssertNil(fixture.model.editingID, "The shortcut must close the editor.")
         for _ in 0..<3 {
             try await Task.sleep(for: .milliseconds(50))
-            hostingView.layoutSubtreeIfNeeded()
+            fixture.hostingView.layoutSubtreeIfNeeded()
         }
+    }
 
-        XCTAssertEqual(model.snips.map(\.content), ["Plan the beach trip"])
-        XCTAssertTrue(model.isSearchExpanded)
-        XCTAssertTrue(model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty)
-        let searchField = try XCTUnwrap(findTextField(in: hostingView, placeholder: "Search"))
-        let searchFieldEditor = try XCTUnwrap(
-            panel.firstResponder as? NSTextView,
-            "Focus must stay in search when a save leaves no results."
+    /// The list's focus target is a SwiftUI `.focusable()` view with no AppKit
+    /// view of its own, so the AppKit first responder is the hosting view (or a
+    /// private view inside it). Down Arrow, which only the list handles, tells
+    /// list focus apart from no focus.
+    @MainActor
+    private func assertListHasFocus(
+        in fixture: HostedPanelFixture,
+        listing snip: Snip,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let responder = try XCTUnwrap(
+            fixture.panel.firstResponder as? NSView,
+            "Focus must land on a view in the panel.",
+            file: file, line: line
         )
-        XCTAssertTrue((searchFieldEditor.delegate as AnyObject?) === searchField)
-        searchFieldEditor.insertText(
-            "s",
-            replacementRange: NSRange(location: searchFieldEditor.string.utf16.count, length: 0)
+        XCTAssertFalse(
+            responder is NSTextView,
+            "Focus must leave the editor and search fields for the list.",
+            file: file, line: line
         )
-        XCTAssertEqual(model.query, "quokkawords")
+        XCTAssertTrue(responder.isDescendant(of: fixture.hostingView), file: file, line: line)
+
+        fixture.model.selection = []
+        let downArrow = String(KeyEquivalent.downArrow.character)
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.numericPad, .function], timestamp: 0,
+            windowNumber: fixture.panel.windowNumber, context: nil, characters: downArrow,
+            charactersIgnoringModifiers: downArrow, isARepeat: false, keyCode: 125
+        ))
+        fixture.panel.sendEvent(event)
+        let deadline = Date().addingTimeInterval(1)
+        while fixture.model.selection != [snip.id], Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(
+            fixture.model.selection, [snip.id],
+            "Down Arrow must move the list selection when the list has focus.",
+            file: file, line: line
+        )
     }
 
     func testListIconCatalogHasUsefulUniqueAvailableSymbols() {
