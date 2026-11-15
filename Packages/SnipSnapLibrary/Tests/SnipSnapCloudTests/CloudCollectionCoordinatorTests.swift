@@ -3685,6 +3685,125 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertNil(cleared.encryptedDataReset)
   }
 
+  func testZoneCleanupFailureWithoutPendingDeletionFailsTheSync() async throws {
+    let active = descriptor(
+      generation: "64646464-6464-6464-6464-646464646464",
+      metadata: "cleanup-failure-active-metadata",
+      payload: "cleanup-failure-active-payload"
+    )
+    let leftover = descriptor(
+      generation: "65656565-6565-6565-6565-656565656565",
+      metadata: "cleanup-failure-leftover-metadata",
+      payload: "cleanup-failure-leftover-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(active)
+    await server.createZones(leftover.zones)
+    let local = TestCloudCollectionLocalStore(active: namespace(active), hasSyncedBefore: true)
+    await local.stageCleanup(leftover.zones)
+    let driver = TestCloudCollectionSyncDriver()
+    let coordinator = makeCollectionCoordinator(
+      local: local,
+      transport: transport,
+      driver: driver,
+      makeDescriptor: { active }
+    )
+
+    await transport.failNextZoneDelete()
+    do {
+      let status = try await coordinator.synchronize()
+      XCTFail("Expected the failed zone cleanup to fail the sync, got \(status)")
+    } catch {
+      XCTAssertEqual(error as? CloudTransportError, .sendFailed)
+    }
+    let failedState = await local.state()
+    let failedDriverEvents = await driver.events()
+    let failedTransportEvents = await transport.events()
+    let leftoverKeptMetadata = await server.hasZone(leftover.metadataZone)
+    XCTAssertEqual(failedState.cleanupZones, leftover.zones)
+    XCTAssertEqual(failedState.deletionState, CloudCollectionDeletionState.none)
+    XCTAssertEqual(failedState.activeNamespace, namespace(active))
+    XCTAssertTrue(failedDriverEvents.isEmpty)
+    XCTAssertFalse(failedTransportEvents.contains(.deletedZones(leftover.zones)))
+    XCTAssertTrue(leftoverKeptMetadata)
+
+    let status = try await coordinator.synchronize()
+    let cleanedState = await local.state()
+    let transportEvents = await transport.events()
+    let leftoverMetadataRemains = await server.hasZone(leftover.metadataZone)
+    let leftoverPayloadRemains = await server.hasZone(leftover.payloadZone)
+    let activeMetadataExists = await server.hasZone(active.metadataZone)
+    let activePayloadExists = await server.hasZone(active.payloadZone)
+    XCTAssertEqual(status, .on(namespace(active)))
+    XCTAssertTrue(cleanedState.cleanupZones.isEmpty)
+    XCTAssertEqual(cleanedState.deletionState, CloudCollectionDeletionState.none)
+    XCTAssertTrue(transportEvents.contains(.deletedZones(leftover.zones)))
+    XCTAssertFalse(leftoverMetadataRemains)
+    XCTAssertFalse(leftoverPayloadRemains)
+    XCTAssertTrue(activeMetadataExists)
+    XCTAssertTrue(activePayloadExists)
+  }
+
+  func testAdoptionZoneCleanupFailureReportsAnAdoptionIssue() async throws {
+    let replaced = descriptor(
+      generation: "66666666-6666-6666-6666-666666666667",
+      metadata: "adoption-cleanup-replaced-metadata",
+      payload: "adoption-cleanup-replaced-payload"
+    )
+    let current = descriptor(
+      generation: "67676767-6767-6767-6767-676767676767",
+      metadata: "adoption-cleanup-current-metadata",
+      payload: "adoption-cleanup-current-payload"
+    )
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await server.createZones(replaced.zones)
+    await transport.seedControl(current)
+    let local = TestCloudCollectionLocalStore(active: namespace(replaced), hasSyncedBefore: true)
+    let driver = TestCloudCollectionSyncDriver()
+    let coordinator = makeCollectionCoordinator(
+      local: local,
+      transport: transport,
+      driver: driver,
+      makeDescriptor: { current }
+    )
+
+    await transport.failNextZoneDelete()
+    let adoptedStatus = try await coordinator.synchronize()
+    let adoptedState = await local.state()
+    let adoptedTransportEvents = await transport.events()
+    let replacedKeptMetadata = await server.hasZone(replaced.metadataZone)
+    let replacedKeptPayload = await server.hasZone(replaced.payloadZone)
+    XCTAssertEqual(
+      adoptedStatus,
+      .adoptedRemoteCollectionWithIssue(namespace(current), .someChangesPending)
+    )
+    XCTAssertEqual(adoptedState.activeNamespace, namespace(current))
+    XCTAssertEqual(adoptedState.cleanupZones, replaced.zones)
+    XCTAssertEqual(adoptedState.deletionState, CloudCollectionDeletionState.none)
+    XCTAssertFalse(adoptedTransportEvents.contains(.deletedZones(replaced.zones)))
+    XCTAssertTrue(replacedKeptMetadata)
+    XCTAssertTrue(replacedKeptPayload)
+
+    let status = try await coordinator.synchronize()
+    let cleanedState = await local.state()
+    let driverEvents = await driver.events()
+    let transportEvents = await transport.events()
+    let replacedMetadataRemains = await server.hasZone(replaced.metadataZone)
+    let replacedPayloadRemains = await server.hasZone(replaced.payloadZone)
+    let currentMetadataExists = await server.hasZone(current.metadataZone)
+    let currentPayloadExists = await server.hasZone(current.payloadZone)
+    XCTAssertEqual(status, .on(namespace(current)))
+    XCTAssertTrue(cleanedState.cleanupZones.isEmpty)
+    XCTAssertTrue(transportEvents.contains(.deletedZones(replaced.zones)))
+    XCTAssertFalse(driverEvents.contains(.sent(namespace(replaced))))
+    XCTAssertFalse(replacedMetadataRemains)
+    XCTAssertFalse(replacedPayloadRemains)
+    XCTAssertTrue(currentMetadataExists)
+    XCTAssertTrue(currentPayloadExists)
+  }
+
   private func makeCollectionCoordinator(
     local: any CloudCollectionLocalStore,
     transport: FakeCloudControlTransport,
