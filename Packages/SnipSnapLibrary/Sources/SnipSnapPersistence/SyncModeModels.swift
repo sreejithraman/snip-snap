@@ -66,6 +66,32 @@ public struct ICloudSyncNamespaceBinding: Codable, Equatable, Sendable {
     }
     return CloudSyncNamespaceKey(rawValue: data.base64EncodedString())
   }
+
+  /// The inverse of `namespaceKey`. Returns nil for any string `namespaceKey` doesn't produce.
+  package init?(namespaceKey: CloudSyncNamespaceKey) {
+    guard var remaining = Data(base64Encoded: namespaceKey.rawValue) else { return nil }
+    func readField() -> String? {
+      guard remaining.count >= 8 else { return nil }
+      let count = remaining.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+      remaining = remaining.dropFirst(8)
+      guard count <= UInt64(remaining.count) else { return nil }
+      let field = remaining.prefix(Int(count))
+      remaining = remaining.dropFirst(Int(count))
+      return String(bytes: field, encoding: .utf8)
+    }
+    guard readField() == "snipsnap-cloud-namespace-v1",
+      let scope = readField(),
+      let accountLineage = readField(),
+      let generation = readField().flatMap(UUID.init(uuidString:))
+    else { return nil }
+    var zones: Set<ICloudSyncZoneBinding> = []
+    while !remaining.isEmpty {
+      guard let ownerName = readField(), let name = readField() else { return nil }
+      zones.insert(ICloudSyncZoneBinding(name: name, ownerName: ownerName))
+    }
+    self.init(scope: scope, accountLineage: accountLineage, generation: generation, zones: zones)
+    guard self.namespaceKey == namespaceKey else { return nil }
+  }
 }
 
 package enum SyncModeStoreKind: String, Codable, Equatable, Sendable {
