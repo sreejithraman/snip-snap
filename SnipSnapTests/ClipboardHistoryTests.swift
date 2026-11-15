@@ -222,6 +222,8 @@ private struct ClipboardGenerationFixture {
 /// uploads to `cloud`.
 private struct ClipboardUnboundFixture {
     let history: ClipboardHistory
+    let pasteboard: NSPasteboard
+    let defaults: UserDefaults
     let historyDirectory: URL
     let bindingURL: URL
     let cloud: ClipboardHeldUploadCloud
@@ -1032,6 +1034,55 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertNil(history.syncError)
     }
 
+    func testFailedAccountResetKeepsUnboundHistoryOutOfTheNextAccountAfterARelaunch() async throws {
+        let older = clipboardEntry("never synced")
+        let unbound = try await makeUnboundHistory(holding: [older], clipboardSync: true)
+        let storeURL = unbound.history.sharedStore.url
+        // The pre-save merge then fails reading the store, which isn't a decoding failure.
+        try failSaves(at: storeURL)
+        await unbound.history.resetCloudAccount()
+        XCTAssertNotNil(unbound.history.syncError)
+
+        let accountB = clipboardSyncGeneration(account: "account-B")
+        let bindingB = try JSONEncoder().encode(accountB)
+        let source = unbound.generationSource
+        let cloud = unbound.cloud
+        source.current = accountB
+        let relaunched = ClipboardHistory(
+            pasteboard: unbound.pasteboard, defaults: unbound.defaults, storeURL: storeURL
+        )
+        relaunched.configureSync(
+            containerIdentifier: "iCloud.org.example.snipsnap",
+            rootURL: unbound.bindingURL.deletingLastPathComponent(),
+            mainEnabled: { true },
+            generation: { await source.generation() },
+            makeCloudService: { store, _, syncRoot in
+                ClipboardCloudSyncService(store: store, syncRootURL: syncRoot, makeTransport: { _ in cloud })
+            }
+        )
+        await relaunched.waitForInitialLoad()
+        relaunched.stopSync()
+        await relaunched.syncNow()
+
+        let uploadedWhileSavesFail = await cloud.uploadedEntryIDs
+        XCTAssertEqual(uploadedWhileSavesFail, [])
+        XCTAssertNotEqual(try? Data(contentsOf: unbound.bindingURL), bindingB)
+
+        try restoreSaves(at: storeURL)
+        relaunched.stopSync()
+        await relaunched.syncNow()
+
+        let uploaded = await cloud.uploadedEntryIDs
+        let uploadedTombstones = await cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(relaunched.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.historyDirectory)
+        XCTAssertTrue(setAside.contains { $0.entries.contains { $0.id == older.id } })
+        XCTAssertEqual(try Data(contentsOf: unbound.bindingURL), bindingB)
+        XCTAssertNil(relaunched.syncError)
+    }
+
     func testAccountResetSetsAsideACopyMadeAfterASetAsideLeftHistoryUnbound() async throws {
         let gate = ClipboardBindingResetGate(holding: .bindingRemoved)
         let fixture = try await makeHistoryAdoptingANewSyncGeneration(
@@ -1826,6 +1877,8 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(Set(history.entries.map(\.id)), Set(entries.map(\.id)))
         return ClipboardUnboundFixture(
             history: history,
+            pasteboard: context.pasteboard,
+            defaults: context.defaults,
             historyDirectory: historyDirectory,
             bindingURL: syncRoot.appendingPathComponent("clipboard-account-binding.json"),
             cloud: cloud,
