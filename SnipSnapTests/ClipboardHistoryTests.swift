@@ -995,6 +995,43 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertNil(history.syncError)
     }
 
+    func testFailedAccountResetKeepsUnboundHistoryOutOfTheNextAccount() async throws {
+        let older = clipboardEntry("never synced")
+        let unbound = try await makeUnboundHistory(holding: [older], clipboardSync: true)
+        let history = unbound.history
+        // The pre-save merge then fails reading the store, which isn't a decoding failure.
+        try failSaves(at: history.sharedStore.url)
+
+        await history.resetCloudAccount()
+        let resetError = try XCTUnwrap(history.syncError)
+        XCTAssertTrue(resetError.hasPrefix("Couldn’t update clipboard history for this account."))
+
+        // The fixture's main sync is always on.
+        unbound.generationSource.current = clipboardSyncGeneration(account: "account-B")
+        history.stopSync()
+        await history.syncNow()
+
+        let uploadedWhileSavesFail = await unbound.cloud.uploadedEntryIDs
+        let uploadedTombstonesWhileSavesFail = await unbound.cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploadedWhileSavesFail, [])
+        XCTAssertEqual(uploadedTombstonesWhileSavesFail, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unbound.bindingURL.path))
+        XCTAssertNotNil(history.syncError)
+
+        try restoreSaves(at: history.sharedStore.url)
+        history.stopSync()
+        await history.syncNow()
+
+        let uploaded = await unbound.cloud.uploadedEntryIDs
+        let uploadedTombstones = await unbound.cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(history.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.historyDirectory)
+        XCTAssertTrue(setAside.contains { $0.entries.contains { $0.id == older.id } })
+        XCTAssertNil(history.syncError)
+    }
+
     func testAccountResetSetsAsideACopyMadeAfterASetAsideLeftHistoryUnbound() async throws {
         let gate = ClipboardBindingResetGate(holding: .bindingRemoved)
         let fixture = try await makeHistoryAdoptingANewSyncGeneration(

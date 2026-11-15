@@ -306,6 +306,34 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(model.syncErrorMessage)
     }
 
+    func testFailedAccountResetKeepsUnboundClipboardHistoryOutOfTheNextAccount() async throws {
+        let older = textEntry("never synced")
+        let unbound = try await makeUnboundClipboardModel(holding: [older], syncEnabled: true)
+        let model = unbound.model
+        let fileManager = FileManager.default
+        let historyFolder = unbound.root.path
+        // A read-only history folder makes the set-aside copy fail before anything changes.
+        try fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: historyFolder)
+        defer { try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder) }
+
+        await model.resetAccountBinding()
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyFolder)
+
+        let resetError = try XCTUnwrap(model.syncErrorMessage)
+        XCTAssertTrue(resetError.hasPrefix("Couldn’t update clipboard history for this account."))
+        unbound.source.current = clipboardSyncGeneration(account: "account-B")
+        await model.synchronize()
+
+        let uploaded = await unbound.cloud.uploadedEntryIDs
+        let uploadedTombstones = await unbound.cloud.uploadedTombstoneIDs
+        XCTAssertEqual(uploaded, [])
+        XCTAssertEqual(uploadedTombstones, [])
+        XCTAssertEqual(model.entries.map(\.id), [])
+        let setAside = try await setAsideHistories(in: unbound.root)
+        XCTAssertEqual(setAside.map { $0.entries.map(\.id) }, [[older.id]])
+        XCTAssertNil(model.syncErrorMessage)
+    }
+
     func testAccountResetKeepsUnboundClipboardHistoryWhileClipboardSyncIsOff() async throws {
         let kept = textEntry("kept while sync is off")
         let unbound = try await makeUnboundClipboardModel(holding: [kept], syncEnabled: false)

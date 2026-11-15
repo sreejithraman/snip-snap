@@ -771,6 +771,32 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await setAsideEntryIDs(in: client.root) == [])
     }
 
+    @Test func failedAccountResetKeepsUnboundHistoryOutOfTheNextAccount() async throws {
+        struct SettingAsideFailure: Error {}
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingURL = client.root.appendingPathComponent("clipboard-account-binding.json")
+        let older = entry("never synced")
+        try await client.store.insert(older)
+
+        await #expect(throws: SettingAsideFailure.self) {
+            try await client.sync.resetAccountBinding(includingUnboundHistory: true,
+                                                      settingAside: { throw SettingAsideFailure() })
+        }
+        await #expect(throws: ClipboardCloudError.syncGenerationChanged) {
+            try await client.run(scope: "account-generation-B")
+        }
+        #expect(try await cloud.fetch().entries.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: bindingURL.path))
+
+        try await client.sync.resetAccountBinding()
+        #expect(try await setAsideEntryIDs(in: client.root) == [[older.id]])
+        #expect(try await client.store.load().entries.isEmpty)
+
+        try await client.run(scope: "account-generation-B")
+        #expect(try await cloud.fetch().entries.isEmpty)
+    }
+
     @Test func unchangedSyncDoesNotWriteAnotherManifest() async throws {
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
