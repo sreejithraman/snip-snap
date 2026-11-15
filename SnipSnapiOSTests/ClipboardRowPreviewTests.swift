@@ -207,6 +207,10 @@ private struct GlassMenuTransitionContent: View {
     }
 }
 
+private struct TransitionTestFailure: Error, CustomStringConvertible {
+    let description: String
+}
+
 @MainActor
 private final class ExpandableTextTransitionProbe: ObservableObject {
     nonisolated static let identifier = "expandable-transition-probe"
@@ -216,11 +220,21 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
 
     @Published var content = SnipTextContent.literal(ExpandableTextTransitionProbe.longText("First"))
     private(set) var activations = 0
-    var height: CGFloat = 0
+    private(set) var heights: [CGFloat] = []
+    private var replacements = 0
+
+    var height: CGFloat { heights.last ?? 0 }
 
     func activate() -> Bool {
         activations += 1
         return true
+    }
+
+    func record(height: CGFloat) { heights.append(height) }
+
+    func replaceContent() {
+        replacements += 1
+        content = .literal(Self.longText(["Second", "Third", "Fourth"][(replacements - 1) % 3]))
     }
 }
 
@@ -233,35 +247,79 @@ private struct ExpandableTextTransitionView: View {
             accessibilityIdentifier: ExpandableTextTransitionProbe.identifier,
             onActivate: { _ in probe.activate() }
         )
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.height = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.record(height: $0) }
         .frame(width: 300)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
 @MainActor
+private func renderedPixels(of view: UIView) -> [UInt8] {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 2
+    let image = UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { _ in
+        _ = view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
+    }
+    guard let data = image.cgImage?.dataProvider?.data else { return [] }
+    return [UInt8](data as Data)
+}
+
+@MainActor
 private struct HostedExpandableText {
+    struct Interruption {
+        let height: CGFloat
+        let attempt: Int
+    }
+
+    private static let attempts = 3
+
     let probe: ExpandableTextTransitionProbe
     let window: UIWindow
+    let hostView: UIView
     let collapsedHeight: CGFloat
+    let collapsedRender: [UInt8]
+    var fullHeight: CGFloat = 0
 
+    /// Mounts the row, then expands and collapses it once to measure the full height and to
+    /// check that a collapsed row renders the truncated preview again.
     static func mount() async throws -> HostedExpandableText {
         let probe = ExpandableTextTransitionProbe()
         let window = try mountTransitionWindow(ExpandableTextTransitionView(probe: probe))
-        let exposed = await TestReadiness.wait { element(in: window) != nil && probe.height > 0 }
+        let hostView = try XCTUnwrap(window.rootViewController?.view)
+        let exposed = await TestReadiness.wait {
+            findButton(in: window, label: probe.content.accessibilityText) != nil && probe.height > 0
+        }
         XCTAssertTrue(exposed, "The hosted expandable text should expose its accessibility button.")
         try await Task.sleep(for: .milliseconds(300))
-        return HostedExpandableText(probe: probe, window: window, collapsedHeight: probe.height)
+        // A clipped full text would drop this ellipsis, so the render comparison can see it.
+        XCTAssertTrue(String(probe.content.presentation(lineLimit: 2).preview.characters).hasSuffix("…"))
+
+        var text = HostedExpandableText(
+            probe: probe, window: window, hostView: hostView,
+            collapsedHeight: probe.height, collapsedRender: renderedPixels(of: hostView)
+        )
+        XCTAssertFalse(text.collapsedRender.isEmpty)
+        try await text.activate()
+        let expanded = await TestReadiness.wait {
+            text.value == "Expanded" && probe.height > text.collapsedHeight * 2
+        }
+        XCTAssertTrue(expanded, "The row should expand on its own before the interruption tests.")
+        try await Task.sleep(for: .milliseconds(400))
+        text.fullHeight = probe.height
+        XCTAssertNotEqual(
+            renderedPixels(of: hostView), text.collapsedRender,
+            "Rendering must capture the row's text, or the collapsed-render check proves nothing."
+        )
+        try await text.activate()
+        let collapsed = await TestReadiness.wait { text.isCollapsed }
+        XCTAssertTrue(collapsed, "The row should collapse on its own before the interruption tests.")
+        let restored = await TestReadiness.wait { text.rendersCollapsedPreview }
+        XCTAssertTrue(restored, "A collapsed row should render its truncated preview again.")
+        return text
     }
 
-    private static func element(in window: UIWindow) -> NSObject? {
-        accessibilityButton(
-            identifier: ExpandableTextTransitionProbe.identifier,
-            label: ExpandableTextTransitionProbe.longText("First"), in: window, depth: 0
-        ) ?? accessibilityButton(
-            identifier: ExpandableTextTransitionProbe.identifier,
-            label: ExpandableTextTransitionProbe.longText("Second"), in: window, depth: 0
-        )
+    private static func findButton(in window: UIWindow, label: String) -> NSObject? {
+        accessibilityButton(identifier: ExpandableTextTransitionProbe.identifier, label: label, in: window, depth: 0)
     }
 
     // SwiftUI exposes its nodes through the informal UIAccessibility container API.
@@ -291,26 +349,76 @@ private struct HostedExpandableText {
         return nil
     }
 
-    func activate() throws {
-        let element = try XCTUnwrap(Self.element(in: window), "The expandable text left the accessibility tree.")
-        _ = element.accessibilityActivate()
+    private var button: NSObject? { Self.findButton(in: window, label: probe.content.accessibilityText) }
+
+    /// Activates the row and returns once its `onActivate` ran.
+    func activate() async throws {
+        let previous = probe.activations
+        let button = try XCTUnwrap(self.button, "The expandable text left the accessibility tree.")
+        _ = button.accessibilityActivate()
+        guard await TestReadiness.wait(until: { probe.activations > previous }) else {
+            throw TransitionTestFailure(description: "The accessibility activation did not reach the text's onActivate.")
+        }
     }
 
-    var value: String? { Self.element(in: window)?.accessibilityValue }
+    /// Presses the row and runs `interrupt` on the first reported height strictly between
+    /// `start` and `end`, which only occurs while the reveal animates. If the press reaches
+    /// `end` without such a frame, `interrupt` still runs, the row settles, and another attempt
+    /// starts. When no attempt lands mid-animation, this throws.
+    func pressAndInterrupt(
+        from start: CGFloat, to end: CGFloat, settled: () -> Bool,
+        with interrupt: () async throws -> Void
+    ) async throws -> Interruption {
+        let low = min(start, end) + 2
+        let high = max(start, end) - 2
+        var missedHeights: [[CGFloat]] = []
+        for attempt in 1...Self.attempts {
+            let firstReading = probe.heights.count
+            try await activate()
+            var interruptedAt: CGFloat?
+            let deadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < deadline {
+                let height = probe.height
+                if height > low, height < high {
+                    interruptedAt = height
+                    break
+                }
+                if probe.heights.count > firstReading, abs(height - end) <= 1 { break }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            // Acting right after the check, with no suspension between, keeps the frame current.
+            try await interrupt()
+            if let interruptedAt { return Interruption(height: interruptedAt, attempt: attempt) }
+            missedHeights.append(Array(probe.heights[firstReading...]))
+            let didSettle = await TestReadiness.wait { settled() }
+            XCTAssertTrue(didSettle, "The row should settle before the next interruption attempt.")
+            try await Task.sleep(for: .milliseconds(400))
+        }
+        throw TransitionTestFailure(description:
+            "No reported height fell strictly between \(start) and \(end) in \(Self.attempts) attempts "
+                + "(heights per attempt: \(missedHeights)). The runner may report only end-state geometry."
+        )
+    }
+
+    var value: String? { button?.accessibilityValue }
 
     var isCollapsed: Bool {
         value == "Collapsed" && abs(probe.height - collapsedHeight) <= 1
     }
 
     var isExpanded: Bool {
-        value == "Expanded" && probe.height > collapsedHeight * 2
+        value == "Expanded" && abs(probe.height - fullHeight) <= 1
+    }
+
+    /// Clipped full text has the same height and value, but its second line lacks the ellipsis.
+    var rendersCollapsedPreview: Bool {
+        renderedPixels(of: hostView) == collapsedRender
     }
 }
 
 @MainActor
 final class SharedTransitionHostTests: XCTestCase {
     private let settleTime: Duration = .milliseconds(500)
-    private let interruptionDelay: Duration = .milliseconds(30)
 
     func testGlassMenuOpensInteractiveThenClosesAndFinishesOnce() async throws {
         let probe = GlassMenuTransitionProbe()
@@ -406,54 +514,66 @@ final class SharedTransitionHostTests: XCTestCase {
     func testExpandableTextCollapsedDuringExpansionSettlesCollapsed() async throws {
         let text = try await HostedExpandableText.mount()
         defer { text.window.isHidden = true }
-        XCTAssertTrue(text.isCollapsed)
+        let activations = text.probe.activations
 
-        try text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        try text.activate()
+        let interruption = try await text.pressAndInterrupt(
+            from: text.collapsedHeight, to: text.fullHeight, settled: { text.isCollapsed }
+        ) {
+            try await text.activate()
+        }
+        XCTAssertGreaterThan(interruption.height, text.collapsedHeight + 2, "The collapse must land mid-expansion.")
+        XCTAssertLessThan(interruption.height, text.fullHeight - 2, "The collapse must land mid-expansion.")
 
         let collapsed = await TestReadiness.wait { text.isCollapsed }
         XCTAssertTrue(collapsed, "Collapsing mid-expansion should settle collapsed.")
         try await Task.sleep(for: settleTime)
         XCTAssertTrue(text.isCollapsed)
-        XCTAssertEqual(text.probe.activations, 2)
+        let restored = await TestReadiness.wait { text.rendersCollapsedPreview }
+        XCTAssertTrue(restored, "The collapsed row must show its truncated preview, not clipped full text.")
+        XCTAssertEqual(text.probe.activations, activations + 2 * interruption.attempt)
     }
 
     func testExpandableTextExpandedDuringCollapseSettlesExpanded() async throws {
         let text = try await HostedExpandableText.mount()
         defer { text.window.isHidden = true }
-        try text.activate()
+        try await text.activate()
         let expanded = await TestReadiness.wait { text.isExpanded }
         XCTAssertTrue(expanded)
         try await Task.sleep(for: settleTime)
-        let expandedHeight = text.probe.height
+        let activations = text.probe.activations
 
-        try text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        try text.activate()
-
-        let reexpanded = await TestReadiness.wait {
-            text.isExpanded && abs(text.probe.height - expandedHeight) <= 1
+        let interruption = try await text.pressAndInterrupt(
+            from: text.fullHeight, to: text.collapsedHeight, settled: { text.isExpanded }
+        ) {
+            try await text.activate()
         }
+        XCTAssertGreaterThan(interruption.height, text.collapsedHeight + 2, "The expansion must land mid-collapse.")
+        XCTAssertLessThan(interruption.height, text.fullHeight - 2, "The expansion must land mid-collapse.")
+
+        let reexpanded = await TestReadiness.wait { text.isExpanded }
         XCTAssertTrue(reexpanded, "Expanding mid-collapse should settle at the full height.")
         try await Task.sleep(for: settleTime)
         XCTAssertTrue(text.isExpanded)
-        XCTAssertEqual(text.probe.height, expandedHeight, accuracy: 1)
-        XCTAssertEqual(text.probe.activations, 3)
+        XCTAssertEqual(text.probe.activations, activations + 2 * interruption.attempt)
     }
 
     func testExpandableTextContentChangeDuringExpansionResetsCollapsed() async throws {
         let text = try await HostedExpandableText.mount()
         defer { text.window.isHidden = true }
+        let activations = text.probe.activations
 
-        try text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        text.probe.content = .literal(ExpandableTextTransitionProbe.longText("Second"))
+        let interruption = try await text.pressAndInterrupt(
+            from: text.collapsedHeight, to: text.fullHeight, settled: { text.isCollapsed }
+        ) {
+            text.probe.replaceContent()
+        }
+        XCTAssertGreaterThan(interruption.height, text.collapsedHeight + 2, "The new content must land mid-expansion.")
+        XCTAssertLessThan(interruption.height, text.fullHeight - 2, "The new content must land mid-expansion.")
 
         let collapsed = await TestReadiness.wait { text.isCollapsed }
         XCTAssertTrue(collapsed, "New content should reset the text to collapsed.")
         try await Task.sleep(for: settleTime)
         XCTAssertTrue(text.isCollapsed)
-        XCTAssertEqual(text.probe.activations, 1)
+        XCTAssertEqual(text.probe.activations, activations + interruption.attempt)
     }
 }

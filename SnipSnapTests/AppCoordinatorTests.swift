@@ -2257,6 +2257,10 @@ private struct GlassMenuTransitionContent: View {
     }
 }
 
+private struct TransitionTestFailure: Error, CustomStringConvertible {
+    let description: String
+}
+
 @MainActor
 private final class ExpandableTextTransitionProbe: ObservableObject {
     nonisolated static let identifier = "expandable-transition-probe"
@@ -2265,12 +2269,22 @@ private final class ExpandableTextTransitionProbe: ObservableObject {
     }
 
     @Published var content = SnipTextContent.literal(ExpandableTextTransitionProbe.longText("First"))
-    private(set) var activations = 0
+    private(set) var activationTimes: [ContinuousClock.Instant] = []
+    private var replacements = 0
     var height: CGFloat = 0
 
+    var activations: Int { activationTimes.count }
+
     func activate() -> Bool {
-        activations += 1
+        activationTimes.append(ContinuousClock.now)
         return true
+    }
+
+    func replaceContent() -> ContinuousClock.Instant {
+        replacements += 1
+        let replacedAt = ContinuousClock.now
+        content = .literal(Self.longText(["Second", "Third", "Fourth"][(replacements - 1) % 3]))
+        return replacedAt
     }
 }
 
@@ -2291,6 +2305,16 @@ private struct ExpandableTextTransitionView: View {
 
 @MainActor
 private struct HostedExpandableText {
+    struct Interruption {
+        let gap: Duration
+        let attempt: Int
+    }
+
+    /// `.snappy(duration: 0.18)` cannot finish sooner than this after the write that starts it.
+    static let animationFloor: Duration = .milliseconds(180)
+    private static let interruptionBudget: Duration = .milliseconds(150)
+    private static let attempts = 3
+
     let probe: ExpandableTextTransitionProbe
     let panel: SnipSnapPanel
     let accessibility: MountedAccessibility
@@ -2309,9 +2333,41 @@ private struct HostedExpandableText {
         )
     }
 
-    func activate() async throws {
+    /// Returns when the text's `onActivate` ran for this press.
+    @discardableResult
+    func activate() async throws -> ContinuousClock.Instant {
+        let previous = probe.activations
         let button = try await accessibility.button(identifier: ExpandableTextTransitionProbe.identifier)
         XCTAssertTrue(accessibility.press(button), "The expandable text should accept an accessibility press.")
+        guard await waitForTransition(within: .seconds(2), until: { probe.activations > previous }) else {
+            throw TransitionTestFailure(description: "The accessibility press did not reach the text's onActivate.")
+        }
+        return probe.activationTimes[previous]
+    }
+
+    /// Presses the text, then runs `interrupt` a frame or two later. The Mac text swap is not an
+    /// animatable layout, so row geometry may report only end values. The proof that `interrupt`
+    /// landed mid-animation is timing instead: it acted sooner after the press than the
+    /// animation can finish. A slow runner gets another attempt
+    /// after the row settles; when no attempt lands in time, this throws.
+    func pressAndInterrupt(
+        settled: () async throws -> Bool,
+        with interrupt: () async throws -> ContinuousClock.Instant
+    ) async throws -> Interruption {
+        var gaps: [Duration] = []
+        for attempt in 1...Self.attempts {
+            let pressedAt = try await activate()
+            try await Task.sleep(for: .milliseconds(32))
+            let gap = try await interrupt() - pressedAt
+            if gap < Self.interruptionBudget { return Interruption(gap: gap, attempt: attempt) }
+            gaps.append(gap)
+            let didSettle = try await waitUntil(settled)
+            XCTAssertTrue(didSettle, "The row should settle before the next interruption attempt.")
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        throw TransitionTestFailure(description:
+            "No attempt interrupted within \(Self.interruptionBudget) of the press (gaps: \(gaps)); the runner is too slow."
+        )
     }
 
     func value() async throws -> String? {
@@ -2340,7 +2396,6 @@ private struct HostedExpandableText {
 @MainActor
 final class SharedTransitionHostTests: XCTestCase {
     private let settleTime: Duration = .milliseconds(500)
-    private let interruptionDelay: Duration = .milliseconds(30)
 
     func testGlassMenuOpensInteractiveThenClosesAndFinishesOnce() async throws {
         let probe = GlassMenuTransitionProbe()
@@ -2439,16 +2494,17 @@ final class SharedTransitionHostTests: XCTestCase {
         let startsCollapsed = try await text.isCollapsed()
         XCTAssertTrue(startsCollapsed)
 
-        try await text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        try await text.activate()
+        let interruption = try await text.pressAndInterrupt(settled: { try await text.isCollapsed() }) {
+            try await text.activate()
+        }
+        XCTAssertLessThan(interruption.gap, HostedExpandableText.animationFloor, "The collapse must land mid-expansion.")
 
         let collapsed = try await text.waitUntil { try await text.isCollapsed() }
         XCTAssertTrue(collapsed, "Collapsing mid-expansion should settle collapsed.")
         try await Task.sleep(for: settleTime)
         let staysCollapsed = try await text.isCollapsed()
         XCTAssertTrue(staysCollapsed)
-        XCTAssertEqual(text.probe.activations, 2)
+        XCTAssertEqual(text.probe.activations, 2 * interruption.attempt)
     }
 
     func testExpandableTextExpandedDuringCollapseSettlesExpanded() async throws {
@@ -2459,35 +2515,38 @@ final class SharedTransitionHostTests: XCTestCase {
         XCTAssertTrue(expanded)
         try await Task.sleep(for: settleTime)
         let expandedHeight = text.probe.height
-
-        try await text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        try await text.activate()
-
-        let reexpanded = try await text.waitUntil {
+        let isAtExpandedHeight: () async throws -> Bool = {
             try await text.isExpanded() && abs(text.probe.height - expandedHeight) <= 1
         }
+
+        let interruption = try await text.pressAndInterrupt(settled: isAtExpandedHeight) {
+            try await text.activate()
+        }
+        XCTAssertLessThan(interruption.gap, HostedExpandableText.animationFloor, "The expansion must land mid-collapse.")
+
+        let reexpanded = try await text.waitUntil(isAtExpandedHeight)
         XCTAssertTrue(reexpanded, "Expanding mid-collapse should settle at the full height.")
         try await Task.sleep(for: settleTime)
         let staysExpanded = try await text.isExpanded()
         XCTAssertTrue(staysExpanded)
         XCTAssertEqual(text.probe.height, expandedHeight, accuracy: 1)
-        XCTAssertEqual(text.probe.activations, 3)
+        XCTAssertEqual(text.probe.activations, 1 + 2 * interruption.attempt)
     }
 
     func testExpandableTextContentChangeDuringExpansionResetsCollapsed() async throws {
         let text = try await HostedExpandableText.mount()
         defer { text.panel.orderOut(nil) }
 
-        try await text.activate()
-        try await Task.sleep(for: interruptionDelay)
-        text.probe.content = .literal(ExpandableTextTransitionProbe.longText("Second"))
+        let interruption = try await text.pressAndInterrupt(settled: { try await text.isCollapsed() }) {
+            text.probe.replaceContent()
+        }
+        XCTAssertLessThan(interruption.gap, HostedExpandableText.animationFloor, "The new content must land mid-expansion.")
 
         let collapsed = try await text.waitUntil { try await text.isCollapsed() }
         XCTAssertTrue(collapsed, "New content should reset the text to collapsed.")
         try await Task.sleep(for: settleTime)
         let staysCollapsed = try await text.isCollapsed()
         XCTAssertTrue(staysCollapsed)
-        XCTAssertEqual(text.probe.activations, 1)
+        XCTAssertEqual(text.probe.activations, interruption.attempt)
     }
 }
