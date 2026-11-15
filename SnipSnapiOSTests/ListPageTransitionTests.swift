@@ -642,6 +642,36 @@ final class ListPageTransitionTests: XCTestCase {
         XCTAssertEqual(probe.sawCancellation, true)
     }
 
+    func testStaleCreationRequestCannotEndANewerPresentation() {
+        var presentation = ListCreationPresentation()
+        let first = UUID()
+        let second = UUID()
+        presentation.begin(first)
+        presentation.reset()
+        presentation.begin(second)
+
+        presentation.end(first)
+        XCTAssertTrue(presentation.isPresenting)
+        XCTAssertTrue(presentation.isCurrent(second))
+        XCTAssertFalse(presentation.isCurrent(first))
+
+        presentation.end(second)
+        XCTAssertFalse(presentation.isPresenting)
+        XCTAssertFalse(presentation.isCurrent(second))
+    }
+
+    func testEndingTheCurrentCreationRequestEndsThePresentation() {
+        var presentation = ListCreationPresentation()
+        let request = UUID()
+        presentation.begin(request)
+        XCTAssertTrue(presentation.isCurrent(request))
+
+        presentation.end(request)
+        XCTAssertFalse(presentation.isPresenting)
+        XCTAssertFalse(presentation.isCurrent(request))
+        XCTAssertEqual(presentation, ListCreationPresentation())
+    }
+
 }
 
 @MainActor

@@ -38,17 +38,40 @@ private enum ListSelectorItem: Identifiable {
     }
 }
 
-struct ListSelector: View {
-    private enum CreationPresentation: Equatable {
+/// The selector's add-cue presentation for one New List request. A late step
+/// from an older request sees a stale ID and cannot end a newer presentation.
+struct ListCreationPresentation: Equatable {
+    private enum Phase: Equatable {
         case idle
         case presenting(UUID)
-
-        var isPresenting: Bool {
-            if case .presenting = self { return true }
-            return false
-        }
     }
 
+    private var phase = Phase.idle
+
+    var isPresenting: Bool {
+        if case .presenting = phase { return true }
+        return false
+    }
+
+    func isCurrent(_ request: UUID) -> Bool {
+        phase == .presenting(request)
+    }
+
+    mutating func begin(_ request: UUID) {
+        phase = .presenting(request)
+    }
+
+    mutating func end(_ request: UUID) {
+        guard isCurrent(request) else { return }
+        phase = .idle
+    }
+
+    mutating func reset() {
+        phase = .idle
+    }
+}
+
+struct ListSelector: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.layoutDirection) private var layoutDirection
@@ -56,7 +79,7 @@ struct ListSelector: View {
     @Environment(\.self) private var environment
     @ScaledMetric(relativeTo: .body) private var fontSize: CGFloat = 16
     @GestureState private var gestureIsActive = false
-    @State private var creation = CreationPresentation.idle
+    @State private var creation = ListCreationPresentation()
     @AccessibilityFocusState private var focusedTabID: String?
 
     let model: IOSAppModel
@@ -473,23 +496,23 @@ struct ListSelector: View {
         }
         let request = UUID()
         withAnimation(animation, completionCriteria: .logicallyComplete) {
-            creation = .presenting(request)
+            creation.begin(request)
         } completion: {
-            guard creation == .presenting(request),
+            guard creation.isCurrent(request),
                   model.selectedPage == sourcePage,
                   sheet == nil, !model.isSearchPresented else { return }
             Task {
-                guard creation == .presenting(request),
+                guard creation.isCurrent(request),
                       model.selectedPage == sourcePage,
                       sheet == nil, !model.isSearchPresented else { return }
                 await createList(sourcePage, sourcePages)
-                resetCreation()
+                withAnimation(animation) { creation.end(request) }
             }
         }
     }
 
     private func resetCreation() {
-        withAnimation(animation) { creation = .idle }
+        withAnimation(animation) { creation.reset() }
     }
 }
 
