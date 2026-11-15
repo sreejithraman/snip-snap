@@ -69,6 +69,23 @@ private enum ClipboardStoredBinding {
     }
 }
 
+/// Creates the CloudKit account source on its first check, so building the service never creates
+/// a container.
+private actor ClipboardLazyAccountState: ICloudAccountStateSource {
+    private let containerIdentifier: String
+    private var source: CloudKitICloudAccountStateSource?
+
+    init(containerIdentifier: String) {
+        self.containerIdentifier = containerIdentifier
+    }
+
+    func currentAccountState() async -> ICloudAccountState {
+        let source = source ?? CloudKitICloudAccountStateSource(container: CKContainer(identifier: containerIdentifier))
+        self.source = source
+        return await source.currentAccountState()
+    }
+}
+
 /// A step of `resetAccountBinding()` that a test can pause or fail at.
 package enum ClipboardBindingResetStep: Sendable {
     case historyCleared, bindingRemoved
@@ -99,7 +116,7 @@ package enum ClipboardBindingResetStep: Sendable {
         self.init(store: store, syncRootURL: syncRootURL, makeTransport: { scope in
             CloudKitClipboardTransport(database: CKContainer(identifier: containerIdentifier).privateCloudDatabase,
                                        generation: scope)
-        })
+        }, accountState: ClipboardLazyAccountState(containerIdentifier: containerIdentifier))
     }
     package init(store: ClipboardHistoryStore, syncRootURL: URL,
                  makeTransport: @escaping @Sendable (String) -> any ClipboardCloudTransport,
@@ -115,7 +132,8 @@ package enum ClipboardBindingResetStep: Sendable {
         self.resetStep = resetStep
     }
 
-    /// Whether this service has an iCloud account source to check before binding or uploading.
+    /// Whether this service checks the iCloud account before it binds or uploads. Exposed so app
+    /// composition tests can confirm each app passes a real account source.
     public var checksAccount: Bool { accountState != nil }
 
     /// Call before disabling sync or responding to an account change. A sync call waiting for a
@@ -144,13 +162,15 @@ package enum ClipboardBindingResetStep: Sendable {
     /// changes, otherwise at the run's next step. A sync for a new sync generation in the bound
     /// account, or while a started set-aside hasn't finished, even after a relaunch, throws
     /// `syncGenerationChanged`; the caller sets history aside with `resetAccountBinding()` before
-    /// syncing again.
+    /// syncing again. Before binding and before each save, it checks the device's iCloud account:
+    /// another account throws `accountChanged`, and no usable account throws `unavailable`.
     @discardableResult public func synchronize(
         generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
     ) async throws -> ClipboardHistoryState {
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         try await waitForStoppedRun()
+        try await checkAccountBeforeRun(generation)
         guard isEnabled() else { return try await stopAndLoadLocalHistory() }
         let (run, transport) = try beginRun(generation: generation)
         let runID = run.id
@@ -161,7 +181,42 @@ package enum ClipboardBindingResetStep: Sendable {
             }
         }
         defer { optInWatch.cancel() }
-        return try await performRun(run, using: transport, isEnabled: isEnabled)
+        return try await performRun(run, using: transport, generation: generation, isEnabled: isEnabled)
+    }
+
+    /// Holds an admission across the account check, so a `stop()` or unbinding during it ends this
+    /// call with `CancellationError` before it binds. A busy service is left to `beginRun`.
+    private func checkAccountBeforeRun(_ generation: String) async throws {
+        guard accountState != nil, case .idle = lifecycle else { return }
+        let admission = UUID()
+        lifecycle = .admitting(admission)
+        defer { if holdsAdmission(admission) { lifecycle = .idle } }
+        do {
+            try await requireAccount(for: generation)
+        } catch {
+            guard holdsAdmission(admission) else { throw CancellationError() }
+            throw error
+        }
+        guard holdsAdmission(admission) else { throw CancellationError() }
+    }
+
+    private func holdsAdmission(_ admission: UUID) -> Bool {
+        if case .admitting(let current) = lifecycle { current == admission } else { false }
+    }
+
+    /// Passes only while the device is signed in to the generation's iCloud account.
+    private func requireAccount(for generation: String) async throws {
+        guard let accountState else { return }
+        guard let binding = ICloudSyncNamespaceBinding(namespaceKey: CloudSyncNamespaceKey(rawValue: generation))
+        else { throw ClipboardCloudError.unavailable }
+        switch await accountState.currentAccountState() {
+        case .available(let lineage) where lineage == binding.accountLineage:
+            return
+        case .available:
+            throw ClipboardCloudError.accountChanged
+        case .noAccount, .restricted, .temporarilyUnavailable, .couldNotDetermine:
+            throw ClipboardCloudError.unavailable
+        }
     }
 
     private func beginRun(generation: String) throws -> (ClipboardCloudOperation, any ClipboardCloudTransport) {
@@ -176,6 +231,7 @@ package enum ClipboardBindingResetStep: Sendable {
     private func performRun(
         _ run: ClipboardCloudOperation,
         using transport: any ClipboardCloudTransport,
+        generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
     ) async throws -> ClipboardHistoryState {
         defer { finishRun(run.id) }
@@ -193,6 +249,7 @@ package enum ClipboardBindingResetStep: Sendable {
                     if !pending.isEmpty || outgoing.keys.count != remote.entries.keys.count || shared.tombstones != remote.tombstones || shared.retentionTombstones != remote.retentionTombstones {
                         let snapshot = ClipboardCloudSnapshot(entries: outgoing, tombstones: shared.tombstones, retentionTombstones: shared.retentionTombstones, version: remote.version)
                         try await performWithRetry(operationName: "clipboard save", owner: run.id) { @MainActor [runID = run.id, cancellation = run.cancellation] in
+                            try await self.requireAccount(for: generation)
                             try self.checkCurrentRun(runID, isEnabled: isEnabled)
                             try await transport.save(snapshot, cancellation: cancellation)
                         }
@@ -221,9 +278,11 @@ package enum ClipboardBindingResetStep: Sendable {
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
     /// While an account reset is pending, it leaves the reset marker in place of the binding.
+    /// It deletes and binds nothing unless the device's iCloud account is the generation's account.
     public func deleteSyncedHistory(generation: String) async throws {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
+        try await requireAccount(for: generation)
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
