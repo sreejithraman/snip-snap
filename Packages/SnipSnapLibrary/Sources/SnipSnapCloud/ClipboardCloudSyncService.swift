@@ -45,8 +45,13 @@ private struct ClipboardCloudBinding {
 
 /// How the stored binding relates to the generation a sync asks for.
 private enum ClipboardStoredBinding {
+    /// Stored while a started account reset hasn't set history aside. It matches no namespace key.
+    static let resetMarker = "clipboard-reset-pending"
+
     /// No readable binding file.
     case unbound
+    /// A started account reset hasn't set history aside, so nothing may bind.
+    case resetPending
     case current
     /// Both are namespace keys with the same cloud scope and account lineage.
     case newSyncGeneration
@@ -54,6 +59,7 @@ private enum ClipboardStoredBinding {
 
     init(stored: String?, requested: String) {
         guard let stored else { self = .unbound; return }
+        if stored == Self.resetMarker { self = .resetPending; return }
         if stored == requested { self = .current; return }
         guard let old = ICloudSyncNamespaceBinding(namespaceKey: CloudSyncNamespaceKey(rawValue: stored)),
               let new = ICloudSyncNamespaceBinding(namespaceKey: CloudSyncNamespaceKey(rawValue: requested)),
@@ -83,7 +89,8 @@ package enum ClipboardBindingResetStep: Sendable {
     private let resetStep: @MainActor (ClipboardBindingResetStep) async throws -> Void
     private var binding: ClipboardCloudBinding?
     private var lifecycle = ClipboardCloudLifecycle.idle
-    /// The started account reset that hasn't set history aside yet, so nothing may bind. In memory only.
+    /// The started account reset that hasn't set history aside yet, so nothing may bind. The reset
+    /// marker keeps the block across a relaunch.
     private var pendingSetAside: UUID?
 
     public convenience init(store: ClipboardHistoryStore,
@@ -129,8 +136,9 @@ package enum ClipboardBindingResetStep: Sendable {
     /// service stops and returns local history. If it stops holding during the run, the service
     /// stops the run, which throws `CancellationError`: at once when observable state it reads
     /// changes, otherwise at the run's next step. A sync for a new sync generation in the bound
-    /// account, or while a started set-aside hasn't finished, throws `syncGenerationChanged`; the
-    /// caller sets history aside with `resetAccountBinding()` before syncing again.
+    /// account, or while a started set-aside hasn't finished, even after a relaunch, throws
+    /// `syncGenerationChanged`; the caller sets history aside with `resetAccountBinding()` before
+    /// syncing again.
     @discardableResult public func synchronize(
         generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
@@ -206,6 +214,7 @@ package enum ClipboardBindingResetStep: Sendable {
     }
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
+    /// While an account reset is pending, it leaves the reset marker in place of the binding.
     public func deleteSyncedHistory(generation: String) async throws {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
@@ -213,7 +222,7 @@ package enum ClipboardBindingResetStep: Sendable {
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
         if hadBinding { try await store.setAside() }
-        try removeBinding()
+        try releaseBinding()
         await worker.reset()
     }
 
@@ -221,8 +230,8 @@ package enum ClipboardBindingResetStep: Sendable {
     /// Sets history aside when a binding exists, or when the caller includes unbound history
     /// because clipboard sync is on. Runs `settingAside` once, just before setting it aside. If
     /// `settingAside` throws, the reset stops with nothing set aside and the binding kept.
-    /// While a started set-aside hasn't archived the history, nothing binds, and a later call sets
-    /// the history aside even without a binding.
+    /// A started reset without a binding stores the reset marker. Until the history is set aside,
+    /// nothing binds, even after a relaunch, and a later call sets the history aside.
     public func resetAccountBinding(
         includingUnboundHistory: Bool = false,
         settingAside: @MainActor () async throws -> Void = {}
@@ -231,18 +240,26 @@ package enum ClipboardBindingResetStep: Sendable {
             || FileManager.default.fileExists(atPath: bindingURL.path) else { return }
         let setAside = UUID()
         pendingSetAside = setAside
+        if !FileManager.default.fileExists(atPath: bindingURL.path) {
+            try writeStoredBinding(ClipboardStoredBinding.resetMarker)
+        }
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         try await settingAside()
         try await store.setAside()
         if pendingSetAside == setAside { pendingSetAside = nil }
         try await resetStep(.historyCleared)
-        try removeBinding()
+        try releaseBinding()
         try await resetStep(.bindingRemoved)
         await worker.reset()
     }
-    private func removeBinding() throws {
-        if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
+    /// Removes the binding file, or stores the reset marker in its place while a reset is pending.
+    private func releaseBinding() throws {
+        if pendingSetAside != nil {
+            try writeStoredBinding(ClipboardStoredBinding.resetMarker)
+        } else if FileManager.default.fileExists(atPath: bindingURL.path) {
+            try FileManager.default.removeItem(at: bindingURL)
+        }
         binding = nil
     }
 
@@ -321,11 +338,10 @@ package enum ClipboardBindingResetStep: Sendable {
         let stored = try (try? Data(contentsOf: bindingURL)).map { try JSONDecoder().decode(String.self, from: $0) }
         switch ClipboardStoredBinding(stored: stored, requested: generation) {
         case .unbound:
-            try FileManager.default.createDirectory(at: bindingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(generation).write(to: bindingURL, options: .atomic)
+            try writeStoredBinding(generation)
         case .current:
             break
-        case .newSyncGeneration:
+        case .resetPending, .newSyncGeneration:
             throw ClipboardCloudError.syncGenerationChanged
         case .otherAccount:
             throw ClipboardCloudError.accountChanged
@@ -334,6 +350,10 @@ package enum ClipboardBindingResetStep: Sendable {
         let transport = makeTransport(generation)
         binding = ClipboardCloudBinding(generation: generation, transport: transport)
         return transport
+    }
+    private func writeStoredBinding(_ value: String) throws {
+        try FileManager.default.createDirectory(at: bindingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(value).write(to: bindingURL, options: .atomic)
     }
     /// Keeps retries scoped to the owning cloud operation so `stop()` can cancel a pending delay.
     private func performWithRetry<Value: Sendable>(
