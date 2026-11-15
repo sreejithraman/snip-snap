@@ -163,7 +163,7 @@ package enum ClipboardBindingResetStep: Sendable {
     /// account, or while a started set-aside hasn't finished, even after a relaunch, throws
     /// `syncGenerationChanged`; the caller sets history aside with `resetAccountBinding()` before
     /// syncing again. Before binding and before each save, it checks the device's iCloud account:
-    /// another account throws `accountChanged`, and no usable account throws `unavailable`.
+    /// another account throws `accountChanged`, and no usable account throws the account gate error.
     @discardableResult public func synchronize(
         generation: String,
         isEnabled: @escaping @MainActor @Sendable () -> Bool
@@ -214,8 +214,14 @@ package enum ClipboardBindingResetStep: Sendable {
             return
         case .available:
             throw ClipboardCloudError.accountChanged
-        case .noAccount, .restricted, .temporarilyUnavailable, .couldNotDetermine:
-            throw ClipboardCloudError.unavailable
+        case .noAccount:
+            throw ICloudAccountGateError.noAccount
+        case .restricted:
+            throw ICloudAccountGateError.restricted
+        case .temporarilyUnavailable:
+            throw ICloudAccountGateError.temporarilyUnavailable
+        case .couldNotDetermine:
+            throw ICloudAccountGateError.couldNotDetermine
         }
     }
 
@@ -283,6 +289,7 @@ package enum ClipboardBindingResetStep: Sendable {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
         try await requireAccount(for: generation)
+        try requireCurrentUnbinding(unbinding)
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
@@ -392,6 +399,13 @@ package enum ClipboardBindingResetStep: Sendable {
             lifecycle = .unbinding(unbinding, unwindingRun: nil)
         }
         return unbinding.id
+    }
+
+    /// Throws `CancellationError` once `stop()` cancelled this unbinding or the lifecycle no longer
+    /// holds it.
+    private func requireCurrentUnbinding(_ id: UUID) throws {
+        guard case .unbinding(let unbinding, _) = lifecycle, unbinding.id == id else { throw CancellationError() }
+        try unbinding.cancellation.check()
     }
 
     private func endUnbinding(_ id: UUID) {

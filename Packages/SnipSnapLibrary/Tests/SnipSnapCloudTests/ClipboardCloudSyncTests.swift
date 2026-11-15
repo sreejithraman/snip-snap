@@ -558,14 +558,17 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
         #expect(try Data(contentsOf: client.bindingURL) == JSONEncoder().encode(accountA))
     }
-    @Test(arguments: [ICloudAccountState.temporarilyUnavailable, .noAccount, .restricted, .couldNotDetermine])
-    func unavailableAccountNeverBindsOrUploads(_ state: ICloudAccountState) async throws {
+    @Test(arguments: [
+        (ICloudAccountState.temporarilyUnavailable, ICloudAccountGateError.temporarilyUnavailable),
+        (.noAccount, .noAccount), (.restricted, .restricted), (.couldNotDetermine, .couldNotDetermine),
+    ])
+    func unavailableAccountNeverBindsOrUploads(_ state: ICloudAccountState, _ error: ICloudAccountGateError) async throws {
         let cloud = ClipboardTestCloud()
         let client = ClipboardClient(cloud, accountState: ClipboardTestAccount(state))
         defer { try? FileManager.default.removeItem(at: client.root) }
         try await client.store.insert(entry("copied under account A"))
 
-        await #expect(throws: ClipboardCloudError.unavailable) {
+        await #expect(throws: error) {
             try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
         }
         #expect(try await cloud.fetch().entries.isEmpty)
