@@ -109,9 +109,10 @@ actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
         var errorDescription: String? { "iCloud is offline." }
     }
 
-    private let result: SnipSnapCloudSyncResult
+    private var result: SnipSnapCloudSyncResult
     private let library: any SnipLibrary
     private let syncError: Failure?
+    private let activeLibraryError: Failure?
     private var synchronizeCallCount = 0
     private var retryCallCount = 0
     private var scheduleCallCount = 0
@@ -125,12 +126,14 @@ actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
         result: SnipSnapCloudSyncResult,
         activeLibrary: any SnipLibrary,
         syncError: Failure? = nil,
+        activeLibraryError: Failure? = nil,
         pausesCloudWork: Bool = false,
         automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
     ) {
         self.result = result
         library = activeLibrary
         self.syncError = syncError
+        self.activeLibraryError = activeLibraryError
         self.pausesCloudWork = pausesCloudWork
         self.automaticSyncResults = automaticSyncResults
     }
@@ -154,12 +157,14 @@ actor IOSCloudSyncSessionProbe: IOSCloudSyncSessionHandling {
         await pauseCloudWorkIfNeeded()
     }
 
-    func iosActiveLibrary()
+    func iosActiveLibrary() throws
         -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     {
-        (library, nil)
+        if let activeLibraryError { throw activeLibraryError }
+        return (library, nil)
     }
 
+    func setResult(_ next: SnipSnapCloudSyncResult) { result = next }
     func syncCount() -> Int { synchronizeCallCount }
     func retryCount() -> Int { retryCallCount }
     func scheduleCount() -> Int { scheduleCallCount }

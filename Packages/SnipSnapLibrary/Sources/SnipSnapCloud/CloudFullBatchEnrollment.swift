@@ -15,7 +15,7 @@ extension CloudFullBatchPlanner {
     switch batch {
     case .fetched(let fetched):
       return current.committingFetch(
-        fetchOutcome(fetched, ownedZones: ownedZones), initialFetch: initialFetch
+        fetchOutcome(fetched, dataZone: dataZone, ownedZones: ownedZones), initialFetch: initialFetch
       )
     case .sent(let sent):
       return current.committingSend(sendOutcome(
@@ -27,14 +27,24 @@ extension CloudFullBatchPlanner {
 
   private static func fetchOutcome(
     _ fetched: CloudFetchedBatch,
+    dataZone: CloudZoneID,
     ownedZones: Set<CloudZoneID>
   ) -> CloudFullFetchOutcome {
     if fetched.databaseEvents.contains(where: isDestructiveReset) { return .destructiveReset }
     if hasMissingZone(fetched, ownedZones: ownedZones) { return .ownedZoneMissing }
     guard fetchRecoveryKind(fetched) == nil else { return .incomplete }
-    return .complete(hasRecords: fetched.items.contains { item in
-      if case .record = item { true } else { false }
-    })
+    let recordZones = fetched.items.compactMap { item -> CloudZoneID? in
+      guard case .record(let snapshot) = item else { return nil }
+      return snapshot.id.zone
+    }
+    let records: CloudFullFetchOutcome.Records = if recordZones.contains(dataZone) {
+      .inDataZone
+    } else if recordZones.isEmpty {
+      .absent
+    } else {
+      .outsideDataZone
+    }
+    return .complete(records: records)
   }
 
   private static func sendOutcome(

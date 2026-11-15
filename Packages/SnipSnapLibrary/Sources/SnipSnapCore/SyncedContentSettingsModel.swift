@@ -416,8 +416,10 @@ public final class SyncedContentSettingsModel {
     }
   }
 
+  /// Records that a sync request reported Delete Synced Content's removal incomplete. A
+  /// running delete reports its own outcome.
   public func recordRemovalPending() {
-    guard mode == .iCloudSync, state != .removalPending else { return }
+    guard mode == .iCloudSync, state != .removalPending, state != .deleting else { return }
     enterRemovalPending()
   }
 

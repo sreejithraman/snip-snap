@@ -404,6 +404,53 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(callCount, 1)
     }
 
+    /// Without an injected action, the handler syncs through the coordinator itself, so that
+    /// sync waits for a mode operation holding the shared gate.
+    func testAccountHandlerFallbackSyncWaitsForTheOperationGate() async throws {
+        let gate = AsyncOperationGate()
+        let fallbackStarts = SyncActionCallCount()
+        let unusedURL = FileManager.default.temporaryDirectory
+        let handler = AppleAccountCacheCoordinatorHandler(
+            persistence: {
+                await fallbackStarts.record()
+                return nil
+            },
+            controlTransport: FakeCloudControlTransport(server: FakeCloudServer()),
+            accountStateSource: InjectedICloudAccountStateSource(state: .noAccount),
+            makeSyncCoordinator: { persistence, namespace, descriptor in
+                makeInjectedSyncCoordinator(
+                    persistence: persistence,
+                    namespace: namespace,
+                    descriptor: descriptor
+                )
+            },
+            makeAttachmentCoordinator: { _, _, _ in
+                AttachmentTransferProbe(preparedURL: unusedURL)
+            },
+            operationGate: gate
+        )
+        let lease = HeldLease()
+        let modeOperation = Task { try await gate.withLease { await lease.hold() } }
+        await lease.waitUntilHeld()
+
+        let syncWaits = expectation(description: "The fallback sync waits for the lease")
+        syncWaits.isInverted = true
+        let sync = Task {
+            await handler.syncWhenPossible()
+            syncWaits.fulfill()
+        }
+        await fulfillment(of: [syncWaits], timeout: 0.05)
+        let startsWhileHeld = await fallbackStarts.value()
+        await lease.release()
+
+        try await modeOperation.value
+        await sync.value
+        let startsAfterRelease = await fallbackStarts.value()
+        // Before the SM23-F1 fix, the fallback runs while the lease is held.
+        XCTAssertEqual(startsWhileHeld, 0)
+        XCTAssertEqual(startsAfterRelease, 1)
+    }
+
     func testGeneratedCollectionRolesDriveEveryAttachmentActionWithoutZoneGuessing() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1452,6 +1499,118 @@ extension ICloudSyncModeCoordinatorTests {
         }
     }
 
+    func testBackgroundStatusWaitsForTheUsersKeepMerge() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mergePause = AccountLocalCopyMergePause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The user's Keep must reach its merge")
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must finish its own merge: \(error)")
+        }
+        do {
+            _ = try await background.value
+        } catch {
+            XCTFail("A background status must not fail beside the user's Keep: \(error)")
+        }
+        XCTAssertEqual(mergePause.hits, 1, "Only the user's Keep may run the merge")
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testUsersKeepReportsItsOwnTurnAfterABackgroundMergeFails() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let crash = CrashInjector(point: .afterAccountResolutionIntent)
+        let mergePause = AccountLocalCopyMergePause(failsOnRelease: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: crash.hit,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Expected the injected interruption after the stored choice")
+        } catch is CrashInjector.Failure {}
+
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The background reconcile must reach its merge")
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            _ = try await background.value
+            XCTFail("The background status must report its failed merge")
+        } catch {
+            XCTAssertTrue(error is AccountLocalCopyMergePause.Failure, "\(error)")
+        }
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must make its own attempt after the failed one: \(error)")
+        }
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
     func testInterruptedRemovalFinishesWhenTheOriginalAccountReturns() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1789,6 +1948,33 @@ private actor SyncActionCallCount {
 
     func record() { count += 1 }
     func value() -> Int { count }
+}
+
+/// Keeps a gate's lease from inside `withLease` until `release()`.
+private actor HeldLease {
+    private var isHeld = false
+    private var isReleased = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        isHeld = true
+        heldWaiters.forEach { $0.resume() }
+        heldWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHeld() async {
+        if isHeld { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
 }
 
 private actor AttachmentTransferProbe: CloudAttachmentTransferring {

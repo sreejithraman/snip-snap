@@ -8,7 +8,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
   private let namespace = "content-admission-namespace"
   /// One incremental fetch past a fresh namespace: records make it active, a reset blocks it.
   private static let activeState = CloudFullNamespaceState.notEnrolled
-    .committingFetch(.complete(hasRecords: true), initialFetch: .ended)
+    .committingFetch(.complete(records: .inDataZone), initialFetch: .ended)
   private static let blockedState = CloudFullNamespaceState.notEnrolled
     .committingFetch(.destructiveReset, initialFetch: .ended)
 

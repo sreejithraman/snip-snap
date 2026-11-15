@@ -168,6 +168,8 @@ package enum SyncModeWritePoint: Equatable, Sendable {
   /// A hook that throws here fails the write after the library saved it, like a store error, so the reservation is released.
   case beforeReservationCleared
   case beforeStoreRetirement
+  /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
+  case beforeAccountLocalCopyMerge
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -251,8 +253,17 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+
+  /// Reconciles of an account-isolation choice take turns, so a background status never runs a
+  /// second Keep merge.
+  let accountIsolationTurns = AsyncOperationGate()
+
   var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
+
+  /// The transition a rollback left when its commit failed. Try Again finishes only this one.
+  private var strandedRollback: SyncModeTransition?
+
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
   var nextManagedReadAttempt: UInt64 = 0
@@ -399,9 +410,9 @@ package actor SwiftDataSyncModePersistence {
       guard transition.targetKind == targetKind, transition.namespace == namespace else {
         throw SyncModePersistenceError.transitionInProgress
       }
-      // Mode operations run one at a time through the app's operation gate, and reopen clears
-      // both stages below the same way. So here they are leftovers of a rollback whose commit
-      // failed, and finishing that rollback lets Try Again continue.
+      // Finish only a rollback this process couldn't commit, so another operation's work in
+      // flight is never undone.
+      guard transition == strandedRollback else { return transition }
       if transition.phase == .candidateDeclared {
         try abortUnactivatedCandidate(reason: nil)
       } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
@@ -515,15 +526,12 @@ package actor SwiftDataSyncModePersistence {
   package func unfreezeBeforePointerSwap(reason: ICloudSyncAttentionReason? = nil) throws {
     guard let transition = manifest.transition,
       transition.sourceStoreID == manifest.activeStoreID,
-      [
-        .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-        .firstSendComplete,
-      ].contains(transition.phase)
+      transition.freezesSource
     else { return }
     var next = manifest
     try next.updateTransition { try $0.unfreeze() }
     next.attentionReason = reason
-    try commit(next)
+    try commitRollback(next)
   }
   package func recordAttention(_ reason: ICloudSyncAttentionReason) throws {
     var next = manifest
@@ -754,17 +762,33 @@ package actor SwiftDataSyncModePersistence {
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
     guard let transition = manifest.transition, manifest.activeStoreID == transition.sourceStoreID else { return }
     var next = manifest
-    if let candidate = store(id: transition.candidateStoreID) {
-      do {
-        try removeStoreFiles(candidate)
-        next.stores.removeAll { $0.id == transition.candidateStoreID }
-      } catch {
-        next.stores[try storeIndex(id: candidate.id)].lifecycle = .deleting
-      }
+    if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
+      next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
     next.attentionReason = reason
-    try commit(next)
+    // Commit before removing any files. A candidate whose files are gone but whose manifest
+    // entry survives a failed commit is reopened empty by the next enable.
+    try commitRollback(next)
+    guard let candidate = store(id: transition.candidateStoreID) else { return }
+    do {
+      try removeStoreFiles(candidate)
+      var removed = manifest
+      removed.stores.removeAll { $0.id == candidate.id }
+      try commit(removed)
+    } catch {
+      // The candidate stays deleting, for reopen or a later cleanup to finish.
+    }
+  }
+
+  private func commitRollback(_ next: Manifest) throws {
+    do {
+      try commit(next)
+    } catch {
+      strandedRollback = manifest.transition
+      throw error
+    }
+    strandedRollback = nil
   }
 
   func store(id: UUID) -> SyncModeStore? {

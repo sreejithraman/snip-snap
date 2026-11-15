@@ -103,6 +103,17 @@ extension SyncModeTransition {
     return merged?.token
   }
 
+  /// Whether this stage keeps the source frozen, so the source refuses library writes.
+  package var freezesSource: Bool {
+    switch stage {
+    case .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
+      .firstSendComplete:
+      true
+    case .candidateDeclared, .candidateReady, .remoteFetched, .pointerSwapped:
+      false
+    }
+  }
+
   package var mergeIntent: SyncModeMergeIntent? {
     if case .sourceFrozen(_, .merging(let intent)) = stage { return intent }
     return nil
@@ -332,15 +343,12 @@ extension SyncModeTransition {
   }
 
   mutating func unfreeze() throws {
-    switch stage {
-    case .sourceFrozen(_, .merging(let intent)):
+    guard freezesSource else { throw SyncModePersistenceError.transitionInProgress }
+    if case .sourceFrozen(_, .merging(let intent)) = stage {
       absorb(intent)
       stage = .candidateReady
-    case .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-      .firstSendComplete:
+    } else {
       stage = .remoteFetched
-    case .candidateDeclared, .candidateReady, .remoteFetched, .pointerSwapped:
-      throw SyncModePersistenceError.transitionInProgress
     }
   }
 
