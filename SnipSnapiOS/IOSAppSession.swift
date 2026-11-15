@@ -379,7 +379,9 @@ final class IOSAppSession {
                 settings.recordSyncFailure(issue)
                 return
             }
-            settings.recordSyncCompleted()
+            if result != .oldSyncedContentRemovalPending {
+                settings.recordSyncCompleted()
+            }
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
             throw error

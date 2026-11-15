@@ -287,10 +287,11 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.state, .ready)
 
     model.recordRemovalPending(true)
-    model.recordSyncCompleted()
     XCTAssertEqual(model.state, .removalPending)
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .removalPending)
+    model.recordSyncCompleted()
+    XCTAssertEqual(model.state, .deleted)
 
     model.recordSyncStopped(.iCloudDataReset)
     model.recordOutstandingSyncRecovered()

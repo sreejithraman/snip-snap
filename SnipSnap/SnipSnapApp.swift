@@ -370,7 +370,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending(false)
                 }
-                cloudServices.syncedContentSettings.recordSyncCompleted()
+                if result != .oldSyncedContentRemovalPending {
+                    cloudServices.syncedContentSettings.recordSyncCompleted()
+                }
                 await model.clipboardHistory.syncNow()
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(

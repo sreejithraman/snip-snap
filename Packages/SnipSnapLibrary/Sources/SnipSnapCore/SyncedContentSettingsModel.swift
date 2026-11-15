@@ -432,12 +432,17 @@ public final class SyncedContentSettingsModel {
     }
   }
 
-  /// Records that a normal sync request finished.
+  /// Records that a normal sync request finished and didn't report a pending removal.
+  /// Request results report an incomplete Delete Synced Content as pending, so a pending
+  /// removal has finished, even if its completion report was lost. Automatic sync engine
+  /// results don't carry that progress.
   public func recordSyncCompleted() {
     guard mode == .iCloudSync else { return }
     switch state {
     case .syncing:
       status.state = .ready
+    case .removalPending:
+      status.state = .deleted
     default:
       break
     }
