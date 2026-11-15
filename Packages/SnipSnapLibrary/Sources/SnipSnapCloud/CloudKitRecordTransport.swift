@@ -16,6 +16,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     private let namespace: CloudSyncNamespace
     private let automaticallyFetchedZones: Set<CloudZoneID>
     private let readRecords: RecordReader
+    private let bound: CloudKitCallBound
     private let makeEngine: EngineFactory
     private var lifecycle = EngineLifecycle.stopped
     private var outboundQueue = CloudRecordOutboundQueue()
@@ -28,12 +29,14 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         database: CKDatabase,
         namespace: CloudSyncNamespace,
         automaticallyFetchedZones: Set<CloudZoneID>? = nil,
-        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
+        diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+        bound: CloudKitCallBound = .standard
     ) {
         self.init(
             namespace: namespace,
             automaticallyFetchedZones: automaticallyFetchedZones,
             diagnostics: diagnostics,
+            bound: bound,
             readRecords: { recordIDs, desiredKeys in
                 try await database.records(for: recordIDs, desiredKeys: desiredKeys)
             },
@@ -53,12 +56,14 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         namespace: CloudSyncNamespace,
         automaticallyFetchedZones: Set<CloudZoneID>?,
         diagnostics: AppDiagnosticRecorder,
+        bound: CloudKitCallBound = .standard,
         readRecords: @escaping RecordReader,
         makeEngine: @escaping EngineFactory
     ) {
         self.namespace = namespace
         self.automaticallyFetchedZones = automaticallyFetchedZones ?? namespace.zones
         self.diagnostics = diagnostics
+        self.bound = bound
         self.readRecords = readRecords
         self.makeEngine = makeEngine
     }

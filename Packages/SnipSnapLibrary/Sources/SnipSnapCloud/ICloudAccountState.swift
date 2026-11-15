@@ -474,17 +474,33 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
 }
 
 package actor CloudKitICloudAccountStateSource: ICloudAccountStateSource {
-    private let container: CKContainer
+    private let accountStatus: @Sendable () async throws -> CKAccountStatus
+    private let userRecordID: @Sendable () async throws -> CKRecord.ID
+    private let bound: CloudKitCallBound
 
-    package init(container: CKContainer) {
-        self.container = container
+    package init(container: CKContainer, bound: CloudKitCallBound = .standard) {
+        self.init(
+            accountStatus: { try await container.accountStatus() },
+            userRecordID: { try await container.userRecordID() },
+            bound: bound
+        )
+    }
+
+    init(
+        accountStatus: @escaping @Sendable () async throws -> CKAccountStatus,
+        userRecordID: @escaping @Sendable () async throws -> CKRecord.ID,
+        bound: CloudKitCallBound = .standard
+    ) {
+        self.accountStatus = accountStatus
+        self.userRecordID = userRecordID
+        self.bound = bound
     }
 
     package func currentAccountState() async -> ICloudAccountState {
         do {
-            switch try await container.accountStatus() {
+            switch try await accountStatus() {
             case .available:
-                let recordID = try await container.userRecordID()
+                let recordID = try await userRecordID()
                 return .available(accountLineage: recordID.recordName)
             case .noAccount:
                 return .noAccount
