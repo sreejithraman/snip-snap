@@ -500,3 +500,10 @@ actor ModelTestLibrary: SnipLibrary {
         }
     }
 }
+
+// TEMPORARY (W13 proof, reverted before review): fails on purpose so CI uploads failure evidence.
+final class W13UploadProofTests: XCTestCase {
+    func testFailsOnPurposeToProveCIUploadsResultBundles() {
+        XCTFail("W13 upload proof: deliberate failure")
+    }
+}
