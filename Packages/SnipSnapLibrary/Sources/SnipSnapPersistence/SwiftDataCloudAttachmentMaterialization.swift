@@ -8,24 +8,18 @@ extension SwiftDataSnipLibrary {
     adoptedBases: [UUID: CloudAttachmentMetadataValue],
     context: ModelContext
   ) throws {
-    let publications = try Self.cloudAttachmentPublications(
+    let allPublications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
     )
-      .filter {
-        $0.lifecycle.materializesFromCloud
-          || ($0.lifecycle.isLocallyPresent && $0.lifecycle.isMetadataAccepted
-            && adoptedBases[$0.attachmentID] != nil)
-      }
+    let publications = allPublications.filter {
+      $0.lifecycle.materializesFromCloud
+        || ($0.lifecycle.isLocallyPresent && $0.lifecycle.isMetadataAccepted
+          && adoptedBases[$0.attachmentID] != nil)
+    }
     guard !publications.isEmpty else { return }
     let snipIDs = Array(Set(publications.map(\.snipID)))
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
-    let referenceIDs = publications.map {
-      StoredSnipAttachmentReference.identifier(
-        snipID: $0.snipID,
-        attachmentID: $0.attachmentID
-      )
-    }
     let storedSnipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>(
       predicate: #Predicate<StoredSnipRecord> { snipIDs.contains($0.id) }
     )).map(\.id))
@@ -34,18 +28,19 @@ extension SwiftDataSnipLibrary {
         predicate: #Predicate<StoredAttachmentRecord> { attachmentIDs.contains($0.id) }
       )).map { ($0.id, $0) }
     )
-    var references = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
-        predicate: #Predicate<StoredSnipAttachmentReference> { referenceIDs.contains($0.id) }
-      )).map { ($0.id, $0) }
+    let storedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> { snipIDs.contains($0.snipID) }
+    ))
+    var references = Dictionary(uniqueKeysWithValues: storedReferences.map { ($0.id, $0) })
+    let presentRowsBySnip = Dictionary(
+      grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
     )
+    let adoptedSnipIDs = Set(publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID))
     let cacheEntries = Dictionary(uniqueKeysWithValues:
       try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
         .map { ($0.attachmentID, $0) }
     )
     let namespaceDigest = CloudAttachmentCacheFiles.namespaceDigest(namespaceKey)
-    var writtenReferenceIDs: Set<String> = []
-    var touchedSnipIDs: Set<UUID> = []
     for publication in publications {
       guard storedSnipIDs.contains(publication.snipID) else { continue }
       let referenceID = StoredSnipAttachmentReference.identifier(
@@ -54,18 +49,13 @@ extension SwiftDataSnipLibrary {
       )
       if let base = adoptedBases[publication.attachmentID],
         let stored = attachments[publication.attachmentID],
-        let reference = references[referenceID]
+        references[referenceID] != nil
       {
         if stored.fileName == base.fileName {
           stored.fileName = publication.fileName
         }
         if stored.contentType == base.contentType {
           stored.contentType = publication.contentType
-        }
-        if reference.position == base.position {
-          reference.update(position: publication.position)
-          writtenReferenceIDs.insert(referenceID)
-          touchedSnipIDs.insert(publication.snipID)
         }
       }
       guard publication.lifecycle.materializesFromCloud else { continue }
@@ -103,26 +93,29 @@ extension SwiftDataSnipLibrary {
         )
         context.insert(reference)
         references[referenceID] = reference
-        writtenReferenceIDs.insert(referenceID)
-        touchedSnipIDs.insert(publication.snipID)
       }
     }
-    guard !touchedSnipIDs.isEmpty else { return }
-    let affectedSnipIDs = Array(touchedSnipIDs)
-    let affectedReferences = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
-      predicate: #Predicate<StoredSnipAttachmentReference> { affectedSnipIDs.contains($0.snipID) }
-    ))
-    for snipReferences in Dictionary(grouping: affectedReferences, by: \.snipID).values {
-      let ordered = snipReferences.sorted { lhs, rhs in
+    let referencesBySnip = Dictionary(grouping: references.values, by: \.snipID)
+    // Adopt a snip's attachment order as a whole only when its local sequence still matches its base.
+    let snipsAdoptingOrder = Set(adoptedSnipIDs.filter { snipID in
+      let localOrder = (referencesBySnip[snipID] ?? []).sorted { lhs, rhs in
         if lhs.position != rhs.position { return lhs.position < rhs.position }
-        // Local positions win ties with adopted positions; attachment IDs settle other ties.
-        let lhsWasWritten = writtenReferenceIDs.contains(lhs.id)
-        let rhsWasWritten = writtenReferenceIDs.contains(rhs.id)
-        if lhsWasWritten != rhsWasWritten { return !lhsWasWritten }
         return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
-      }
-      for (position, reference) in ordered.enumerated() where reference.position != position {
-        reference.update(position: position)
+      }.map(\.attachmentID)
+      let baseOrder = (presentRowsBySnip[snipID] ?? []).sorted { lhs, rhs in
+        let lhsPosition = adoptedBases[lhs.attachmentID]?.position ?? lhs.position
+        let rhsPosition = adoptedBases[rhs.attachmentID]?.position ?? rhs.position
+        if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
+        return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
+      }.map(\.attachmentID)
+      return localOrder == baseOrder
+    })
+    for snipID in snipsAdoptingOrder {
+      for row in presentRowsBySnip[snipID] ?? [] {
+        let referenceID = StoredSnipAttachmentReference.identifier(
+          snipID: snipID, attachmentID: row.attachmentID
+        )
+        references[referenceID]?.update(position: row.position)
       }
     }
   }

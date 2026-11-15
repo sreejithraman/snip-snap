@@ -572,7 +572,10 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
         manualSortKey: try metadataByID[
           StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: record.id)
         ].map { try SnipOrderKey(data: $0.orderKeyData) },
-        attachments: try (referencesBySnip[record.id] ?? []).sorted { $0.position < $1.position }
+        attachments: try (referencesBySnip[record.id] ?? []).sorted {
+          if $0.position != $1.position { return $0.position < $1.position }
+          return $0.attachmentID.uuidString < $1.attachmentID.uuidString
+        }
           .map { reference in
             guard let attachment = attachmentsByID[reference.attachmentID] else {
               throw SnipLibraryError.invalidStore
