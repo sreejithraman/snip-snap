@@ -2,6 +2,8 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
+extension StoredCloudTextRecord: CloudTextRecordServerFields {}
+
 extension SwiftDataSnipLibrary {
   package func acceptedCloudTextSnipIDs() throws -> Set<UUID> {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
@@ -9,13 +11,7 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let records = try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
-    return Set(
-      records.compactMap { record in
-        record.acceptedText != nil || record.shadowData != nil || record.systemFields != nil
-          ? record.snipID
-          : nil
-      }
-    )
+    return Set(records.compactMap { $0.hasServerState ? $0.snipID : nil })
   }
 
   package func acceptedCloudTextValues() throws -> [UUID: String] {
@@ -212,11 +208,7 @@ extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: container)
     let records = try Self.cloudTextRecords(namespaceKey: namespaceKey, context: context)
       .filter { record in
-        !liveSnipIDs.contains(record.snipID)
-          && record.acceptedText == nil
-          && record.shadowData == nil
-          && record.systemFields == nil
-          && record.recoveryData == nil
+        !liveSnipIDs.contains(record.snipID) && !record.hasServerState && record.recoveryData == nil
       }
     guard !records.isEmpty else { return false }
     for record in records { context.delete(record) }
@@ -497,7 +489,7 @@ extension SwiftDataSnipLibrary {
     {
       if liveSnipIDs.contains(record.snipID) {
         record.recoveryData = nil
-      } else if record.acceptedText != nil || record.shadowData != nil || record.systemFields != nil {
+      } else if record.hasServerState {
         record.recoveryData = deletionRecoveryData
       } else {
         context.delete(record)
