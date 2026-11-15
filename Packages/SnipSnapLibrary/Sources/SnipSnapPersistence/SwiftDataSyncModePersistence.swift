@@ -784,13 +784,35 @@ package actor SwiftDataSyncModePersistence {
     return transition
   }
 
-  package func cancelPendingICloudEnable() throws {
+  /// A full-record enable that sent records first keeps their accepted bases in the source, so a
+  /// later enable merges against what the server holds. Keeping them is best effort: Cancel setup
+  /// always aborts.
+  package func cancelPendingICloudEnable() async throws {
+    guard let transition = pendingICloudEnable() else { return }
+    if transition.syncProtocol == .fullRecordV1, transition.sendAttempt != nil,
+      hasStoreFile(id: transition.candidateStoreID)
+    {
+      do {
+        let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+        try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
+      } catch {
+        diagnostics.record(
+          .failure(operation: "sync.cancel_setup", error: error, visibility: .background)
+        )
+      }
+    }
+    // The promotion suspends, so check again with no suspension before the abort.
+    guard pendingICloudEnable() != nil else { return }
+    try abortUnactivatedCandidate(reason: nil)
+  }
+
+  private func pendingICloudEnable() -> SyncModeTransition? {
     guard let transition = manifest.transition,
       transition.targetKind == .iCloudSync,
       manifest.activeStoreID == transition.sourceStoreID,
       transition.phase != .pointerSwapped
-    else { return }
-    try abortUnactivatedCandidate(reason: nil)
+    else { return nil }
+    return transition
   }
 
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
