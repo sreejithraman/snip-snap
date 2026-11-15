@@ -3,12 +3,12 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  package func applyCloudAttachmentTransitions(
+  func applyCloudAttachmentTransitions(
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
-  ) throws -> [UUID: CloudAttachmentMetadataValue] {
+  ) throws -> [UUID: CloudAttachmentAdoption] {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
@@ -24,7 +24,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
-    var adoptedBases: [UUID: CloudAttachmentMetadataValue] = [:]
+    var adoptions: [UUID: CloudAttachmentAdoption] = [:]
     var materializedAttachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
@@ -116,14 +116,34 @@ extension SwiftDataSnipLibrary {
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
-          if row.metadata != metadata,
-            row.lifecycle.keepsUnsentEdit(againstRecordNaming: metadata.payloadIdentity)
-          {
-            row.lifecycle.adoptBase(metadataRecord)
-            continue
-          }
-          if row.lifecycle.isLocallyPresent && row.lifecycle.isMetadataAccepted {
-            adoptedBases[metadata.attachmentID] = adoptedBases[metadata.attachmentID] ?? row.metadata
+          if row.lifecycle.isLocallyPresent {
+            let base = row.acknowledgedMetadata(acknowledgedValues)
+            // A commit's first adoption of a row keeps the base from before the commit.
+            let commitBase = if let earlier = adoptions[metadata.attachmentID] {
+              earlier.base
+            } else {
+              base
+            }
+            adoptions[metadata.attachmentID] = CloudAttachmentAdoption(
+              base: commitBase, record: metadata
+            )
+            // A published row already equals its base, so only a pending edit keeps fields.
+            // A record naming another payload is adopted whole: its publisher may delete ours.
+            if row.lifecycle.isPresentAwaitingMetadata,
+              row.payloadIdentity == metadata.payloadIdentity
+            {
+              let merged = CloudAttachmentMerge.metadata(
+                base: base, local: row.metadata, remote: metadata
+              )
+              if merged != metadata {
+                row.snipID = merged.snipID
+                row.position = merged.position
+                row.fileName = merged.fileName
+                row.contentType = merged.contentType
+                row.lifecycle.adoptBase(metadataRecord)
+                continue
+              }
+            }
           }
           if row.payloadIdentity != metadata.payloadIdentity {
             removeCache(for: metadata.attachmentID)
@@ -341,7 +361,7 @@ extension SwiftDataSnipLibrary {
         try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
-    return adoptedBases
+    return adoptions
   }
 
   package func commitCloudAttachmentTransitions(
@@ -377,7 +397,7 @@ extension SwiftDataSnipLibrary {
       transitions: transitions,
       context: context
     )
-    let adoptedBases = try applyCloudAttachmentTransitions(
+    let adoptions = try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
       acknowledgedValues: acknowledgedValues,
@@ -385,7 +405,7 @@ extension SwiftDataSnipLibrary {
     )
     try materializeCloudAttachments(
       namespaceKey: namespaceKey,
-      adoptedBases: adoptedBases,
+      adoptions: adoptions,
       metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(in: transitions),
       acknowledgedValues: acknowledgedValues,
       context: context

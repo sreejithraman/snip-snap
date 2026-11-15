@@ -3,9 +3,9 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  package func materializeCloudAttachments(
+  func materializeCloudAttachments(
     namespaceKey: String,
-    adoptedBases: [UUID: CloudAttachmentMetadataValue],
+    adoptions: [UUID: CloudAttachmentAdoption],
     metadataAcknowledgedAttachmentIDs: Set<UUID>,
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
@@ -16,8 +16,7 @@ extension SwiftDataSnipLibrary {
     )
     let publications = allPublications.filter {
       $0.lifecycle.materializesFromCloud
-        || ($0.lifecycle.isLocallyPresent && $0.lifecycle.isMetadataAccepted
-          && adoptedBases[$0.attachmentID] != nil)
+        || ($0.lifecycle.isLocallyPresent && adoptions[$0.attachmentID] != nil)
     }
     let metadataAcknowledgedSnipIDs = Set(allPublications.filter {
       metadataAcknowledgedAttachmentIDs.contains($0.attachmentID)
@@ -47,7 +46,7 @@ extension SwiftDataSnipLibrary {
       grouping: allPublications.filter { $0.lifecycle.isLocallyPresent }, by: \.snipID
     )
     var adoptedOrInsertedSnipIDs = Set(
-      publications.filter { adoptedBases[$0.attachmentID] != nil }.map(\.snipID)
+      publications.filter { adoptions[$0.attachmentID] != nil }.map(\.snipID)
     )
     let cacheEntries = Dictionary(uniqueKeysWithValues:
       try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context)
@@ -60,16 +59,18 @@ extension SwiftDataSnipLibrary {
         snipID: publication.snipID,
         attachmentID: publication.attachmentID
       )
-      if let base = adoptedBases[publication.attachmentID],
+      if let adoption = adoptions[publication.attachmentID], let base = adoption.base,
         let stored = attachments[publication.attachmentID],
         references[referenceID] != nil
       {
-        if stored.fileName == base.fileName {
-          stored.fileName = publication.fileName
-        }
-        if stored.contentType == base.contentType {
-          stored.contentType = publication.contentType
-        }
+        let fileName = CloudAttachmentMerge.field(
+          base: base.fileName, local: stored.fileName, remote: adoption.record.fileName
+        )
+        if stored.fileName != fileName { stored.fileName = fileName }
+        let contentType = CloudAttachmentMerge.field(
+          base: base.contentType, local: stored.contentType, remote: adoption.record.contentType
+        )
+        if stored.contentType != contentType { stored.contentType = contentType }
       }
       guard publication.lifecycle.materializesFromCloud else { continue }
       let relativePath: String
@@ -121,8 +122,8 @@ extension SwiftDataSnipLibrary {
       }
       let localOrder = localOrdersBySnip[snipID] ?? []
       let baseOrder = presentRows.sorted { lhs, rhs in
-        let lhsPosition = adoptedBases[lhs.attachmentID]?.position ?? lhs.position
-        let rhsPosition = adoptedBases[rhs.attachmentID]?.position ?? rhs.position
+        let lhsPosition = adoptions[lhs.attachmentID]?.base?.position ?? lhs.position
+        let rhsPosition = adoptions[rhs.attachmentID]?.base?.position ?? rhs.position
         if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
         return lhs.attachmentID.uuidString < rhs.attachmentID.uuidString
       }.map(\.attachmentID)

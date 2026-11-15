@@ -181,13 +181,6 @@ struct CloudAttachmentPublicationLifecycle {
     isMetadataAccepted && metadataRecord == record
   }
 
-  /// SM33-D1: adoption updates each field still showing its base, but an edit awaiting
-  /// acknowledgement keeps its whole record against differing same-payload metadata.
-  /// A different payload must be adopted because its publisher may delete our old payload.
-  func keepsUnsentEdit(againstRecordNaming payload: CloudTextStorageIdentity) -> Bool {
-    isPresentAwaitingMetadata && payload == payloadIdentity
-  }
-
   private var acceptedPayload: CloudAttachmentAcceptedRecord? {
     switch upload {
     case .payloadPending: return nil
