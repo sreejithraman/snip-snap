@@ -771,7 +771,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await setAsideEntryIDs(in: client.root) == [])
     }
 
-    @Test(.disabled("Held until the fix so the Mac app defect test runs red first")) func failedAccountResetKeepsUnboundHistoryOutOfTheNextAccount() async throws {
+    @Test func failedAccountResetKeepsUnboundHistoryOutOfTheNextAccount() async throws {
         struct SettingAsideFailure: Error {}
         let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
         defer { try? FileManager.default.removeItem(at: client.root) }
