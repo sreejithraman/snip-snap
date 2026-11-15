@@ -111,7 +111,7 @@ package extension CloudAttachmentPublication {
   var transferState: CloudAttachmentTransferState {
     if let lastFailure { return .failed(lastFailure) }
     if !isLocallyPresent { return .waitingForDeletion }
-    if localSourceURL == nil, metadataAccepted { return .available }
+    if localSourceURL == nil, payloadAccepted { return .available }
     if !payloadAccepted { return .waitingForUpload }
     if !metadataAccepted { return .waitingForMetadata }
     return .available

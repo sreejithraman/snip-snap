@@ -134,6 +134,10 @@ struct CloudAttachmentPublicationLifecycle {
     return true
   }
 
+  /// CloudKit holds the payload, so a device without its bytes can download them while a
+  /// metadata edit still waits to sync.
+  var isPayloadRecoverableFromCloudKit: Bool { isPayloadAccepted }
+
   var payloadShadowData: Data? { acceptedPayload?.shadowData }
 
   var metadataShadowData: Data? { metadataRecord.shadowData }
