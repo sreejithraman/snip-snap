@@ -232,14 +232,15 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       .appendingPathComponent("Attachments", isDirectory: true)
   }
 
-  /// The marker files that retire a mode store, beside its SwiftData files. Retirement adds
-  /// them in order: content writes stop, then a recovery copy records that its synced state is
-  /// cleared.
-  package struct StoreRetirementMarkers: Sendable {
-    private let readOnlyURL: URL
-    private let quarantineURL: URL
+  /// The marker files that retire a mode store, beside its SwiftData files. The read-only
+  /// marker stops content writes; the quarantine record says the store's synced state is cleared.
+  struct StoreRetirementMarkers: Sendable {
+    enum Phase { case writable, readOnly, quarantined }
 
-    package init(storeURL: URL) {
+    let readOnlyURL: URL
+    let quarantineURL: URL
+
+    init(storeURL: URL) {
       let directory = storeURL.deletingLastPathComponent()
       readOnlyURL = directory.appendingPathComponent(
         ".snipsnap-read-only-recovery",
@@ -251,61 +252,45 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       )
     }
 
-    var refusesContentWrites: Bool {
-      FileManager.default.fileExists(atPath: readOnlyURL.path)
+    /// A quarantine record without the read-only marker is left by an interrupted cleanup, so
+    /// that store counts as writable.
+    var phase: Phase {
+      guard FileManager.default.fileExists(atPath: readOnlyURL.path) else { return .writable }
+      return FileManager.default.fileExists(atPath: quarantineURL.path) ? .quarantined : .readOnly
     }
 
-    var isQuarantined: Bool {
-      FileManager.default.fileExists(atPath: quarantineURL.path)
-    }
-
-    func refuseContentWrites() throws {
-      try DurableFile.write(Data("1".utf8), to: readOnlyURL)
-    }
-
-    func recordQuarantine() throws {
-      try DurableFile.write(Data("1".utf8), to: quarantineURL)
-    }
-
-    func allowContentWrites() throws {
+    /// Removes the quarantine record first, so it never outlives the read-only marker.
+    func restore() throws {
+      try Self.removeIfPresent(quarantineURL)
       try Self.removeIfPresent(readOnlyURL)
     }
 
-    func removeQuarantineRecord() throws {
-      try Self.removeIfPresent(quarantineURL)
-    }
-
-    /// Undoes an unfinished retirement in reverse, so a quarantine record never stands without
-    /// the read-only marker.
-    package func restore() throws {
-      try removeQuarantineRecord()
-      try allowContentWrites()
-    }
-
-    private static func removeIfPresent(_ url: URL) throws {
+    static func removeIfPresent(_ url: URL) throws {
       guard FileManager.default.fileExists(atPath: url.path) else { return }
       try FileManager.default.removeItem(at: url)
     }
   }
 
   package func markReadOnlyRecovery() throws {
-    try retirementMarkers.refuseContentWrites()
+    try DurableFile.write(Data("1".utf8), to: retirementMarkers.readOnlyURL)
   }
 
+  /// Makes the store writable again, dropping any quarantine record first.
   package func removeReadOnlyRecoveryMarker() throws {
-    try retirementMarkers.allowContentWrites()
+    try retirementMarkers.restore()
   }
 
   package func isRecoveryQuarantineComplete() -> Bool {
-    retirementMarkers.isQuarantined
+    retirementMarkers.phase == .quarantined
   }
 
   package func markRecoveryQuarantineComplete() throws {
-    try retirementMarkers.recordQuarantine()
+    if retirementMarkers.phase == .writable { try markReadOnlyRecovery() }
+    try DurableFile.write(Data("1".utf8), to: retirementMarkers.quarantineURL)
   }
 
   package func removeRecoveryQuarantineCompleteMarker() throws {
-    try retirementMarkers.removeQuarantineRecord()
+    try StoreRetirementMarkers.removeIfPresent(retirementMarkers.quarantineURL)
   }
 
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {

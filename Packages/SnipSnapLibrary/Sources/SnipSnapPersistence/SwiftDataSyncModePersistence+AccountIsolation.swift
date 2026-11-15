@@ -4,7 +4,7 @@ import SnipSnapCore
 extension SwiftDataSyncModePersistence.Manifest {
   /// Apple Account isolation (ADR 0015), decoded from `accountIsolation`, its two stores'
   /// lifecycles, and the active-store pointer. Only the transitions below write those fields.
-  enum AccountIsolationPhase: Equatable {
+  enum AccountIsolationPhase {
     case none
     /// The local replacement is declared while the iCloud cache is still active. Reopen, or the
     /// next isolation or reconcile in this process, finishes the swap.
@@ -200,10 +200,7 @@ extension SwiftDataSyncModePersistence {
     }
     let requested: ICloudAccountIsolationResolution = choice == .keepLocalCopy
       ? .keepingLocalCopy : .removing
-    guard isolation.resolution == .undecided || isolation.resolution == requested else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    if isolation.resolution == .undecided {
+    if isolation.resolution != requested {
       var intended = manifest
       try intended.chooseAccountIsolationResolution(requested)
       try commit(intended)
@@ -234,18 +231,17 @@ extension SwiftDataSyncModePersistence {
   private func finishAccountIsolationResolution(
     _ isolation: ICloudAccountIsolation
   ) throws {
-    guard manifest.accountIsolation == isolation,
-      isolation.resolution != .undecided,
-      isolation.storeID != manifest.activeStoreID
-    else { throw SyncModePersistenceError.transitionInProgress }
+    guard manifest.accountIsolation == isolation else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    var deleting = manifest
+    try deleting.endAccountIsolation()
     let roots = try Self.validatedStoreRoots(manifest.stores, rootURL: rootURL)
     guard roots[isolation.storeID] != nil,
       let isolatedStore = store(id: isolation.storeID)
     else {
       throw SyncModePersistenceError.invalidManifest
     }
-    var deleting = manifest
-    try deleting.endAccountIsolation()
     try crashHook(.beforeAccountIsolationRemovalCommit)
     try commit(deleting)
     try crashHook(.afterAccountIsolationRemovalCommit)
