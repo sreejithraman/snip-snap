@@ -480,8 +480,16 @@ package actor CloudKitICloudAccountStateSource: ICloudAccountStateSource {
 
     package init(container: CKContainer, bound: CloudKitCallBound = .standard) {
         self.init(
-            accountStatus: { try await container.accountStatus() },
-            userRecordID: { try await container.userRecordID() },
+            accountStatus: {
+                try await container.configuredWith(configuration: bound.configuration(.small)) {
+                    try await $0.accountStatus()
+                }
+            },
+            userRecordID: {
+                try await container.configuredWith(configuration: bound.configuration(.small)) {
+                    try await $0.userRecordID()
+                }
+            },
             bound: bound
         )
     }
@@ -498,9 +506,9 @@ package actor CloudKitICloudAccountStateSource: ICloudAccountStateSource {
 
     package func currentAccountState() async -> ICloudAccountState {
         do {
-            switch try await accountStatus() {
+            switch try await bound.read(.small, accountStatus) {
             case .available:
-                let recordID = try await userRecordID()
+                let recordID = try await bound.read(.small, userRecordID)
                 return .available(accountLineage: recordID.recordName)
             case .noAccount:
                 return .noAccount

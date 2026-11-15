@@ -38,7 +38,11 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             diagnostics: diagnostics,
             bound: bound,
             readRecords: { recordIDs, desiredKeys in
-                try await database.records(for: recordIDs, desiredKeys: desiredKeys)
+                try await database.configuredWith(
+                    configuration: bound.configuration(.transfer)
+                ) { configured in
+                    try await configured.records(for: recordIDs, desiredKeys: desiredKeys)
+                }
             },
             makeEngine: { serialization, automaticallySync, delegate in
                 var configuration = CKSyncEngine.Configuration(
@@ -257,7 +261,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         var stage = CloudSyncDiagnostics.AttachmentStage.cloudKitRequest
         CloudSyncDiagnostics.attachmentStarted(stage)
         do {
-            let results = try await readRecords([recordID], [field])
+            let results = try await bound.read(.transfer) { [readRecords] in
+                try await readRecords([recordID], [field])
+            }
             CloudSyncDiagnostics.attachmentSucceeded(stage)
             stage = .cloudKitRecord
             CloudSyncDiagnostics.attachmentStarted(stage)

@@ -67,7 +67,13 @@ public enum SnipSnapCloudAppAssembly {
       cloudScope: namespace?.scope ?? "private",
       accountLineage: namespace?.accountLineage ?? identifier,
       accountLineageProvider: {
-        try await container.userRecordID().recordName
+        let bound = CloudKitCallBound.standard
+        let recordID = try await bound.read(.small) {
+          try await container.configuredWith(configuration: bound.configuration(.small)) {
+            try await $0.userRecordID()
+          }
+        }
+        return recordID.recordName
       },
       accountStateSource: accountStateSource,
       ownerName: CKCurrentUserDefaultName,

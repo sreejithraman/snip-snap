@@ -200,3 +200,57 @@ private final class UnusedRecordEngine: CloudKitRecordEngine {
 func isCloudKitNetworkFailure(_ error: any Error) -> Bool {
     (error as? CKError)?.code == .networkFailure
 }
+
+extension CloudKitCallBoundTests {
+    func testReadReturnsAFastValue() async throws {
+        let value = try await CloudKitCallBound.shortForTests.read(.small) { 42 }
+        XCTAssertEqual(value, 42)
+    }
+
+    func testReadRethrowsTheOperationsError() async {
+        struct Failure: Error, Equatable {}
+        do {
+            _ = try await CloudKitCallBound.shortForTests.read(.small) { () async throws -> Int in
+                throw Failure()
+            }
+            XCTFail("The operation's error must reach the caller")
+        } catch {
+            XCTAssertEqual(error as? Failure, Failure())
+        }
+    }
+
+    func testReadGivesUpOnAStalledCallAfterItsTotalAndMargin() async {
+        let stall = CloudKitCallStall()
+        addTeardownBlock { stall.release() }
+        let bound = CloudKitCallBound(
+            idle: .milliseconds(100),
+            smallTotal: .milliseconds(300),
+            transferTotal: .seconds(30),
+            backstopMargin: .milliseconds(200)
+        )
+        let started = ContinuousClock.now
+        do {
+            _ = try await bound.read(.small) { () async throws -> Int in
+                await stall.enter()
+                return 0
+            }
+            XCTFail("A stalled read must time out")
+        } catch {
+            XCTAssertTrue(isCloudKitNetworkFailure(error), "\(error)")
+        }
+        let elapsed = started.duration(to: ContinuousClock.now)
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(500), "Wait for the total plus the margin")
+        XCTAssertLessThan(elapsed, .seconds(5), "A small call must not use the transfer total")
+    }
+
+    func testConfigurationsCarryTheIdleAndTotalLimits() {
+        let small = CloudKitCallBound.standard.configuration(.small)
+        XCTAssertEqual(small.timeoutIntervalForRequest, 30)
+        XCTAssertEqual(small.timeoutIntervalForResource, 60)
+        XCTAssertEqual(small.qualityOfService, .userInitiated)
+        let transfer = CloudKitCallBound.standard.configuration(.transfer)
+        XCTAssertEqual(transfer.timeoutIntervalForRequest, 30)
+        XCTAssertEqual(transfer.timeoutIntervalForResource, 600)
+        XCTAssertEqual(transfer.qualityOfService, .userInitiated)
+    }
+}
