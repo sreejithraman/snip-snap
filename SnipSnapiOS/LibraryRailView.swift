@@ -159,6 +159,14 @@ enum RailListMark: Equatable {
     }
 }
 
+extension Array where Element == LibraryPage {
+    /// The page `offset` steps from `page`, or nil past either end, so arrow keys stop at the ends.
+    func page(_ offset: Int, from page: LibraryPage) -> LibraryPage? {
+        guard let index = firstIndex(of: page), indices.contains(index + offset) else { return nil }
+        return self[index + offset]
+    }
+}
+
 extension EnvironmentValues {
     /// Sizing for a library sidebar, set by the container that holds it and its detail.
     @Entry var librarySidebarSizing = LibrarySidebarSizing.unmeasured()
@@ -201,7 +209,7 @@ private struct LibrarySidebarContainer: ViewModifier {
 
 /// The library's list column beside the page card. It is a thin rail of marks, or a wider sidebar
 /// that also shows names. Dragging its trailing edge resizes it; the toggle at its top switches looks.
-/// With a hardware keyboard, Tab reaches the column's pages, and the selection follows the arrow keys.
+/// With a hardware keyboard, the arrow keys move between its pages while no text is being edited.
 struct LibraryRailView: View {
     /// Rows keep this inset on both sides, so a mark stays put as the column widens.
     private static let inset: CGFloat = 12
@@ -215,7 +223,6 @@ struct LibraryRailView: View {
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
     @State private var stripDrag: StripDrag?
     @GestureState private var isDraggingStrip = false
-    @FocusState private var focusedPage: LibraryPage?
     private let newListStyle = NewListButtonStyle.current
 
     init(
@@ -268,8 +275,6 @@ struct LibraryRailView: View {
                 ) {
                     RailIcon(systemImage: "clipboard", color: .primary)
                 }
-                .focusable()
-                .focused($focusedPage, equals: .clipboard)
                 .accessibilityIdentifier("clipboard-sidebar")
 
                 if model.recoverySnapshot.needsAttentionCount > 0 {
@@ -289,8 +294,6 @@ struct LibraryRailView: View {
                     ) {
                         RailListMarkView(list: list)
                     }
-                    .focusable()
-                    .focused($focusedPage, equals: .list(list.id))
                     .accessibilityIdentifier("list-\(list.name)")
                     .listContextActions(
                         list: list,
@@ -308,12 +311,17 @@ struct LibraryRailView: View {
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
-        // Like a sidebar list, the selection follows keyboard focus.
-        .onChange(of: focusedPage) { _, page in
-            if let page, page != model.selectedPage { model.selectPage(page) }
-        }
-        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-            focusAdjacentPage(by: press.key == .upArrow ? -1 : 1)
+        .background {
+            // Text editing keeps the arrow keys; elsewhere they move between pages like a sidebar list.
+            Group {
+                Button("Previous Page") { selectAdjacentPage(by: -1) }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                Button("Next Page") { selectAdjacentPage(by: 1) }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             widthToggle
@@ -347,14 +355,8 @@ struct LibraryRailView: View {
         }
     }
 
-    /// Moves focus to the next or previous page, stopping at either end, when the focus system
-    /// leaves the arrow keys to the column.
-    private func focusAdjacentPage(by offset: Int) -> KeyPress.Result {
-        let pages = model.pages
-        guard let focusedPage, let index = pages.firstIndex(of: focusedPage) else { return .ignored }
-        let target = index + offset
-        if pages.indices.contains(target) { self.focusedPage = pages[target] }
-        return .handled
+    private func selectAdjacentPage(by offset: Int) {
+        if let page = model.pages.page(offset, from: model.selectedPage) { model.selectPage(page) }
     }
 
     private var widthToggleTitle: Text {

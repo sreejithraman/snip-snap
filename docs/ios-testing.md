@@ -394,7 +394,7 @@ Existing conditional tests have these preconditions:
   `testRailEdgeDragsResizeAndIgnoresVerticalDrags` require the rail. The
   rail's width choice is saved per `SNIP_SNAP_UI_TEST_STORE`, so each run
   starts from the device default.
-  `testRailKeyboardMovesBetweenPagesAndShortcutTogglesNames` runs only on iPad,
+  `testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames` runs only on iPad,
   because XCTest key events don't reach the Duo's inner panel.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one

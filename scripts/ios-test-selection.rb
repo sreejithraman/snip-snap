@@ -42,7 +42,7 @@ module IOSTestSelection
         testRegularSidebarNewListMeetsTouchTargetMinimum
         testRailShowsListNamesAcrossRelaunchUntilToggledBack
         testRailEdgeDragsResizeAndIgnoresVerticalDrags
-        testRailKeyboardMovesBetweenPagesAndShortcutTogglesNames
+        testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames
       ]
     },
     'undo' => {

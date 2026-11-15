@@ -630,7 +630,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     /// XCTest key events don't reach the iPhone Duo's inner panel, so this runs on iPad.
-    func testRailKeyboardMovesBetweenPagesAndShortcutTogglesNames() throws {
+    func testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames() throws {
         continueAfterFailure = false
         guard UIDevice.current.userInterfaceIdiom == .pad else {
             throw XCTSkip("XCTest key events reach the rail only on iPad.")
@@ -644,16 +644,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         let work = app.buttons["list-Work"]
         XCTAssertTrue(work.waitForExistence(timeout: 3))
         clipboard.tap()
-        XCTAssertTrue(clipboard.isSelected)
-
-        // Tab moves focus between the window's groups until it reaches the rail.
-        func railHasFocus() -> Bool {
-            [clipboard, inbox, work].contains { $0.value(forKey: "hasFocus") as? Bool == true }
-        }
-        for _ in 0..<6 where !railHasFocus() {
-            app.typeKey(.tab, modifierFlags: [])
-        }
-        XCTAssertTrue(railHasFocus(), "Tab must reach the rail.")
         XCTAssertTrue(clipboard.isSelected)
 
         app.typeKey(.downArrow, modifierFlags: [])
@@ -672,6 +662,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         waitForClipboardRowWidth(in: app, "Control-Command-S hides names") { $0 < 80 }
 
         work.hover()
+        // The name appears as a tooltip after the pointer rests.
+        _ = app.staticTexts["Work"].waitForExistence(timeout: 3)
         keepScreenshot(of: app, named: "Pointer over Work in the rail")
     }
 

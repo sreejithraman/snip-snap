@@ -1,3 +1,4 @@
+import SnipSnapCore
 import XCTest
 @testable import SnipSnapiOS
 
@@ -20,6 +21,19 @@ final class LibraryRailTests: XCTestCase {
 
     func testIconOnlyPolicyNeverShowsLetters() {
         XCTAssertEqual(RailListMark(name: "Groceries", systemImage: ListIconSymbol.defaultName, policy: .iconOnly), .icon(ListIconSymbol.defaultName))
+    }
+}
+
+final class LibraryRailArrowKeyTests: XCTestCase {
+    func testArrowKeysStepThroughPagesAndStopAtTheEnds() {
+        let work = UUID()
+        let pages: [LibraryPage] = [.clipboard, .list(SnipList.inboxID), .list(work)]
+        XCTAssertEqual(pages.page(1, from: .clipboard), .list(SnipList.inboxID))
+        XCTAssertEqual(pages.page(1, from: .list(SnipList.inboxID)), .list(work))
+        XCTAssertEqual(pages.page(-1, from: .list(SnipList.inboxID)), .clipboard)
+        XCTAssertNil(pages.page(1, from: .list(work)))
+        XCTAssertNil(pages.page(-1, from: .clipboard))
+        XCTAssertNil(pages.page(1, from: .list(UUID())))
     }
 }
 
