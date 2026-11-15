@@ -2081,8 +2081,10 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
     }
 
     // SM27-F2 guard: a later seeding merge that approves the superseded placeholder again stops
-    // excluding it, so its placeholder row uploads.
-    func testSeedingModeMergeReapprovingTheSupersededPlaceholderUploadsIt() async throws {
+    // excluding it, so its placeholder row uploads. During seeding, approval alone decides what
+    // uploads, so the test also delivers the seed and then edits the placeholder. That edit uploads
+    // only if the placeholder keeps syncing after seeding.
+    func testSeedingModeMergeReapprovalKeepsTheSupersededPlaceholderSyncing() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
@@ -2098,11 +2100,32 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(stored.namespaceState.phase, .seeding)
         XCTAssertEqual(stored.namespaceState.approvedSnipIDs, [superseded, remerged])
         XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
-        let pending = try await bridge.pendingChanges()
+        var pending = try await bridge.pendingChanges()
         XCTAssertEqual(savedTexts(in: pending), [
             superseded: "superseded by the re-merge",
             remerged: "approved by the re-merge",
         ])
+
+        for case .save(let draft) in pending.operations {
+            try await deliver(draft, through: bridge)
+        }
+        stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(stored.namespaceState.phase, .active)
+        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty, "the re-approved snip stays linked")
+
+        _ = try await library.perform(
+            .update(
+                id: superseded,
+                content: "edited after seeding",
+                attachmentURLs: nil,
+                expectedUpdatedAt: nil,
+                now: Date()
+            ),
+            sortedBy: .chronological
+        )
+
+        pending = try await bridge.pendingChanges()
+        XCTAssertEqual(savedTexts(in: pending), [superseded: "edited after seeding"])
     }
 
     // SM27-F2 ADV-2 guard: excluding the superseded placeholder leaves the delivered seed linked,
