@@ -393,7 +393,9 @@ Existing conditional tests have these preconditions:
   rail's width choice is saved per `SNIP_SNAP_UI_TEST_STORE`, so each run
   starts from the device default.
   `testRailArrowKeysMoveBetweenPagesAndShortcutTogglesNames` runs only on iPad,
-  because XCTest key events don't reach the Duo's inner panel.
+  because XCTest key events don't reach the Duo's inner panel. It is left out
+  of the `lists` group: on the iPad Simulator its key presses, ⌃⌘S included,
+  reach the app on some runs and not others.
 - `testPhotoPickerStagesAChosenImage` and
   `testEditorKeepsStagedPhotoWhenPhotoPickerIsCancelled` require at least one
   image in the selected Simulator's Photos library. They declare a skip when
