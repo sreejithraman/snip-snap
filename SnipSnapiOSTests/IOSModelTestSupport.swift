@@ -52,7 +52,7 @@ enum TestReadiness {
 
     /// Polls `condition`, suspending between checks, until it holds or the bound passes.
     @MainActor
-    static func wait(until condition: () async -> Bool) async -> Bool {
+    static func wait(timeout: TimeInterval = TestReadiness.timeout, until condition: () async -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(timeout)
         while await !condition() {
             guard ContinuousClock.now < deadline else { return false }
@@ -60,6 +60,78 @@ enum TestReadiness {
         }
         return true
     }
+}
+
+/// Brings up the keyboard once per test process. CI's focus timeouts have come in a host's first keyboard
+/// session after launch (a correlation, not a proven cause), so focus tests warm it up first.
+@MainActor
+enum TestKeyboard {
+    private static var isWarm = false
+    /// Long enough for CI's slowest observed show (about 7 s); short enough that a Simulator with a
+    /// hardware keyboard, where the keyboard never shows, doesn't pay the full readiness bound.
+    private static let showTimeout: TimeInterval = 15
+
+    /// Logs whether the keyboard showed, so CI logs can tell a warmed run from one where it never appeared,
+    /// for example with a hardware keyboard connected. Never fails the test.
+    static func warmUp() async {
+        guard !isWarm else { return }
+        isWarm = true
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            NSLog("TestKeyboard: no window scene, skipped the warm-up")
+            return
+        }
+        let shown = KeyboardFlag(), hidden = KeyboardFlag()
+        let center = NotificationCenter.default
+        let observers = [
+            center.addObserver(forName: UIResponder.keyboardDidShowNotification, object: nil, queue: nil) { _ in shown.set() },
+            center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: nil) { _ in hidden.set() },
+        ]
+        defer { observers.forEach { center.removeObserver($0) } }
+
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        let field = UITextView(frame: CGRect(x: 0, y: 100, width: 200, height: 40))
+        controller.view.addSubview(field)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        let start = ContinuousClock.now
+        let tookFocus = field.becomeFirstResponder()
+        let didShow = await TestReadiness.wait(timeout: showTimeout) { shown.value }
+        let elapsed = ContinuousClock.now - start
+        if didShow {
+            NSLog("TestKeyboard: keyboard showed after %@", "\(elapsed)")
+        } else {
+            NSLog("TestKeyboard: keyboard did not show within %@ (took focus: %@); continuing", "\(elapsed)", "\(tookFocus)")
+        }
+        field.resignFirstResponder()
+        // Let the keyboard finish leaving, so the first measured test starts without it.
+        if didShow, await !TestReadiness.wait(until: { hidden.value }) {
+            NSLog("TestKeyboard: keyboard did not hide after the warm-up")
+        }
+    }
+}
+
+/// Names which focus step failed: each composer's mount and first-responder state, the focus binding,
+/// and whether the host's window is key.
+@MainActor
+func composerFocusDiagnostics(_ host: UIViewController, focused: Bool) -> String {
+    func composers(in view: UIView) -> [ComposerTextView] {
+        (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap { composers(in: $0) }
+    }
+    let states = composers(in: host.view).map {
+        "mounted=\($0.window != nil) firstResponder=\($0.isFirstResponder) canBecome=\($0.canBecomeFirstResponder)"
+    }
+    return "composers=\(states) binding=\(focused) keyWindow=\(host.view.window?.isKeyWindow ?? false)"
+}
+
+private final class KeyboardFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    func set() { lock.withLock { isSet = true } }
+    var value: Bool { lock.withLock { isSet } }
 }
 
 @MainActor
