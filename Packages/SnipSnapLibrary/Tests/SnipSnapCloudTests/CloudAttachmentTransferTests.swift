@@ -6527,6 +6527,9 @@ private struct AttachmentMatrixCell: Sendable, CustomStringConvertible {
     }
   }
 
+  static let holderCells = all.filter { $0.role == .holder }
+  static let downloadedCells = all.filter { $0.role == .downloaded }
+
   var expectedNames: [UUID: String] {
     var names = Dictionary(uniqueKeysWithValues: AttachmentMatrixMember.initial.map { ($0.id, $0.fileName) })
     if local == .removeRecorded { names.removeValue(forKey: AttachmentMatrixMember.a.id) }
@@ -6550,6 +6553,44 @@ private struct AttachmentMatrixCell: Sendable, CustomStringConvertible {
       members = AttachmentMatrixMember.initial
     }
     return members.map(\.id).filter { expectedNames[$0] != nil }
+  }
+
+  // SM33-D5 permits the pending device's whole edit, subject to main's edit-survival floor.
+  var allowedNames: [[UUID: String]] {
+    guard local == .removeRecorded && remote == .rename else { return [expectedNames] }
+    var pendingNames = expectedNames
+    pendingNames[AttachmentMatrixMember.b.id] = AttachmentMatrixMember.b.fileName
+    return [expectedNames, pendingNames]
+  }
+
+  var allowedSharedOrders: [[UUID]] {
+    let remoteAddWithLocalReorder = remote == .add && (local == .reorder || local == .inFlightReorder)
+    let localMembershipWithRemoteReorder = remote == .reorder && (local == .addRecorded || local == .removeRecorded)
+    guard remoteAddWithLocalReorder || localMembershipWithRemoteReorder else {
+      return [expectedSharedOrder]
+    }
+    let pendingOrder = AttachmentMatrixMember.initial.map(\.id).filter { expectedNames[$0] != nil }
+    return [expectedSharedOrder, pendingOrder]
+  }
+
+  var mainFloorSharedOrder: [UUID]? {
+    switch (role, local, remote) {
+    case (.holder, .reorder, .add), (.holder, .inFlightReorder, .add):
+      AttachmentMatrixMember.localOrder.map(\.id)
+    case (.downloaded, .addRecorded, .reorder):
+      AttachmentMatrixMember.remoteOrder.map(\.id)
+    case (.downloaded, .removeRecorded, .reorder):
+      [AttachmentMatrixMember.c.id, AttachmentMatrixMember.b.id]
+    default:
+      nil
+    }
+  }
+
+  var mainFloorNames: [UUID: String] {
+    if role == .downloaded && local == .removeRecorded && remote == .rename {
+      return [AttachmentMatrixMember.b.id: "remote-B.txt"]
+    }
+    return [:]
   }
 }
 
@@ -6604,8 +6645,19 @@ fileprivate extension AttachmentTransferTestSupport {
 
 @Suite(.serialized)
 private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport {
-  @Test(arguments: AttachmentMatrixCell.all)
-  func testAttachmentEditInvariantMatrix(_ cell: AttachmentMatrixCell) async {
+  @Test(arguments: AttachmentMatrixCell.holderCells)
+  func testAttachmentEditInvariantMatrixWithLocalFiles(_ cell: AttachmentMatrixCell) async {
+    await run(cell)
+  }
+
+  @Test(arguments: AttachmentMatrixCell.downloadedCells)
+  func testAttachmentEditInvariantMatrixWithDownloadsOnly(_ cell: AttachmentMatrixCell) async {
+    await run(cell)
+  }
+
+  private func run(_ cell: AttachmentMatrixCell) async {
+    var log = "result=FAIL server=[] H=[] D=[]"
+    defer { print("MATRIX role=\(cell) \(log)") }
     do {
       let clients = try await makeAttachmentEditClients()
       defer { try? FileManager.default.removeItem(at: clients.holder.root) }
@@ -6620,9 +6672,10 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
         try await local.sync.sync()
         try await remote.sync.sync()
       }
-      try await assertInvariants(cell, clients: clients)
+      log = try await checkInvariants(cell, clients: clients)
     } catch {
       Issue.record("\(cell) threw: \(error)")
+      log += " error=\(String(reflecting: String(describing: error)))"
     }
   }
 
@@ -6673,61 +6726,99 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
       recordName: "a-\(member.id.uuidString.lowercased())"))
   }
 
-  private func assertInvariants(_ cell: AttachmentMatrixCell, clients: AttachmentEditClients) async throws {
+  private func checkInvariants(_ cell: AttachmentMatrixCell, clients: AttachmentEditClients) async throws -> String {
     let expectedNames = cell.expectedNames
     let expectedIDs = Set(expectedNames.keys)
     let expectedTypes = expectedNames.mapValues { _ in "public.plain-text" }
     let sharedIDs = Set(AttachmentMatrixMember.initial.map(\.id)).intersection(expectedIDs)
     let types = await clients.holder.server.storedRecordTypes(in: CloudZoneID(name: "data", ownerName: "owner"))
-    #expect(types.filter { $0 == CloudAttachmentRecordCodec.metadataRecordType }.count == expectedIDs.count,
-      "\(cell) server membership count")
+    var failures: [String] = []
+    func check(_ condition: Bool, _ message: String) {
+      #expect(condition, "\(cell) \(message)")
+      if !condition { failures.append(message) }
+    }
+    check(types.filter { $0 == CloudAttachmentRecordCodec.metadataRecordType }.count == expectedIDs.count,
+      "server membership count")
     var serverPositions: [UUID: Int] = [:]
     var serverNames: [UUID: String] = [:]
     var serverTypes: [UUID: String] = [:]
     for member in AttachmentMatrixMember.allCases {
       let record = await clients.holder.server.fullSnapshot(for: metadataID(member))
       if expectedNames[member.id] == nil {
-        #expect(record == nil, "\(cell) absent server member \(member.fileName)")
+        check(record == nil, "absent server member \(member.fileName)")
         continue
       }
-      let present = try #require(record, "\(cell) missing server member \(member.fileName)")
+      check(record != nil, "server has member \(member.fileName)")
+      guard let present = record else { continue }
       if case .int64(let position)? = present.encryptedFields["position"] {
         serverPositions[member.id] = Int(position)
-      } else { Issue.record("\(cell) missing server position for \(member.fileName)") }
+      } else { check(false, "server has position for \(member.fileName)") }
       if case .string(let name)? = present.encryptedFields["fileName"] { serverNames[member.id] = name }
       if case .string(let type)? = present.encryptedFields["contentType"] { serverTypes[member.id] = type }
     }
-    #expect(serverNames == expectedNames, "\(cell) server names follow field winners, including the in-flight exception")
-    #expect(serverTypes == expectedTypes, "\(cell) server types")
+    check(cell.allowedNames.contains(serverNames), "server names follow field winners or the pending exception")
+    check(serverTypes == expectedTypes, "server types")
     let serverOrder = serverPositions.keys.sorted {
       if serverPositions[$0] != serverPositions[$1] { return serverPositions[$0, default: 0] < serverPositions[$1, default: 0] }
       return $0.uuidString < $1.uuidString
     }
-    #expect(serverOrder.filter { sharedIDs.contains($0) } == cell.expectedSharedOrder,
-      "\(cell) server shared-attachment order")
+    let serverSharedOrder = serverOrder.filter { sharedIDs.contains($0) }
+    check(cell.allowedSharedOrders.contains(serverSharedOrder), "server shared order follows the winner or the pending exception")
+    if let mainOrder = cell.mainFloorSharedOrder {
+      check(serverSharedOrder == mainOrder, "server keeps the reorder retained by main c42d47d5")
+    }
+    for (id, name) in cell.mainFloorNames {
+      check(serverNames[id] == name, "server keeps the rename retained by main c42d47d5")
+    }
+    var deviceLogs: [String] = []
     for (role, client) in [("H", clients.holder), ("D", clients.downloaded)] {
       let snapshot = try await client.library.checkedSnapshot(sortedBy: .manual)
-      let snip = try #require(snapshot.snips.first(where: { $0.id == client.snipID }), "\(cell) \(role) missing snip")
-      let order = snip.attachments.map(\.id)
-      #expect(Set(order) == expectedIDs && order.count == expectedIDs.count, "\(cell) \(role) membership")
-      #expect(order == serverOrder, "\(cell) \(role) agrees with server order")
-      #expect(order.filter { sharedIDs.contains($0) } == cell.expectedSharedOrder,
-        "\(cell) \(role) shared order follows reorder winner and in-flight exception")
-      let names = snip.attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.fileName }
-      let contentTypes = snip.attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.contentType ?? "<nil>" }
-      #expect(names == expectedNames, "\(cell) \(role) names")
-      #expect(contentTypes == expectedTypes, "\(cell) \(role) types")
+      let snip = snapshot.snips.first(where: { $0.id == client.snipID })
+      check(snip != nil, "\(role) has snip")
+      let attachments = snip?.attachments ?? []
+      let order = attachments.map(\.id)
+      check(Set(order) == expectedIDs && order.count == expectedIDs.count, "\(role) membership")
+      check(order == serverOrder, "\(role) agrees with server order")
+      let sharedOrder = order.filter { sharedIDs.contains($0) }
+      check(cell.allowedSharedOrders.contains(sharedOrder), "\(role) shared order follows the winner or the pending exception")
+      let names = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.fileName }
+      let contentTypes = attachments.reduce(into: [UUID: String]()) { $0[$1.id] = $1.contentType ?? "<nil>" }
+      check(cell.allowedNames.contains(names), "\(role) names follow the winner or the pending exception")
+      check(names == serverNames, "\(role) agrees with server names")
+      check(contentTypes == expectedTypes && contentTypes == serverTypes, "\(role) types")
+      if let mainOrder = cell.mainFloorSharedOrder {
+        check(sharedOrder == mainOrder, "\(role) keeps the reorder retained by main c42d47d5")
+      }
+      for (id, name) in cell.mainFloorNames {
+        check(names[id] == name, "\(role) keeps the rename retained by main c42d47d5")
+      }
       let positions = try await client.library.storedAttachmentReferencePositions(for: client.snipID)
-      #expect(Set(positions.keys) == expectedIDs, "\(cell) \(role) stored membership")
-      #expect(positions.values.sorted() == Array(0..<expectedIDs.count), "\(cell) \(role) positions are a permutation")
-      #expect(positions == serverPositions, "\(cell) \(role) stored positions agree with server")
+      check(Set(positions.keys) == expectedIDs, "\(role) stored membership")
+      check(positions.values.sorted() == Array(0..<expectedIDs.count), "\(role) positions are a permutation")
+      check(positions == serverPositions, "\(role) stored positions agree with server")
+      deviceLogs.append("\(role)=\(format(order: order, positions: positions, names: names, types: contentTypes))")
     }
     for (role, client) in [("H", clients.holder), ("D", clients.downloaded)] {
       let next = try await client.store.pendingChanges()
-      #expect(!next.operations.contains(where: { operation in
+      check(!next.operations.contains(where: { operation in
         guard case .save(let draft) = operation else { return false }
         return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
-      }), "\(cell) \(role) quiet after settlement")
+      }), "\(role) quiet after settlement")
     }
+    let result = failures.isEmpty ? "PASS" : "FAIL"
+    let server = format(order: serverOrder, positions: serverPositions, names: serverNames, types: serverTypes)
+    return "result=\(result) server=\(server) \(deviceLogs.joined(separator: " ")) failures=\(String(reflecting: failures.joined(separator: "; ")))"
+  }
+
+  private func format(order: [UUID], positions: [UUID: Int], names: [UUID: String], types: [UUID: String]) -> String {
+    let extraIDs = Set(positions.keys).union(names.keys).subtracting(order).sorted { $0.uuidString < $1.uuidString }
+    let entries = (order + extraIDs).map { id in
+      let member = AttachmentMatrixMember.allCases.first { $0.id == id }
+      let label = member.map { String($0.fileName.prefix(1)) } ?? id.uuidString
+      let position = positions[id].map(String.init) ?? "missing"
+      let name = String(reflecting: names[id] ?? "<missing>")
+      return "\(label):\(position):\(name):\(types[id] ?? "<missing>")"
+    }
+    return "[\(entries.joined(separator: ","))]"
   }
 }
