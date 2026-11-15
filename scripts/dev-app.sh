@@ -297,6 +297,10 @@ start_app() {
         --env "SNIP_SNAP_STORE_PATH=$store_path"
         --env "SNIP_SNAP_SHOW_PANEL_ON_LAUNCH=1"
     )
+    if [[ -n "$simulated_store_dir" ]]; then
+        # Otherwise diagnostics land in the slot's bundle-ID log, which normal runs show and export.
+        launch_arguments+=(--env "SNIP_SNAP_DIAGNOSTICS_DIRECTORY=$simulated_store_dir/Diagnostics")
+    fi
     if [[ "${SNIP_SNAP_UI_TEST_UPDATE_SETTINGS:-}" == 1 ]]; then
         launch_arguments+=(--env "SNIP_SNAP_UI_TEST_UPDATE_SETTINGS=1")
     fi
