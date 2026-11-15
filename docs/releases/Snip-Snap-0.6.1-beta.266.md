@@ -1,0 +1,23 @@
+# Snip Snap 0.6.1 Beta 266
+
+## Mac
+
+- Fix a #365 regression that stopped in-flight snips syncing, and keep superseded seed approvals off iCloud
+- Record a failed CLI session end as cli.session_end
+- Don't swap in an empty store when a mode change's candidate files are gone
+- Keep a stored marker so an interrupted clipboard account reset still blocks the next account after a relaunch
+- Offer Try Again when a deletion is incomplete
+- Give the legacy text record's reached-iCloud rule one home
+- Don't let Try Again replay a full re-enable merge in flight, and keep its plan digest stable
+- Record and report a failed Try Again in Deletion incomplete
+
+## iOS
+
+- Fix a #365 regression that stopped in-flight snips syncing, and keep superseded seed approvals off iCloud
+- Record a failed CLI session end as cli.session_end
+- Don't swap in an empty store when a mode change's candidate files are gone
+- Keep a stored marker so an interrupted clipboard account reset still blocks the next account after a relaunch
+- Offer Try Again when a deletion is incomplete
+- Give the legacy text record's reached-iCloud rule one home
+- Don't let Try Again replay a full re-enable merge in flight, and keep its plan digest stable
+- Record and report a failed Try Again in Deletion incomplete

@@ -4,6 +4,28 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sun, 15 Nov 2026 22:12:56 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.266</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.266-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>266</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.266/Snip-Snap-0.6.1.zip" length="18927337" type="application/octet-stream" sparkle:edSignature="xrMOKE5Q0fHqqV6MM7XrzHgQG5LAIP2N/f8WMzKy1nyRUJtPIqTese4K1KORP8vbzSYT6FFly2RGW9JGuTR0Ag=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 266 — Mac
+
+- Fix a #365 regression that stopped in-flight snips syncing, and keep superseded seed approvals off iCloud
+- Record a failed CLI session end as cli.session_end
+- Don't swap in an empty store when a mode change's candidate files are gone
+- Keep a stored marker so an interrupted clipboard account reset still blocks the next account after a relaunch
+- Offer Try Again when a deletion is incomplete
+- Give the legacy text record's reached-iCloud rule one home
+- Don't let Try Again replay a full re-enable merge in flight, and keep its plan digest stable
+- Record and report a failed Try Again in Deletion incomplete
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sun, 15 Nov 2026 18:25:37 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.257</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.257-mac.txt</sparkle:fullReleaseNotesLink>
