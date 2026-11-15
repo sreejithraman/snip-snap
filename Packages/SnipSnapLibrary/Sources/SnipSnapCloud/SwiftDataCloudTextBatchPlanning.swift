@@ -189,8 +189,7 @@ extension SwiftDataCloudTextPersistence {
           guard isTerminal, let record = recordByIdentity[storageIdentity(id)] else { continue }
           finished.insert(record.snipID)
       }
-      // `current` predates this batch, so the snips it finished don't show server state yet.
-      let linkedSnipIDs = current.sentSnipIDs.union(finished)
+      let linkedSnipIDs = Set(current.records.map(\.snipID))
       return state.committingSend(.delivered(
           zoneSaved: batch.databaseEvents.contains { event in
               guard case .zoneSaved(let zone) = event else { return false }

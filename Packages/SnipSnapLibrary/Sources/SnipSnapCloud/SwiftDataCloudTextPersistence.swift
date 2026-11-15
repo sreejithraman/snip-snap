@@ -121,7 +121,7 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
         var snapshot = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
         if let pruned = snapshot.namespaceState.pruningDeletedSeeds(
             liveSnipIDs: Set(snapshot.snips.map(\.id)),
-            linkedSnipIDs: snapshot.sentSnipIDs
+            linkedSnipIDs: Set(snapshot.records.map(\.snipID))
         ) {
             try await library.transitionCloudTextNamespace(
                 namespaceKey: namespaceKey,
@@ -241,7 +241,8 @@ package actor SwiftDataCloudTextPersistence: CloudTextSyncPersistence {
             guard let next = snapshot.namespaceState.replacingSeedApproval(
                 with: snipIDs,
                 liveSnipIDs: localIDs,
-                linkedSnipIDs: snapshot.sentSnipIDs
+                recordedSnipIDs: Set(snapshot.records.map(\.snipID)),
+                sentSnipIDs: snapshot.sentSnipIDs
             ) else {
                 return
             }
