@@ -228,10 +228,12 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             return
         }
         do {
-            let coordinator = try await requireCoordinator()
-            let status = try await coordinator.status()
-            guard status.state != .off, status.attentionReason == nil else { return }
-            _ = try await coordinator.syncActive()
+            try await operationGate.withLease {
+                let coordinator = try await self.requireCoordinator()
+                let status = try await coordinator.status()
+                guard status.state != .off, status.attentionReason == nil else { return }
+                _ = try await coordinator.syncActive()
+            }
         } catch {
             // Launch and foreground work is best effort. Durable work remains queued.
         }

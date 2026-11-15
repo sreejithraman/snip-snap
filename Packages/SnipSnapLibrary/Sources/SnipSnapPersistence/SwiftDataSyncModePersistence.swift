@@ -253,6 +253,10 @@ package actor SwiftDataSyncModePersistence {
   var manifest: Manifest
   var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
+
+  /// The transition a rollback left when its commit failed. Try Again finishes only this one.
+  private var strandedRollback: SyncModeTransition?
+
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
   var nextManagedReadAttempt: UInt64 = 0
@@ -399,9 +403,9 @@ package actor SwiftDataSyncModePersistence {
       guard transition.targetKind == targetKind, transition.namespace == namespace else {
         throw SyncModePersistenceError.transitionInProgress
       }
-      // Mode operations run one at a time through the app's operation gate, and reopen clears
-      // both stages below the same way. So here they are leftovers of a rollback whose commit
-      // failed, and finishing that rollback lets Try Again continue.
+      // Finish only a rollback this process couldn't commit, so another operation's work in
+      // flight is never undone.
+      guard transition == strandedRollback else { return transition }
       if transition.phase == .candidateDeclared {
         try abortUnactivatedCandidate(reason: nil)
       } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
@@ -515,15 +519,12 @@ package actor SwiftDataSyncModePersistence {
   package func unfreezeBeforePointerSwap(reason: ICloudSyncAttentionReason? = nil) throws {
     guard let transition = manifest.transition,
       transition.sourceStoreID == manifest.activeStoreID,
-      [
-        .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-        .firstSendComplete,
-      ].contains(transition.phase)
+      transition.freezesSource
     else { return }
     var next = manifest
     try next.updateTransition { try $0.unfreeze() }
     next.attentionReason = reason
-    try commit(next)
+    try commitRollback(next)
   }
   package func recordAttention(_ reason: ICloudSyncAttentionReason) throws {
     var next = manifest
@@ -764,7 +765,17 @@ package actor SwiftDataSyncModePersistence {
     }
     next.transition = nil
     next.attentionReason = reason
-    try commit(next)
+    try commitRollback(next)
+  }
+
+  private func commitRollback(_ next: Manifest) throws {
+    do {
+      try commit(next)
+    } catch {
+      strandedRollback = manifest.transition
+      throw error
+    }
+    strandedRollback = nil
   }
 
   func store(id: UUID) -> SyncModeStore? {
