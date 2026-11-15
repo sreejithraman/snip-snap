@@ -201,6 +201,7 @@
 		D3A10C000000000000000012 /* IOSSharedContainerLockLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */; };
 		C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000004 /* IOSSyncModelTests.swift */; };
 		C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */; };
+		C2610B260000000000000011 /* IOSSnipEditorDraftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000011 /* IOSSnipEditorDraftTests.swift */; };
 		C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000006 /* IOSShareImportTests.swift */; };
 		C2610B260000000000000007 /* IOSSnipCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2610A260000000000000007 /* IOSSnipCopyTests.swift */; };
 		C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */; };
@@ -451,6 +452,7 @@
 		D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSharedContainerLockLifecycleTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000004 /* IOSSyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSyncModelTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAttachmentPreviewTests.swift; sourceTree = "<group>"; };
+		C2610A260000000000000011 /* IOSSnipEditorDraftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSnipEditorDraftTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000006 /* IOSShareImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSShareImportTests.swift; sourceTree = "<group>"; };
 		C2610A260000000000000007 /* IOSSnipCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSnipCopyTests.swift; sourceTree = "<group>"; };
 		C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSUndoFeedbackTests.swift; sourceTree = "<group>"; };
@@ -773,6 +775,7 @@
 				C2710A270000000000000001 /* IOSUndoFeedbackTests.swift */,
 				C2610A260000000000000006 /* IOSShareImportTests.swift */,
 				C2610A260000000000000005 /* IOSAttachmentPreviewTests.swift */,
+				C2610A260000000000000011 /* IOSSnipEditorDraftTests.swift */,
 				C2610A260000000000000004 /* IOSSyncModelTests.swift */,
 				C2610A260000000000000003 /* IOSClipboardModelTests.swift */,
 				D3A10C000000000000000002 /* IOSSharedContainerLockLifecycleTests.swift */,
@@ -1260,6 +1263,7 @@
 				C2710B270000000000000001 /* IOSUndoFeedbackTests.swift in Sources */,
 				C2610B260000000000000006 /* IOSShareImportTests.swift in Sources */,
 				C2610B260000000000000005 /* IOSAttachmentPreviewTests.swift in Sources */,
+				C2610B260000000000000011 /* IOSSnipEditorDraftTests.swift in Sources */,
 				C2610B260000000000000004 /* IOSSyncModelTests.swift in Sources */,
 				C2610B260000000000000003 /* IOSClipboardModelTests.swift in Sources */,
 				D3A10C000000000000000012 /* IOSSharedContainerLockLifecycleTests.swift in Sources */,

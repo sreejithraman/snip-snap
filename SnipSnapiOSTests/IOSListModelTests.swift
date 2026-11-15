@@ -21,7 +21,7 @@ final class IOSListModelTests: IOSModelTestCase {
         XCTAssertEqual(model.selectedPage, .list(workID))
 
         model.selectedSnipID = UUID()
-        model.selectedSnipIDs = [UUID()]
+        model.selectSnips([UUID()])
         model.selectPage(.clipboard)
         XCTAssertEqual(model.selectedPage, .clipboard)
         XCTAssertEqual(model.lastSelectedListID, workID)
