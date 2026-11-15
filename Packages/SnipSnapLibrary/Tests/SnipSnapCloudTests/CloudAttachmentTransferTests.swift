@@ -4861,6 +4861,49 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
   }
 
   // 4e: the user renames an attachment, then renames it again while the first save is in flight.
+  func testAHeldMetadataAcknowledgementPreservesAnUnreconciledPrependOnTheFileHolder() async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let held = try await holdCRenameForPlacementTest(in: holder)
+    let n = AttachmentMatrixMember.n.id
+    try await insertUnreconciledAttachment(id: n, fileName: "N.txt", at: 0, in: holder)
+
+    try await holder.store.stage(.sent(held.sent), outbound: held.outbound)
+    try await holder.store.applyStaged(held.sent.id)
+    try await holder.transport.confirmApplied(held.sent.id)
+
+    let expected = [n] + AttachmentMatrixMember.initial.map(\.id)
+    let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), expected, "An earlier acknowledgement must keep the unreconciled prepend.")
+    try await assertHeldRenamePlacementSettles(expected, between: clients)
+  }
+
+  func testAHeldMetadataAcknowledgementPreservesARemovalBeforeAnUnreconciledAppend() async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let held = try await holdCRenameForPlacementTest(in: holder)
+    let b = AttachmentMatrixMember.b.id
+    let c = AttachmentMatrixMember.c.id
+    let z = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    try await keepAttachments([b, c], ofSnip: holder.snipID, in: holder.library)
+
+    try await holder.store.stage(.sent(held.sent), outbound: held.outbound)
+    try await holder.store.applyStaged(held.sent.id)
+    try await holder.transport.confirmApplied(held.sent.id)
+
+    let afterAcknowledgement = try await holder.library.storedAttachmentReferencePositions(for: holder.snipID)
+    XCTAssertEqual(afterAcknowledgement, [b: 0, c: 1], "The acknowledgement must leave the unreconciled removal's coordinates intact.")
+    try await insertUnreconciledAttachment(id: z, fileName: "Z.txt", at: 2, in: holder)
+    let expected = [b, c, z]
+    let immediate = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(immediate.snips.first(where: { $0.id == holder.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), expected, "The append must follow C without a stale-coordinate tie.")
+    try await assertHeldRenamePlacementSettles(expected, between: clients)
+  }
+
   func testAnEditDuringAnInFlightMetadataSaveStaysPendingAfterTheSaveIsAccepted() async throws {
     let client = try await makeAttachmentClient(fileNames: ["a"])
     defer { try? FileManager.default.removeItem(at: client.root) }
@@ -5503,6 +5546,69 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
   }
 
 
+  private func holdCRenameForPlacementTest(
+    in client: AttachmentClient
+  ) async throws -> (outbound: CloudOutboundBatch, sent: CloudSentBatch) {
+    let c = AttachmentMatrixMember.c.id
+    try await renameAttachment(ofSnip: client.snipID, attachmentID: c,
+      to: "renamed C.txt", in: client.library)
+    let outbound = try await client.store.pendingChanges()
+    let storage = try await snapshot(client.library, client.namespace)
+    let row = try publication(of: c, in: storage)
+    let metadataID = CloudAttachmentRecordCodec.recordID(row.metadataIdentity)
+    XCTAssertTrue(outbound.operations.contains(where: { operation in
+      if case .save(let draft) = operation { draft.id == metadataID } else { false }
+    }), "C's rename must be recorded before the acknowledgement is held.")
+    let sent = try await client.transport.send(outbound)
+    XCTAssertTrue(sent.items.contains(where: { item in
+      if case .saved(let record) = item { record.id == metadataID } else { false }
+    }), "The held result must acknowledge C's rename.")
+    return (outbound, sent)
+  }
+
+  private func insertUnreconciledAttachment(
+    id: UUID, fileName: String, at position: Int, in client: AttachmentClient
+  ) async throws {
+    let snapshot = try await client.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(snapshot.snips.first(where: { $0.id == client.snipID }))
+    let source = client.root.appendingPathComponent(fileName)
+    try Data("\(fileName) payload".utf8).write(to: source)
+    var edits = snip.attachments.map { SnipAttachmentEdit.existing(attachmentID: $0.id) }
+    edits.insert(.added(sourceURL: source), at: position)
+    let update = try await client.library.perform(.editAttachments(
+      snipID: client.snipID, content: snip.content, edits: edits,
+      expectedUpdatedAt: snip.updatedAt, now: Date(timeIntervalSince1970: 4)
+    ), sortedBy: .manual)
+    let edited = try XCTUnwrap(update.snapshot.snips.first(where: { $0.id == client.snipID }))
+    let imported = try XCTUnwrap(edited.attachments.first(where: { $0.fileName == fileName }))
+    try await client.library.setUnpublishedAttachmentID(imported.id, to: id, for: client.snipID)
+  }
+
+  private func assertHeldRenamePlacementSettles(
+    _ expected: [UUID], between clients: AttachmentEditClients
+  ) async throws {
+    let holder = clients.holder
+    let peer = clients.downloaded
+    // Publish the new payload and its metadata before the peer reconciles an attachment subset.
+    for _ in 0..<3 { try await holder.sync.sendPending() }
+    for _ in 0..<2 {
+      try await holder.sync.sync()
+      try await peer.sync.sync()
+    }
+    let order = try await assertSettledAttachmentOrder(Set(expected), between: holder, and: peer)
+    XCTAssertEqual(order, expected, "The placement made during the held acknowledgement must reach both devices and the server.")
+    let c = AttachmentMatrixMember.c.id
+    for client in [holder, peer] {
+      let snapshot = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = try XCTUnwrap(snapshot.snips.first(where: { $0.id == client.snipID }))
+      XCTAssertEqual(snip.attachments.first(where: { $0.id == c })?.fileName, "renamed C.txt")
+    }
+    let storage = try await snapshot(holder.library, holder.namespace)
+    let renamed = try publication(of: c, in: storage)
+    let record = await holder.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(renamed.metadataIdentity))
+    XCTAssertEqual(record?.encryptedFields["fileName"], .string("renamed C.txt"))
+  }
+
   private func assertSettledAttachmentOrder(
     _ expectedIDs: Set<UUID>,
     between first: AttachmentClient,
@@ -6090,6 +6196,23 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
 }
 
 private extension SwiftDataSnipLibrary {
+  // Change only the imported ID so assigning the adverse ID preserves the raw position tie under test.
+  func setUnpublishedAttachmentID(_ originalID: UUID, to fixedID: UUID, for snipID: UUID) throws {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    let attachment = try XCTUnwrap(context.fetch(FetchDescriptor<StoredAttachmentRecord>(
+      predicate: #Predicate<StoredAttachmentRecord> { $0.id == originalID }
+    )).first)
+    let reference = try XCTUnwrap(context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
+      predicate: #Predicate<StoredSnipAttachmentReference> {
+        $0.snipID == snipID && $0.attachmentID == originalID
+      }
+    )).first)
+    attachment.id = fixedID
+    reference.attachmentID = fixedID
+    reference.id = StoredSnipAttachmentReference.identifier(snipID: snipID, attachmentID: fixedID)
+    try context.save()
+  }
+
   func setStoredAttachmentReferencePositions(_ positions: [UUID: Int], for snipID: UUID) throws {
     let context = Self.makeContext(container: try XCTUnwrap(container))
     let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
