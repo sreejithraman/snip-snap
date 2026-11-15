@@ -1049,6 +1049,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
             format: "label CONTAINS %@", "across your devices"
         )).firstMatch.exists)
+        XCTAssertTrue(alert.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "already on this device will upload to iCloud"
+        )).firstMatch.exists)
         alert.buttons["Cancel"].tap()
         XCTAssertEqual(clipboardSync.value as? String, "0")
     }
