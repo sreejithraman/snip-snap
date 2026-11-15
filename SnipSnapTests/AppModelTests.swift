@@ -3044,11 +3044,12 @@ final class AppModelTests: StoreBackedTestCase {
         model.query = "Edit me"
         let second = Task { @MainActor in await model.beginEditing(a.id) }
         await handler.waitUntilPreparationStarts(count: 2)
-        await handler.releasePreparation()
 
+        await handler.releaseNextPreparation()
         let openedFirst = await first.value
-        let openedSecond = await second.value
         XCTAssertFalse(openedFirst)
+        await handler.releaseNextPreparation()
+        let openedSecond = await second.value
         XCTAssertTrue(openedSecond)
         XCTAssertEqual(model.editingID, a.id)
     }
@@ -3096,40 +3097,30 @@ final class AppModelTests: StoreBackedTestCase {
         var finished = Snip(content: "Finished", origin: .quickEntry)
         finished.isDone = true
         let library = InMemorySnipLibrary(snips: [edited, finished], suspendsFirstCommand: true)
-        let model = AppModel(
-            library: library, defaults: defaults(),
-            recoveryScope: SnipRecoveryScope("account-a-generation-a")
-        )
+        let model = AppModel(library: library, defaults: defaults())
         await model.reload()
         let opened = await model.beginEditing(edited.id)
         XCTAssertTrue(opened)
         let session = try XCTUnwrap(model.inlineEditSessionID)
-        let newLibrary = InMemorySnipLibrary(snips: [edited])
 
-        let holdsLock = Task { @MainActor in await model.setDoneNow(false, ids: [finished.id]) }
+        let holder = Task { @MainActor in await model.setDoneNow(false, ids: [finished.id]) }
         await library.waitUntilFirstCommandStarts()
-        // The command lock admits waiters in order, so the scope change runs before the save.
-        let scopeChange = Task { @MainActor in
-            await model.replaceLibrary(
-                newLibrary,
-                recoveryScope: SnipRecoveryScope("account-b-generation-a")
-            )
-        }
-        await Task.yield()
         let save = Task { @MainActor in await model.saveInlineEdit(content: "Late", in: session) }
-        await Task.yield()
-        await library.resumeFirstCommand()
+        while !model.isSavingInlineEdit { await Task.yield() }
+        // Stands in for a refresh that ends the edit while the save waits for the command lock.
+        model.apply(SnipLibrarySnapshot(
+            snips: model.snips.filter { $0.id != edited.id },
+            lists: model.lists
+        ))
+        XCTAssertNil(model.editingID)
 
-        await holdsLock.value
-        await scopeChange.value
+        await library.resumeFirstCommand()
+        await holder.value
         let saved = await save.value
         XCTAssertFalse(saved)
-        XCTAssertNil(model.editingID)
-        let newContent = await newLibrary.snapshot(sortedBy: .chronological).snips.first?.content
-        XCTAssertEqual(newContent, "Draft")
-        let oldContent = await library.snapshot(sortedBy: .chronological).snips
+        let content = await library.snapshot(sortedBy: .chronological).snips
             .first { $0.id == edited.id }?.content
-        XCTAssertEqual(oldContent, "Draft")
+        XCTAssertEqual(content, "Draft")
     }
 
     @MainActor
@@ -4710,6 +4701,11 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
     func releasePreparation() {
         preparationContinuations.forEach { $0.resume(returning: url) }
         preparationContinuations.removeAll()
+    }
+
+    func releaseNextPreparation() {
+        guard !preparationContinuations.isEmpty else { return }
+        preparationContinuations.removeFirst().resume(returning: url)
     }
 
     func failPreparation(_ error: any Error) {
