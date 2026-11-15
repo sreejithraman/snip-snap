@@ -353,8 +353,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                         issue = .iCloudAccountChanged
                     }
                     stopIssue = issue
-                    do { try await cliRequestStore.suspendActiveScope() }
-                    catch { model.presentError(error) }
+                    await model.suspendCLIActiveScope(in: cliRequestStore)
                     await model.clipboardHistory.resetCloudAccount()
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordSyncStopped(issue)
@@ -602,8 +601,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         case .libraryReplacedAndSyncScheduled:
             await reloadActiveLibrary()
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-            do { try await cliRequests.suspendActiveScope() }
-            catch { model.presentError(error) }
+            await model.suspendCLIActiveScope(in: cliRequests)
             await model.clipboardHistory.resetCloudAccount()
             await reloadActiveLibrary()
             let issue: SyncedContentSyncIssue
