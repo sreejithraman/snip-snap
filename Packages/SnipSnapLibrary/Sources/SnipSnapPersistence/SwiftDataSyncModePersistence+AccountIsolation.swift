@@ -212,7 +212,14 @@ extension SwiftDataSyncModePersistence {
     try await reconcileAccountIsolationResolution()
   }
 
+  /// Finishes a stored Keep or Remove. Calls run one at a time in arrival order. A call that
+  /// waited re-reads the manifest: if the earlier call finished, it returns; if that call
+  /// failed, it makes its own attempt.
   package func reconcileAccountIsolationResolution() async throws {
+    try await accountIsolationTurns.withLease { try await self.reconcileInTurn() }
+  }
+
+  private func reconcileInTurn() async throws {
     try? await resumeDeclaredAccountIsolation()
     guard let isolation = manifest.accountIsolation,
       isolation.resolution != .undecided
@@ -220,6 +227,7 @@ extension SwiftDataSyncModePersistence {
     if isolation.resolution == .keepingLocalCopy {
       let sourceStore = try storeForIsolation(id: isolation.storeID)
       let sourceLibrary = try libraryForTransition(storeID: sourceStore.id)
+      try await writeHook(.beforeAccountLocalCopyMerge)
       try await sourceLibrary.prepareCloudAttachmentsForLocalCopy(
         namespaceKey: isolation.namespace.namespaceKey
       )
