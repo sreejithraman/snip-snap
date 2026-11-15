@@ -380,7 +380,7 @@ final class CloudKitOperationRetryTests: XCTestCase {
 
 }
 
-private final class RetryClock: Sendable {
+final class RetryClock: Sendable {
   private let origin = ContinuousClock.now
   var now: ContinuousClock.Instant { origin.advanced(by: elapsed) }
   private let value = Mutex<Duration>(.zero)
