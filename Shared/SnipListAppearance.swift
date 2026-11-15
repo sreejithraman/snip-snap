@@ -247,16 +247,9 @@ struct SnipListColorPicker: View {
                             SnipListColorSwatch(
                                 color: SnipListAppearance(preset: preset ?? automatic).color,
                                 isSelected: selected,
-                                diameter: 32
+                                diameter: 32,
+                                symbol: preset == nil ? "sparkles" : nil
                             )
-                            .overlay {
-                                if preset == nil {
-                                    Image(systemName: "sparkles")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                        .accessibilityHidden(true)
-                                }
-                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -301,7 +294,6 @@ struct SnipListNoIconButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel("No icon")
         .accessibilityHint("Shows the list’s first letters")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -315,15 +307,17 @@ struct SnipListColorSwatch: View {
     let color: Color
     let isSelected: Bool
     var diameter: CGFloat = 32
+    /// A symbol drawn on the swatch, such as the Automatic choice's sparkles.
+    var symbol: String?
 
     var body: some View {
         Group {
             if reduceTransparency || contrast == .increased {
                 Circle().fill(color)
                     .frame(width: diameter, height: diameter)
+                    .overlay { symbolImage }
             } else {
-                Circle()
-                    .fill(.clear)
+                symbolImage
                     .frame(width: diameter, height: diameter)
                     .glassEffect(
                         .regular.tint(color.opacity(SnipSnapTheme.listGlassTintOpacity)).interactive(),
@@ -338,6 +332,19 @@ struct SnipListColorSwatch: View {
                         .frame(width: diameter + 12, height: diameter + 12)
                 }
             }
+    }
+}
+
+extension SnipListColorSwatch {
+    @ViewBuilder fileprivate var symbolImage: some View {
+        if let symbol {
+            Image(systemName: symbol)
+                .font(.system(size: diameter * 0.42, weight: .semibold))
+                .foregroundStyle(.primary)
+                .accessibilityHidden(true)
+        } else {
+            Color.clear
+        }
     }
 }
 
