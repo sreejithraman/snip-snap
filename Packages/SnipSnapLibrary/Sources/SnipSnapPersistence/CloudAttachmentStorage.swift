@@ -102,6 +102,9 @@ package enum CloudAttachmentFailure: String, Codable, Equatable, Sendable {
   package var retriesManually: Bool {
     self != .updateRequired && self != .accessDenied
   }
+
+  /// Only Try Again clears this failure.
+  package var clearsOnManualRetryOnly: Bool { retriesManually && !retriesAutomatically }
 }
 
 package extension CloudAttachmentPublication {
