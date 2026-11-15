@@ -315,6 +315,7 @@ final class IOSAppSession {
     ) async throws {
         guard let session else { return }
         let syncStart = settings.recordSyncStarted()
+        var stopIssue: SyncedContentSyncIssue?
         do {
             let result: SnipSnapCloudSyncResult
             if retryingUserRecoverableFailures {
@@ -361,10 +362,6 @@ final class IOSAppSession {
                 await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 break
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-                clipboard.stop()
-                await clipboard.resetAccountBinding()
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 let issue: SyncedContentSyncIssue
                 switch result {
                 case .iCloudDataReset:
@@ -374,6 +371,11 @@ final class IOSAppSession {
                 default:
                     issue = .iCloudAccountChanged
                 }
+                stopIssue = issue
+                clipboard.stop()
+                await clipboard.resetAccountBinding()
+                let active = try await session.iosActiveLibrary()
+                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 settings.recordSyncStopped(issue)
             case .syncIssue(let issue):
                 settings.recordSyncFailure(issue)
@@ -384,6 +386,7 @@ final class IOSAppSession {
             }
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+            if let stopIssue { settings.recordSyncStopped(stopIssue) }
             throw error
         }
     }
