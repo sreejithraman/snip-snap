@@ -1933,7 +1933,9 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [first, second])
     }
 
-    func testSeedingModeMergeWithoutPendingZoneCreationActivatesOnAnEmptyApproval() async throws {
+    // SM27-F1 H5: like seed pruning, an empty re-merge that finishes seeding must exclude every
+    // live snip without a record, so snips the merge did not approve stay off iCloud.
+    func testSeedingModeMergeWithoutPendingZoneCreationExcludesUnlinkedSnipsOnAnEmptyApproval() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let library = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
@@ -1956,8 +1958,10 @@ final class SwiftDataCloudTextPersistenceTests: XCTestCase {
         stored = try await library.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(stored.namespaceState.phase, .active)
         XCTAssertTrue(stored.namespaceState.approvedSnipIDs.isEmpty)
-        XCTAssertTrue(stored.namespaceState.excludedSnipIDs.isEmpty)
+        XCTAssertEqual(stored.namespaceState.excludedSnipIDs, [first, second])
         XCTAssertFalse(stored.namespaceState.zoneCreationPending)
+        let pending = try await bridge.pendingChanges()
+        XCTAssertTrue(pending.operations.isEmpty, "the empty merge uploads neither unapproved snip")
     }
 
     // SM27-H3: a snip excluded at the first seed and approved by a later merge keeps syncing.
