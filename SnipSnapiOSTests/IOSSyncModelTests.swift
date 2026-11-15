@@ -446,6 +446,26 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .removalPending)
     }
 
+    func testRetryFromAnIncompleteDeletionFinishesIt() async {
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let cloudSession = IOSCloudSyncSessionProbe(
+            result: .oldSyncedContentRemovalCompleted,
+            activeLibrary: ModelTestLibrary()
+        )
+        let session = IOSAppSession(
+            library: ModelTestLibrary(),
+            syncedContentSettings: settings,
+            cloudSyncSession: cloudSession
+        )
+
+        await session.retrySyncWhenPossible()
+
+        let retryCount = await cloudSession.retryCount()
+        XCTAssertEqual(retryCount, 1)
+        XCTAssertEqual(settings.state, .deleted)
+        XCTAssertEqual(settings.statusTitle, "Synced content deleted")
+    }
+
     func testAutomaticPendingRemovalResultKeepsDeletionIncomplete() async {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         let fixture = AutomaticSyncFixture(settings: settings)

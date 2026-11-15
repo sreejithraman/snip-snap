@@ -68,6 +68,66 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testRetryOfAnIncompleteDeletionRunsTheRetry() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let retries = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let handler = makeHandler(
+            model: model, cloud: ApplicationCLICloudEffects { retries.record() }, syncSettings: settings
+        )
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(retries.count, 1)
+        XCTAssertEqual(receipt.status, .success)
+    }
+
+    @MainActor
+    func testRetryWhileADeleteRunsStillRefuses() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let retries = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .deleting)
+        let handler = makeHandler(
+            model: model, cloud: ApplicationCLICloudEffects { retries.record() }, syncSettings: settings
+        )
+
+        do {
+            _ = try await handle(.retrySync, using: handler, model: model)
+            XCTFail("A running delete must report its own outcome.")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "iCloud sync is busy or unavailable. Check sync status.")
+        }
+
+        XCTAssertEqual(retries.count, 0)
+    }
+
+    @MainActor
+    func testRetryDuringASettingsRetryReportsTheCurrentStatus() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        await model.waitForInitialLoad()
+        let retries = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        // Like the Mac app's retry action, this retry runs only if no explicit sync is running.
+        let cloud = ApplicationCLICloudEffects {
+            await settings.performExplicitSync { retries.record() }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+        let gate = ApplicationCLITransitionGate()
+        let settingsRetry = Task { await settings.performExplicitSync { await gate.suspend() } }
+        await gate.waitUntilEntered()
+
+        let receipt = try await handle(.retrySync, using: handler, model: model)
+
+        XCTAssertEqual(retries.count, 0)
+        XCTAssertEqual(receipt.status, .success)
+        XCTAssertEqual(receipt.message, settings.detail)
+        gate.resume()
+        await settingsRetry.value
+    }
+
+    @MainActor
     func testHideLeavesAnEditListFormOpen() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
         let coordinator = AppCoordinator(
@@ -208,6 +268,13 @@ private final class ApplicationCLITransitionGate {
         resumeWaiter?.resume()
         resumeWaiter = nil
     }
+}
+
+@MainActor
+private final class ApplicationCLIRetryCounter {
+    private(set) var count = 0
+
+    func record() { count += 1 }
 }
 
 @MainActor
