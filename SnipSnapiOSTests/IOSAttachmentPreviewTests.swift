@@ -1076,6 +1076,7 @@ final class ImageViewerZoomTests: XCTestCase {
     /// the same drag, so it still pans.
     func testPinchedDragStillPansAfterThePinchEndsAtBaseZoom() {
         var zoom = ImageViewerZoom()
+        zoom.dragStarted()
         zoom.pinchChanged(whileDragging: true)
         zoom.pinchEnded(magnification: 1, in: bounds)
         XCTAssertEqual(zoom.scale, 1)
@@ -1086,6 +1087,7 @@ final class ImageViewerZoomTests: XCTestCase {
 
     func testDragEndAloneClearsThePinchMark() {
         var zoom = ImageViewerZoom()
+        zoom.dragStarted()
         zoom.pinchChanged(whileDragging: true)
         XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
 
@@ -1095,13 +1097,58 @@ final class ImageViewerZoomTests: XCTestCase {
 
     func testCancelledPinchDragDoesNotBlockTheNextSwipeToClose() {
         var zoom = ImageViewerZoom()
+        zoom.dragStarted()
         zoom.pinchChanged(whileDragging: true)
         // The system takes the touches, so the drag stops without ending. Commit b2c756c4
         // proved this sequence fails when nothing resets the mark at cancel.
         zoom.dragStopped()
 
+        zoom.dragStarted()
         XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
         XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    /// SwiftUI may reset the gesture state before it calls `onEnded`.
+    func testPinchedDragPansWhenItsEndArrivesAfterTheStop() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStopped()
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        XCTAssertEqual(zoom.offset, .zero)
+    }
+
+    func testSwipeClosesAfterAPinchedDragEndsBeforeItsStop() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+        zoom.dragStopped()
+
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 150)
+        XCTAssertTrue(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    /// A pinch can arrive in the drag's first frame, before its start is observed.
+    func testFirstFramePinchKeepsTheDragAPan() {
+        var zoom = ImageViewerZoom()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
+    }
+
+    func testFirstFramePinchAfterACancelledPinchedDragKeepsTheNewDragAPan() {
+        var zoom = ImageViewerZoom()
+        zoom.dragStarted()
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStopped()
+
+        zoom.pinchChanged(whileDragging: true)
+        zoom.dragStarted()
+        XCTAssertEqual(zoom.dismissalDistance(dragTranslation: longSwipeDown, magnification: 1), 0)
+        XCTAssertFalse(zoom.dragEnded(translation: longSwipeDown, magnification: 1, in: bounds))
     }
 
     func testReadsUseTheMagnificationInProgress() {

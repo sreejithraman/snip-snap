@@ -153,8 +153,8 @@ private struct FullScreenAttachmentImage: View {
                         )
                     }
             )
-            .onChange(of: isDragging) { was, now in
-                if was, !now { zoom.dragStopped() }
+            .onChange(of: isDragging) { _, dragging in
+                if dragging { zoom.dragStarted() } else { zoom.dragStopped() }
             }
             .task(id: url) {
                 didFailToLoad = false
@@ -212,24 +212,39 @@ private struct FullScreenAttachmentImage: View {
 
 /// Committed zoom and pan, and whether the current drag has seen a pinch.
 struct ImageViewerZoom {
+    /// Whether the drag has seen a pinch. A pinch during a drag turns it into a pan, even
+    /// back at base zoom.
+    private enum DragPinch {
+        case none
+        /// A pinch happened during the drag in progress.
+        case seen
+        /// The drag stopped after a pinch. Its end can still arrive; the next drag's start
+        /// clears this.
+        case seenBeforeStop
+    }
+
     private(set) var scale: CGFloat = 1
     private(set) var offset: CGSize = .zero
-    /// A pinch during a drag turns the drag into a pan, even back at base zoom.
-    private var dragSawPinch = false
+    private var dragPinch = DragPinch.none
 
     mutating func toggle() {
         scale = scale > 1 ? 1 : 2
         offset = .zero
     }
 
-    mutating func pinchChanged(whileDragging: Bool) {
-        if whileDragging { dragSawPinch = true }
+    /// A pinch that arrives before the start is seen belongs to the new drag, so it stays.
+    mutating func dragStarted() {
+        if dragPinch == .seenBeforeStop { dragPinch = .none }
     }
 
-    /// The drag ended or the system cancelled it. After a normal end, `dragEnded` has
-    /// already cleared the pinch mark, so this does nothing.
+    mutating func pinchChanged(whileDragging: Bool) {
+        if whileDragging { dragPinch = .seen }
+    }
+
+    /// The drag ended or the system cancelled it. SwiftUI may report this before or after
+    /// `dragEnded`, so the pinch mark stays readable by a late end.
     mutating func dragStopped() {
-        dragSawPinch = false
+        if dragPinch == .seen { dragPinch = .seenBeforeStop }
     }
 
     mutating func pinchEnded(magnification: CGFloat, in bounds: ImageViewerBounds) {
@@ -243,9 +258,9 @@ struct ImageViewerZoom {
         magnification: CGFloat,
         in bounds: ImageViewerBounds
     ) -> Bool {
-        defer { dragSawPinch = false }
+        defer { dragPinch = .none }
         let zoom = effectiveScale(magnification: magnification)
-        if pans(at: zoom) {
+        if zoom > 1 || dragPinch != .none {
             offset = bounds.bounded(
                 CGSize(width: offset.width + translation.width, height: offset.height + translation.height),
                 scale: zoom
@@ -286,8 +301,10 @@ struct ImageViewerZoom {
         )
     }
 
+    /// Whether the drag in progress pans. A stopped drag's pinch no longer counts, so the
+    /// next drag follows the finger.
     private func pans(at zoom: CGFloat) -> Bool {
-        zoom > 1 || dragSawPinch
+        zoom > 1 || dragPinch == .seen
     }
 }
 
