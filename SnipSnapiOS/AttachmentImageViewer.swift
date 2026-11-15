@@ -223,8 +223,9 @@ struct ImageViewerZoom {
         offset = .zero
     }
 
+    /// A pinch still in progress marks the new drag again on its next change.
     mutating func dragBegan() {
-        if case .idle = drag { drag = .active(pinched: false) }
+        drag = .active(pinched: false)
     }
 
     mutating func pinchChanged(whileDragging: Bool) {
