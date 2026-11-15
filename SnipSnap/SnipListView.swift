@@ -22,6 +22,7 @@ private enum SnipListScrollTarget {
 
 struct SnipListView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: AppModel
     let displayedListID: UUID
     let isInteractive: Bool
@@ -858,7 +859,7 @@ struct SnipListView: View {
                 submenu.addPanelAction(
                     list.displayName,
                     isEnabled: model.editingID == nil,
-                    image: list.menuMarkImage(appearance: NSApp.effectiveAppearance)
+                    image: list.menuMarkImage(colorScheme: colorScheme)
                 ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }

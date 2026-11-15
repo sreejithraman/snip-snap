@@ -10,7 +10,7 @@ The picker offers Automatic, red, orange, yellow, green, teal, blue, indigo, vio
 
 `SnipList.systemImage` stores an empty string for no symbol, because every synced build requires the field. Older builds saved `list.bullet` or `circle.grid.2x2.fill` on every new list, so those also mean no symbol and the picker leaves them out. Each preset resolves to its current adaptive sRGB values when rendered, so palette improvements automatically reach saved lists. The app does not store or offer custom colors.
 
-SwiftData schema 9 stores the preset's raw value in optional `colorPresetID`. Frozen historical schemas retain their old `colorID`, `lightHex`, and `darkHex` fields only so existing stores remain openable. Migration drops all of those values without translating them, so existing colors become neutral while the rest of each list survives. JSON backups store `colorPreset` as a string. Missing and unknown preset IDs become neutral.
+SwiftData schema 9 stores the preset's raw value in optional `colorPresetID`. Frozen historical schemas retain their old `colorID`, `lightHex`, and `darkHex` fields only so existing stores remain openable. Migration drops all of those values without translating them, so existing colors become Automatic while the rest of each list survives. JSON backups store `colorPreset` as a string. Missing and unknown preset IDs read as Automatic.
 
 CloudKit stores the preset as JSON bytes in one encrypted List `colorPreset` field. The old encrypted `color` pair is ignored and removed on the next list write. Name, icon, and color merge separately. Conflicting preset edits use the existing recovered-list flow. An explicit null clears the color on other devices.
 

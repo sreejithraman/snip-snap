@@ -189,14 +189,14 @@ extension SnipList {
     }
 
 #if os(macOS)
-    /// For AppKit menus: letters rendered in the app's current appearance, or the list's symbol.
+    /// For AppKit menus: letters rendered for the panel's color scheme, or the list's symbol.
     @MainActor
-    func menuMarkImage(appearance: NSAppearance, diameter: CGFloat = 16) -> NSImage? {
+    func menuMarkImage(colorScheme: ColorScheme, diameter: CGFloat = 16) -> NSImage? {
         guard case .letters = displayMark else {
             return icon.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         }
         var environment = EnvironmentValues()
-        environment.colorScheme = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        environment.colorScheme = colorScheme
         environment.displayScale = NSScreen.main?.backingScaleFactor ?? 2
         return renderedLetters(in: environment, diameter: diameter)
     }
