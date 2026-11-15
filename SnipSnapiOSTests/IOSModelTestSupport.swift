@@ -62,6 +62,62 @@ enum TestReadiness {
     }
 }
 
+/// Brings up the keyboard once per test process. On CI, focus waits timed out in a host's first keyboard
+/// session after launch, so focus tests warm it up before they measure anything.
+@MainActor
+enum TestKeyboard {
+    private static var isWarm = false
+
+    /// Logs whether the keyboard showed, so CI logs can tell a warmed run from one where it never appeared,
+    /// for example with a hardware keyboard connected. Never fails the test.
+    static func warmUp() async {
+        guard !isWarm else { return }
+        isWarm = true
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            NSLog("TestKeyboard: no window scene, skipped the warm-up")
+            return
+        }
+        let shown = KeyboardFlag(), hidden = KeyboardFlag()
+        let center = NotificationCenter.default
+        let observers = [
+            center.addObserver(forName: UIResponder.keyboardDidShowNotification, object: nil, queue: nil) { _ in shown.set() },
+            center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: nil) { _ in hidden.set() },
+        ]
+        defer { observers.forEach { center.removeObserver($0) } }
+
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        let field = UITextView(frame: CGRect(x: 0, y: 100, width: 200, height: 40))
+        controller.view.addSubview(field)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        let start = ContinuousClock.now
+        let tookFocus = field.becomeFirstResponder()
+        let didShow = await TestReadiness.wait { shown.value }
+        let elapsed = ContinuousClock.now - start
+        if didShow {
+            NSLog("TestKeyboard: keyboard showed after %@", "\(elapsed)")
+        } else {
+            NSLog("TestKeyboard: keyboard did not show within %@ (took focus: %@); continuing", "\(elapsed)", "\(tookFocus)")
+        }
+        field.resignFirstResponder()
+        // Let the keyboard finish leaving, so the first measured test starts without it.
+        if didShow, await !TestReadiness.wait(until: { hidden.value }) {
+            NSLog("TestKeyboard: keyboard did not hide after the warm-up")
+        }
+    }
+}
+
+private final class KeyboardFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    func set() { lock.withLock { isSet = true } }
+    var value: Bool { lock.withLock { isSet } }
+}
+
 @MainActor
 final class RecordingHapticPlayer: IOSHapticPlaying {
     var played: [IOSHapticFeedback.Meaning] = []

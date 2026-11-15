@@ -10,6 +10,10 @@ import XCTest
 /// library trees. These tests host the real root view and swap its size class.
 @MainActor
 final class IOSFoldContinuityTests: IOSModelTestCase {
+    override func setUp() async throws {
+        try await super.setUp()
+        await TestKeyboard.warmUp()
+    }
 
     func testDraftTextAndAttachmentSurviveSizeClassSwaps() async throws {
         let storage = makeComposerStorage()
@@ -173,7 +177,7 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
     }
 
-    func testComposerClearsFocusWhenTheSystemRefusesIt() throws {
+    func testComposerClearsFocusWhenTheSystemRefusesIt() async throws {
         var focused = false
         let blocker = FocusKeepingTextField()
         let host = UIHostingController(rootView: ComposerTextInput(
@@ -193,8 +197,8 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
             onPasteAttachments: { _, _ in }
         )
         host.view.layoutIfNeeded()
-        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !focused }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: TestReadiness.timeout), .completed)
+        let cleared = await TestReadiness.wait { !focused }
+        XCTAssertTrue(cleared, "Refused focus must clear the binding. \(composerFocusDiagnostics(host, focused: focused))")
         XCTAssertTrue(blocker.isFirstResponder)
     }
 

@@ -12,6 +12,11 @@ import XCTest
 
 @MainActor
 final class IOSComposerTests: IOSModelTestCase {
+    override func setUp() async throws {
+        try await super.setUp()
+        await TestKeyboard.warmUp()
+    }
+
     func testComposerPasteStagesCopiedPhotoWithoutPastingItsFileURL() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -666,7 +671,7 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertEqual(body, "before hello there after")
     }
 
-    func testComposerFocusUpdatesDoNotWriteBindingsDuringViewUpdates() throws {
+    func testComposerFocusUpdatesDoNotWriteBindingsDuringViewUpdates() async throws {
         var focused = false
         var enabled = true
         var isUpdating = false
@@ -701,35 +706,37 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertTrue(focused, "User focus must still reach SwiftUI")
 
         // UIKit applies SwiftUI's focus after the update, so count echoes until it settles.
-        func update(expectingFirstResponder expected: Bool) {
+        func update(expectingFirstResponder expected: Bool, line: UInt = #line) async {
             isUpdating = true
             defer { isUpdating = false }
             host.rootView = input()
             host.view.setNeedsLayout()
             host.view.layoutIfNeeded()
-            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                view.isFirstResponder == expected
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: TestReadiness.timeout), .completed)
+            let settled = await TestReadiness.wait { view.isFirstResponder == expected }
+            XCTAssertTrue(
+                settled,
+                "First responder never became \(expected). \(composerFocusDiagnostics(host, focused: focused))",
+                line: line
+            )
         }
         focused = false
-        update(expectingFirstResponder: false)
+        await update(expectingFirstResponder: false)
         XCTAssertEqual(writesDuringUpdate, 0, "SwiftUI-driven focus must not echo through its binding")
 
         focused = true
-        update(expectingFirstResponder: true)
+        await update(expectingFirstResponder: true)
         XCTAssertEqual(writesDuringUpdate, 0)
 
         enabled = false
-        update(expectingFirstResponder: false)
+        await update(expectingFirstResponder: false)
         XCTAssertTrue(focused, "Disabling input must preserve SwiftUI's requested focus")
         XCTAssertEqual(writesDuringUpdate, 0)
 
         enabled = true
-        update(expectingFirstResponder: true)
+        await update(expectingFirstResponder: true)
         XCTAssertTrue(view.resignFirstResponder())
-        let blurred = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !focused }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [blurred], timeout: TestReadiness.timeout), .completed, "User blur must still reach SwiftUI")
+        let blurred = await TestReadiness.wait { !focused }
+        XCTAssertTrue(blurred, "User blur must still reach SwiftUI. \(composerFocusDiagnostics(host, focused: focused))")
     }
 
     func testComposerKeepsCursorWhenLargePlainTextPasteBecomesAnAttachment() async throws {
@@ -1137,7 +1144,7 @@ final class IOSComposerTests: IOSModelTestCase {
     }
 
     /// Opening or closing a foldable swaps the compact and regular layouts while the composer is focused.
-    func testFocusedComposerKeepsDraftAndFocusAcrossSizeClassChanges() throws {
+    func testFocusedComposerKeepsDraftAndFocusAcrossSizeClassChanges() async throws {
         var draft = "Fold draft"
         var focused = false
         let host = UIHostingController(rootView: SizeClassComposerSwap(
@@ -1166,17 +1173,30 @@ final class IOSComposerTests: IOSModelTestCase {
             host.traitOverrides.horizontalSizeClass = sizeClass
             host.view.setNeedsLayout()
             host.view.layoutIfNeeded()
-            let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let moved = await TestReadiness.wait {
                 guard let input = composer(in: host.view) else { return false }
                 return input !== previous && input.isFirstResponder
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: TestReadiness.timeout), .completed, "\(sizeClass)")
+            }
+            XCTAssertTrue(moved, "\(sizeClass): \(composerFocusDiagnostics(host, focused: focused))")
             let input = try XCTUnwrap(composer(in: host.view))
             XCTAssertEqual(input.text, "Fold draft")
             XCTAssertTrue(focused, "The layout change must not end the user's editing")
             previous = input
         }
     }
+}
+
+/// Names which focus step failed: each composer's mount and first-responder state, the focus binding,
+/// and whether the host's window is key.
+@MainActor
+func composerFocusDiagnostics(_ host: UIViewController, focused: Bool) -> String {
+    func composers(in view: UIView) -> [ComposerTextView] {
+        (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap { composers(in: $0) }
+    }
+    let states = composers(in: host.view).map {
+        "mounted=\($0.window != nil) firstResponder=\($0.isFirstResponder) canBecome=\($0.canBecomeFirstResponder)"
+    }
+    return "composers=\(states) binding=\(focused) keyWindow=\(host.view.window?.isKeyWindow ?? false)"
 }
 
 /// Mirrors `IOSAppRootView.appNavigation`: each size class owns its own composer.
