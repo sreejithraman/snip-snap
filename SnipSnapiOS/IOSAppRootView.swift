@@ -807,7 +807,7 @@ struct IOSAppRootView: View {
         }
     }
 
-    /// Default-icon lists show letter marks in the rail; the others keep their icon.
+    /// Lists without an icon show letters; the others keep their icon.
     private func seedRailListsFixtureIfRequested() async {
         guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_RAIL_LISTS"] == "1",
               model.snips.isEmpty else { return }
@@ -819,6 +819,8 @@ struct IOSAppRootView: View {
         }
         _ = await model.createList(name: "Travel", systemImage: "airplane", color: .blue)
         _ = await model.createList(name: "Ideas", color: .orange)
+        // Older builds saved this symbol on every new list.
+        _ = await model.createList(name: "Archive", systemImage: "list.bullet")
         model.selectList(SnipList.inboxID)
     }
 

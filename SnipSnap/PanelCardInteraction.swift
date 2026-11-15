@@ -355,6 +355,7 @@ extension NSMenu {
         _ title: String,
         isEnabled: Bool = true,
         systemImage: String? = nil,
+        image: NSImage? = nil,
         isDestructive: Bool = false,
         handler: @escaping () -> Void
     ) {
@@ -364,7 +365,9 @@ extension NSMenu {
             isEnabled: isEnabled,
             handler: handler
         )
-        if let systemImage {
+        if let image {
+            item.image = image
+        } else if let systemImage {
             item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
         }
         if isDestructive {

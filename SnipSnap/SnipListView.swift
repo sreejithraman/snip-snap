@@ -858,7 +858,7 @@ struct SnipListView: View {
                 submenu.addPanelAction(
                     list.displayName,
                     isEnabled: model.editingID == nil,
-                    systemImage: list.displaySystemImage
+                    image: list.menuMarkImage(appearance: NSApp.effectiveAppearance)
                 ) {
                     let orderedIDs = model.snips.filter { ids.contains($0.id) }.map(\.id)
                     Task { _ = await model.moveToList(ids: orderedIDs, listID: list.id) }

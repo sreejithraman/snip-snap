@@ -138,8 +138,6 @@ Debug builds also read these Try switches at launch, again with the
   example to preview the rail on iPad.
 - `SNIP_SNAP_NEW_LIST_BUTTON=roundPlus|roundCompose|inlinePlus|inlineStackBadgePlus`
   picks the rail's New List button.
-- `SNIP_SNAP_RAIL_LIST_MARK=letters|icons` picks how the rail marks lists that
-  still have a default icon.
 
 `BUNDLE_ID` is the `Bundle:` line the runner prints. Keyboard input does not
 reach iOS 27 guests through SimLock, so `agent-device fill` cannot type.

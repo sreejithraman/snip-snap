@@ -31,7 +31,7 @@ struct SnipListAppearance {
     private static let blackWhiteLabelContrastThreshold: Float = 0.179
 
     var title: String {
-        preset?.title ?? String(localized: "Neutral")
+        preset?.title ?? String(localized: "Automatic")
     }
 
     private static func components(_ hex: String) -> (CGFloat, CGFloat, CGFloat) {
@@ -57,6 +57,12 @@ struct SnipListAppearance {
     }
 
     var selectionFill: Color { color.opacity(0.16) }
+
+    var badgeFill: Color { preset == nil ? Color.secondary.opacity(0.3) : color }
+
+    func badgeLabel(in environment: EnvironmentValues) -> Color {
+        preset == nil ? .primary : filledControlLabel(in: environment)
+    }
 
     var controlTint: Color {
         preset == nil ? SnipSnapTheme.controlTint : color
@@ -103,27 +109,120 @@ struct SnipListSendColors {
 }
 
 extension SnipList {
-    var accent: SnipListAppearance { SnipListAppearance(preset: color) }
+    var accent: SnipListAppearance { SnipListAppearance(preset: tint) }
 
-    /// Keep a visible identity on older devices without changing the saved choice.
-    var displaySystemImage: String { ListIconSymbol.supportedName(systemImage) }
+    /// Letters stand in for a symbol this OS can't draw, so older devices keep a visible identity.
+    var displayMark: SnipListMark { mark(isAvailable: ListIconSymbol.isAvailable) }
 }
 
 enum ListIconSymbol {
-    static let defaultName = "list.bullet"
-
-    static func supportedName(_ name: String) -> String {
+    static func isAvailable(_ name: String) -> Bool {
 #if os(macOS)
-        let isAvailable = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+        NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
 #else
-        let isAvailable = UIImage(systemName: name) != nil
+        UIImage(systemName: name) != nil
 #endif
-        return isAvailable ? name : defaultName
+    }
+}
+
+/// A list's symbol in its color, or its letters in a circle of its color.
+struct SnipListMarkView: View {
+    @Environment(\.self) private var environment
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
+    let mark: SnipListMark
+    let appearance: SnipListAppearance
+    var diameter: CGFloat = 22
+    var scalesWithText = true
+
+    init(mark: SnipListMark, appearance: SnipListAppearance, diameter: CGFloat = 22, scalesWithText: Bool = true) {
+        self.mark = mark
+        self.appearance = appearance
+        self.diameter = diameter
+        self.scalesWithText = scalesWithText
+    }
+
+    init(list: SnipList, diameter: CGFloat = 22, scalesWithText: Bool = true) {
+        self.init(mark: list.displayMark, appearance: list.accent, diameter: diameter, scalesWithText: scalesWithText)
+    }
+
+    var body: some View {
+        let size = diameter * (scalesWithText ? textScale : 1)
+        Group {
+            switch mark {
+            case .icon(let systemImage):
+                Image(systemName: systemImage)
+                    .font(.system(size: size * 0.6, weight: .medium))
+                    .foregroundStyle(appearance.color)
+            case .letters(let letters):
+                Text(verbatim: letters)
+                    .font(.system(size: size * (letters.count > 1 ? 0.42 : 0.52), weight: .semibold, design: .rounded))
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+                    .foregroundStyle(appearance.badgeLabel(in: environment))
+                    .padding(size * 0.08)
+                    .frame(width: size, height: size)
+                    .background(appearance.badgeFill, in: Circle())
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+extension SnipList {
+    /// Menus draw only images, so letters are rendered to one in this environment's appearance.
+    @MainActor
+    func menuMarkImage(in environment: EnvironmentValues, diameter: CGFloat = 18) -> Image {
+        guard case .letters = displayMark, let image = renderedLetters(in: environment, diameter: diameter) else {
+            return Image(systemName: icon ?? "circle.fill")
+        }
+#if os(macOS)
+        return Image(nsImage: image).renderingMode(.original)
+#else
+        return Image(uiImage: image.withRenderingMode(.alwaysOriginal)).renderingMode(.original)
+#endif
+    }
+
+#if os(macOS)
+    /// For AppKit menus: letters rendered in the app's current appearance, or the list's symbol.
+    @MainActor
+    func menuMarkImage(appearance: NSAppearance, diameter: CGFloat = 16) -> NSImage? {
+        guard case .letters = displayMark else {
+            return icon.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+        }
+        var environment = EnvironmentValues()
+        environment.colorScheme = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        environment.displayScale = NSScreen.main?.backingScaleFactor ?? 2
+        return renderedLetters(in: environment, diameter: diameter)
+    }
+
+    @MainActor
+    private func renderedLetters(in environment: EnvironmentValues, diameter: CGFloat) -> NSImage? {
+        let renderer = ImageRenderer(content: letterBadge(in: environment, diameter: diameter))
+        renderer.scale = environment.displayScale
+        return renderer.nsImage
+    }
+#else
+    @MainActor
+    private func renderedLetters(in environment: EnvironmentValues, diameter: CGFloat) -> UIImage? {
+        let renderer = ImageRenderer(content: letterBadge(in: environment, diameter: diameter))
+        renderer.scale = environment.displayScale
+        return renderer.uiImage
+    }
+#endif
+
+    @MainActor
+    private func letterBadge(in environment: EnvironmentValues, diameter: CGFloat) -> some View {
+        SnipListMarkView(list: self, diameter: diameter, scalesWithText: false)
+            .environment(\.colorScheme, environment.colorScheme)
+            .environment(\.colorSchemeContrast, environment.colorSchemeContrast)
     }
 }
 
 struct SnipListColorPicker: View {
     @Binding var selection: SnipListColorPreset?
+    /// The color a list gets without a choice; nil before the list exists.
+    var automatic: SnipListColorPreset?
     var showsTitle = true
     private static let options = [nil] + SnipListColorPreset.allCases.map(Optional.some)
 
@@ -147,23 +246,67 @@ struct SnipListColorPicker: View {
                             selection = preset
                         } label: {
                             SnipListColorSwatch(
-                                color: SnipListAppearance(preset: preset).color,
+                                color: SnipListAppearance(preset: preset ?? automatic).color,
                                 isSelected: selected,
                                 diameter: 32
                             )
+                            .overlay {
+                                if preset == nil {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .accessibilityHidden(true)
+                                }
+                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(preset?.title ?? String(localized: "Neutral"))
+                        .accessibilityLabel(SnipListAppearance(preset: preset).title)
                         .accessibilityAddTraits(selected ? .isSelected : [])
-                        .accessibilityIdentifier("list-color-\(preset?.rawValue ?? "neutral")")
-                        .help(preset?.title ?? String(localized: "Neutral"))
+                        .accessibilityIdentifier("list-color-\(preset?.rawValue ?? "automatic")")
+                        .help(SnipListAppearance(preset: preset).title)
                     }
                 }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("List color")
         }
+    }
+}
+
+/// The icon choice that shows a list's letters instead of a symbol.
+struct SnipListNoIconButton: View {
+    @Binding var selection: String
+    var didSelect: () -> Void = {}
+
+    var body: some View {
+        let isSelected = SnipList.icon(stored: selection) == nil
+        Button {
+            selection = ""
+            didSelect()
+        } label: {
+            HStack(spacing: SnipSnapSpacing.relatedContent) {
+                SnipListMarkView(mark: .letters("Aa"), appearance: SnipListAppearance(preset: nil), diameter: 28)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("No icon").font(.body.weight(.medium))
+                    Text("Show the list’s first letters").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark").font(.body.weight(.semibold))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(isSelected ? SnipSnapTheme.selectionFill : .clear, in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("No icon")
+        .accessibilityHint("Shows the list’s first letters")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("list-icon-none")
     }
 }
 

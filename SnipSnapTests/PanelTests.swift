@@ -281,9 +281,9 @@ final class PanelTests: StoreBackedTestCase {
         let savedSymbol = "snipsnap.future-symbol"
         let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
 
-        XCTAssertEqual(list.displaySystemImage, "list.bullet")
+        XCTAssertEqual(list.displayMark, .letters("F"))
         XCTAssertEqual(list.systemImage, savedSymbol)
-        XCTAssertEqual(SnipList.inbox.displaySystemImage, SnipList.inbox.systemImage)
+        XCTAssertEqual(SnipList.inbox.displayMark, .icon(SnipList.inbox.systemImage))
     }
 
     func testTrackpadSwipeSwitchesOncePerHorizontalGesture() {

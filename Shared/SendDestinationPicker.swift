@@ -27,6 +27,7 @@ enum ListDestinationPurpose {
 }
 
 struct ListDestinationLabel: View {
+    @Environment(\.self) private var environment
     let list: SnipList
 
     var body: some View {
@@ -35,7 +36,7 @@ struct ListDestinationLabel: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
-            Image(systemName: list.displaySystemImage)
+            list.menuMarkImage(in: environment)
                 .foregroundStyle(list.accent.color)
                 .frame(width: 24)
         }
