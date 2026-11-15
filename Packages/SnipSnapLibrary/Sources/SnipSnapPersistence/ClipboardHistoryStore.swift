@@ -12,7 +12,10 @@ public actor ClipboardHistoryStore {
 
     public func load() throws -> ClipboardHistoryState {
         guard FileManager.default.fileExists(atPath: url.path) else { return ClipboardHistoryState() }
-        let data = try Data(contentsOf: url)
+        return try Self.decodeHistory(Data(contentsOf: url))
+    }
+
+    private static func decodeHistory(_ data: Data) throws -> ClipboardHistoryState {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let value = try decoder.singleValueContainer()
@@ -58,9 +61,16 @@ public actor ClipboardHistoryStore {
         let directory = url.deletingLastPathComponent()
         guard let backups = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         for backup in backups where backup.lastPathComponent.hasPrefix(Self.setAsidePrefix) {
-            guard let data = try? Data(contentsOf: backup),
-                  let state = try? JSONDecoder().decode(ClipboardHistoryState.self, from: data) else { return }
-            retained.formUnion(state.entries.flatMap(\.ownedFiles).map(\.relativePath))
+            guard let data = try? Data(contentsOf: backup) else { return }
+            if let state = try? Self.decodeHistory(data) {
+                retained.formUnion(state.entries.flatMap(\.ownedFiles).map(\.relativePath))
+                continue
+            }
+            // An undecodable copy keeps every file whose path appears in its text.
+            for path in previous.entries.flatMap(\.ownedFiles).map(\.relativePath)
+            where !retained.contains(path) && Self.text(data, mentions: path) {
+                retained.insert(path)
+            }
         }
         for file in previous.entries.flatMap(\.ownedFiles) where !retained.contains(file.relativePath) {
             guard let target = try? files.url(for: file) else { continue }
@@ -70,6 +80,12 @@ public actor ClipboardHistoryStore {
                 try? FileManager.default.removeItem(at: parent)
             }
         }
+    }
+
+    private static func text(_ data: Data, mentions path: String) -> Bool {
+        var forms = [Data(path.utf8)]
+        if let quoted = try? JSONEncoder().encode(path) { forms.append(quoted.dropFirst().dropLast()) }
+        return forms.contains { !$0.isEmpty && data.range(of: $0) != nil }
     }
 
     @discardableResult public func merge(_ remote: ClipboardHistoryState) throws -> ClipboardHistoryState {

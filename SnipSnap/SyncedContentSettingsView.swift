@@ -161,7 +161,7 @@ struct SyncedContentSettingsView: View {
                 clipboard.setSyncEnabled(true)
             }
         } message: {
-            Text("Sync text, images, and pinned files across your devices. Files that have synced keep syncing after you unpin them.")
+            Text("Sync text, images, and pinned files across your devices. Clipboard history already on this device will upload to iCloud. Files that have synced keep syncing after you unpin them.")
         }
         .alert("Turn off sync?", isPresented: $confirmsUsingDeviceCopy) {
             Button("Cancel", role: .cancel) {}
