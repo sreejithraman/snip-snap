@@ -181,6 +181,13 @@ struct CloudAttachmentPublicationLifecycle {
     isMetadataAccepted && metadataRecord == record
   }
 
+  /// SM33-D1: an edit that differs from the fetched record survives a fetch naming the same
+  /// payload and uses the fetched record as its base.
+  /// A different payload must be adopted because its publisher may delete our old payload.
+  func keepsUnsentEdit(againstRecordNaming payload: CloudTextStorageIdentity) -> Bool {
+    isPresentAwaitingMetadata && payload == payloadIdentity
+  }
+
   private var acceptedPayload: CloudAttachmentAcceptedRecord? {
     switch upload {
     case .payloadPending: return nil
@@ -263,6 +270,12 @@ struct CloudAttachmentPublicationLifecycle {
 
   // MARK: CloudKit events
 
+  mutating func adoptBase(_ record: CloudAttachmentAcceptedRecord) {
+    guard metadataRecord != record else { return }
+    metadataRecord = record
+    revision += 1
+  }
+
   /// Adopts metadata CloudKit holds. The payload it names is accepted, so any queued upload is
   /// released. The payload record and the replaced payload stay as they were.
   mutating func acceptRemoteMetadata(
@@ -331,15 +344,21 @@ struct CloudAttachmentPublicationLifecycle {
   }
 
   /// The lifecycle of the attachment that replaces this one under a new identity after CloudKit
-  /// no longer knows its metadata record.
-  func remappedReplacement(expectedRevision: UInt64) throws -> Self {
+  /// no longer knows its metadata record. Devices that saw the delete clean its accepted
+  /// payloads, so only an unaccepted payload can keep its identity.
+  func remappedReplacement(
+    expectedRevision: UInt64,
+    freshPayload: CloudTextStorageIdentity
+  ) throws -> Self {
     guard revision == expectedRevision, isLocallyPresent else {
       throw CloudAttachmentStorageError.staleTransition
     }
     var replacement = self
-    if case .published(let payload) = upload {
-      replacement.upload = .metadataPending(payload: payload)
+    if acceptedPayload != nil {
+      replacement.payloadIdentity = freshPayload
+      replacement.upload = .payloadPending(queuedUpload: nil)
     }
+    replacement.replacedPayload = nil
     replacement.metadataRecord = .unrecorded
     replacement.failure = nil
     replacement.revision = revision + 1

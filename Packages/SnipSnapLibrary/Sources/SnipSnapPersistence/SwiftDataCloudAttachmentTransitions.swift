@@ -7,7 +7,7 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     context: ModelContext
-  ) throws {
+  ) throws -> [UUID: CloudAttachmentMetadataValue] {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
@@ -23,6 +23,7 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
+    var adoptedBases: [UUID: CloudAttachmentMetadataValue] = [:]
     var materializedAttachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
@@ -114,6 +115,15 @@ extension SwiftDataSnipLibrary {
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
+          if row.metadata != metadata,
+            row.lifecycle.keepsUnsentEdit(againstRecordNaming: metadata.payloadIdentity)
+          {
+            row.lifecycle.adoptBase(metadataRecord)
+            continue
+          }
+          if row.lifecycle.isLocallyPresent && row.lifecycle.isMetadataAccepted {
+            adoptedBases[metadata.attachmentID] = adoptedBases[metadata.attachmentID] ?? row.metadata
+          }
           if row.payloadIdentity != metadata.payloadIdentity {
             removeCache(for: metadata.attachmentID)
           }
@@ -197,7 +207,12 @@ extension SwiftDataSnipLibrary {
           throw CloudAttachmentStorageError.staleTransition
         }
         let replacementLifecycle = try row.lifecycle.remappedReplacement(
-          expectedRevision: expected
+          expectedRevision: expected,
+          freshPayload: CloudTextStorageIdentity(
+            zoneName: row.payloadIdentity.zoneName,
+            ownerName: row.payloadIdentity.ownerName,
+            recordName: UUID().uuidString.lowercased()
+          )
         )
         guard byAttachment[replacementAttachmentID] == nil,
           !storedAttachments.keys.contains(replacementAttachmentID)
@@ -208,6 +223,9 @@ extension SwiftDataSnipLibrary {
           // The device that deleted it owns the payload's cleanup.
           removeRemotelyDeleted(row)
           continue
+        }
+        for cleanup in row.lifecycle.payloadCleanupsAfterMetadataDeletion {
+          cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
         }
         let oldAttachments = storedAttachments.removeValue(forKey: attachmentID) ?? []
         var newAttachments: [StoredAttachmentRecord] = []
@@ -322,6 +340,7 @@ extension SwiftDataSnipLibrary {
         try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
+    return adoptedBases
   }
 
   package func commitCloudAttachmentTransitions(
@@ -356,12 +375,16 @@ extension SwiftDataSnipLibrary {
       transitions: transitions,
       context: context
     )
-    try applyCloudAttachmentTransitions(
+    let adoptedBases = try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
       context: context
     )
-    try materializeCloudAttachments(namespaceKey: namespaceKey, context: context)
+    try materializeCloudAttachments(
+      namespaceKey: namespaceKey,
+      adoptedBases: adoptedBases,
+      context: context
+    )
     try afterMutationBeforeSave()
     try lock.check()
     try context.save()

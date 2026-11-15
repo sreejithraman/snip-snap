@@ -449,13 +449,17 @@ extension SwiftDataSnipLibrary {
       // Dependency availability is not permission to replay cached intent.
       // Only explicit planner items or checked graph repairs release a snip.
       try lock.check()
-      try applyCloudAttachmentTransitions(
+      let adoptedBases = try applyCloudAttachmentTransitions(
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
         context: context
       )
       try lock.check()
-      try materializeCloudAttachments(namespaceKey: batch.namespaceKey, context: context)
+      try materializeCloudAttachments(
+        namespaceKey: batch.namespaceKey,
+        adoptedBases: adoptedBases,
+        context: context
+      )
       try lock.check()
       try Self.resolveStoredListNames(context: context)
       try lock.check()

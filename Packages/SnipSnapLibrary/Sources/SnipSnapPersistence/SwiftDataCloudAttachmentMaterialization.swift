@@ -5,13 +5,18 @@ import SwiftData
 extension SwiftDataSnipLibrary {
   package func materializeCloudAttachments(
     namespaceKey: String,
+    adoptedBases: [UUID: CloudAttachmentMetadataValue],
     context: ModelContext
   ) throws {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
     )
-      .filter { $0.lifecycle.materializesFromCloud }
+      .filter {
+        $0.lifecycle.materializesFromCloud
+          || ($0.lifecycle.isLocallyPresent && $0.lifecycle.isMetadataAccepted
+            && adoptedBases[$0.attachmentID] != nil)
+      }
     guard !publications.isEmpty else { return }
     let snipIDs = Array(Set(publications.map(\.snipID)))
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
@@ -41,6 +46,22 @@ extension SwiftDataSnipLibrary {
     let namespaceDigest = CloudAttachmentCacheFiles.namespaceDigest(namespaceKey)
     for publication in publications {
       guard storedSnipIDs.contains(publication.snipID) else { continue }
+      let referenceID = StoredSnipAttachmentReference.identifier(
+        snipID: publication.snipID,
+        attachmentID: publication.attachmentID
+      )
+      if let base = adoptedBases[publication.attachmentID],
+        let stored = attachments[publication.attachmentID],
+        let reference = references[referenceID],
+        stored.fileName == base.fileName,
+        stored.contentType == base.contentType,
+        reference.position == base.position
+      {
+        stored.fileName = publication.fileName
+        stored.contentType = publication.contentType
+        reference.update(position: publication.position)
+      }
+      guard publication.lifecycle.materializesFromCloud else { continue }
       let relativePath: String
       if let cache = cacheEntries[publication.attachmentID],
         cache.payloadIdentity == publication.payloadIdentity
@@ -53,27 +74,21 @@ extension SwiftDataSnipLibrary {
           fileName: publication.fileName
         )
       }
-      let attachment = SnipAttachment(
-        id: publication.attachmentID,
-        fileName: publication.fileName,
-        relativePath: relativePath,
-        contentType: publication.contentType,
-        byteCount: publication.byteCount
-      )
       if let stored = attachments[publication.attachmentID] {
-        stored.update(from: attachment)
+        stored.relativePath = relativePath
+        stored.byteCount = publication.byteCount
       } else {
-        let stored = StoredAttachmentRecord(attachment)
+        let stored = StoredAttachmentRecord(SnipAttachment(
+          id: publication.attachmentID,
+          fileName: publication.fileName,
+          relativePath: relativePath,
+          contentType: publication.contentType,
+          byteCount: publication.byteCount
+        ))
         context.insert(stored)
         attachments[publication.attachmentID] = stored
       }
-      let referenceID = StoredSnipAttachmentReference.identifier(
-        snipID: publication.snipID,
-        attachmentID: publication.attachmentID
-      )
-      if let reference = references[referenceID] {
-        reference.update(position: publication.position)
-      } else {
+      if references[referenceID] == nil {
         let reference = StoredSnipAttachmentReference(
           snipID: publication.snipID,
           attachmentID: publication.attachmentID,
