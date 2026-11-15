@@ -115,4 +115,52 @@ final class AppDiagnosticBackgroundActivityTests: XCTestCase {
       XCTAssertFalse(report.text.contains("diagnostics.writeFailed"))
     }
   }
+
+  func testExpiryAfterFinishIsIgnoredAndProtectionEndsOnce() throws {
+    let probe = ProtectionProbe()
+    let activity = try XCTUnwrap(try probe.begin())
+    activity.finish()
+    probe.expire()
+    activity.finish()
+
+    XCTAssertNoThrow(try activity.check())
+    XCTAssertEqual(probe.ends, 1)
+    XCTAssertEqual(probe.phases, [.protectionRequested, .protectionGranted, .protectionEnded])
+  }
+
+  func testRepeatedExpiryIsReportedOnceAndStillStopsWorkAfterFinish() throws {
+    let probe = ProtectionProbe()
+    let activity = try XCTUnwrap(try probe.begin())
+    probe.expire()
+    probe.expire()
+    XCTAssertThrowsError(try activity.check()) { XCTAssertTrue($0 is CancellationError) }
+    activity.finish()
+
+    XCTAssertThrowsError(try activity.check()) { XCTAssertTrue($0 is CancellationError) }
+    XCTAssertEqual(probe.ends, 1)
+    XCTAssertEqual(probe.phases, [
+      .protectionRequested, .protectionGranted, .protectionExpired, .protectionEnded,
+    ])
+  }
+}
+
+/// Grants protection, then delivers expiry only when the test asks.
+private final class ProtectionProbe: Sendable {
+  private let expiry = Mutex<(@Sendable () -> Void)?>(nil)
+  private let recordedPhases = Mutex<[RuntimeTrace.Phase]>([])
+  private let recordedEnds = Mutex(0)
+  var phases: [RuntimeTrace.Phase] { recordedPhases.withLock { $0 } }
+  var ends: Int { recordedEnds.withLock { $0 } }
+
+  func begin() throws -> FileAccessBackgroundActivity? {
+    let trace = RuntimeTrace(sink: { [self] event in
+      recordedPhases.withLock { $0.append(event.phase) }
+    }).span(.diagnostics)
+    return try FileAccessBackgroundActivity.begin(runner: { [self] expire in
+      expiry.withLock { $0 = expire }
+      return { [self] in recordedEnds.withLock { $0 += 1 } }
+    }, trace: trace)
+  }
+
+  func expire() { expiry.withLock { $0 }?() }
 }

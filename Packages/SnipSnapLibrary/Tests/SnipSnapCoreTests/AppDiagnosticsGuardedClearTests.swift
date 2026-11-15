@@ -66,10 +66,14 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
       let ready = DispatchSemaphore(value: 0)
       let start = DispatchSemaphore(value: 0)
       let finished = DispatchSemaphore(value: 0)
+      let appendResult = Mutex<Result<Void, any Error>?>(nil)
       DispatchQueue.global().async {
         ready.signal()
         start.wait()
-        store.append(.succeeded(operation: "clipboard.persist"))
+        let appended = Result {
+          try appendRetryingBusy(.succeeded(operation: "clipboard.persist"), to: store)
+        }
+        appendResult.withLock { $0 = appended }
         finished.signal()
       }
       ready.wait()
@@ -77,6 +81,7 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
       let result = Result { try store.clear(ifRevision: snapshot.revision) }
       finished.wait()
       let cleared = try result.get()
+      try XCTUnwrap(appendResult.withLock { $0 }).get()
 
       let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
       XCTAssertTrue(
@@ -118,11 +123,25 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
       clearReturned.signal()
     }
     XCTAssertEqual(insideClear.wait(timeout: .now() + 5), .success)
-    store.append(.succeeded(operation: "clipboard.persist"))
+    let appendResult = Mutex<Result<Void, any Error>?>(nil)
+    let appendBusy = DispatchSemaphore(value: 0)
+    let appendReturned = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      let result = Result {
+        try appendRetryingBusy(
+          .succeeded(operation: "clipboard.persist"), to: store,
+          onFirstBusy: { appendBusy.signal() })
+      }
+      appendResult.withLock { $0 = result }
+      appendReturned.signal()
+    }
+    XCTAssertEqual(appendBusy.wait(timeout: .now() + 5), .success)
     releaseClear.signal()
     XCTAssertEqual(clearReturned.wait(timeout: .now() + 5), .success)
+    XCTAssertEqual(appendReturned.wait(timeout: .now() + 5), .success)
     let clearOutcome = clearResult.withLock { $0 }
     let cleared = try XCTUnwrap(clearOutcome).get()
+    try XCTUnwrap(appendResult.withLock { $0 }).get()
 
     XCTAssertTrue(cleared)
     let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
@@ -186,5 +205,24 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
     try FileManager.default.removeItem(at: lockURL)
     let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
     XCTAssertTrue(contents.contains("operation=app.startup"))
+  }
+}
+
+/// Appends as `AppDiagnosticWriter` does: busy keeps the event for another try, and
+/// every other error fails. The deadline turns a lock that never frees into a failure.
+private func appendRetryingBusy(
+  _ event: AppDiagnosticEvent, to store: AppDiagnosticEventStore, onFirstBusy: () -> Void = {}
+) throws {
+  let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+  var sawBusy = false
+  while true {
+    do {
+      return try store.appendThrowing(event)
+    } catch AppDiagnosticAccessError.busy where ContinuousClock.now < deadline {
+      if !sawBusy {
+        sawBusy = true
+        onFirstBusy()
+      }
+    }
   }
 }
