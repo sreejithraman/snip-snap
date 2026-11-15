@@ -5,9 +5,11 @@ import SnipSnapCore
 import XCTest
 
 /// After an aborted enable, a fresh enable runs against a server that already holds the aborted
-/// attempt's records (SM23-F4). It must end with one copy of each snip: no recovered copies and no
-/// extra server records. An enable is aborted either by Try Again finding its candidate's files
-/// gone (SM23-F3-D3) or by Cancel setup. Every shipped build starts its enables as full-record.
+/// attempt's records (SM23-F4). An enable is aborted either by Try Again finding its candidate's
+/// files gone (SM23-F3-D3) or by Cancel setup, which only aborts. Every shipped build starts its
+/// enables as full-record. When the source holds bases for those records, the fresh enable ends
+/// with one copy of each snip. Without them, a snip edited between attempts ends as a visible
+/// recovered copy.
 extension ICloudSyncModeCoordinatorTests {
     // (b)
     func testFullRecordTryAgainWithAMissingCandidateAddsNoDuplicateSnips() async throws {
@@ -25,9 +27,7 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsOneCopyOfEachSnip(.cancelSetupThenEnable)
     }
 
-    func testFullRecordEnableAfterCancelSetupWhenTheRestoreKeptNoBasesAddsNoDuplicateSnips()
-        async throws
-    {
+    func testFullRecordEnableAfterCancelSetupWithoutKeptBasesAddsNoDuplicateSnips() async throws {
         try await assertFreshEnableKeepsOneCopyOfEachSnip(
             .cancelSetupThenEnable,
             fullDisk: .manifestAndStore
@@ -39,13 +39,12 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsOneCopyOfEachSnip(.cancelSetupEditThenEnable)
     }
 
-    func testFullRecordEnableAfterCancelSetupWhenTheRestoreKeptNoBasesKeepsOneCopyOfASnipEditedInBetween()
+    // The SM23-F4 Cancel-path residual: Cancel setup aborts with no kept bases to merge the edit
+    // against.
+    func testFullRecordEnableAfterCancelSetupWithoutKeptBasesKeepsTheEditAsARecoveredCopy()
         async throws
     {
-        try await assertFreshEnableKeepsOneCopyOfEachSnip(
-            .cancelSetupEditThenEnable,
-            fullDisk: .manifestAndStore
-        )
+        try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.cancelSetupEditThenEnable)
     }
 
     // (f)
@@ -57,80 +56,12 @@ extension ICloudSyncModeCoordinatorTests {
     func testFullRecordTryAgainAfterARelaunchWithoutKeptBasesKeepsTheEditAsARecoveredCopy()
         async throws
     {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let enabled = try await freshEnableOnTheSameServer(
-            after: .relaunchEditThenTryAgain,
-            fullDisk: .manifestAndStore,
-            root: root
-        )
-
-        try await assertEndedOnThroughAFreshTransition(enabled)
-        let fresh = try XCTUnwrap(enabled.stranded.disk.transitionIDsAtSwap.last)
-        var expected = enabled.stranded.originals
-        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
-            transitionID: fresh,
-            sourceID: enabled.editedSnipID
-        )
-        expected[recoveredID] = Self.sameServerEditedText
-        let active = try await enabled.persistence.activeLibrary()
-            .checkedSnapshot(sortedBy: .manual).snips
-        XCTAssertEqual(
-            Dictionary(active.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
-            expected,
-            "The original must keep the server's text and the edit a recovered copy."
-        )
-        let serverSnipRecords = await enabled.stranded.server
-            .storedRecordTypes(in: textZone(makeNamespace()))
-            .filter { $0 == "Snip" }
-        XCTAssertEqual(serverSnipRecords.count, 3)
-        let serverTexts = await enabled.stranded.server.storedTextValues()
-        XCTAssertEqual(serverTexts, expected.values.sorted())
+        try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.relaunchEditThenTryAgain)
     }
 
-    // SM23-F4 D3 = A: keeping the sent records' bases is best effort.
-    func testCancelSetupThatCantKeepTheSentBasesStillAbortsAndRecordsTheFailure() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .manifestAndStore
-        )
-        stranded.disk.freeManifest()
-        let recordedBefore = stranded.probe.events.count
-
-        try await stranded.persistence.cancelPendingICloudEnable()
-
-        let expected: [AppDiagnosticEvent] = [
-            .failure(
-                operation: "sync.cancel_setup",
-                error: SameServerFullDisk.Failure.injected,
-                visibility: .background
-            )
-        ]
-        XCTAssertEqual(
-            Array(stranded.probe.events.dropFirst(recordedBefore)),
-            expected,
-            "Cancel setup must record that it couldn't keep the sent records' bases."
-        )
-        let storage = try await stranded.persistence.snapshot()
-        XCTAssertNil(storage.transition)
-        XCTAssertEqual(storage.activeStore.id, stranded.transition.sourceStoreID)
-        stranded.disk.free()
-        let bases = try await sourceBases(of: stranded)
-        XCTAssertEqual(bases, [], "The failed promotion must leave no partial bases.")
-        let kept = try await stranded.persistence.activeLibrary()
-            .checkedSnapshot(sortedBy: .manual).snips
-        XCTAssertEqual(
-            Dictionary(kept.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
-            stranded.originals
-        )
-        let snipID = try XCTUnwrap(stranded.originals.keys.first)
-        try await edit(snipID, to: Self.sameServerEditedText, in: stranded.persistence)
-    }
-
-    // SM23-F4-D5 = A: the bases a turn-off kept are the true common ancestor, so Cancel setup
-    // must not replace them with the merged records the aborted re-enable sent.
+    // Cancel setup only aborts, so the bases a turn-off kept stay the common ancestor, and the
+    // next merge keeps both devices' changes. Writing the aborted re-enable's sent records over
+    // them would silently revert the other device's change (SM23-F4 review, F1).
     func testFullRecordEnableAfterCancelSetupKeepsAServerChangeMadeWhileSyncWasOff() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -152,143 +83,6 @@ extension ICloudSyncModeCoordinatorTests {
             to: enabled.editedSnipID,
             in: enabled.persistence,
             server: enabled.stranded.server
-        )
-    }
-
-    // SM23-F4-D5 = A: the same rule on the restore path. The restore commits, so Try Again
-    // merges the same transition again against the bases the restore kept.
-    func testFullRecordTryAgainAfterARestoreKeepsAServerChangeMadeWhileSyncWasOff() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .swapOnly,
-            history: .turnedOffThenEditedOnBothSides
-        )
-
-        let status = try await sameServerCoordinator(
-            on: stranded.persistence,
-            server: stranded.server
-        ).enableOrRetry()
-
-        XCTAssertEqual(
-            status.state,
-            .on,
-            "Try Again stopped with \(String(describing: status.attentionReason))."
-        )
-        let storage = try await stranded.persistence.snapshot()
-        XCTAssertNil(storage.transition)
-        XCTAssertEqual(storage.activeStore.kind, .iCloudSync)
-        XCTAssertEqual(
-            stranded.disk.transitionIDsAtSwap,
-            [stranded.transition.id, stranded.transition.id],
-            "Try Again must finish the restored transition."
-        )
-        try await assertOneCopyOfEachSnip(
-            in: stranded.persistence,
-            expected: stranded.originals,
-            transitionIDs: [stranded.transition.id],
-            server: stranded.server
-        )
-        try await assertKeptTheOtherDevicesChange(
-            to: stranded.keptSnipID,
-            in: stranded.persistence,
-            server: stranded.server
-        )
-    }
-
-    // Cancel setup keeps the sent records' bases only for a full-record attempt whose candidate
-    // still has its files (SM23-F4 F2).
-    func testCancelSetupOfALegacyEnableWritesNoBasesAndRecordsNothing() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .manifestOnly,
-            syncProtocol: .legacyTextV1
-        )
-        XCTAssertEqual(stranded.transition.syncProtocol, .legacyTextV1)
-        XCTAssertNotNil(stranded.transition.sendAttempt)
-        stranded.disk.free()
-
-        try await assertCancelSetupWritesNoBasesAndRecordsNothing(stranded)
-    }
-
-    func testCancelSetupAfterARestoreClearedTheSendAttemptWritesNoBasesAndRecordsNothing()
-        async throws
-    {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .swapOnly
-        )
-        XCTAssertEqual(stranded.transition.syncProtocol, .fullRecordV1)
-        XCTAssertNil(stranded.transition.sendAttempt)
-        let restored = try await sourceBases(of: stranded)
-        XCTAssertFalse(restored.isEmpty, "The restore must have kept the sent records' bases.")
-
-        try await assertCancelSetupWritesNoBasesAndRecordsNothing(stranded)
-    }
-
-    func testCancelSetupWithACandidateWhoseFilesAreGoneWritesNoBasesAndRecordsNothing()
-        async throws
-    {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .manifestOnly
-        )
-        XCTAssertEqual(stranded.transition.syncProtocol, .fullRecordV1)
-        XCTAssertNotNil(stranded.transition.sendAttempt)
-        try await removeCandidateFiles(of: stranded)
-        stranded.disk.free()
-
-        try await assertCancelSetupWritesNoBasesAndRecordsNothing(stranded)
-        XCTAssertEqual(
-            stranded.probe.count(.failure(
-                operation: "sync.cancel_setup",
-                error: SyncModePersistenceError.missingStore,
-                visibility: .background
-            )),
-            0,
-            "Cancel setup must not open a candidate whose files are gone."
-        )
-    }
-
-    func testCancelSetupWhoseAbortCantCommitThrowsAndKeepsTheSentBasesAndTheTransition()
-        async throws
-    {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let stranded = try await strandAnEnableThatReachedTheServer(
-            root: root,
-            fullDisk: .manifestAndStore
-        )
-        stranded.disk.freeStore()
-        let recordedBefore = stranded.probe.events.count
-
-        do {
-            try await stranded.persistence.cancelPendingICloudEnable()
-            XCTFail("Cancel setup can't commit its abort while manifest writes fail.")
-        } catch {
-            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
-        }
-
-        XCTAssertEqual(Array(stranded.probe.events.dropFirst(recordedBefore)), [])
-        let storage = try await stranded.persistence.snapshot()
-        XCTAssertEqual(storage.transition?.id, stranded.transition.id)
-        XCTAssertEqual(storage.activeStore.id, stranded.transition.sourceStoreID)
-        let bases = try await sourceBases(of: stranded)
-        var sent = Set(stranded.originals.keys.map {
-            CloudEntityReference(kind: .snip, domainID: $0)
-        })
-        sent.insert(CloudEntityReference(kind: .list, domainID: SnipList.inboxID))
-        XCTAssertEqual(
-            Set(bases.map(\.reference)),
-            sent,
-            "The promotion before the failed abort must keep the sent records' bases."
         )
     }
 
@@ -372,40 +166,52 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Cancels `stranded`'s enable, and checks that it aborts without changing the source's
-    /// dormant bases or recording a diagnostic.
-    private func assertCancelSetupWritesNoBasesAndRecordsNothing(
-        _ stranded: SameServerStrandedEnable,
+    /// Runs the fresh enable `retry` names on a disk where the restore keeps no bases, and checks
+    /// that it ends On through a new transition. The edited snip's original ID keeps the server's
+    /// text, and the edit lands in a recovered copy that the fresh transition derives, locally and
+    /// on the server.
+    private func assertFreshEnableKeepsTheEditAsARecoveredCopy(
+        _ retry: SameServerRetry,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        let before = try await sourceBases(of: stranded)
-        let recordedBefore = stranded.probe.events.count
-
-        try await stranded.persistence.cancelPendingICloudEnable()
-
-        let storage = try await stranded.persistence.snapshot()
-        XCTAssertNil(storage.transition, file: file, line: line)
-        XCTAssertEqual(
-            storage.activeStore.id,
-            stranded.transition.sourceStoreID,
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let enabled = try await freshEnableOnTheSameServer(
+            after: retry,
+            fullDisk: .manifestAndStore,
+            root: root,
             file: file,
             line: line
         )
-        XCTAssertEqual(
-            Array(stranded.probe.events.dropFirst(recordedBefore)),
-            [],
-            "Cancel setup must record nothing here.",
+
+        try await assertEndedOnThroughAFreshTransition(enabled, file: file, line: line)
+        let fresh = try XCTUnwrap(
+            enabled.stranded.disk.transitionIDsAtSwap.last,
             file: file,
             line: line
         )
-        let after = try await sourceBases(of: stranded)
-        XCTAssertEqual(after, before, "Cancel setup must not write bases here.", file: file, line: line)
-    }
-
-    private func sourceBases(of stranded: SameServerStrandedEnable) async throws -> [CloudDormantBase] {
-        try await stranded.persistence.libraryForTransition(storeID: stranded.transition.sourceStoreID)
-            .dormantCloudBases()
+        var expected = enabled.stranded.originals
+        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
+            transitionID: fresh,
+            sourceID: enabled.editedSnipID
+        )
+        expected[recoveredID] = Self.sameServerEditedText
+        let active = try await enabled.persistence.activeLibrary()
+            .checkedSnapshot(sortedBy: .manual).snips
+        XCTAssertEqual(
+            Dictionary(active.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected,
+            "The original must keep the server's text and the edit a recovered copy.",
+            file: file,
+            line: line
+        )
+        let serverSnipRecords = await enabled.stranded.server
+            .storedRecordTypes(in: textZone(makeNamespace()))
+            .filter { $0 == "Snip" }
+        XCTAssertEqual(serverSnipRecords.count, 3, file: file, line: line)
+        let serverTexts = await enabled.stranded.server.storedTextValues()
+        XCTAssertEqual(serverTexts, expected.values.sorted(), file: file, line: line)
     }
 
     /// Runs the fresh enable `retry` names, and checks that it ends On through a new transition
@@ -548,13 +354,12 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Adds the snips, applies `history`, and runs an enable until its first send reached
-    /// `server`. Then it fails the pointer swap as `fullDisk` says. On a full disk, the enable
-    /// stays at `firstSendComplete` with the source frozen, and the disk stays full.
+    /// Adds the snips, applies `history`, and runs a full-record enable until its first send
+    /// reached `server`. Then it fails the pointer swap on a disk that fills as `fullDisk` says,
+    /// so the enable stays at `firstSendComplete` with the source frozen. The disk stays full.
     private func strandAnEnableThatReachedTheServer(
         root: URL,
         fullDisk: SameServerFullDisk.Extent,
-        syncProtocol: SyncModeSyncProtocol = .fullRecordV1,
         history: SameServerHistory = .localOnly,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -563,7 +368,7 @@ extension ICloudSyncModeCoordinatorTests {
         let probe = StoreOpenDiagnosticProbe()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: syncProtocol,
+            defaultSyncProtocol: .fullRecordV1,
             crashHook: disk.hit,
             manifestWriter: disk.writer.write,
             afterMutationBeforeSave: disk.checkStoreSave,
@@ -598,12 +403,7 @@ extension ICloudSyncModeCoordinatorTests {
         } catch SameServerFullDisk.Failure.injected {}
         let stuck = try await persistence.snapshot()
         let transition = try XCTUnwrap(stuck.transition, file: file, line: line)
-        XCTAssertEqual(
-            transition.phase,
-            fullDisk == .swapOnly ? .candidateReady : .firstSendComplete,
-            file: file,
-            line: line
-        )
+        XCTAssertEqual(transition.phase, .firstSendComplete, file: file, line: line)
         let sent = await server.storedTextValues()
         XCTAssertEqual(
             sent,
@@ -768,16 +568,12 @@ private struct SameServerFreshEnable {
 }
 
 /// Fails the first pointer swap after `armAtPointerSwap()` and, from then on, the writes its
-/// `Extent` names, like a disk that fills mid-change. `free()` frees the disk, `freeManifest()`
-/// only its manifest writes, and `freeStore()` only its store saves. From the armed swap on, it
-/// also notes which stored transition each pointer swap was about to activate.
+/// `Extent` names, like a disk that fills mid-change. `free()` frees the disk. From the armed
+/// swap on, it also notes which stored transition each pointer swap was about to activate.
 private final class SameServerFullDisk: @unchecked Sendable {
     enum Failure: Error { case injected }
 
     enum Extent {
-        /// Only the swap fails. The restore keeps the sent records' accepted bases in the source
-        /// and commits, so the enable goes back to `candidateReady` for Try Again.
-        case swapOnly
         /// Store saves still succeed, so a full-record restore keeps the sent records' accepted
         /// bases in the source, but can't commit (SM23-F3's strand).
         case manifestOnly
@@ -809,15 +605,7 @@ private final class SameServerFullDisk: @unchecked Sendable {
     }
 
     func free() {
-        freeManifest()
-        freeStore()
-    }
-
-    func freeManifest() {
         writer.failWrites = false
-    }
-
-    func freeStore() {
         lock.withLock { storeIsFull = false }
     }
 
@@ -833,7 +621,7 @@ private final class SameServerFullDisk: @unchecked Sendable {
             return true
         }
         guard fills else { return }
-        if extent != .swapOnly { writer.failWrites = true }
+        writer.failWrites = true
         throw Failure.injected
     }
 
