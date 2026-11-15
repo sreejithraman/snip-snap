@@ -86,6 +86,7 @@ public enum CloudDevelopmentTransportContract {
         try await exerciseClipboard(
           transport: clipboard, name: "CloudKit",
           zoneExists: { try await zoneExists(clipboardZone, in: database) },
+          requireMissingZone: { try await requireManifestReadReportsZoneNotFound(clipboardZone, in: database) },
           validateAccount: validateAccount
         )
       },
@@ -110,6 +111,21 @@ public enum CloudDevelopmentTransportContract {
     }
   }
 
+  /// A missing clipboard zone must read as `.zoneNotFound`, the code that makes the transport create
+  /// its zone again on the next save.
+  private static func requireManifestReadReportsZoneNotFound(
+    _ zoneID: CKRecordZone.ID, in database: CKDatabase
+  ) async throws {
+    do {
+      _ = try await database.record(for: CKRecord.ID(recordName: "manifest", zoneID: zoneID))
+    } catch let error as CKError where error.code == .zoneNotFound {
+      return
+    } catch let error as CKError {
+      throw ContractError.missingZoneReadReturned(code: error.code.rawValue)
+    }
+    throw ContractError.missingZoneReadReturned(code: nil)
+  }
+
   /// The zone `CloudKitClipboardTransport` names for `generation`; the transport keeps its own private.
   static func clipboardZoneID(generation: String) -> CKRecordZone.ID {
     let digest = SHA256.hash(data: Data(generation.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -117,13 +133,17 @@ public enum CloudDevelopmentTransportContract {
   }
 
   /// A clipboard fetch reads without creating the zone; only a save creates it, and `deleteAll()`
-  /// removes it.
+  /// removes it. `requireMissingZone` checks the code a read of the missing zone returns.
   static func exerciseClipboard(
     transport: any ClipboardCloudTransport,
     name: String,
     zoneExists: () async throws -> Bool,
+    requireMissingZone: () async throws -> Void,
     validateAccount: () async throws -> Void = {}
   ) async throws {
+    try await step("\(name) clipboard: a zone never created reads as missing") {
+      try await requireMissingZone()
+    }
     try await step("\(name) clipboard: empty fetch") {
       try await validateAccount()
       let fetched = try await transport.fetch()
@@ -152,6 +172,9 @@ public enum CloudDevelopmentTransportContract {
       try await validateAccount()
       try await transport.deleteAll()
       guard try await !zoneExists() else { throw ContractError.clipboardZoneStillExists }
+    }
+    try await step("\(name) clipboard: a deleted zone reads as missing") {
+      try await requireMissingZone()
     }
   }
 
@@ -344,6 +367,8 @@ public enum CloudDevelopmentTransportContract {
     case clipboardZoneWasNotCreated
     case clipboardEntryWasNotFetched
     case clipboardZoneStillExists
+    /// A read of a missing zone returned this `CKError.Code` raw value, or nil when it found a record.
+    case missingZoneReadReturned(code: Int?)
   }
 }
 #endif

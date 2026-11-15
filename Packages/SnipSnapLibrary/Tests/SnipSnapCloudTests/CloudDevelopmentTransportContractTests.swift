@@ -117,10 +117,12 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
 
     func testClipboardStageStopsWhereAFetchCreatesTheZone() async throws {
         let transport = ZoneTrackingClipboardTransport(fetchCreatesZone: true)
+        var missingZoneProbes = 0
 
         do {
             try await CloudDevelopmentTransportContract.exerciseClipboard(
-                transport: transport, name: "fake", zoneExists: { await transport.zoneExists }
+                transport: transport, name: "fake", zoneExists: { await transport.zoneExists },
+                requireMissingZone: { missingZoneProbes += 1 }
             )
             XCTFail("A fetch that creates the zone must fail the clipboard stage.")
         } catch {
@@ -129,19 +131,26 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
         }
         let saves = await transport.saves
         XCTAssertEqual(saves, 0)
+        XCTAssertEqual(missingZoneProbes, 1, "Only the probe before the first fetch runs")
     }
 
     func testClipboardStagePassesWhenOnlyASaveCreatesTheZone() async throws {
         let transport = ZoneTrackingClipboardTransport(fetchCreatesZone: false)
+        var zoneExistedAtProbe: [Bool] = []
 
         try await CloudDevelopmentTransportContract.exerciseClipboard(
-            transport: transport, name: "fake", zoneExists: { await transport.zoneExists }
+            transport: transport, name: "fake", zoneExists: { await transport.zoneExists },
+            requireMissingZone: {
+                let exists = await transport.zoneExists
+                zoneExistedAtProbe.append(exists)
+            }
         )
 
         let saves = await transport.saves
         let zoneExists = await transport.zoneExists
         XCTAssertEqual(saves, 1)
         XCTAssertFalse(zoneExists)
+        XCTAssertEqual(zoneExistedAtProbe, [false, false], "Probes run before the first fetch and after the delete")
     }
 
     func testCleanupFailurePreservesTheOriginalFailure() async {

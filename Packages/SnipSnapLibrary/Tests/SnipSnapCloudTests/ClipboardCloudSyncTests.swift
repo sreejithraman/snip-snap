@@ -91,6 +91,7 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
         var state: ICloudAccountState
         var checks = 0
         var holdsNextCheck = false
+        var checksBeforeHold = 0
         var heldCheck: CheckedContinuation<ICloudAccountState, Never>?
         var heldCheckWaiters: [CheckedContinuation<Void, Never>] = []
         var holdDeadline: Task<Void, Never>?
@@ -112,15 +113,17 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
     /// Whether a hold ended at its deadline instead of by `release(answering:)`.
     var holdTimedOut: Bool { account.withLock { $0.holdTimedOut } }
 
-    /// Holds the next check. Without `release(answering:)` within `timeout`, the hold ends: a held
-    /// check answers with the current state, and `checkHeld()` returns.
-    func holdNextCheck(for timeout: Duration = .seconds(5)) {
+    /// Holds the next check after `skipped` checks that answer at once. Without `release(answering:)`
+    /// within `timeout`, the hold ends: a held check answers with the current state, and
+    /// `checkHeld()` returns.
+    func holdNextCheck(after skipped: Int = 0, for timeout: Duration = .seconds(5)) {
         let deadline = Task { [weak self] in
             do { try await Task.sleep(for: timeout) } catch { return }
             self?.endHold(answering: nil)
         }
         account.withLock { account in
             account.holdsNextCheck = true
+            account.checksBeforeHold = skipped
             account.holdDeadline = deadline
         }
     }
@@ -171,6 +174,10 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
                 account.withLock { account in
                     account.checks += 1
                     guard account.holdsNextCheck else { return (account.state, []) }
+                    guard account.checksBeforeHold == 0 else {
+                        account.checksBeforeHold -= 1
+                        return (account.state, [])
+                    }
                     account.holdsNextCheck = false
                     account.heldCheck = check
                     defer { account.heldCheckWaiters = [] }
@@ -835,6 +842,30 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         // One check before binding, then one before each of the two save attempts.
         #expect(account.checks == 3)
         #expect(await cloud.serial == 1)
+    }
+    @Test func stopDuringADeleteAttemptsAccountCheckCancelsTheDelete() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let bindingA = try JSONEncoder().encode(accountA)
+        let synced = entry("synced under account A")
+        try await client.store.insert(synced); try await client.run(scope: accountA)
+
+        // The pre-bind check answers at once; the first delete attempt's check waits.
+        account.holdNextCheck(after: 1)
+        let deleting = Task { try await client.sync.deleteSyncedHistory(generation: accountA) }
+        await account.checkHeld()
+        client.sync.stop()
+        account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
+
+        await #expect(throws: CancellationError.self) { try await deleting.value }
+        #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
+        #expect((try? Data(contentsOf: client.bindingURL)) == bindingA)
+        #expect(try await setAsideEntryIDs(in: client.root).isEmpty)
+        #expect(try await client.store.load().entries.map(\.id) == [synced.id])
     }
     @Test func deleteRechecksTheAccountBeforeEachAttempt() async throws {
         let clock = ClipboardRetryClock()
