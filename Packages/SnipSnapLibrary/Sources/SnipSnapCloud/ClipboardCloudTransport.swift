@@ -72,7 +72,7 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         var tombstones: [UUID: Date]
         var retentionTombstones: [UUID: Date]?
     }
-    private let database: CKDatabase
+    private let calls: CloudKitDatabaseCalls
     private let zone: CKRecordZone.ID
     private let bound: CloudKitCallBound
     private var cache: [String: Data] = [:]
@@ -80,16 +80,17 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
     private var zoneReady = false
     private var fetchedReferences: Set<String> = []
     package init(database: CKDatabase, generation: String, bound: CloudKitCallBound = .standard) {
-        self.database = database
+        self.init(generation: generation, bound: bound, calls: .live(database: database, bound: bound))
+    }
+    init(generation: String, bound: CloudKitCallBound, calls: CloudKitDatabaseCalls) {
+        self.calls = calls
         self.bound = bound
         let digest = Self.digest(Data(generation.utf8))
         zone = CKRecordZone.ID(zoneName: "SnipSnapClipboard-" + String(digest.prefix(24)))
     }
     private func prepare() async throws {
         guard !zoneReady else { return }
-        _ = try await database.configuredWith(configuration: bound.configuration(.small)) {
-            [zone] configured in try await configured.save(CKRecordZone(zoneID: zone))
-        }
+        _ = try await calls.saveZone(CKRecordZone(zoneID: zone), .small)
         zoneReady = true
     }
     package func fetch() async throws -> ClipboardCloudSnapshot {
@@ -165,28 +166,18 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         defer { try? FileManager.default.removeItem(at: url) }
         ClipboardCloudRecordCodec.setPayload(url, on: record)
         try cancellation.check()
-        let results = try await database.configuredWith(configuration: bound.configuration(.transfer)) {
-            try await $0.modifyRecords(saving: [record], deleting: deleting, savePolicy: policy, atomically: true)
-        }
+        let results = try await calls.modifyRecords([record], deleting, policy, true, .transfer)
         guard let result = results.saveResults[record.recordID] else { throw ClipboardCloudError.invalidPayload }
         _ = try result.get()
     }
     package func deleteAll() async throws {
-        do {
-            _ = try await database.configuredWith(configuration: bound.configuration(.small)) {
-                [zone] configured in try await configured.deleteRecordZone(withID: zone)
-            }
-        }
+        do { _ = try await calls.deleteZone(zone, .small) }
         catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem { }
         zoneReady = false; uploaded = []; cache = [:]; fetchedReferences = []
     }
     /// The caller reads the record's asset after this returns, so a late read changes nothing.
     private func transferRecord(_ id: CKRecord.ID) async throws -> CKRecord {
-        try await bound.read(.transfer) { [database, bound] in
-            try await database.configuredWith(configuration: bound.configuration(.transfer)) {
-                try await $0.record(for: id)
-            }
-        }
+        try await bound.read(.transfer) { [calls] in try await calls.record(id, .transfer) }
     }
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
