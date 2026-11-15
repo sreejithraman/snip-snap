@@ -17,6 +17,7 @@ process_name=""
 app_path=""
 executable_path=""
 store_path=""
+simulated_store_dir=""
 lock_dir=""
 
 usage() {
@@ -59,6 +60,11 @@ configure_claimed_slot() {
     app_path="$derived_data/Build/Products/Debug/$process_name.app"
     executable_path="$app_path/Contents/MacOS/$process_name"
     store_path="$dev_state_dir/data/slot-$slot/items.json"
+    if [[ "${SNIP_SNAP_UI_TEST_SYNC_SETTINGS:-}" == 1 ]]; then
+        # Simulated sync state stays out of the slot's own data.
+        simulated_store_dir="$dev_state_dir/data/simulated-slot-$slot"
+        store_path="$simulated_store_dir/items.json"
+    fi
     runtime_dir="${runtime_dir:-$dev_state_dir/runtime/slot-$slot}"
     lock_dir="$dev_state_dir/locks/slot-$slot"
 }
@@ -204,6 +210,12 @@ run_signed_build() {
     fi
 }
 
+clear_simulated_store() {
+    [[ -n "$simulated_store_dir" ]] || return 0
+    [[ -n "$dev_state_dir" && "$slot" =~ '^[1-9][0-9]*$' ]] || return 1
+    /bin/rm -rf -- "$simulated_store_dir"
+}
+
 clear_runtime_state() {
     /bin/mkdir -p "$runtime_dir"
     /bin/rm -f \
@@ -271,6 +283,10 @@ start_app() {
         write_result start blocked "Snip Snap Dev $slot did not quit before the build." passed blocked
         return 1
     fi
+    if ! clear_simulated_store; then
+        write_result start blocked "Snip Snap Dev $slot could not clear its simulated data." passed blocked
+        return 1
+    fi
     print "Building Snip Snap Dev $slot for this worktree."
     if ! run_signed_build; then
         write_result start failed "Snip Snap Dev $slot did not build." failed blocked
@@ -299,7 +315,11 @@ start_app() {
         if [[ "$launched_pid" =~ '^[1-9][0-9]*$' ]]; then
             write_runtime_state "$launched_pid"
             write_result start passed "Snip Snap Dev $slot built and opened." passed passed "$launched_pid"
-            print "Opened Snip Snap Dev $slot. Its Accessibility grant and data stay with this slot."
+            if [[ -n "$simulated_store_dir" ]]; then
+                print "Opened Snip Snap Dev $slot with throwaway simulated data. Its Accessibility grant stays with this slot."
+            else
+                print "Opened Snip Snap Dev $slot. Its Accessibility grant and data stay with this slot."
+            fi
             return
         fi
         /bin/sleep 0.1
