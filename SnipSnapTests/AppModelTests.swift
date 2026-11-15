@@ -1211,14 +1211,79 @@ final class AppModelTests: StoreBackedTestCase {
         await model.reload()
         let keep = try XCTUnwrap(model.snips.first { $0.content == "Keep" })
         let hide = try XCTUnwrap(model.snips.first { $0.content == "Hide" })
+        model.enterSearch()
+        model.query = "e"
         model.selectSnip(keep.id, modifiers: .command)
         model.selectSnip(hide.id, modifiers: .command)
+        XCTAssertEqual(model.selection, [keep.id, hide.id])
         model.query = "Keep"
         XCTAssertEqual(model.selection, [keep.id])
         XCTAssertEqual(model.selectionState.anchor, keep.id)
         XCTAssertEqual(model.selectionState.focus, keep.id)
-        model.query = ""
-        XCTAssertEqual(model.selection, [keep.id])
+    }
+
+    @MainActor
+    func testQueryWhileSearchIsClosedOpensSearchAndClearsSelection() async throws {
+        let repository = try JSONSnipLibrary(fileURL: storeURL())
+        let added = try await repository.add(content: "Keep", origin: .quickEntry)
+        let snip = try XCTUnwrap(added)
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        model.selection = [snip.id]
+
+        model.query = "   "
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.selection, [snip.id])
+
+        model.query = "Keep"
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "Keep")
+        XCTAssertTrue(model.selection.isEmpty)
+        XCTAssertEqual(model.filteredSnips.map(\.id), [snip.id])
+    }
+
+    @MainActor
+    func testShowingClipboardOrSelectingAListClosesSearch() async throws {
+        let other = SnipList(id: UUID(), name: "Other", systemImage: "folder", position: 1)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [Snip(content: "Draft", origin: .quickEntry)], lists: [.inbox, other]),
+            defaults: defaults()
+        )
+        await model.reload()
+
+        model.enterSearch()
+        model.query = "Draft"
+        model.showClipboard()
+        XCTAssertTrue(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+
+        model.enterSearch()
+        model.query = "Draft"
+        model.selectList(other)
+        XCTAssertFalse(model.isShowingClipboard)
+        XCTAssertFalse(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.activeListID, other.id)
+    }
+
+    @MainActor
+    func testMovingSearchSelectionToANewListKeepsSearchOpen() async throws {
+        let snip = Snip(content: "Draft", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.reload()
+        model.enterSearch()
+        model.query = "Draft"
+        model.selection = [snip.id]
+
+        let moved = await model.createList(name: "Destination", systemImage: "folder", movingIDs: [snip.id])
+
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.activeList.name, "Destination")
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertEqual(model.query, "Draft")
+        XCTAssertEqual(model.filteredSnips.map(\.id), [snip.id])
     }
 
     @MainActor
@@ -2452,13 +2517,16 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(model.canReorder(ids: [first.id]))
 
         model.query = "First"
+        model.selection = [first.id]
+        XCTAssertEqual(model.selection, [first.id])
         XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
         await model.moveSelectionNow(by: -1)
         XCTAssertEqual(model.snips.map(\.id), originalIDs)
         XCTAssertEqual(model.sortMode, .chronological)
 
-        model.query = ""
+        model.exitSearch()
+        model.selection = [first.id]
         model.completionFilter = .done
         XCTAssertFalse(model.canReorder(ids: model.selection))
         XCTAssertFalse(model.canReorder(ids: [first.id]))
