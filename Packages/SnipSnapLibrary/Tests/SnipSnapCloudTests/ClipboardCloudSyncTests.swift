@@ -84,7 +84,8 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
 }
 
 /// The device's current iCloud account, which a test can switch, and how often the service checked
-/// it. After `holdNextCheck()`, the next check waits for `release(answering:)`; later ones answer at once.
+/// it. After `holdNextCheck(for:)`, the next check waits for `release(answering:)`; later ones answer
+/// at once. A hold that isn't released in time ends by itself, so a regression fails instead of hanging.
 private final class ClipboardTestAccount: ICloudAccountStateSource {
     private struct Account {
         var state: ICloudAccountState
@@ -92,6 +93,9 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
         var holdsNextCheck = false
         var heldCheck: CheckedContinuation<ICloudAccountState, Never>?
         var heldCheckWaiters: [CheckedContinuation<Void, Never>] = []
+        var holdDeadline: Task<Void, Never>?
+        var holdTimedOut = false
+        var isHolding: Bool { holdsNextCheck || heldCheck != nil }
     }
     private let account: Mutex<Account>
 
@@ -105,29 +109,60 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
         account.withLock { $0.state = state }
     }
 
-    func holdNextCheck() {
-        account.withLock { $0.holdsNextCheck = true }
+    /// Whether a hold ended at its deadline instead of by `release(answering:)`.
+    var holdTimedOut: Bool { account.withLock { $0.holdTimedOut } }
+
+    /// Holds the next check. Without `release(answering:)` within `timeout`, the hold ends: a held
+    /// check answers with the current state, and `checkHeld()` returns.
+    func holdNextCheck(for timeout: Duration = .seconds(5)) {
+        let deadline = Task { [weak self] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            self?.endHold(answering: nil)
+        }
+        account.withLock { account in
+            account.holdsNextCheck = true
+            account.holdDeadline = deadline
+        }
     }
 
-    /// Returns once the held check is waiting for its answer.
+    /// Returns once the held check is waiting for its answer, or the hold has ended.
     func checkHeld() async {
         await withCheckedContinuation { waiter in
-            let isHeld = account.withLock { account in
-                if account.heldCheck == nil { account.heldCheckWaiters.append(waiter) }
-                return account.heldCheck != nil
+            let waits = account.withLock { account in
+                guard account.holdsNextCheck else { return false }
+                account.heldCheckWaiters.append(waiter)
+                return true
             }
-            if isHeld { waiter.resume() }
+            if !waits { waiter.resume() }
         }
     }
 
     /// Switches to `state` and answers the held check with it.
     func release(answering state: ICloudAccountState) {
-        let held = account.withLock { account in
-            account.state = state
-            defer { account.heldCheck = nil }
-            return account.heldCheck
-        }
-        held?.resume(returning: state)
+        endHold(answering: state)
+    }
+
+    /// Ends the hold. With no `state`, the deadline passed, and a held check gets the current state.
+    private func endHold(answering state: ICloudAccountState?) {
+        let ended: (answer: ICloudAccountState, check: CheckedContinuation<ICloudAccountState, Never>?,
+                    waiters: [CheckedContinuation<Void, Never>], deadline: Task<Void, Never>?) =
+            account.withLock { account in
+                if let state {
+                    account.state = state
+                } else if account.isHolding {
+                    account.holdTimedOut = true
+                }
+                defer {
+                    account.holdsNextCheck = false
+                    account.heldCheck = nil
+                    account.heldCheckWaiters = []
+                    account.holdDeadline = nil
+                }
+                return (account.state, account.heldCheck, account.heldCheckWaiters, account.holdDeadline)
+            }
+        if state != nil { ended.deadline?.cancel() }
+        ended.check?.resume(returning: ended.answer)
+        for waiter in ended.waiters { waiter.resume() }
     }
 
     func currentAccountState() async -> ICloudAccountState {
@@ -650,6 +685,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         let client = ClipboardClient(cloud, accountState: account)
         defer { try? FileManager.default.removeItem(at: client.root) }
         let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let bindingA = try JSONEncoder().encode(accountA)
         let synced = entry("synced under account A")
         try await client.store.insert(synced); try await client.run(scope: accountA)
 
@@ -658,10 +694,57 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         await account.checkHeld()
         client.sync.stop()
         account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
 
         await #expect(throws: CancellationError.self) { try await deleting.value }
         #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
-        #expect(try Data(contentsOf: client.bindingURL) == JSONEncoder().encode(accountA))
+        #expect((try? Data(contentsOf: client.bindingURL)) == bindingA)
+        #expect(try await setAsideEntryIDs(in: client.root).isEmpty)
+    }
+    @Test func stopDuringTheDeleteAccountCheckBindsNothingForUnboundHistory() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        let otherDevice = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root); try? FileManager.default.removeItem(at: otherDevice.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let shared = entry("synced by another device")
+        try await otherDevice.store.insert(shared); try await otherDevice.run(scope: accountA)
+        let local = entry("never synced")
+        try await client.store.insert(local)
+
+        account.holdNextCheck()
+        let deleting = Task { try await client.sync.deleteSyncedHistory(generation: accountA) }
+        await account.checkHeld()
+        client.sync.stop()
+        account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
+
+        await #expect(throws: CancellationError.self) { try await deleting.value }
+        #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
+        #expect(Set(try await cloud.fetch().entries.keys) == [shared.id])
+        #expect(try await client.store.load().entries.map(\.id) == [local.id])
+    }
+    @Test func stopWhileADeleteWaitsForAStoppingRunCancelsTheDelete() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let bindingA = try JSONEncoder().encode("account-generation-A")
+        let synced = entry("synced")
+        try await client.store.insert(synced); try await client.run()
+        try await client.store.insert(entry("copied later"))
+        await cloud.pauseNextSave()
+        let running = Task { try await client.run() }
+        try await requireSavePaused(cloud, during: running)
+
+        // The delete stops the run and waits in `beginUnbinding` for it to unwind.
+        let deleting = Task.immediate { try await client.sync.deleteSyncedHistory(generation: "account-generation-A") }
+        client.sync.stop()
+        await cloud.resumeSave()
+
+        await #expect(throws: CancellationError.self) { try await deleting.value }
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
+        #expect((try? Data(contentsOf: client.bindingURL)) == bindingA)
         #expect(try await setAsideEntryIDs(in: client.root).isEmpty)
     }
     @Test func stopDuringThePreBindAccountCheckBindsNothing() async throws {
@@ -676,6 +759,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         await account.checkHeld()
         client.sync.stop()
         account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
 
         await #expect(throws: CancellationError.self) { try await running.value }
         #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
@@ -695,6 +779,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         try await client.sync.resetAccountBinding(includingUnboundHistory: true)
         let leftByReset = try? Data(contentsOf: client.bindingURL)
         account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
 
         await #expect(throws: CancellationError.self) { try await running.value }
         #expect((try? Data(contentsOf: client.bindingURL)) == leftByReset)
@@ -715,6 +800,7 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         await account.checkHeld()
         await #expect(throws: ClipboardCloudError.busy) { try await client.run(scope: accountA) }
         account.release(answering: .available(accountLineage: "account-A"))
+        #expect(!account.holdTimedOut)
 
         #expect(try await first.value.entries.map(\.id) == [copy.id])
         #expect(Set(try await cloud.fetch().entries.keys) == [copy.id])
