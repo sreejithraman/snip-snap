@@ -591,6 +591,8 @@ final class ClipboardHistory: ObservableObject {
     func resetCloudAccount() async {
         let token = beginSuppression()
         defer { endSuppression(token) }
+        // Copies still waiting belong to the account being left, and base never recorded them.
+        dropWaitingCaptures()
         stopSync()
         do {
             try await setAsideCloudHistory()
@@ -830,6 +832,11 @@ final class ClipboardHistory: ObservableObject {
         capture = .watching(handledChangeCount: attempt.changeCount)
         guard pasteboard.changeCount == attempt.changeCount else { return }
         admitCapture(entry)
+    }
+
+    private func dropWaitingCaptures() {
+        guard case .settingAside(let id, let isRetired, _) = handoff else { return }
+        handoff = .settingAside(id: id, isRetired: isRetired, captures: [])
     }
 
     private func admitCapture(_ entry: ClipboardEntry) {
