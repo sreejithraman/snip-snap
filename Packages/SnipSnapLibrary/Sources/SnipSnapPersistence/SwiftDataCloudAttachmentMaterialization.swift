@@ -7,6 +7,7 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     adoptedBases: [UUID: CloudAttachmentMetadataValue],
     metadataAcknowledgedAttachmentIDs: Set<UUID>,
+    acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
   ) throws {
     let allPublications = try Self.cloudAttachmentPublications(

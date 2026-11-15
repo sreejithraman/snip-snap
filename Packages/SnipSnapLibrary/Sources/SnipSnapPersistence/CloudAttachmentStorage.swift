@@ -32,6 +32,20 @@ package struct CloudAttachmentMetadataValue: Codable, Equatable, Sendable {
   }
 }
 
+/// Reads the metadata iCloud last acknowledged from a stored metadata shadow.
+/// SnipSnapCloud supplies the reader, because only it can decode CloudKit records.
+package struct CloudAttachmentAcknowledgedValues: Sendable {
+  private let decode: @Sendable (Data) throws -> CloudAttachmentMetadataValue
+
+  package init(decode: @escaping @Sendable (Data) throws -> CloudAttachmentMetadataValue) {
+    self.decode = decode
+  }
+
+  package func metadata(fromShadow shadowData: Data) throws -> CloudAttachmentMetadataValue {
+    try decode(shadowData)
+  }
+}
+
 package struct CloudAttachmentPublication: Equatable, Sendable {
   package let metadata: CloudAttachmentMetadataValue
   package let metadataIdentity: CloudTextStorageIdentity

@@ -85,6 +85,11 @@ package enum CloudAttachmentRecordCodec {
     return metadata
   }
 
+  /// The metadata an accepted record's archived shadow holds.
+  package static func acknowledgedMetadata(_ shadowData: Data) throws -> CloudAttachmentMetadataValue {
+    try metadata(from: CloudKitRecordMapper.snapshot(CloudRecordShadow(data: shadowData).record()))
+  }
+
   package static func recordID(_ identity: CloudTextStorageIdentity) -> CloudRecordID {
     CloudRecordID(
       zone: CloudZoneID(name: identity.zoneName, ownerName: identity.ownerName),
@@ -142,5 +147,11 @@ package enum CloudAttachmentRecordCodec {
       throw CloudRecordError.invalidField(key)
     }
     return value
+  }
+}
+
+package extension CloudAttachmentAcknowledgedValues {
+  static let cloudKit = CloudAttachmentAcknowledgedValues {
+    try CloudAttachmentRecordCodec.acknowledgedMetadata($0)
   }
 }

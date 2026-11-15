@@ -6,6 +6,7 @@ extension SwiftDataSnipLibrary {
   package func applyCloudAttachmentTransitions(
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
+    acknowledgedValues: CloudAttachmentAcknowledgedValues,
     context: ModelContext
   ) throws -> [UUID: CloudAttachmentMetadataValue] {
     let publications = try Self.cloudAttachmentPublications(
@@ -346,6 +347,7 @@ extension SwiftDataSnipLibrary {
   package func commitCloudAttachmentTransitions(
     namespaceKey: CloudSyncNamespaceKey,
     transitions: [CloudAttachmentTransition],
+    acknowledgedValues: CloudAttachmentAcknowledgedValues,
     afterSave: @Sendable () -> Void = {}
   ) throws {
     let namespaceKey = namespaceKey.rawValue
@@ -378,12 +380,14 @@ extension SwiftDataSnipLibrary {
     let adoptedBases = try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
+      acknowledgedValues: acknowledgedValues,
       context: context
     )
     try materializeCloudAttachments(
       namespaceKey: namespaceKey,
       adoptedBases: adoptedBases,
       metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(in: transitions),
+      acknowledgedValues: acknowledgedValues,
       context: context
     )
     try afterMutationBeforeSave()

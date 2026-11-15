@@ -7,6 +7,7 @@ import SwiftData
 extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
+    acknowledgedValues: CloudAttachmentAcknowledgedValues,
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
@@ -452,6 +453,7 @@ extension SwiftDataSnipLibrary {
       let adoptedBases = try applyCloudAttachmentTransitions(
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
+        acknowledgedValues: acknowledgedValues,
         context: context
       )
       try lock.check()
@@ -461,6 +463,7 @@ extension SwiftDataSnipLibrary {
         metadataAcknowledgedAttachmentIDs: Self.metadataAcknowledgedAttachmentIDs(
           in: batch.attachmentTransitions
         ),
+        acknowledgedValues: acknowledgedValues,
         context: context
       )
       try lock.check()

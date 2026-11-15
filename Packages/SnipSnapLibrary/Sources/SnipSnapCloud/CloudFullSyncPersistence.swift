@@ -659,7 +659,7 @@ extension CloudFullSyncPersistence {
       observedDestructiveReset = reason
     }
     do {
-      _ = try await library.commitCloudFullBatch(batch)
+      _ = try await library.commitCloudFullBatch(batch, acknowledgedValues: .cloudKit)
       try await clearRecoveredFailure(in: batch)
       try await afterCommitHook()
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
@@ -680,7 +680,7 @@ extension CloudFullSyncPersistence {
         rawBatchData: rawData
       )
       try await library.replaceStagedCloudFullBatch(replacement)
-      _ = try await library.commitCloudFullBatch(replacement)
+      _ = try await library.commitCloudFullBatch(replacement, acknowledgedValues: .cloudKit)
       try await clearRecoveredFailure(in: replacement)
       try await afterCommitHook()
     }

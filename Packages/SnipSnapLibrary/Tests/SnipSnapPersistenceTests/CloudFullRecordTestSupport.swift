@@ -3,7 +3,34 @@ import Foundation
 @testable import SnipSnapCore
 @testable import SnipSnapPersistence
 
+extension CloudAttachmentAcknowledgedValues {
+  /// These tests store placeholder shadows that only SnipSnapCloud could decode.
+  static let unreadable = CloudAttachmentAcknowledgedValues { _ in
+    throw CloudAttachmentStorageError.invalidMetadata
+  }
+}
+
 extension SwiftDataSnipLibrary {
+  func commitCloudFullBatch(
+    _ batch: CloudFullBatchCommit,
+    afterSave: @Sendable () -> Void = {}
+  ) throws -> CloudFullBatchCommitResult {
+    try commitCloudFullBatch(batch, acknowledgedValues: .unreadable, afterSave: afterSave)
+  }
+
+  func commitCloudAttachmentTransitions(
+    namespaceKey: CloudSyncNamespaceKey,
+    transitions: [CloudAttachmentTransition],
+    afterSave: @Sendable () -> Void = {}
+  ) throws {
+    try commitCloudAttachmentTransitions(
+      namespaceKey: namespaceKey,
+      transitions: transitions,
+      acknowledgedValues: .unreadable,
+      afterSave: afterSave
+    )
+  }
+
   func testAcceptCloudEntity(
     namespaceKey: CloudSyncNamespaceKey,
     value: CloudAcceptedEntityInput,
