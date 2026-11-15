@@ -236,6 +236,7 @@ package actor SwiftDataSyncModePersistence {
   let writeHook: WriteHook
   let readHook: ReadHook
   let recoveryQuarantineHook: RecoveryQuarantineHook
+  let afterMutationBeforeSave: @Sendable () throws -> Void
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
@@ -255,6 +256,7 @@ package actor SwiftDataSyncModePersistence {
     writeHook: @escaping WriteHook = { _ in },
     readHook: @escaping ReadHook = {},
     recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {},
+    afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     diagnostics: AppDiagnosticRecorder = .live
   ) throws {
     self.rootURL = rootURL
@@ -265,6 +267,7 @@ package actor SwiftDataSyncModePersistence {
     self.writeHook = writeHook
     self.readHook = readHook
     self.recoveryQuarantineHook = recoveryQuarantineHook
+    self.afterMutationBeforeSave = afterMutationBeforeSave
     self.defaultSyncProtocol = defaultSyncProtocol
     self.diagnostics = diagnostics
     try DurableFile.createDirectory(rootURL)
@@ -500,7 +503,9 @@ package actor SwiftDataSyncModePersistence {
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
-      ), diagnostics: diagnostics
+      ),
+      afterMutationBeforeSave: afterMutationBeforeSave,
+      diagnostics: diagnostics
     )
   }
 
