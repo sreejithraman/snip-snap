@@ -196,6 +196,49 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
+    /// A merge or reconcile that throws leaves its intent durable. It must also clear its
+    /// in-flight mark, so Try Again on the same persistence, with no reopen, resumes the intent.
+    func testEnableTryAgainResumesAFullMergeIntentLeftByThrownAttempts() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let applies = PlanApplyFailures(failing: 2)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            writeHook: { try await applies.hit($0) }
+        )
+        let server = FakeCloudServer()
+        let texts = try await optOutAfterSyncing(persistence, server: server)
+        let coordinator = modeCoordinator(on: persistence, server: server)
+
+        // 1. The enable's merge throws after its intent is durable, and the intent stays.
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("The injected failure must end the enable.")
+        } catch PlanApplyFailures.Failure.injected {}
+        let afterMerge = try await persistence.snapshot().transition
+        XCTAssertEqual(afterMerge?.phase, .sourceFrozen)
+        XCTAssertNotNil(afterMerge?.mergeIntent)
+        XCTAssertEqual(afterMerge?.mergeIntent?.fullReenablePlanID, afterMerge?.id)
+
+        // 2. Pins the merge's clear. Try Again reconciles the intent and throws at the same
+        // point. If the merge kept its mark, this would return Setting Up without reaching it.
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("Try Again must reconcile the intent and reach the failing apply.")
+        } catch PlanApplyFailures.Failure.injected {}
+        let reached = await applies.arrivals
+        XCTAssertEqual(reached, 2)
+        let afterReconcile = try await persistence.snapshot().transition
+        XCTAssertEqual(afterReconcile, afterMerge)
+
+        // 3. Pins the reconcile's clear. If the failed reconcile kept its mark, this would
+        // return Setting Up too.
+        let finished = try await coordinator.enableOrRetry()
+        XCTAssertEqual(finished.state, .on)
+        try await assertModeChangeFinished(persistence, on: .iCloudSync, holding: texts)
+    }
+
     func testFailedCancelSetupKeepsTheLibraryForTheNextEnable() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -556,6 +599,25 @@ private actor HeldStepPause {
         isResumed = true
         release?.resume()
         release = nil
+    }
+}
+
+/// Fails the first `failures` arrivals at the full re-enable plan apply, then lets later ones
+/// pass. Counts every arrival.
+private actor PlanApplyFailures {
+    enum Failure: Error { case injected }
+
+    private(set) var arrivals = 0
+    private let failures: Int
+
+    init(failing failures: Int) {
+        self.failures = failures
+    }
+
+    func hit(_ point: SyncModeWritePoint) throws {
+        guard point == .beforeFullReenablePlanApply else { return }
+        arrivals += 1
+        if arrivals <= failures { throw Failure.injected }
     }
 }
 
