@@ -222,12 +222,7 @@ package enum ClipboardBindingResetStep: Sendable {
         let transport = try bind(to: generation)
         try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
         if hadBinding { try await store.setAside() }
-        if pendingSetAside != nil {
-            try writeStoredBinding(ClipboardStoredBinding.resetMarker)
-            binding = nil
-        } else {
-            try removeBinding()
-        }
+        try releaseBinding()
         await worker.reset()
     }
 
@@ -254,12 +249,17 @@ package enum ClipboardBindingResetStep: Sendable {
         try await store.setAside()
         if pendingSetAside == setAside { pendingSetAside = nil }
         try await resetStep(.historyCleared)
-        try removeBinding()
+        try releaseBinding()
         try await resetStep(.bindingRemoved)
         await worker.reset()
     }
-    private func removeBinding() throws {
-        if FileManager.default.fileExists(atPath: bindingURL.path) { try FileManager.default.removeItem(at: bindingURL) }
+    /// Removes the binding file, or stores the reset marker in its place while a reset is pending.
+    private func releaseBinding() throws {
+        if pendingSetAside != nil {
+            try writeStoredBinding(ClipboardStoredBinding.resetMarker)
+        } else if FileManager.default.fileExists(atPath: bindingURL.path) {
+            try FileManager.default.removeItem(at: bindingURL)
+        }
         binding = nil
     }
 
