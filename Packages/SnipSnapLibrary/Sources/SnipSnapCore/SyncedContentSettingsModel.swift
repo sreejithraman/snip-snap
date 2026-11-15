@@ -422,10 +422,21 @@ public final class SyncedContentSettingsModel {
   }
 
   /// Records that a sync request reported Delete Synced Content's removal incomplete. A
-  /// running delete reports its own outcome.
+  /// running delete reports its own outcome. Only an explicit sync records a removal that
+  /// stays incomplete, so automatic syncs can't flood diagnostics.
   public func recordRemovalPending() {
-    guard mode == .iCloudSync, state != .removalPending, state != .deleting else { return }
-    enterRemovalPending()
+    guard mode == .iCloudSync else { return }
+    switch state {
+    case .deleting:
+      break
+    case .removalPending where isPerformingExplicitSync:
+      record(.someChangesPending, operation: "sync.delete")
+      finishDeletingIssue = .someChangesPending
+    case .removalPending:
+      break
+    default:
+      enterRemovalPending()
+    }
   }
 
   /// Records that a sync request reported Delete Synced Content's removal finished. It
@@ -498,6 +509,10 @@ public final class SyncedContentSettingsModel {
     case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
       record(issue, operation: "sync.run")
       status.state = .failed(issue)
+    // Automatic syncs can fail on every schedule here, so only an explicit sync records.
+    case (.iCloudSync, .removalPending) where isPerformingExplicitSync:
+      record(issue, operation: "sync.run")
+      finishDeletingIssue = issue
     case (.localOnly, .enabling(let existing)) where existing == issue:
       break
     case (.localOnly, .enabling) where issue.retriesAutomatically:
