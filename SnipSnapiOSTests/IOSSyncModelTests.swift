@@ -89,6 +89,84 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.statusTitle, "Sync turned off")
     }
 
+    /// Each stop result and the issue Settings shows for it.
+    private static let stopResults: [(result: SnipSnapCloudSyncResult, issue: SyncedContentSyncIssue)] = [
+        (.iCloudDataReset, .iCloudDataReset),
+        (.iCloudSignedOut, .signInRequired),
+        (.iCloudAccountChanged, .iCloudAccountChanged),
+    ]
+
+    func testStopTurnsSyncOffAndRecordsOnlyTheStop() async {
+        for (result, issue) in Self.stopResults {
+            let diagnostics = IOSDiagnosticRecorderProbe()
+            let settings = SyncedContentSettingsModel(mode: .iCloudSync, diagnostics: diagnostics.recorder)
+            let session = IOSAppSession(
+                library: ModelTestLibrary(),
+                syncedContentSettings: settings,
+                cloudSyncSession: IOSCloudSyncSessionProbe(result: result, activeLibrary: ModelTestLibrary())
+            )
+
+            await session.syncWhenPossible()
+
+            XCTAssertEqual(settings.mode, .localOnly, "\(result)")
+            XCTAssertEqual(settings.state, .failed(issue), "\(result)")
+            XCTAssertEqual(diagnostics.events.map(\.operation), ["sync.stop"], "\(result)")
+        }
+    }
+
+    func testFailedCleanupAfterAStopStillTurnsSyncOff() async {
+        for (result, issue) in Self.stopResults {
+            let diagnostics = IOSDiagnosticRecorderProbe()
+            let settings = SyncedContentSettingsModel(mode: .iCloudSync, diagnostics: diagnostics.recorder)
+            let session = IOSAppSession(
+                library: ModelTestLibrary(),
+                syncedContentSettings: settings,
+                cloudSyncSession: IOSCloudSyncSessionProbe(
+                    result: result,
+                    activeLibrary: ModelTestLibrary(),
+                    activeLibraryError: .offline
+                )
+            )
+
+            await session.syncWhenPossible()
+
+            XCTAssertEqual(settings.mode, .localOnly, "\(result)")
+            XCTAssertEqual(settings.state, .failed(issue), "\(result)")
+            XCTAssertEqual(
+                diagnostics.events.map(\.operation),
+                ["sync.run", "sync.stop"],
+                "\(result)"
+            )
+        }
+    }
+
+    func testFailedCleanupAfterAStopStillReplacesDeletionIncomplete() async {
+        for (result, issue) in Self.stopResults {
+            let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+            settings.recordRemovalPending()
+            let cloudSession = IOSCloudSyncSessionProbe(
+                result: result,
+                activeLibrary: ModelTestLibrary(),
+                activeLibraryError: .offline
+            )
+            let session = IOSAppSession(
+                library: ModelTestLibrary(),
+                syncedContentSettings: settings,
+                cloudSyncSession: cloudSession
+            )
+
+            await session.syncWhenPossible()
+            XCTAssertEqual(settings.mode, .localOnly, "\(result)")
+            XCTAssertEqual(settings.state, .failed(issue), "\(result)")
+
+            // The store left iCloud, so a later request finds nothing to sync.
+            await cloudSession.setResult(.noChange)
+            await session.syncWhenPossible()
+            XCTAssertEqual(settings.mode, .localOnly, "\(result)")
+            XCTAssertEqual(settings.state, .failed(issue), "\(result)")
+        }
+    }
+
     func testManualSyncRecordsFailureInSettingsWithoutShowingGeneralError() async {
         let cloudSession = IOSCloudSyncSessionProbe(
             result: .noChange,
