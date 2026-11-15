@@ -11,13 +11,7 @@ extension SwiftDataSyncModePersistence {
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
     value.writeReservation = nil
-    if let isolation = value.accountIsolation,
-      value.activeStoreID == isolation.storeID,
-      let sourceIndex = value.stores.firstIndex(where: { $0.id == isolation.storeID }),
-      let replacementIndex = value.stores.firstIndex(where: {
-        $0.id == isolation.replacementStoreID
-      })
-    {
+    if case .declared(let isolation) = try value.accountIsolationPhase() {
       guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
         throw SyncModePersistenceError.invalidManifest
       }
@@ -28,9 +22,7 @@ extension SwiftDataSyncModePersistence {
           storeID: isolation.replacementStoreID
         )
       )
-      value.stores[replacementIndex].lifecycle = .ready
-      value.stores[sourceIndex].lifecycle = .isolated
-      value.activeStoreID = isolation.replacementStoreID
+      try value.swapToIsolationReplacement()
     }
     if let activeIndex = value.stores.firstIndex(where: { $0.id == value.activeStoreID }),
       value.stores[activeIndex].lifecycle == .creating
@@ -50,18 +42,9 @@ extension SwiftDataSyncModePersistence {
     if let active = value.stores.first(where: { $0.id == value.activeStoreID }),
       let root = storeRoots[active.id]
     {
-      let marker = SwiftDataSnipLibrary.readOnlyRecoveryMarkerURL(
-        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
-      )
-      if FileManager.default.fileExists(atPath: marker.path) {
-        try FileManager.default.removeItem(at: marker)
-      }
-      let quarantineMarker = SwiftDataSnipLibrary.recoveryQuarantineCompleteMarkerURL(
-        forStoreURL: root.appendingPathComponent("snips.store", isDirectory: false)
-      )
-      if FileManager.default.fileExists(atPath: quarantineMarker.path) {
-        try FileManager.default.removeItem(at: quarantineMarker)
-      }
+      try SwiftDataSnipLibrary.StoreRetirementMarkers(
+        storeURL: root.appendingPathComponent("snips.store", isDirectory: false)
+      ).restore()
     }
     let removable = value.stores.filter {
       $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting)
@@ -136,7 +119,11 @@ extension SwiftDataSyncModePersistence {
   }
 
   static func canonicalRelativeRoot(for store: SyncModeStore) -> String {
-    "stores/\(store.kind.rawValue)-\(store.id.uuidString.lowercased())"
+    canonicalRelativeRoot(kind: store.kind, id: store.id)
+  }
+
+  static func canonicalRelativeRoot(kind: SyncModeStoreKind, id: UUID) -> String {
+    "stores/\(kind.rawValue)-\(id.uuidString.lowercased())"
   }
 
   static func absorbMergeIntent(_ transition: inout SyncModeTransition) {
@@ -215,27 +202,7 @@ extension SwiftDataSyncModePersistence {
         throw SyncModePersistenceError.invalidManifest
       }
     }
-    if let isolation = value.accountIsolation {
-      guard value.transition == nil,
-        let source = value.stores.first(where: { $0.id == isolation.storeID }),
-        let replacement = value.stores.first(where: {
-          $0.id == isolation.replacementStoreID
-        }),
-        source.kind == .iCloudSync,
-        source.namespace == isolation.namespace,
-        replacement.kind == .localOnly,
-        replacement.namespace == nil
-      else { throw SyncModePersistenceError.invalidManifest }
-      let declared = value.activeStoreID == source.id
-        && source.lifecycle == .ready
-        && replacement.lifecycle == .creating
-      let isolated = value.activeStoreID == replacement.id
-        && source.lifecycle == .isolated
-        && replacement.lifecycle == .ready
-      guard declared || isolated else { throw SyncModePersistenceError.invalidManifest }
-    } else if value.stores.contains(where: { $0.lifecycle == .isolated }) {
-      throw SyncModePersistenceError.invalidManifest
-    }
+    _ = try value.accountIsolationPhase()
   }
 
   static func write(

@@ -7,7 +7,7 @@ extension SwiftDataSnipLibrary {
   /// from the staged batch to recovery rows in one commit. Unreadable evidence
   /// cannot prove that this source is safe to edit, including after reopening.
   func requireContentWritesAllowed(context: ModelContext) throws {
-    guard !FileManager.default.fileExists(atPath: readOnlyRecoveryMarkerURL.path) else {
+    guard !retirementMarkers.refusesContentWrites else {
       throw SnipLibraryError.readOnlyRecovery
     }
     do {
