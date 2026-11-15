@@ -431,9 +431,10 @@ private struct ProviderLoadFailure: Error {
     let underlying: any Error
 }
 
-/// Loads one provider value and resumes its caller exactly once: with the callback's result, or with
-/// `CancellationError` when the task is cancelled first. Completion and cancellation share a lock, so a
-/// late callback cannot recreate staging files after a cancelled batch has been cleaned.
+/// Loads one provider value and resumes its caller exactly once. The first callback claims the load
+/// under the lock and runs its result outside it, so cancelling never waits for a copy and a callback
+/// after cancellation never runs. A load claimed before cancellation still delivers its value; the
+/// caller's next cancellation check cleans up what it staged.
 final class ProviderLoad<Value: Sendable>: @unchecked Sendable {
     private struct Waiter {
         let continuation: CheckedContinuation<Value, Error>
@@ -453,7 +454,7 @@ final class ProviderLoad<Value: Sendable>: @unchecked Sendable {
     private init() {}
 
     /// `start` begins the provider load and returns its progress. The load's callback hands its result
-    /// to `finish`, which runs the result only while the load still waits.
+    /// to `finish`, which runs the result only when it claims a waiting load.
     static func run(
         isolation: isolated (any Actor)? = #isolation,
         _ start: (_ finish: @escaping @Sendable (_ result: () throws -> Value) -> Void) -> Progress
@@ -503,9 +504,8 @@ final class ProviderLoad<Value: Sendable>: @unchecked Sendable {
             return
         }
         phase = .completed
-        let value = Result { try result() }
         lock.unlock()
-        waiter.continuation.resume(with: value)
+        waiter.continuation.resume(with: Result { try result() })
     }
 
     private func cancel() {
