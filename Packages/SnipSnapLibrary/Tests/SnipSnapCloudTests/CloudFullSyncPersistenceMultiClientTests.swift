@@ -96,14 +96,16 @@ extension CloudFullSyncPersistenceTests {
       .updateList(id: noIcon.id, name: "Reading list", systemImage: "book.fill", color: .set(.teal)), sortedBy: .manual)
     try await newerClient.sync()
     try await olderClient.fetchRemote()
-    let chosen = try XCTUnwrap(await older.snapshot(sortedBy: .manual).lists.first { $0.id == noIcon.id })
+    let olderLists = await older.snapshot(sortedBy: .manual).lists
+    let chosen = try XCTUnwrap(olderLists.first { $0.id == noIcon.id })
     XCTAssertEqual(chosen.mark(), .icon("book.fill"))
     XCTAssertEqual(chosen.tint, .teal)
     _ = try await older.perform(
       .updateList(id: noIcon.id, name: "Reading list", systemImage: ""), sortedBy: .manual)
     try await olderClient.sync()
     try await newerClient.fetchRemote()
-    let cleared = try XCTUnwrap(await newer.snapshot(sortedBy: .manual).lists.first { $0.id == noIcon.id })
+    let newerLists = await newer.snapshot(sortedBy: .manual).lists
+    let cleared = try XCTUnwrap(newerLists.first { $0.id == noIcon.id })
     XCTAssertEqual(cleared.systemImage, "")
     XCTAssertEqual(cleared.tint, .teal)
   }

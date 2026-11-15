@@ -215,7 +215,6 @@ extension SnipList {
     private func letterBadge(in environment: EnvironmentValues, diameter: CGFloat) -> some View {
         SnipListMarkView(list: self, diameter: diameter, scalesWithText: false)
             .environment(\.colorScheme, environment.colorScheme)
-            .environment(\.colorSchemeContrast, environment.colorSchemeContrast)
     }
 }
 
