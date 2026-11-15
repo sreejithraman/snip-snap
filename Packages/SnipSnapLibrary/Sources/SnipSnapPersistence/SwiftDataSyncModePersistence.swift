@@ -168,6 +168,8 @@ package enum SyncModeWritePoint: Equatable, Sendable {
   /// A hook that throws here fails the write after the library saved it, like a store error, so the reservation is released.
   case beforeReservationCleared
   case beforeStoreRetirement
+  /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
+  case beforeAccountLocalCopyMerge
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -251,6 +253,11 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+
+  /// Reconciles of an account-isolation choice take turns, so a background status never runs a
+  /// second Keep merge.
+  let accountIsolationTurns = AsyncOperationGate()
+
   var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 

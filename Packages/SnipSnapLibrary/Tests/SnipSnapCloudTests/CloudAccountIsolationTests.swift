@@ -1499,6 +1499,118 @@ extension ICloudSyncModeCoordinatorTests {
         }
     }
 
+    func testBackgroundStatusWaitsForTheUsersKeepMerge() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mergePause = AccountLocalCopyMergePause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The user's Keep must reach its merge")
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must finish its own merge: \(error)")
+        }
+        do {
+            _ = try await background.value
+        } catch {
+            XCTFail("A background status must not fail beside the user's Keep: \(error)")
+        }
+        XCTAssertEqual(mergePause.hits, 1, "Only the user's Keep may run the merge")
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
+    func testUsersKeepReportsItsOwnTurnAfterABackgroundMergeFails() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let crash = CrashInjector(point: .afterAccountResolutionIntent)
+        let mergePause = AccountLocalCopyMergePause(failsOnRelease: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: crash.hit,
+            writeHook: mergePause.hit
+        )
+        let namespace = makeNamespace()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: textZone(namespace),
+            makeTransport: {
+                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+            },
+            accountStateSource: account
+        )
+        _ = try await coordinator.enableOrRetry()
+        try await add("prior account work", to: persistence.activeLibrary())
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        do {
+            _ = try await coordinator.resolveAccountIsolation(.keepLocalCopy)
+            XCTFail("Expected the injected interruption after the stored choice")
+        } catch is CrashInjector.Failure {}
+
+        let background = Task { try await coordinator.status() }
+        await mergePause.waitForHits(1, within: .seconds(5))
+        XCTAssertEqual(mergePause.hits, 1, "The background reconcile must reach its merge")
+        let keep = Task { try await coordinator.resolveAccountIsolation(.keepLocalCopy) }
+        await mergePause.waitForHits(2, within: .seconds(2))
+        mergePause.release()
+
+        do {
+            _ = try await background.value
+            XCTFail("The background status must report its failed merge")
+        } catch {
+            XCTAssertTrue(error is AccountLocalCopyMergePause.Failure, "\(error)")
+        }
+        do {
+            let kept = try await keep.value
+            XCTAssertEqual(kept.state, .off)
+        } catch {
+            XCTFail("The user's Keep must make its own attempt after the failed one: \(error)")
+        }
+        let storage = try await persistence.snapshot()
+        XCTAssertNil(storage.accountIsolation)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        let visible = await (try await persistence.activeLibrary())
+            .snapshot(sortedBy: .chronological)
+        XCTAssertEqual(visible.snips.map(\.content), ["prior account work"])
+    }
+
     func testInterruptedRemovalFinishesWhenTheOriginalAccountReturns() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
