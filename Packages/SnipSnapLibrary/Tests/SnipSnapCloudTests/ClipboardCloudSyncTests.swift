@@ -127,7 +127,7 @@ private func requireSavePaused<Success: Sendable>(
 }
 
 /// The saved-snips namespace key the apps pass as the clipboard generation.
-private func namespaceKey(cloudScope: String = "iCloud.example.snips", account: String, generation: UUID) -> String {
+private func namespaceKey(cloudScope: String = "private", account: String, generation: UUID) -> String {
     let value = generation.uuidString.lowercased()
     return ICloudSyncNamespaceBinding(
         scope: cloudScope,
@@ -346,7 +346,7 @@ private func namespaceKey(cloudScope: String = "iCloud.example.snips", account: 
             try await client.run(scope: namespaceKey(account: "account-B", generation: generation))
         }
         await #expect(throws: ClipboardCloudError.accountChanged) {
-            try await client.run(scope: namespaceKey(cloudScope: "iCloud.example.other", account: "account-A", generation: generation))
+            try await client.run(scope: namespaceKey(cloudScope: "shared", account: "account-A", generation: generation))
         }
         let stored = try Data(contentsOf: client.root.appendingPathComponent("clipboard-account-binding.json"))
         #expect(try stored == JSONEncoder().encode(bound))
