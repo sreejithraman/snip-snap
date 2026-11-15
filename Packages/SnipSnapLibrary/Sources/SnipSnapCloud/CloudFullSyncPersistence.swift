@@ -346,19 +346,9 @@ package actor CloudFullSyncCoordinator {
         recordCommittedBatch(observed)
       }
     }
-    let state: CloudEngineStateEnvelope?
-    do {
-      state = try await store.loadEngineState()
-    } catch let error as CloudTransportError
-      where !session.isRunning && (error == .invalidEngineState || error == .stateNamespaceMismatch)
-    {
-      // Nothing has started or queued yet: start the empty engine `ensureStarted` would.
-      // A running engine's reset would drop the events queued behind these batches, so
-      // there the error fails the run and the next run drains the queue (ADR 0028).
-      try await restartEmptyEngine()
-      return
+    if let state = try await store.loadEngineState() {
+      session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch)
     }
-    if let state { session.adoptStoredState(requiresInitialFetch: state.requiresInitialFetch) }
   }
 
   @discardableResult

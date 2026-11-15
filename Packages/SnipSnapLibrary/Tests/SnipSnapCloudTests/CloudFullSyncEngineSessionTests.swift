@@ -258,8 +258,9 @@ extension CloudFullSyncPersistenceTests {
     }
   }
 
-  /// SM27-L2-C1: before the fix, the read after staged recovery threw and failed the run of a
-  /// stopped engine, though `ensureStarted` restarts an empty engine over the same stored state.
+  /// SM27-L2-C1 guard; the lead did not reproduce. Applying the staged batch replaces the
+  /// stored engine state with the batch's own, here none, so the read after staged recovery
+  /// finds no state and `ensureStarted` starts an empty engine.
   func testStagedBatchRecoveredOverAnUnreadableEngineStateRestartsAnEmptyEngine() async throws {
     let fixture = try EngineSessionFixture(name: "StagedOverUnreadableState", namespace: makeNamespace())
     defer { fixture.remove() }
@@ -279,63 +280,49 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(stored?.namespace, fixture.namespace)
   }
 
-  /// SM27-L2-C1: a stopped engine has nothing queued, so staged recovery over an unreadable
-  /// state starts one empty engine, and the run's own `ensureStarted` keeps it.
-  func testStagedRecoveryOverAnUnreadableEngineStateStartsOneEmptyEngine() async throws {
-    let samples = EngineSessionSamples(namespace: makeNamespace())
-    let store = ScriptedSessionStore(engineState: samples.state(requiresInitialFetch: false))
-    let transport = AutomaticSyncTransportProbe(fetched: samples.fetched(requiresInitialFetch: false))
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
-    await store.leaveStagedBatchOverUnreadableEngineState()
-
-    let outcome = try await coordinator.fetchRemote()
-
-    let states = await transport.startedEngineStates()
-    let resets = await transport.resetCount()
-    let fetches = await transport.fetchCount()
-    let clears = await store.engineStateClearCount()
-    let staged = await store.stagedBatchCount()
-    XCTAssertEqual(states, [nil])
-    XCTAssertEqual(resets, 0)
-    XCTAssertEqual(fetches, 1)
-    XCTAssertEqual(clears, 1)
-    XCTAssertEqual(staged, 0)
-    XCTAssertFalse(outcome.blocksOutbound)
-  }
-
-  /// SM27-L2-F1: resetting a running engine would drop the events queued behind the replayed
-  /// batch, so the read error fails the run as at base, and the engine is neither reset nor
-  /// restarted.
-  func testStagedRecoveryOverAnUnreadableEngineStateFailsTheRunOfARunningEngine() async throws {
+  /// Base behavior, kept as a guard. If a store's state stays unreadable after staged recovery,
+  /// the run fails whether the engine is stopped or running. Nothing resets or starts an engine
+  /// there, so the queue behind the replayed batches stays for the next run (ADR 0028).
+  func testReadErrorAfterStagedRecoveryFailsTheRunWithoutResettingOrStartingAnEngine() async throws {
     let samples = EngineSessionSamples(namespace: makeNamespace())
     let stored = samples.state(requiresInitialFetch: false)
-    let store = ScriptedSessionStore(engineState: stored)
-    let transport = AutomaticSyncTransportProbe(fetched: samples.fetched(requiresInitialFetch: false))
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
-    try await coordinator.prepareAutomaticSync()
-    await store.leaveStagedBatchOverUnreadableEngineState()
+    for wasRunning in [false, true] {
+      let label = "was running: \(wasRunning)"
+      let store = ScriptedSessionStore(engineState: stored)
+      let transport = AutomaticSyncTransportProbe(fetched: samples.fetched(requiresInitialFetch: false))
+      let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+      if wasRunning { try await coordinator.prepareAutomaticSync() }
+      await store.leaveStagedBatchOverUnreadableEngineState()
+      let queuedID = UUID()
+      await transport.enqueue(.checkpoint(queuedID, stored))
 
-    do {
-      _ = try await coordinator.fetchRemote()
-      XCTFail("Expected the engine-state read to fail the run")
-    } catch CloudTransportError.invalidEngineState {}
+      do {
+        _ = try await coordinator.fetchRemote()
+        XCTFail("Expected the engine-state read to fail the run (\(label))")
+      } catch CloudTransportError.invalidEngineState {}
 
-    let states = await transport.startedEngineStates()
-    let resets = await transport.resetCount()
-    let fetches = await transport.fetchCount()
-    let clears = await store.engineStateClearCount()
-    let staged = await store.stagedBatchCount()
-    XCTAssertEqual(states, [stored])
-    XCTAssertEqual(resets, 0)
-    XCTAssertEqual(fetches, 0)
-    XCTAssertEqual(clears, 0)
-    XCTAssertEqual(staged, 0)
+      let states = await transport.startedEngineStates()
+      let resets = await transport.resetCount()
+      let fetches = await transport.fetchCount()
+      let waiting = await transport.pendingEvent()
+      let clears = await store.engineStateClearCount()
+      let staged = await store.stagedBatchCount()
+      let expectedStates: [CloudEngineStateEnvelope?] = wasRunning ? [stored] : []
+      XCTAssertEqual(states, expectedStates, label)
+      XCTAssertEqual(resets, 0, label)
+      XCTAssertEqual(fetches, 0, label)
+      XCTAssertEqual(waiting?.id, queuedID, label)
+      XCTAssertEqual(clears, 0, label)
+      XCTAssertEqual(staged, 0, label)
+    }
   }
 
-  /// SM27-L2-F1 (fails at `69b3158f`). The probe's reset drops its queue, as the CloudKit
-  /// transport's does. A purge queued behind the replayed batch must survive the failed run,
-  /// and the next run must commit it so it blocks edits and sends (ADR 0028).
-  func testUnreadableStateAfterStagedRecoveryKeepsAQueuedPurgeForTheNextRun() async throws {
+  /// SM27-L2-C1 and L2-F1 guard with the SwiftData store. Applying the replayed head replaces
+  /// the unreadable state with the head's own, here none, so the run goes on. The purge queued
+  /// behind the head then commits in the same run, in order, with no reset, and blocks edits
+  /// and sends (ADR 0028). The probe's reset would drop that queue, as the CloudKit
+  /// transport's does.
+  func testReplayedBatchOverAnUnreadableStateKeepsTheQueuedPurgeInOrder() async throws {
     let samples = EngineSessionSamples(namespace: makeNamespace())
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("QueuedPurgeBehindStagedBatch-\(UUID().uuidString)")
@@ -356,24 +343,22 @@ extension CloudFullSyncPersistenceTests {
     await transport.setPending(.fetched(head))
     await transport.setPending(.fetched(purge))
 
-    do {
-      _ = try await coordinator.processAutomaticChanges()
-      XCTFail("Expected the engine-state read to fail the run")
-    } catch CloudTransportError.invalidEngineState {}
-    let waiting = await transport.pendingEvent()
-    let resetsAfterFailure = await transport.resetCount()
-    XCTAssertEqual(waiting?.id, purge.id)
-    XCTAssertEqual(resetsAfterFailure, 0)
-
     let outcome = try await coordinator.processAutomaticChanges()
 
+    let engineState = try await library.cloudTextSyncSnapshot(
+      namespaceKey: samples.namespace.namespaceKey).engineState
+    let waiting = await transport.pendingEvent()
     let confirmed = await transport.confirmedBatchIDs()
+    let resets = await transport.resetCount()
     let starts = await transport.startCount()
     let sends = await transport.sendCount()
     let scheduled = await transport.scheduledBatches()
     let signal = try await store.destructiveResetSignal()
     let admission = try await store.outboundAdmission()
+    XCTAssertNil(engineState)
+    XCTAssertNil(waiting)
     XCTAssertEqual(confirmed, [head.id, purge.id])
+    XCTAssertEqual(resets, 0)
     XCTAssertEqual(starts, 1)
     XCTAssertEqual(signal, .purged)
     XCTAssertEqual(outcome.result, .iCloudDataReset)
@@ -455,6 +440,7 @@ private actor ScriptedSessionStore: CloudFullSyncStore {
   func failNextPlan() { failsNextPlan = true }
 
   /// A batch whose apply failed after its stage commit, over a stored state no engine reads.
+  /// Unlike the SwiftData store, applying it leaves that state in place.
   func leaveStagedBatchOverUnreadableEngineState() {
     staged.append(CloudFullBatchCommit(namespaceKey: "test", batchID: UUID(),
       expectedEngineState: nil, nextEngineState: nil, items: []))
