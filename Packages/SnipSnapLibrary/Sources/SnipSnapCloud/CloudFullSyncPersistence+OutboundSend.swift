@@ -273,7 +273,8 @@ extension CloudFullSyncPersistence {
       let attachmentPlan = Self.attachmentOperations(
         attachments,
         dataZone: dataZone,
-        payloadZone: payloadZone
+        payloadZone: payloadZone,
+        blockedRecordIDs: failedFetchIDs
       )
       if !attachmentPlan.invalidPublicationIDs.isEmpty
         || !attachmentPlan.invalidCleanupIdentities.isEmpty
@@ -322,10 +323,13 @@ extension CloudFullSyncPersistence {
     var invalidCleanupIdentities: Set<CloudTextStorageIdentity> = []
   }
 
+  /// - Parameter blockedRecordIDs: records a failed fetch blocks. Another member's block holds its
+  ///   snip's order write.
   private static func attachmentOperations(
     _ snapshot: CloudAttachmentStorageSnapshot,
     dataZone: CloudZoneID,
-    payloadZone: CloudZoneID
+    payloadZone: CloudZoneID,
+    blockedRecordIDs: Set<CloudRecordID> = []
   ) -> AttachmentOperationPlan {
     let publications = snapshot.publications.sorted {
       $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString
@@ -348,22 +352,26 @@ extension CloudFullSyncPersistence {
         plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
       }
     }
+    var metadataSaves: [(snipID: UUID, draft: CloudRecordDraft)] = []
     for publication in publications where publication.isLocallyPresent
       && publication.payloadAccepted
       && !publication.metadataAccepted
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {
-        guard publication.metadataIdentity.zoneName == dataZone.name,
-          publication.metadataIdentity.ownerName == dataZone.ownerName,
-          publication.metadata.payloadIdentity.zoneName == payloadZone.name,
-          publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
-        else { throw CloudAttachmentStorageError.invalidMetadata }
-        plan.operations.append(.save(try CloudAttachmentRecordCodec.metadataDraft(publication)))
+        metadataSaves.append((publication.metadata.snipID,
+          try metadataDraft(publication, dataZone: dataZone, payloadZone: payloadZone)))
       } catch {
         plan.invalidPublicationIDs.insert(publication.metadata.attachmentID)
       }
     }
+    plan.operations += orderWrites(
+      completing: metadataSaves,
+      publications: publications,
+      dataZone: dataZone,
+      payloadZone: payloadZone,
+      blockedRecordIDs: blockedRecordIDs
+    ).map(CloudOutboundOperation.save)
     for publication in publications where !publication.isLocallyPresent
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
@@ -400,6 +408,57 @@ extension CloudFullSyncPersistence {
       }
     }
     return plan
+  }
+
+  private static func metadataDraft(
+    _ publication: CloudAttachmentPublication,
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID
+  ) throws -> CloudRecordDraft {
+    guard publication.metadataIdentity.zoneName == dataZone.name,
+      publication.metadataIdentity.ownerName == dataZone.ownerName,
+      publication.metadata.payloadIdentity.zoneName == payloadZone.name,
+      publication.metadata.payloadIdentity.ownerName == payloadZone.ownerName
+    else { throw CloudAttachmentStorageError.invalidMetadata }
+    return try CloudAttachmentRecordCodec.metadataDraft(publication)
+  }
+
+  /// SM33-F2A: a snip whose order changes also saves its acknowledged members at their current
+  /// values, so its order write carries the whole order. The snip's metadata saves wait while a
+  /// member iCloud already holds can't be saved in this send.
+  private static func orderWrites(
+    completing saves: [(snipID: UUID, draft: CloudRecordDraft)],
+    publications: [CloudAttachmentPublication],
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID,
+    blockedRecordIDs: Set<CloudRecordID>
+  ) -> [CloudRecordDraft] {
+    let reorderedSnipIDs = Set(
+      saves.filter { CloudAttachmentOrderWrite.changesOrder($0.draft) }.map { $0.snipID }
+    )
+    guard !reorderedSnipIDs.isEmpty else { return saves.map { $0.draft } }
+    let savedIDs = Set(saves.map { $0.draft.id })
+    var companions: [(snipID: UUID, draft: CloudRecordDraft)] = []
+    var waitingSnipIDs: Set<UUID> = []
+    for member in publications where member.isLocallyPresent
+      && reorderedSnipIDs.contains(member.metadata.snipID)
+      && member.metadataShadowData != nil
+    {
+      let id = CloudAttachmentRecordCodec.recordID(member.metadataIdentity)
+      guard !blockedRecordIDs.contains(id) else {
+        waitingSnipIDs.insert(member.metadata.snipID)
+        continue
+      }
+      guard !savedIDs.contains(id) else { continue }
+      guard member.metadataAccepted, !isTerminalAttachmentFailure(member.lastFailure),
+        let draft = try? metadataDraft(member, dataZone: dataZone, payloadZone: payloadZone)
+      else {
+        waitingSnipIDs.insert(member.metadata.snipID)
+        continue
+      }
+      companions.append((member.metadata.snipID, draft))
+    }
+    return (saves + companions).filter { !waitingSnipIDs.contains($0.snipID) }.map { $0.draft }
   }
 
   static func plannedAttachmentOperationIDs(

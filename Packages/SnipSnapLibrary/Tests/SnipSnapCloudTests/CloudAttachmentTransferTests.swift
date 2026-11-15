@@ -7460,6 +7460,65 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     #expect(settled == .agreed(on: localOrder), "L=\(role.rawValue)")
   }
 
+  /// SM33-F2A: a reorder also saves the member it didn't move, so its write carries the whole order.
+  @Test func testAReorderPlansEveryMemberOfItsSnip() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let holder = clients.holder
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: holder.snipID, in: holder.library)
+
+    let plan = try await holder.store.pendingChanges()
+
+    #expect(metadataSavePositions(in: plan) == [.b: 0, .a: 1, .c: 2])
+    #expect(CloudAttachmentOrderWrite.groups(in: plan.operations)[holder.snipID].map { Set($0) }
+      == Set(AttachmentMatrixMember.initial.map(metadataID)))
+  }
+
+  @Test func testARenameAloneSavesOnlyTheRenamedAttachment() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let holder = clients.holder
+    try await renameAttachment(ofSnip: holder.snipID, attachmentID: AttachmentMatrixMember.b.id,
+      to: "renamed B.txt", in: holder.library)
+
+    let plan = try await holder.store.pendingChanges()
+
+    #expect(metadataSavePositions(in: plan) == [.b: 1])
+    #expect(CloudAttachmentOrderWrite.groups(in: plan.operations).isEmpty)
+  }
+
+  /// A member iCloud already holds but this device can't save holds the whole order write.
+  @Test func testAReorderWaitsWhileAFailedFetchBlocksAMember() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (holder, downloaded) = (clients.holder, clients.downloaded)
+    try await renameAttachment(ofSnip: holder.snipID, attachmentID: AttachmentMatrixMember.c.id,
+      to: "renamed C.txt", in: holder.library)
+    try await holder.sync.sendPendingUntilSettled()
+    await downloaded.transport.failNextFetchedItem(metadataID(.c), failure: .retryable)
+    try await downloaded.sync.fetchRemote()
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id), ofSnip: downloaded.snipID,
+      in: downloaded.library)
+
+    let plan = try await downloaded.store.pendingChanges()
+
+    #expect(metadataSavePositions(in: plan).isEmpty)
+  }
+
+  /// A member iCloud never held joins with its own first save, so its upload holds nothing.
+  @Test func testAReorderDoesNotWaitForAnAttachmentStillUploading() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let holder = clients.holder
+    try await appendAttachment(.n, to: holder)
+    let order: [AttachmentMatrixMember] = [.b, .a, .c, .n]
+    try await keepAttachments(order.map(\.id), ofSnip: holder.snipID, in: holder.library)
+
+    let plan = try await holder.store.pendingChanges()
+
+    #expect(metadataSavePositions(in: plan) == [.b: 0, .a: 1, .c: 2])
+  }
+
   @Test(arguments: [false, true])
   func testSparseAttachmentRetryAfterPlanningKeepsMainRecoveryAndCanonicalPositions(
     acknowledgedBeforeRetry: Bool
@@ -7631,6 +7690,19 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
         ofSnip: client.snipID, in: client.library)
       _ = try await client.store.pendingChanges()
     }
+  }
+
+  /// The position each planned metadata save writes, by member.
+  private func metadataSavePositions(in plan: CloudOutboundBatch) -> [AttachmentMatrixMember: Int64] {
+    var positions: [AttachmentMatrixMember: Int64] = [:]
+    for case .save(let draft) in plan.operations
+    where draft.recordType == CloudAttachmentRecordCodec.metadataRecordType {
+      guard let member = AttachmentMatrixMember.allCases.first(where: { metadataID($0) == draft.id }),
+        case .int64(let position)? = draft.encryptedFields["position"]
+      else { continue }
+      positions[member] = position
+    }
+    return positions
   }
 
   private func metadataID(_ member: AttachmentMatrixMember) -> CloudRecordID {

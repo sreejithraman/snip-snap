@@ -456,6 +456,181 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(queued?.sentBatch, sent)
     }
 
+    // MARK: SM33-F2A order writes
+
+    func testAnOrderWriteGoesAloneInAnAtomicBatchAfterOrdinaryWork() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let text = fixture.recordID("text")
+        let snipID = UUID()
+        let first = fixture.recordID("a-first")
+        let second = fixture.recordID("a-second")
+        let otherSnip = fixture.recordID("a-other")
+        let batches = Mutex<[CKSyncEngine.RecordZoneChangeBatch]>([])
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            while let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine) {
+                batches.withLock { $0.append(batch) }
+                engine.remove(pendingRecordZoneChanges: batch.recordsToSave.map { .saveRecord($0.recordID) })
+                await transport.emit(sentRecords(batch.recordsToSave), from: engine)
+            }
+            await transport.emit(.didSendChanges, from: engine)
+        }
+
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(orderDraft(first, snipID: snipID, position: 0)),
+            .save(makeDraft(text, "ordinary")),
+            .save(orderDraft(second, snipID: snipID, position: 1)),
+            .save(orderDraft(otherSnip, snipID: UUID(), position: 0)),
+        ]))
+
+        let shapes = batches.withLock { $0.map { batch in
+            (Set(batch.recordsToSave.map { CloudKitRecordMapper.id(for: $0.recordID) }), batch.atomicByZone)
+        } }
+        XCTAssertEqual(shapes.count, 3)
+        XCTAssertEqual(shapes.first?.0, [text], "Ordinary work goes first.")
+        XCTAssertEqual(shapes.first?.1, false)
+        let groups = shapes.dropFirst()
+        XCTAssertEqual(Set(groups.map { $0.0 }), [[first, second], [otherSnip]], "Each snip's order write goes alone.")
+        XCTAssertTrue(groups.allSatisfy { $0.1 }, "Only order writes are atomic.")
+        XCTAssertEqual(Set(sent.items.map(\.id)), [text, first, second, otherSnip])
+    }
+
+    func testARecordThatFailedOnlyWithItsOrderWriteCountsAsNotSent() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let snipID = UUID()
+        let stale = fixture.recordID("a-stale")
+        let current = fixture.recordID("a-current")
+        let suppliedAgain = Mutex(false)
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            let group = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
+            XCTAssertEqual(group?.atomicByZone, true)
+            await transport.emit(.sentRecordZoneChanges(
+                savedRecords: [], deletedRecordIDs: [],
+                failedRecordSaves: [
+                    (recordID: CloudKitRecordMapper.recordID(for: stale), error: ckError(.quotaExceeded)),
+                    (recordID: CloudKitRecordMapper.recordID(for: current), error: ckError(.batchRequestFailed)),
+                ],
+                failedRecordDeletes: []
+            ), from: engine)
+            // CloudKit may keep both pending. The failed group must not go again in this cycle.
+            let again = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
+            suppliedAgain.withLock { $0 = again != nil }
+            await transport.emit(.didSendChanges, from: engine)
+        }
+
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(orderDraft(stale, snipID: snipID, position: 1)),
+            .save(orderDraft(current, snipID: snipID, position: 0)),
+        ]))
+
+        XCTAssertEqual(sent.items, [.failed(stale, .quotaExceeded)], "The sibling reports no result.")
+        XCTAssertFalse(suppliedAgain.withLock { $0 }, "A failed order write waits for the next schedule.")
+        let head = await transport.headEvent()
+        guard case .batch(let batch)? = head else { return XCTFail("Expected the sent batch.") }
+        XCTAssertEqual(batch.outbound?.operations.map(\.id), [stale], "Only reported records are acknowledged.")
+        XCTAssertEqual(CloudKitRecordTransport.failure(ckError(.batchRequestFailed)), .retryable)
+    }
+
+    func testAStrayBatchRequestFailedOutsideAnyOrderWriteIsRetryable() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let text = fixture.recordID("text")
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
+            XCTAssertEqual(batch?.atomicByZone, false)
+            await transport.emit(.sentRecordZoneChanges(
+                savedRecords: [], deletedRecordIDs: [],
+                failedRecordSaves: [
+                    (recordID: CloudKitRecordMapper.recordID(for: text), error: ckError(.batchRequestFailed)),
+                ],
+                failedRecordDeletes: []
+            ), .didSendChanges, from: engine)
+        }
+
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(makeDraft(text, "ordinary")),
+        ]))
+
+        XCTAssertEqual(sent.items, [.failed(text, .retryable)])
+    }
+
+    func testAnOrderWriteMissingAMemberIsNotSentAtomically() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let snipID = UUID()
+        let mapped = fixture.recordID("a-mapped")
+        let unmappable = fixture.recordID("a-unmappable")
+        let provided = Mutex<[CKSyncEngine.RecordZoneChangeBatch]>([])
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            while let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine) {
+                provided.withLock { $0.append(batch) }
+                engine.remove(pendingRecordZoneChanges: batch.recordsToSave.map { .saveRecord($0.recordID) })
+            }
+            await transport.emit(.didSendChanges, from: engine)
+        }
+        let broken = orderDraft(unmappable, snipID: snipID, position: 1)
+
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(orderDraft(mapped, snipID: snipID, position: 0)),
+            .save(CloudRecordDraft(id: broken.id, recordType: broken.recordType,
+                schemaVersion: broken.schemaVersion, routingFields: broken.routingFields,
+                encryptedFields: broken.encryptedFields, removedRoutingFields: ["schemaVersion"])),
+        ]))
+
+        XCTAssertTrue(provided.withLock { $0.isEmpty }, "A group the provider can't build whole goes nowhere.")
+        XCTAssertEqual(sent.items, [.failed(unmappable, .invalidRecord)])
+    }
+
+    func testAnOrderWriteTooLargeForOneRequestGoesOutAsOrdinaryWork() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let snipID = UUID()
+        let atomic = Mutex<[Bool]>([])
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            if let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine) {
+                atomic.withLock { $0.append(batch.atomicByZone) }
+            }
+            await transport.emit(.didSendChanges, from: engine)
+        }
+        let saves = (0...CloudAttachmentOrderWrite.requestRecordLimit).map { index in
+            CloudOutboundOperation.save(orderDraft(fixture.recordID("a-\(index)"), snipID: snipID, position: index))
+        }
+
+        _ = try await transport.send(CloudOutboundBatch(operations: saves))
+
+        XCTAssertEqual(atomic.withLock { $0 }, [false])
+    }
+
+    func testAPerRecordErrorThrownAfterEveryResultAddsNoBatchWideFailure() async throws {
+        let (fixture, engine) = try await startedFixture()
+        let transport = fixture.transport
+        let snipID = UUID()
+        let first = fixture.recordID("a-first")
+        let second = fixture.recordID("a-second")
+        engine.onSend { engine, options in
+            await transport.emit(.willSendChanges, from: engine)
+            let batch = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
+            await transport.emit(sentRecords(batch?.recordsToSave ?? []), .didSendChanges, from: engine)
+            throw ckError(.partialFailure)
+        }
+
+        let sent = try await transport.send(CloudOutboundBatch(operations: [
+            .save(orderDraft(first, snipID: snipID, position: 0)),
+            .save(orderDraft(second, snipID: snipID, position: 1)),
+        ]))
+
+        XCTAssertEqual(Set(sent.items.map(\.id)), [first, second])
+        XCTAssertTrue(sent.databaseEvents.isEmpty, "The thrown error restates the per-record results.")
+        let confirmed = try await transport.confirmAllEvents()
+        XCTAssertEqual(confirmed.compactMap(\.sentBatch).count, 1, "The send queues one batch.")
+    }
+
     // MARK: Fetch scope
 
     func testNextFetchAsksForTheAutomaticZonesOrTheRunningScopedFetchAndNoneWhileStopped() async throws {
@@ -1252,6 +1427,30 @@ private struct TransferTimeout: Error {}
 
 private func makeDraft(_ id: CloudRecordID, _ text: String) -> CloudRecordDraft {
     .text(id: id, snipID: UUID(), text: text)
+}
+
+/// An attachment's first metadata save, which always writes its snip's order.
+private func orderDraft(_ id: CloudRecordID, snipID: UUID, position: Int) -> CloudRecordDraft {
+    CloudRecordDraft(
+        id: id,
+        recordType: CloudAttachmentRecordCodec.metadataRecordType,
+        schemaVersion: 1,
+        routingFields: ["schemaVersion": .int64(1)],
+        encryptedFields: [
+            "snipID": .string(snipID.uuidString.lowercased()),
+            "position": .int64(Int64(position)),
+        ]
+    )
+}
+
+/// A started transport whose engine finished its first fetch.
+private func startedFixture() async throws -> (TransportFixture, ScriptedRecordEngine) {
+    let fixture = makeFixture()
+    try await fixture.transport.start(state: nil)
+    let engine = try fixture.engine(0)
+    await fixture.transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
+    try await fixture.transport.confirmAllEvents()
+    return (fixture, engine)
 }
 
 /// The mapper rejects a draft that removes routing fields.
