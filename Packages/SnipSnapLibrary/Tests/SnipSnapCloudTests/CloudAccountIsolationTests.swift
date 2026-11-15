@@ -2223,3 +2223,158 @@ private struct SameAccountReturn: Sendable {
     let isolatedRoot: URL
     let isolatedCacheRoot: URL
 }
+
+extension ICloudSyncModeCoordinatorTests {
+    func testStalledReturningDownloadReleasesTheGateForTheUsersRemove() async throws {
+        try await assertStalledReturningDownloadReleasesTheGate(for: .remove)
+    }
+
+    func testStalledReturningDownloadReleasesTheGateForTheUsersKeep() async throws {
+        try await assertStalledReturningDownloadReleasesTheGate(for: .keepLocalCopy)
+    }
+
+    /// Holds the returning account's download in a CloudKit read that never answers, inside the
+    /// account handler's gate, and queues the user's choice behind it.
+    private func assertStalledReturningDownloadReleasesTheGate(
+        for choice: AppleAccountCacheChoice
+    ) async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stall = CloudKitCallStall()
+        addTeardownBlock { stall.release() }
+        let cache = try await isolateCacheWhoseAttachmentIsOnlyInCloudKit(root: root)
+        let downloads = makeDownloadTransport(bound: .shortForTests) { _, _ in
+            await stall.enter()
+            throw CloudKitCallStall.Released()
+        }
+        let returning = ICloudSyncModeCoordinator(
+            persistence: cache.persistence,
+            namespace: cache.namespace,
+            textZone: cache.dataZone,
+            payloadZone: cache.payloadZone,
+            makeTransport: { downloads },
+            accountStateSource: cache.account
+        )
+        let handler = AppleAccountCacheCoordinatorHandler(coordinator: returning)
+        await cache.account.setState(.available(accountLineage: cache.namespace.accountLineage))
+
+        let refreshEnded = TaskEndMark()
+        let refresh = Task {
+            defer { refreshEnded.set() }
+            return try await handler.refreshAppleAccountNotice()
+        }
+        let stalled = await stall.waitUntilEntered(within: .seconds(5))
+        XCTAssertTrue(stalled, "The returning account's download must reach CloudKit")
+        let choiceEnded = TaskEndMark()
+        let resolve = Task {
+            defer { choiceEnded.set() }
+            try await handler.resolveAppleAccountCache(choice)
+        }
+        // Bounded: the stalled read must end the refresh, and then the queued choice must run.
+        let refreshStopped = await refreshEnded.wait(within: .seconds(5))
+        XCTAssertTrue(refreshStopped, "A stalled download must not hold the account gate")
+        let choiceRan = await choiceEnded.wait(within: .seconds(5))
+        XCTAssertTrue(choiceRan, "The user's choice must run once the stalled download stops")
+        stall.release()
+
+        do {
+            _ = try await refresh.value
+            XCTFail("The stalled download must fail the account refresh")
+        } catch {
+            XCTAssertTrue(isCloudKitNetworkFailure(error), "\(error)")
+        }
+        switch choice {
+        case .remove:
+            do {
+                try await resolve.value
+            } catch {
+                XCTFail("The user's Remove must finish after the stalled download: \(error)")
+            }
+            let storage = try await cache.persistence.snapshot()
+            XCTAssertNil(storage.accountIsolation)
+        case .keepLocalCopy:
+            do {
+                try await resolve.value
+                XCTFail("Keep must fail while the attachment's bytes are missing")
+            } catch {
+                XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed, "\(error)")
+            }
+            let storage = try await cache.persistence.snapshot()
+            XCTAssertEqual(storage.accountIsolation?.resolution, .keepingLocalCopy)
+        }
+    }
+
+    /// Isolates an iCloud cache whose only attachment's bytes now exist only in CloudKit.
+    private func isolateCacheWhoseAttachmentIsOnlyInCloudKit(
+        root: URL
+    ) async throws -> CloudOnlyAttachmentCache {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            attachmentCacheRootURL: root.appendingPathComponent(
+                "AppGroup/Library/Caches/CloudAttachments"
+            )
+        )
+        let sourceURL = root.appendingPathComponent("prior-account-attachment.txt")
+        try Data("prior account attachment".utf8).write(to: sourceURL)
+        let library = try await persistence.activeLibrary()
+        let added = try await library.perform(
+            .add(
+                content: "prior account work",
+                origin: .quickEntry,
+                source: nil,
+                listID: SnipList.inbox.id,
+                attachmentURLs: [sourceURL],
+                requestID: UUID(),
+                now: .distantPast
+            ),
+            sortedBy: .manual
+        )
+        let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+        let dataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private",
+            accountLineage: "account-a",
+            generation: UUID(),
+            zones: [dataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        let account = InjectedICloudAccountStateSource(
+            state: .available(accountLineage: namespace.accountLineage)
+        )
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: dataZone,
+            payloadZone: payloadZone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            accountStateSource: account
+        )
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let uploaded = await (try await persistence.activeLibrary()).snapshot(sortedBy: .manual)
+        try FileManager.default.removeItem(at: XCTUnwrap(uploaded.attachmentURLs[attachmentID]))
+
+        await account.setState(.noAccount)
+        _ = try await coordinator.refreshAccountState()
+        let isolated = try await persistence.snapshot()
+        XCTAssertNotNil(isolated.accountIsolation)
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        return CloudOnlyAttachmentCache(
+            persistence: persistence,
+            namespace: namespace,
+            dataZone: dataZone,
+            payloadZone: payloadZone,
+            account: account
+        )
+    }
+}
+
+private struct CloudOnlyAttachmentCache {
+    let persistence: SwiftDataSyncModePersistence
+    let namespace: CloudSyncNamespace
+    let dataZone: CloudZoneID
+    let payloadZone: CloudZoneID
+    let account: InjectedICloudAccountStateSource
+}

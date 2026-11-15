@@ -118,6 +118,7 @@ final class SnipCLIApplicationHandler {
         case .retrySync:
             try model.beginCLIScopeChange()
             defer { model.endCLIScopeChange() }
+            var finishingDeletionFailed = false
             if syncedContentSettings.mode == .localOnly {
                 guard syncedContentSettings.canEnable else { throw cliApplicationError(syncedContentSettings.detail) }
                 await syncedContentSettings.enableICloudSync()
@@ -126,8 +127,10 @@ final class SnipCLIApplicationHandler {
                     throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
                 }
                 await cloudSyncHandler.retrySyncWhenPossible()
+                finishingDeletionFailed = syncedContentSettings.finishDeletingIssue != nil
             }
-            return SnipCLIReceipt(request: request, status: cliSyncHasFailure ? .failed : .success,
+            let retryFailed = cliSyncHasFailure || finishingDeletionFailed
+            return SnipCLIReceipt(request: request, status: retryFailed ? .failed : .success,
                 message: syncedContentSettings.detail, extendedResult: .application(cliSyncResult()),
                 resultingScopeToken: model.cliScopeToken)
         case .clipboardSyncStatus: return receipt(cliClipboardSyncResult())
