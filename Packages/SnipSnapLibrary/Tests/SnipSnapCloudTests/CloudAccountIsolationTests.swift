@@ -404,6 +404,53 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(callCount, 1)
     }
 
+    /// Without an injected action, the handler syncs through the coordinator itself, so that
+    /// sync waits for a mode operation holding the shared gate.
+    func testAccountHandlerFallbackSyncWaitsForTheOperationGate() async throws {
+        let gate = AsyncOperationGate()
+        let fallbackStarts = SyncActionCallCount()
+        let unusedURL = FileManager.default.temporaryDirectory
+        let handler = AppleAccountCacheCoordinatorHandler(
+            persistence: {
+                await fallbackStarts.record()
+                return nil
+            },
+            controlTransport: FakeCloudControlTransport(server: FakeCloudServer()),
+            accountStateSource: InjectedICloudAccountStateSource(state: .noAccount),
+            makeSyncCoordinator: { persistence, namespace, descriptor in
+                makeInjectedSyncCoordinator(
+                    persistence: persistence,
+                    namespace: namespace,
+                    descriptor: descriptor
+                )
+            },
+            makeAttachmentCoordinator: { _, _, _ in
+                AttachmentTransferProbe(preparedURL: unusedURL)
+            },
+            operationGate: gate
+        )
+        let lease = HeldLease()
+        let modeOperation = Task { try await gate.withLease { await lease.hold() } }
+        await lease.waitUntilHeld()
+
+        let syncWaits = expectation(description: "The fallback sync waits for the lease")
+        syncWaits.isInverted = true
+        let sync = Task {
+            await handler.syncWhenPossible()
+            syncWaits.fulfill()
+        }
+        await fulfillment(of: [syncWaits], timeout: 0.05)
+        let startsWhileHeld = await fallbackStarts.value()
+        await lease.release()
+
+        try await modeOperation.value
+        await sync.value
+        let startsAfterRelease = await fallbackStarts.value()
+        // Before the SM23-F1 fix, the fallback runs while the lease is held.
+        XCTAssertEqual(startsWhileHeld, 0)
+        XCTAssertEqual(startsAfterRelease, 1)
+    }
+
     func testGeneratedCollectionRolesDriveEveryAttachmentActionWithoutZoneGuessing() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1789,6 +1836,33 @@ private actor SyncActionCallCount {
 
     func record() { count += 1 }
     func value() -> Int { count }
+}
+
+/// Keeps a gate's lease from inside `withLease` until `release()`.
+private actor HeldLease {
+    private var isHeld = false
+    private var isReleased = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        isHeld = true
+        heldWaiters.forEach { $0.resume() }
+        heldWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHeld() async {
+        if isHeld { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
 }
 
 private actor AttachmentTransferProbe: CloudAttachmentTransferring {

@@ -5,7 +5,7 @@ import SnipSnapCore
 import XCTest
 
 /// A failed rollback can leave a transition stage that only reopen clears (SM23-L1, SM23-L2).
-/// Mode operations run one at a time, so Try Again finds such a stage only as a leftover.
+/// Try Again finishes only a rollback this process couldn't commit, not work in flight (SM23-F1).
 extension ICloudSyncModeCoordinatorTests {
     func testEnableTryAgainUnfreezesASourceLeftFrozenByAFailedRestore() async throws {
         let root = temporaryDirectory()
@@ -127,6 +127,53 @@ extension ICloudSyncModeCoordinatorTests {
                 on: change == .enable ? .iCloudSync : .localOnly
             )
         }
+    }
+
+    func testEnableTryAgainDoesNotUnfreezeAnEnableInFlight() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pause = FrozenSourceReadPause()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .legacyTextV1,
+            readHook: { await pause.read(sourceFrozen: storedSourceIsFrozen(under: root)) }
+        )
+        try await add("kept", to: persistence.activeLibrary())
+        let server = FakeCloudServer()
+        // Two coordinators on one persistence, with no shared gate between them.
+        let inFlight = modeCoordinator(on: persistence, server: server)
+        let tryAgain = modeCoordinator(on: persistence, server: server)
+        let firstEnable = Task {
+            do {
+                let status = try await inFlight.enableOrRetry()
+                await pause.heldWorkFinished()
+                return status
+            } catch {
+                await pause.heldWorkFinished()
+                throw error
+            }
+        }
+        await pause.waitUntilPaused()
+        guard await pause.hasPaused else {
+            _ = try await firstEnable.value
+            XCTFail("The enable finished without reaching its final snapshot read.")
+            return
+        }
+        let held = try? await persistence.snapshot()
+
+        let retried = await Task { try await tryAgain.enableOrRetry() }.result
+        let afterRetry = try? await persistence.snapshot()
+        await pause.resume()
+
+        XCTAssertEqual(held?.transition?.phase, .sourceFrozen)
+        XCTAssertNotNil(held?.transition?.freezeToken)
+        // Before the SM23-F1 fix, these fail: Try Again unfreezes the enable in flight and
+        // starts its own merge.
+        XCTAssertEqual(try retried.get().state, .settingUp)
+        XCTAssertEqual(afterRetry?.transition, held?.transition)
+        let enabled = try await firstEnable.value
+        XCTAssertEqual(enabled.state, .on)
+        try await assertModeChangeFinished(persistence, on: .iCloudSync)
     }
 
     /// Runs `change` until `failure` strands its transition, then frees the disk. The failure
@@ -251,6 +298,52 @@ private struct StrandedTransition {
     let persistence: SwiftDataSyncModePersistence
     let coordinator: ICloudSyncModeCoordinator
     let server: FakeCloudServer
+}
+
+/// Holds the first library read made while the source is frozen, which is the final snapshot
+/// read, until `resume()`.
+private actor FrozenSourceReadPause {
+    private(set) var hasPaused = false
+    private var heldWorkIsDone = false
+    private var isResumed = false
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var release: CheckedContinuation<Void, Never>?
+
+    func read(sourceFrozen: Bool) async {
+        guard sourceFrozen, !hasPaused else { return }
+        hasPaused = true
+        pauseWaiters.forEach { $0.resume() }
+        pauseWaiters = []
+        guard !isResumed else { return }
+        await withCheckedContinuation { release = $0 }
+    }
+
+    func waitUntilPaused() async {
+        if hasPaused || heldWorkIsDone { return }
+        await withCheckedContinuation { pauseWaiters.append($0) }
+    }
+
+    /// Ends `waitUntilPaused()` for work that finished without reaching the read.
+    func heldWorkFinished() {
+        heldWorkIsDone = true
+        pauseWaiters.forEach { $0.resume() }
+        pauseWaiters = []
+    }
+
+    func resume() {
+        isResumed = true
+        release?.resume()
+        release = nil
+    }
+}
+
+private func storedSourceIsFrozen(under root: URL) -> Bool {
+    let manifestURL = root.appendingPathComponent("activation.json", isDirectory: false)
+    let manifest = try? JSONDecoder().decode(
+        SwiftDataSyncModePersistence.Manifest.self,
+        from: Data(contentsOf: manifestURL)
+    )
+    return manifest?.transition?.phase == .sourceFrozen
 }
 
 /// Fails one step of a mode change and, from then on, every manifest write, like a disk that
