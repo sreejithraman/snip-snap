@@ -3482,6 +3482,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     // The first sync accepts the payloads; the second publishes the metadata that names them.
     try await client.sync.sync()
     try await client.sync.sync()
+    // Consume our published metadata so a later fetch cannot mask the removal's pending phase.
+    try await client.sync.fetchRemote()
     let published = try await snapshot(client.library, client.namespace)
     XCTAssertEqual(published.publications.count, 2, "Client 1 must publish both attachments.")
     XCTAssertTrue(
@@ -3903,6 +3905,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: client.root) }
     try await client.sync.sync()
     try await client.sync.sync()
+    // Consume our published metadata so a later fetch cannot mask the removal's pending phase.
+    try await client.sync.fetchRemote()
     let publishedStorage = try await snapshot(client.library, client.namespace)
     let published = try XCTUnwrap(publishedStorage.publications.first, "The attachment must publish.")
     XCTAssertTrue(published.metadataAccepted, "The attachment's metadata must publish.")
