@@ -119,13 +119,22 @@ package struct CloudNamespaceStateStorage: Equatable, Sendable {
   }
 
   /// A mode merge during seeding replaces the approvals. `nil` outside seeding or when unchanged.
-  package func replacingSeedApproval(with snipIDs: Set<UUID>) -> CloudNamespaceStateStorage? {
+  /// As in seed pruning, an empty approval finishes seeding and excludes every live snip without
+  /// a record. While the zone is still to create, the zone save finishes it instead.
+  package func replacingSeedApproval(
+    with snipIDs: Set<UUID>,
+    liveSnipIDs: Set<UUID>,
+    linkedSnipIDs: Set<UUID>
+  ) -> CloudNamespaceStateStorage? {
     guard case .seeding(let approved, let excluded, let pending) = enrollment,
       approved != snipIDs
     else { return nil }
     let remaining = excluded.subtracting(snipIDs)
-    // As in seed pruning, an empty seed still waiting for its zone finishes on the zone save.
-    if snipIDs.isEmpty && !pending { return CloudNamespaceStateStorage(.active(excluded: remaining)) }
+    if snipIDs.isEmpty && !pending {
+      return CloudNamespaceStateStorage(
+        .active(excluded: remaining.union(liveSnipIDs.subtracting(linkedSnipIDs)))
+      )
+    }
     return CloudNamespaceStateStorage(
       .seeding(approved: snipIDs, excluded: remaining, zoneCreationPending: pending)
     )
