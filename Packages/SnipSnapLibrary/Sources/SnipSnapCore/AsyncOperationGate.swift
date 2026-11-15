@@ -6,6 +6,8 @@ package actor AsyncOperationGate {
   private var occupied = false
   private var waiters: [(UUID, CheckedContinuation<Void, any Error>)] = []
 
+  package init() {}
+
   package func withLease<Value: Sendable>(
     _ operation: @Sendable () async throws -> Value
   ) async throws -> Value {

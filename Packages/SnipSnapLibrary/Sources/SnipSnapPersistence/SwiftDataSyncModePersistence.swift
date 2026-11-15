@@ -253,6 +253,11 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+
+  /// Reconciles of an account-isolation choice take turns, so a background status never runs a
+  /// second Keep merge.
+  let accountIsolationTurns = AsyncOperationGate()
+
   var writeAdmission = ActiveStoreWriteAdmission()
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
   // A checked read may suspend while another wrapper starts and finishes its
