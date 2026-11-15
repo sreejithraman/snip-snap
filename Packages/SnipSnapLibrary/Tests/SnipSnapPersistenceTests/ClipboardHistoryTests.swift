@@ -129,6 +129,32 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertFalse(result.entries[0].isPinned)
     }
 
+    func testSetAsideCopiesTheHistoryBesideItAndEmptiesIt() async throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"))
+        try await store.insert(text("set aside"))
+        let before = try Data(contentsOf: store.url)
+
+        try await store.setAside()
+
+        let copies = try setAsideCopies(in: directory)
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(copies.first)), before)
+        let after = try await store.load()
+        XCTAssertTrue(after.entries.isEmpty)
+
+        let emptyDirectory = try root()
+        defer { try? FileManager.default.removeItem(at: emptyDirectory) }
+        try await ClipboardHistoryStore(url: emptyDirectory.appendingPathComponent("clipboard.json")).setAside()
+        XCTAssertEqual(try setAsideCopies(in: emptyDirectory), [])
+    }
+
+    private func setAsideCopies(in directory: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("clipboard-quarantine-") }
+    }
+
     private func text(_ value: String, id: UUID = UUID(), time: Double = 10, pinned: Double? = nil) -> ClipboardEntry {
         ClipboardEntry(id: id, capturedAt: Date(timeIntervalSince1970: time), items: [
             ClipboardPayloadItem(representations: [ClipboardRepresentation(type: "public.utf8-plain-text", data: Data(value.utf8))])
