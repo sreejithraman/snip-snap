@@ -3077,6 +3077,14 @@ final class CloudAttachmentTransferTests: XCTestCase {
     ))
   }
 
+  /// A payload shadow that decodes like one CloudKit returned, so its cleanup's delete keeps it.
+  private func payloadShadow(_ identity: CloudTextStorageIdentity) throws -> CloudRecordShadow {
+    try CloudRecordShadow.archive(CKRecord(
+      recordType: CloudAttachmentRecordCodec.payloadRecordType,
+      recordID: CloudKitRecordMapper.recordID(for: CloudAttachmentRecordCodec.recordID(identity))
+    ))
+  }
+
   /// Publishes two local-source attachments, removes the one at position 0, and plans the
   /// batch that deletes its metadata while the other moves to position 0 with metadata pending.
   private func makeRemovedPublishedAttachmentFixture() async throws -> (
@@ -3086,16 +3094,19 @@ final class CloudAttachmentTransferTests: XCTestCase {
   ) {
     let fixture = try await makePendingAttachmentFixture(names: ["removed", "remaining"])
     let pending = try await snapshot(fixture.library, fixture.namespace)
+    var acceptPayloads: [CloudAttachmentTransition] = []
+    for publication in pending.publications {
+      let shadow = try payloadShadow(publication.metadata.payloadIdentity)
+      acceptPayloads.append(.payloadAccepted(
+        attachmentID: publication.metadata.attachmentID,
+        expectedRevision: publication.revision,
+        shadowData: shadow.data,
+        systemFields: shadow.systemFields
+      ))
+    }
     try await fixture.library.commitCloudAttachmentTransitions(
       namespaceKey: fixture.namespace.namespaceKey,
-      transitions: pending.publications.map {
-        .payloadAccepted(
-          attachmentID: $0.metadata.attachmentID,
-          expectedRevision: $0.revision,
-          shadowData: Data("payload-shadow".utf8),
-          systemFields: Data()
-        )
-      }
+      transitions: acceptPayloads
     )
     let payloadsAccepted = try await snapshot(fixture.library, fixture.namespace)
     var acceptMetadata: [CloudAttachmentTransition] = []
@@ -3171,11 +3182,16 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let remapped = try await snapshot(fixture.library, fixture.namespace)
     XCTAssertNil(remapped.publications.first(where: {
       $0.metadata.attachmentID == replacedAttachmentID
-    }), file: file, line: line)
+    }), "The remap must retire the replaced publication.", file: file, line: line)
     let replacement = try XCTUnwrap(remapped.publications.first(where: {
       $0.metadata.attachmentID == remappedAttachmentID
-    }), file: file, line: line)
-    XCTAssertFalse(replacement.metadataAccepted, file: file, line: line)
+    }), "The remap must add the replacement publication.", file: file, line: line)
+    XCTAssertFalse(
+      replacement.metadataAccepted,
+      "The replacement's metadata must start pending.",
+      file: file,
+      line: line
+    )
     XCTAssertEqual(
       remapped.cleanups.first(where: { $0.identity == removedPayload })?.blockedByAttachmentID,
       remappedAttachmentID,
@@ -3188,6 +3204,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     XCTAssertTrue(
       remappedBatch.operations.contains(where: { $0.id == remappedMetadataRecordID }),
+      "The replacement's metadata save must be planned.",
       file: file,
       line: line
     )
@@ -3200,7 +3217,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let ready = try await snapshot(fixture.library, fixture.namespace)
     let readyReplacement = try XCTUnwrap(ready.publications.first(where: {
       $0.metadata.attachmentID == remappedAttachmentID
-    }), file: file, line: line)
+    }), "The replacement must still be pending after planning.", file: file, line: line)
     let shadow = try metadataShadow(remappedMetadataIdentity)
     try await fixture.library.commitCloudAttachmentTransitions(
       namespaceKey: fixture.namespace.namespaceKey,
@@ -3216,6 +3233,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
 
     XCTAssertTrue(
       releasedBatch.operations.contains(where: { $0.id == cleanupRecordID }),
+      "Accepting the replacement's metadata must release the old payload's cleanup.",
       file: file,
       line: line
     )
