@@ -126,6 +126,20 @@ private func requireSavePaused<Success: Sendable>(
     try #require(paused, "The save never paused")
 }
 
+/// The saved-snips namespace key the apps pass as the clipboard generation.
+private func namespaceKey(cloudScope: String = "iCloud.example.snips", account: String, generation: UUID) -> String {
+    let value = generation.uuidString.lowercased()
+    return ICloudSyncNamespaceBinding(
+        scope: cloudScope,
+        accountLineage: account,
+        generation: generation,
+        zones: [
+            ICloudSyncZoneBinding(name: "snips-\(value)", ownerName: CKCurrentUserDefaultName),
+            ICloudSyncZoneBinding(name: "payloads-\(value)", ownerName: CKCurrentUserDefaultName),
+        ]
+    ).namespaceKey.rawValue
+}
+
 @Suite @MainActor struct ClipboardCloudSyncTests {
     @Test func payloadReferencesUseRandomNamesAndDetectManifestConflicts() throws {
         let data = Data("private clipboard content".utf8)
@@ -298,6 +312,44 @@ private func requireSavePaused<Success: Sendable>(
         try await client.sync.resetAccountBinding()
         #expect(try await client.store.load().entries.isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: client.root.path).contains { $0.hasPrefix("clipboard-quarantine-") })
+    }
+    @Test func newSyncGenerationInTheSameAccountIsNotAnAccountChange() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("first generation"))
+        try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        do {
+            try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        } catch let error as ClipboardCloudError {
+            #expect(error != .accountChanged)
+        }
+    }
+    @Test func relaunchedServiceTreatsANewSyncGenerationAsTheSameAccount() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("first generation"))
+        try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        let relaunched = ClipboardClient(reopening: client, cloud)
+        do {
+            try await relaunched.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+        } catch let error as ClipboardCloudError {
+            #expect(error != .accountChanged)
+        }
+    }
+    @Test func otherAccountOrCloudScopeIsAnAccountChangeAndKeepsTheBindingFile() async throws {
+        let cloud = ClipboardTestCloud(); let client = ClipboardClient(cloud)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let generation = UUID()
+        let bound = namespaceKey(account: "account-A", generation: generation)
+        try await client.store.insert(entry("account A")); try await client.run(scope: bound)
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(account: "account-B", generation: generation))
+        }
+        await #expect(throws: ClipboardCloudError.accountChanged) {
+            try await client.run(scope: namespaceKey(cloudScope: "iCloud.example.other", account: "account-A", generation: generation))
+        }
+        let stored = try Data(contentsOf: client.root.appendingPathComponent("clipboard-account-binding.json"))
+        #expect(try stored == JSONEncoder().encode(bound))
     }
     @Test func pinnedFilesTransferBytesAndUnpinnedReferencesStayLocal() async throws {
         let cloud = ClipboardTestCloud(); let a = ClipboardClient(cloud); let b = ClipboardClient(cloud)
