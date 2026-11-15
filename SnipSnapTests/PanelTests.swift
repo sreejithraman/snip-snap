@@ -824,6 +824,106 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertEqual(scrollViews(in: hostingView).count, 0)
     }
 
+    @MainActor
+    func testSearchKeepsFocusAfterSaveLeavesNoResults() async throws {
+        let defaultsName = "SnipSnapSearchSaveFocus-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.search-save-focus-tests.\(UUID().uuidString)")
+        )
+        addTeardownBlock { pasteboard.releaseGlobally() }
+        let history = ClipboardHistory(
+            pasteboard: pasteboard,
+            defaults: defaults,
+            storeURL: try storeURL().deletingLastPathComponent().appendingPathComponent("clipboard.json")
+        )
+        await history.waitForInitialLoad()
+        let snip = Snip(content: "Plan the quokkaword trip", origin: .quickEntry, listID: SnipList.inboxID)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [snip]),
+            defaults: defaults,
+            clipboardHistory: history
+        )
+        await model.waitForInitialLoad()
+        model.enterSearch()
+        model.query = "quokkaword"
+        let settings = ShortcutSettings(defaults: defaults)
+        let coordinator = AppCoordinator(
+            model: model,
+            shortcutSettings: settings,
+            isAccessibilityTrusted: { true }
+        )
+        let fileDropController = PanelFileDropController()
+        let dragSessionController = PanelDragSessionController()
+        let rootView = ContentView(
+            coordinator: coordinator,
+            fileDropController: fileDropController,
+            dragSessionController: dragSessionController
+        )
+        .environmentObject(model)
+        .environmentObject(settings)
+        let hostingView = PanelFileDropHostingView(
+            rootView: rootView,
+            controller: fileDropController,
+            dragSessionController: dragSessionController
+        )
+        let contentViewController = NSViewController()
+        contentViewController.view = hostingView
+        let panel = SnipSnapPanel.make(
+            contentViewController: contentViewController,
+            frameAutosaveName: nil
+        )
+        coordinator.attachPanelWindow(panel)
+        panel.makeKeyAndOrderFront(nil)
+        defer {
+            panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            processLifetimePanelSearchWindows.append(panel)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        let editor = try XCTUnwrap(waitForTextField(in: hostingView, placeholder: "Snip text"))
+        XCTAssertTrue(panel.makeFirstResponder(editor))
+        let editorFieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
+        editorFieldEditor.insertText(
+            "Plan the beach trip",
+            replacementRange: NSRange(location: 0, length: editorFieldEditor.string.utf16.count)
+        )
+        let save = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "s",
+            charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1
+        ))
+        XCTAssertTrue(hostingView.performKeyEquivalent(with: save))
+        let deadline = Date().addingTimeInterval(2)
+        while model.editingID != nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(model.editingID, "Cmd-S must save and close the editor.")
+        for _ in 0..<3 {
+            try await Task.sleep(for: .milliseconds(50))
+            hostingView.layoutSubtreeIfNeeded()
+        }
+
+        XCTAssertEqual(model.snips.map(\.content), ["Plan the beach trip"])
+        XCTAssertTrue(model.isSearchExpanded)
+        XCTAssertTrue(model.filteredSnips.isEmpty && model.clipboardSearchMatches.isEmpty)
+        let searchField = try XCTUnwrap(findTextField(in: hostingView, placeholder: "Search"))
+        let searchFieldEditor = try XCTUnwrap(
+            panel.firstResponder as? NSTextView,
+            "Focus must stay in search when a save leaves no results."
+        )
+        XCTAssertTrue((searchFieldEditor.delegate as AnyObject?) === searchField)
+        searchFieldEditor.insertText(
+            "s",
+            replacementRange: NSRange(location: searchFieldEditor.string.utf16.count, length: 0)
+        )
+        XCTAssertEqual(model.query, "quokkawords")
+    }
+
     func testListIconCatalogHasUsefulUniqueAvailableSymbols() {
         let icons = SnipListIconOptions.categories.flatMap(\.icons)
 
