@@ -190,11 +190,17 @@ extension SwiftDataSnipLibrary {
       where local[row.attachmentID] == nil && row.lifecycle.isLocallyPresent {
         try lock.check()
         changed = true
+        let abandonedUpload: CloudAttachmentAbandonedUpload?
         switch row.lifecycle.removeLocally() {
-        case .awaitMetadataDeletion:
-          break
-        case .discardPendingPayload(let queuedUpload):
-          if let upload = try queuedUpload.map({
+        case .awaitMetadataDeletion(let abandoned):
+          abandonedUpload = abandoned
+        case .discard(let abandoned):
+          abandonedUpload = abandoned
+          context.delete(row)
+        }
+        if let abandonedUpload {
+          cleanupQueue.queue(abandonedUpload.cleanup)
+          if let upload = try abandonedUpload.queuedUpload.map({
             try Self.validatedChild(
               relativePath: $0,
               root: cloudAttachmentUploadRoot(namespaceKey: namespaceKey)
@@ -202,10 +208,6 @@ extension SwiftDataSnipLibrary {
           }) {
             uploadFilesToRemove.append(upload)
           }
-          context.delete(row)
-        case .discardAcceptedPayload(let owedCleanup):
-          cleanupQueue.queue(owedCleanup)
-          context.delete(row)
         }
       }
       try lock.check()

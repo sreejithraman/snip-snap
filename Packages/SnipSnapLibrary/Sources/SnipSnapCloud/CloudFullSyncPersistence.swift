@@ -662,11 +662,13 @@ extension CloudFullSyncPersistence {
       _ = try await library.commitCloudFullBatch(batch)
       try await clearRecoveredFailure(in: batch)
       try await afterCommitHook()
-    } catch let error as CloudFullStorageError
-      where error == .staleLocalEntity || error == .invalidEnrollment
+    } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
+      || (error as? CloudFullStorageError) == .invalidEnrollment
+      || (error as? CloudAttachmentStorageError) == .staleTransition
+      || (error as? CloudAttachmentStorageError) == .missingPublication
     {
-      // ACKs do not mutate local content, but a later move can invalidate the
-      // planned enrollment. Recompute once; the fresh commit must still validate.
+      // Local edits can invalidate a staged plan. Recompute once from the raw result;
+      // the fresh commit must still validate.
       guard let rawData = batch.rawBatchData else { throw error }
       let raw = try JSONDecoder().decode(RawStagedBatch.self, from: rawData)
       guard raw.storageVersion == 1, raw.batch.id == id else {
