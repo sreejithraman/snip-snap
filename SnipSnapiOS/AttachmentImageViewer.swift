@@ -87,6 +87,7 @@ private struct FullScreenAttachmentImage: View {
     @State private var zoom = ImageViewerZoom()
     @GestureState private var magnification: CGFloat = 1
     @GestureState private var dragTranslation: CGSize = .zero
+    @GestureState private var isDragging = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -125,6 +126,9 @@ private struct FullScreenAttachmentImage: View {
                     .updating($dragTranslation) { value, state, _ in
                         state = value.translation
                     }
+                    .updating($isDragging) { _, state, _ in
+                        state = true
+                    }
                     .onEnded { value in
                         let closes = zoom.dragEnded(
                             translation: value.translation,
@@ -149,8 +153,8 @@ private struct FullScreenAttachmentImage: View {
                         )
                     }
             )
-            .onChange(of: dragTranslation) { previous, current in
-                if previous == .zero, current != .zero { zoom.dragBegan() }
+            .onChange(of: isDragging) { was, now in
+                if was, !now { zoom.dragStopped() }
             }
             .task(id: url) {
                 didFailToLoad = false
@@ -208,28 +212,24 @@ private struct FullScreenAttachmentImage: View {
 
 /// Committed zoom and pan, and whether the current drag has seen a pinch.
 struct ImageViewerZoom {
-    /// A pinch during a drag turns the drag into a pan, even back at base zoom.
-    private enum Drag {
-        case idle
-        case active(pinched: Bool)
-    }
-
     private(set) var scale: CGFloat = 1
     private(set) var offset: CGSize = .zero
-    private var drag = Drag.idle
+    /// A pinch during a drag turns the drag into a pan, even back at base zoom.
+    private var dragSawPinch = false
 
     mutating func toggle() {
         scale = scale > 1 ? 1 : 2
         offset = .zero
     }
 
-    /// A pinch still in progress marks the new drag again on its next change.
-    mutating func dragBegan() {
-        drag = .active(pinched: false)
+    mutating func pinchChanged(whileDragging: Bool) {
+        if whileDragging { dragSawPinch = true }
     }
 
-    mutating func pinchChanged(whileDragging: Bool) {
-        if whileDragging { drag = .active(pinched: true) }
+    /// The drag ended or the system cancelled it. After a normal end, `dragEnded` has
+    /// already cleared the pinch mark, so this does nothing.
+    mutating func dragStopped() {
+        dragSawPinch = false
     }
 
     mutating func pinchEnded(magnification: CGFloat, in bounds: ImageViewerBounds) {
@@ -243,7 +243,7 @@ struct ImageViewerZoom {
         magnification: CGFloat,
         in bounds: ImageViewerBounds
     ) -> Bool {
-        defer { drag = .idle }
+        defer { dragSawPinch = false }
         let zoom = effectiveScale(magnification: magnification)
         if pans(at: zoom) {
             offset = bounds.bounded(
@@ -287,8 +287,7 @@ struct ImageViewerZoom {
     }
 
     private func pans(at zoom: CGFloat) -> Bool {
-        if case .active(pinched: true) = drag { return true }
-        return zoom > 1
+        zoom > 1 || dragSawPinch
     }
 }
 
