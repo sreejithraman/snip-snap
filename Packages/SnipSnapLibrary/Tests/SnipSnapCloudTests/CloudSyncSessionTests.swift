@@ -82,6 +82,117 @@ final class CloudSyncSessionTests: XCTestCase {
     XCTAssertEqual(events, ["sync"])
   }
 
+  func testQueuedSyncAndTryAgainShareOneTryAgainRun() async throws {
+    let probe = SessionWorkProbe()
+    let session = makeSession(probe)
+    let first = Task { try await session.synchronize() }
+    await probe.waitUntilPaused()
+    let prematureSync = expectation(description: "Queued sync must wait for active work")
+    prematureSync.isInverted = true
+    let prematureRetry = expectation(description: "Queued Try Again must wait for active work")
+    prematureRetry.isInverted = true
+    let sync = Task {
+      defer { prematureSync.fulfill() }
+      return try await session.synchronize()
+    }
+    let retry = Task {
+      defer { prematureRetry.fulfill() }
+      return try await session.retrySynchronization()
+    }
+    await fulfillment(of: [prematureSync, prematureRetry], timeout: 0.05)
+    await probe.resume()
+
+    _ = try await first.value
+    let syncResult = try await sync.value
+    let retryResult = try await retry.value
+    XCTAssertEqual(syncResult, .contentUpdated)
+    XCTAssertEqual(retryResult, .contentUpdated)
+    let events = await probe.events()
+    XCTAssertEqual(events, ["sync", "retry"])
+  }
+
+  func testCancelledQueuedRequestNeverRunsAndLaterRequestsStillSync() async throws {
+    let probe = SessionWorkProbe()
+    let session = makeSession(probe)
+    let first = Task { try await session.synchronize() }
+    await probe.waitUntilPaused()
+    let prematureRetry = expectation(description: "Queued Try Again must wait for active work")
+    prematureRetry.isInverted = true
+    let retry = Task {
+      defer { prematureRetry.fulfill() }
+      return try await session.retrySynchronization()
+    }
+    await fulfillment(of: [prematureRetry], timeout: 0.05)
+    retry.cancel()
+    do {
+      _ = try await retry.value
+      XCTFail("Expected the cancelled Try Again to stop waiting")
+    } catch is CancellationError {}
+    await probe.resume()
+    _ = try await first.value
+
+    let later = try await session.synchronize()
+    XCTAssertEqual(later, .contentUpdated)
+    let events = await probe.events()
+    XCTAssertEqual(events, ["sync", "sync"])
+  }
+
+  func testFailureReachesAutomaticErrorHandlerOnlyWhenScheduledSyncJoinedTheRun() async throws {
+    let probe = SessionWorkProbe()
+    let (reports, reporter) = AsyncStream.makeStream(of: SessionTestError.self)
+    let session = SnipSnapCloudSyncSession(
+      synchronize: { try await probe.run("sync"); return .contentUpdated },
+      retry: { try await probe.run("retry"); throw SessionTestError("retry") },
+      scheduleAutomaticSync: {
+        try await probe.run("schedule")
+        throw SessionTestError("schedule")
+      },
+      enable: { try await probe.run("enable"); return .enabled },
+      delete: { try await probe.run("delete"); return .completed },
+      activeLibrary: { throw SyncModePersistenceError.missingStore },
+      automaticErrorHandler: { error in
+        reporter.yield(error as? SessionTestError ?? SessionTestError("unexpected \(error)"))
+      }
+    )
+    let first = Task { try await session.synchronize() }
+    await probe.waitUntilPaused()
+    let prematureRetry = expectation(description: "Queued Try Again must wait for active work")
+    prematureRetry.isInverted = true
+    let retry = Task {
+      defer { prematureRetry.fulfill() }
+      return try await session.retrySynchronization()
+    }
+    await session.scheduleAutomaticSync()
+    await fulfillment(of: [prematureRetry], timeout: 0.05)
+    await probe.resume()
+    _ = try await first.value
+
+    do {
+      _ = try await retry.value
+      XCTFail("Expected Try Again that absorbed scheduled sync to fail")
+    } catch let error as SessionTestError {
+      XCTAssertEqual(error, SessionTestError("retry"))
+    }
+    do {
+      _ = try await session.retrySynchronization()
+      XCTFail("Expected Try Again alone to fail")
+    } catch let error as SessionTestError {
+      XCTAssertEqual(error, SessionTestError("retry"))
+    }
+    await session.scheduleAutomaticSync()
+    await probe.waitForEvent("schedule")
+    // Queued while scheduled sync runs, so it returns only after that run reports its failure.
+    let later = try await session.synchronize()
+    XCTAssertEqual(later, .contentUpdated)
+    reporter.finish()
+
+    var reported: [SessionTestError] = []
+    for await report in reports { reported.append(report) }
+    XCTAssertEqual(reported, [SessionTestError("retry"), SessionTestError("schedule")])
+    let events = await probe.events()
+    XCTAssertEqual(events, ["sync", "retry", "retry", "schedule", "sync"])
+  }
+
   private func makeSession(_ probe: SessionWorkProbe) -> SnipSnapCloudSyncSession {
     SnipSnapCloudSyncSession(
       synchronize: { try await probe.run("sync"); return .contentUpdated },
@@ -91,6 +202,14 @@ final class CloudSyncSessionTests: XCTestCase {
       delete: { try await probe.run("delete"); return .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore }
     )
+  }
+}
+
+private struct SessionTestError: Error, Equatable {
+  let name: String
+
+  init(_ name: String) {
+    self.name = name
   }
 }
 
