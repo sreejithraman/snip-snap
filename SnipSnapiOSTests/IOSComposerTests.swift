@@ -343,29 +343,30 @@ final class IOSComposerTests: IOSModelTestCase {
         XCTAssertFalse(secondRan)
     }
 
-    func testProviderLoadCancellationInterruptsTheProviderAndSkipsItsLateCompletion() async {
+    func testProviderLoadCancellationInterruptsTheProviderAndSkipsItsLateCompletion() async throws {
         let progress = Progress(totalUnitCount: 1)
         let started = expectation(description: "Provider load started")
-        let task = Task { () -> Bool in
-            var lateFinish: (@Sendable (() throws -> Int) -> Void)?
-            do {
-                _ = try await ProviderLoad<Int>.run { finish in
-                    lateFinish = finish
-                    started.fulfill()
-                    return progress
-                }
-                XCTFail("Cancelled load must not return a value")
-            } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
-            var lateRan = false
-            lateFinish?({
-                lateRan = true
-                return 1
-            })
-            return lateRan
+        let captured = CapturedFinish<Int>()
+        let task = Task {
+            try await ProviderLoad<Int>.run { finish in
+                captured.store(finish)
+                started.fulfill()
+                return progress
+            }
         }
         await fulfillment(of: [started], timeout: TestReadiness.timeout)
         task.cancel()
-        let lateRan = await task.value
+        let settled = await settledResult(of: task)
+        var lateRan = false
+        captured.call {
+            lateRan = true
+            return 1
+        }
+        let result = try XCTUnwrap(settled)
+        do {
+            _ = try result.get()
+            XCTFail("Cancelled load must not return a value")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
         XCTAssertFalse(lateRan)
         XCTAssertTrue(progress.isCancelled)
     }
@@ -385,16 +386,21 @@ final class IOSComposerTests: IOSModelTestCase {
         } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
     }
 
-    func testProviderLoadCancelsAProgressThatArrivesAfterCancellation() async {
+    func testProviderLoadCancelsAProgressThatArrivesAfterCancellation() async throws {
         let progress = Progress(totalUnitCount: 1)
+        let captured = CapturedFinish<Int>()
         let task = Task {
-            try await ProviderLoad<Int>.run { _ in
+            try await ProviderLoad<Int>.run { finish in
+                captured.store(finish)
                 withUnsafeCurrentTask { $0?.cancel() }
                 return progress
             }
         }
+        let settled = await settledResult(of: task)
+        captured.call { 0 }
+        let result = try XCTUnwrap(settled)
         do {
-            _ = try await task.value
+            _ = try result.get()
             XCTFail("Cancelled load must not return a value")
         } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
         XCTAssertTrue(progress.isCancelled)
@@ -402,21 +408,18 @@ final class IOSComposerTests: IOSModelTestCase {
 
     func testProviderLoadCancellationThatArrivesDuringTheResultBodyKeepsTheCompletion() async throws {
         let progress = Progress(totalUnitCount: 1)
+        let started = expectation(description: "Provider load started")
         let inBody = expectation(description: "Result body running")
         let finished = expectation(description: "Load settled")
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
+        let captured = CapturedFinish<Int>()
         var outcome: Result<Int, any Error>?
         let task = Task {
             do {
                 let value = try await ProviderLoad<Int>.run { finish in
-                    DispatchQueue.global().async {
-                        finish {
-                            inBody.fulfill()
-                            release.wait()
-                            return 7
-                        }
-                    }
+                    captured.store(finish)
+                    started.fulfill()
                     return progress
                 }
                 outcome = .success(value)
@@ -424,6 +427,14 @@ final class IOSComposerTests: IOSModelTestCase {
                 outcome = .failure(error)
             }
             finished.fulfill()
+        }
+        await fulfillment(of: [started], timeout: TestReadiness.timeout)
+        DispatchQueue.global().async {
+            captured.call {
+                inBody.fulfill()
+                _ = release.wait(timeout: .now() + TestReadiness.timeout)
+                return 7
+            }
         }
         await fulfillment(of: [inBody], timeout: TestReadiness.timeout)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { release.signal() }
@@ -1084,5 +1095,19 @@ private final class ProviderHandlerCounter: @unchecked Sendable {
 
     var count: Int {
         lock.withLock { value }
+    }
+}
+
+private final class CapturedFinish<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finish: (@Sendable (() throws -> Value) -> Void)?
+
+    func store(_ finish: @escaping @Sendable (() throws -> Value) -> Void) {
+        lock.withLock { self.finish = finish }
+    }
+
+    func call(_ result: () throws -> Value) {
+        let finish = lock.withLock { self.finish }
+        finish?(result)
     }
 }
