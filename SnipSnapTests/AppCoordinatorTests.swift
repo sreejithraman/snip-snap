@@ -2321,6 +2321,12 @@ private struct HostedExpandableText {
     let collapsedHeight: CGFloat
 
     static func mount() async throws -> HostedExpandableText {
+        // With Reduce Motion on, the text toggles without animation, so nothing could be interrupted.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            throw TransitionTestFailure(description:
+                "Reduce Motion is on, so the text toggles without animation; turn it off to run these tests."
+            )
+        }
         let probe = ExpandableTextTransitionProbe()
         let panel = try await mountTransitionPanel(ExpandableTextTransitionView(probe: probe))
         let accessibility = try MountedAccessibility(root: try XCTUnwrap(panel.contentView))
@@ -2345,10 +2351,12 @@ private struct HostedExpandableText {
         return probe.activationTimes[previous]
     }
 
-    /// Presses the text, then runs `interrupt` a frame or two later. The Mac text swap is not an
-    /// animatable layout, so row geometry may report only end values. The proof that `interrupt`
-    /// landed mid-animation is timing instead: it acted sooner after the press than the
-    /// animation can finish. A slow runner gets another attempt
+    /// Presses the text, then runs `interrupt` a frame or two later. Mac renders opening like open
+    /// and closing like closed, and its row geometry may report only end values, so nothing here
+    /// shows the first transition still pending. The gap check only shows `interrupt` acted sooner
+    /// than the animation can finish. Proof that stale completions are ignored comes from the iOS
+    /// tests, which run the same `toggleExpansion`/`settleExpansion` code and act on mid-animation
+    /// heights; these tests prove ordering and Mac rendering. A slow runner gets another attempt
     /// after the row settles; when no attempt lands in time, this throws.
     func pressAndInterrupt(
         settled: () async throws -> Bool,

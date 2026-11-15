@@ -348,6 +348,12 @@ private struct HostedExpandableText {
     /// Mounts the row, then expands and collapses it once to measure the full height and to
     /// check that a collapsed row renders the truncated preview again.
     static func mount(for test: XCTestCase) async throws -> HostedExpandableText {
+        // With Reduce Motion on, the text toggles without animation and never reports a mid-animation height.
+        guard !UIAccessibility.isReduceMotionEnabled else {
+            throw TransitionTestFailure(description:
+                "Reduce Motion is on, so the text toggles without animation; turn it off to run these tests."
+            )
+        }
         try ApplicationAccessibility.enable(for: test)
         // UIKit loads its accessibility support after the switch flips; mount the row afterward.
         try await Task.sleep(for: .milliseconds(300))
