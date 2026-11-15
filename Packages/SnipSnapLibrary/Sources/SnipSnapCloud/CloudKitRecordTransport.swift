@@ -235,7 +235,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     ) async throws -> CloudRecordSnapshot? {
         let recordID = CloudKitRecordMapper.recordID(for: id)
         do {
-            let results = try await readRecords([recordID], Array(fields).sorted())
+            let results = try await boundedRead([recordID], Array(fields).sorted())
             guard let result = results[recordID] else { return nil }
             do {
                 return try CloudKitRecordMapper.snapshot(
@@ -261,9 +261,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         var stage = CloudSyncDiagnostics.AttachmentStage.cloudKitRequest
         CloudSyncDiagnostics.attachmentStarted(stage)
         do {
-            let results = try await bound.read(.transfer) { [readRecords] in
-                try await readRecords([recordID], [field])
-            }
+            let results = try await boundedRead([recordID], [field])
             CloudSyncDiagnostics.attachmentSucceeded(stage)
             stage = .cloudKitRecord
             CloudSyncDiagnostics.attachmentStarted(stage)
@@ -296,6 +294,16 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         } catch {
             CloudSyncDiagnostics.attachmentFailed(stage, error: error)
             throw error
+        }
+    }
+
+    /// Reads records with the transfer limits and the read backstop.
+    private func boundedRead(
+        _ recordIDs: [CKRecord.ID],
+        _ desiredKeys: [CKRecord.FieldKey]?
+    ) async throws -> [CKRecord.ID: Result<CKRecord, any Error>] {
+        try await bound.read(.transfer) { [readRecords] in
+            try await readRecords(recordIDs, desiredKeys)
         }
     }
 

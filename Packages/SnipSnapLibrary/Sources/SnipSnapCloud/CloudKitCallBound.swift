@@ -3,8 +3,8 @@ import Foundation
 import Synchronization
 
 /// Limits how long one direct CloudKit call may run. CloudKit ends a call after `idle` without
-/// data or after its kind's total. A read also has a backstop, because CloudKit's async calls
-/// ignore task cancellation.
+/// data or after its kind's total. A read also has a backstop in case CloudKit ignores its
+/// configuration or a cancel.
 package struct CloudKitCallBound: Sendable {
   package enum Kind: Sendable {
     /// Account checks, small records, and zone changes.
@@ -45,30 +45,37 @@ package struct CloudKitCallBound: Sendable {
     return configuration
   }
 
-  /// Returns `operation`'s result, or throws `networkFailure` once the kind's total plus the
-  /// margin passes. The late call is abandoned, and its result is dropped. `operation` must
-  /// only read, so an abandoned call changes nothing.
+  /// Returns `operation`'s result or error, or throws `networkFailure` once the kind's total
+  /// plus the margin passes. The caller's cancel reaches `operation`, but the caller still waits
+  /// for one of those two. The backstop cancels `operation`; if it runs on anyway, its late
+  /// result is dropped. `operation` must only read, so an abandoned call changes nothing.
   package func read<Value: Sendable>(
     _ kind: Kind,
     _ operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
     let limit = total(kind) + backstopMargin
-    return try await withCheckedThrowingContinuation { continuation in
-      let outcome = FirstOutcome(continuation)
-      let timer = Task {
-        try await Task.sleep(for: limit)
-        outcome.resolve(.failure(CKError(.networkFailure)))
-      }
-      Task {
-        let result: Result<Value, any Error>
-        do {
-          result = .success(try await operation())
-        } catch {
-          result = .failure(error)
+    let call = CallTask()
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        let outcome = FirstOutcome(continuation)
+        let timer = Task {
+          try await Task.sleep(for: limit)
+          outcome.resolve(.failure(CKError(.networkFailure)))
+          call.cancel()
         }
-        timer.cancel()
-        outcome.resolve(result)
+        call.attach(Task {
+          let result: Result<Value, any Error>
+          do {
+            result = .success(try await operation())
+          } catch {
+            result = .failure(error)
+          }
+          timer.cancel()
+          outcome.resolve(result)
+        })
       }
+    } onCancel: {
+      call.cancel()
     }
   }
 
@@ -77,6 +84,32 @@ package struct CloudKitCallBound: Sendable {
     case .small: smallTotal
     case .transfer: transferTotal
     }
+  }
+}
+
+/// Cancels a call's task, even when the cancel comes before the task exists.
+private final class CallTask: Sendable {
+  private struct State {
+    var task: Task<Void, Never>?
+    var cancelled = false
+  }
+
+  private let state = Mutex(State())
+
+  func attach(_ task: Task<Void, Never>) {
+    let cancelled = state.withLock { state in
+      state.task = task
+      return state.cancelled
+    }
+    if cancelled { task.cancel() }
+  }
+
+  func cancel() {
+    let task = state.withLock { state in
+      state.cancelled = true
+      return state.task
+    }
+    task?.cancel()
   }
 }
 
