@@ -261,8 +261,7 @@ extension SwiftDataSnipLibrary {
     let candidateCounts = Dictionary(grouping: candidates, by: { $0.archive.reference }).mapValues(\.count)
     for candidate in candidates {
       let value = candidate.archive
-      guard value.format == .legacyBindingV1,
-        value.key == CloudStoredQuarantine.corruptShadowKey(reference: value.reference, payload: value.payload),
+      guard value.corruptShadowMarker == .archive,
         candidate.accepted.reference == value.reference,
         candidate.accepted.identity == value.identity,
         candidate.accepted.shadowData == value.payload,
@@ -303,9 +302,7 @@ extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: container)
     let records = try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
     for value in expected {
-      guard value.format == .legacyBindingV1,
-        value.key == CloudStoredQuarantine.corruptShadowKey(
-          reference: value.reference, payload: value.payload),
+      guard value.corruptShadowMarker == .archive,
         let record = records.first(where: {
           $0.id == StoredCloudMappingQuarantine.key(namespaceKey: namespaceKey.rawValue, key: value.key)
         }),
