@@ -14,6 +14,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     var conflictOnce = false
     var rateLimitedFetches = 0
     var rateLimitedDeletes = 0
+    var rateLimitedSaves = 0
     var fetchObserver: (@Sendable () -> Void)?
     var fetchRequests = 0
     var pauseSave = false
@@ -37,6 +38,7 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     func setConflict() { conflictOnce = true }
     func rateLimitFetches(_ count: Int) { rateLimitedFetches = count }
     func rateLimitDeletes(_ count: Int) { rateLimitedDeletes = count }
+    func rateLimitSaves(_ count: Int) { rateLimitedSaves = count }
     func observeFetches(_ observer: @escaping @Sendable () -> Void) { fetchObserver = observer }
     func fetchCount() -> Int { fetchRequests }
     func fetch() throws -> ClipboardCloudSnapshot {
@@ -56,6 +58,10 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
             if let error = pausedSaveError { pausedSaveError = nil; throw error }
         }
         try cancellation.check()
+        if rateLimitedSaves > 0 {
+            rateLimitedSaves -= 1
+            throw Self.rateLimited()
+        }
         if unavailable { throw ClipboardCloudError.unavailable }
         if conflictOnce { conflictOnce = false; throw ClipboardCloudError.conflict }
         guard incoming.version == snapshot.version else { throw ClipboardCloudError.conflict }
@@ -77,12 +83,20 @@ private actor ClipboardTestCloud: ClipboardCloudTransport {
     }
 }
 
-/// The device's current iCloud account, which a test can switch, and how often the service checked it.
+/// The device's current iCloud account, which a test can switch, and how often the service checked
+/// it. After `holdNextCheck()`, the next check waits for `release(answering:)`; later ones answer at once.
 private final class ClipboardTestAccount: ICloudAccountStateSource {
-    private let account: Mutex<(state: ICloudAccountState, checks: Int)>
+    private struct Account {
+        var state: ICloudAccountState
+        var checks = 0
+        var holdsNextCheck = false
+        var heldCheck: CheckedContinuation<ICloudAccountState, Never>?
+        var heldCheckWaiters: [CheckedContinuation<Void, Never>] = []
+    }
+    private let account: Mutex<Account>
 
     init(_ state: ICloudAccountState) {
-        account = Mutex((state: state, checks: 0))
+        account = Mutex(Account(state: state))
     }
 
     var checks: Int { account.withLock { $0.checks } }
@@ -91,10 +105,44 @@ private final class ClipboardTestAccount: ICloudAccountStateSource {
         account.withLock { $0.state = state }
     }
 
+    func holdNextCheck() {
+        account.withLock { $0.holdsNextCheck = true }
+    }
+
+    /// Returns once the held check is waiting for its answer.
+    func checkHeld() async {
+        await withCheckedContinuation { waiter in
+            let isHeld = account.withLock { account in
+                if account.heldCheck == nil { account.heldCheckWaiters.append(waiter) }
+                return account.heldCheck != nil
+            }
+            if isHeld { waiter.resume() }
+        }
+    }
+
+    /// Switches to `state` and answers the held check with it.
+    func release(answering state: ICloudAccountState) {
+        let held = account.withLock { account in
+            account.state = state
+            defer { account.heldCheck = nil }
+            return account.heldCheck
+        }
+        held?.resume(returning: state)
+    }
+
     func currentAccountState() async -> ICloudAccountState {
-        account.withLock { account in
-            account.checks += 1
-            return account.state
+        await withCheckedContinuation { check in
+            let outcome: (answer: ICloudAccountState?, waiters: [CheckedContinuation<Void, Never>]) =
+                account.withLock { account in
+                    account.checks += 1
+                    guard account.holdsNextCheck else { return (account.state, []) }
+                    account.holdsNextCheck = false
+                    account.heldCheck = check
+                    defer { account.heldCheckWaiters = [] }
+                    return (nil, account.heldCheckWaiters)
+                }
+            if let answer = outcome.answer { check.resume(returning: answer) }
+            for waiter in outcome.waiters { waiter.resume() }
         }
     }
 }
@@ -592,6 +640,112 @@ enum ClipboardSetAsideCrash: CaseIterable, Sendable {
         #expect(try await cloud.fetch().entries.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
         #expect(account.checks == 0)
+    }
+    @Test func stopDuringTheDeleteAccountCheckCancelsTheDelete() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let synced = entry("synced under account A")
+        try await client.store.insert(synced); try await client.run(scope: accountA)
+
+        account.holdNextCheck()
+        let deleting = Task { try await client.sync.deleteSyncedHistory(generation: accountA) }
+        await account.checkHeld()
+        client.sync.stop()
+        account.release(answering: .available(accountLineage: "account-A"))
+
+        await #expect(throws: CancellationError.self) { try await deleting.value }
+        #expect(Set(try await cloud.fetch().entries.keys) == [synced.id])
+        #expect(try Data(contentsOf: client.bindingURL) == JSONEncoder().encode(accountA))
+        #expect(try await setAsideEntryIDs(in: client.root).isEmpty)
+    }
+    @Test func stopDuringThePreBindAccountCheckBindsNothing() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("copied under account A"))
+
+        account.holdNextCheck()
+        let running = Task { try await client.run(scope: namespaceKey(account: "account-A", generation: UUID())) }
+        await account.checkHeld()
+        client.sync.stop()
+        account.release(answering: .available(accountLineage: "account-A"))
+
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(!FileManager.default.fileExists(atPath: client.bindingURL.path))
+        #expect(await cloud.fetchCount() == 0)
+        #expect(await cloud.serial == 0)
+    }
+    @Test func accountResetDuringThePreBindAccountCheckBindsNothing() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("never synced"))
+
+        account.holdNextCheck()
+        let running = Task { try await client.run(scope: namespaceKey(account: "account-A", generation: UUID())) }
+        await account.checkHeld()
+        try await client.sync.resetAccountBinding(includingUnboundHistory: true)
+        let leftByReset = try? Data(contentsOf: client.bindingURL)
+        account.release(answering: .available(accountLineage: "account-A"))
+
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect((try? Data(contentsOf: client.bindingURL)) == leftByReset)
+        #expect(await cloud.fetchCount() == 0)
+        #expect(await cloud.serial == 0)
+    }
+    @Test func secondSyncDuringThePreBindAccountCheckIsBusy() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let copy = entry("copied under account A")
+        try await client.store.insert(copy)
+
+        account.holdNextCheck()
+        let first = Task { try await client.run(scope: accountA) }
+        await account.checkHeld()
+        await #expect(throws: ClipboardCloudError.busy) { try await client.run(scope: accountA) }
+        account.release(answering: .available(accountLineage: "account-A"))
+
+        #expect(try await first.value.entries.map(\.id) == [copy.id])
+        #expect(Set(try await cloud.fetch().entries.keys) == [copy.id])
+    }
+    @Test func failedAccountCheckLeavesTheServiceReadyForTheNextRun() async throws {
+        let cloud = ClipboardTestCloud()
+        let account = ClipboardTestAccount(.available(accountLineage: "account-B"))
+        let client = ClipboardClient(cloud, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        let accountA = namespaceKey(account: "account-A", generation: UUID())
+        let copy = entry("copied under account A")
+        try await client.store.insert(copy)
+
+        await #expect(throws: ClipboardCloudError.accountChanged) { try await client.run(scope: accountA) }
+        account.switchTo(.available(accountLineage: "account-A"))
+        try await client.run(scope: accountA)
+
+        #expect(Set(try await cloud.fetch().entries.keys) == [copy.id])
+    }
+    @Test func everySaveAttemptChecksTheAccount() async throws {
+        let clock = ClipboardRetryClock()
+        let retry = CloudKitOperationRetry(now: { clock.now }, sleep: { clock.advance($0) })
+        let cloud = ClipboardTestCloud()
+        await cloud.rateLimitSaves(1)
+        let account = ClipboardTestAccount(.available(accountLineage: "account-A"))
+        let client = ClipboardClient(cloud, retry: retry, accountState: account)
+        defer { try? FileManager.default.removeItem(at: client.root) }
+        try await client.store.insert(entry("copied under account A"))
+
+        try await client.run(scope: namespaceKey(account: "account-A", generation: UUID()))
+
+        // One check before binding, then one before each of the two save attempts.
+        #expect(account.checks == 3)
+        #expect(await cloud.serial == 1)
     }
     @Test func matchingAccountSyncsAsBefore() async throws {
         let cloud = ClipboardTestCloud()
