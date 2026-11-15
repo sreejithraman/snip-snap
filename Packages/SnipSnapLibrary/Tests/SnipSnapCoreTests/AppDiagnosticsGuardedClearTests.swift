@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import Synchronization
 import XCTest
 
 @testable import SnipSnapCore
@@ -83,6 +84,52 @@ final class AppDiagnosticsGuardedClearTests: XCTestCase {
         "The event unseen by the original snapshot must survive either outcome.")
       XCTAssertEqual(contents.contains("operation=app.startup"), !cleared)
     }
+  }
+
+  func testAppendContendingWithGuardedClearSurvivesWhenRetriedAfterBusy() throws {
+    // The first clock read after arming happens inside clear's store lock.
+    let clearGateArmed = Mutex(false)
+    let insideClear = DispatchSemaphore(value: 0)
+    let releaseClear = DispatchSemaphore(value: 0)
+    let store = AppDiagnosticEventStore(
+      directoryURL: directory, policy: .init(exportBytes: 4_096), appVersion: "1", appBuild: "2",
+      now: {
+        let gated = clearGateArmed.withLock { armed in
+          let wasArmed = armed
+          armed = false
+          return wasArmed
+        }
+        if gated {
+          insideClear.signal()
+          releaseClear.wait()
+        }
+        return Date(timeIntervalSince1970: 1_790_056_800)
+      },
+      lockTimeout: 0.01
+    )
+    store.append(.succeeded(operation: "app.startup"))
+    let revision = try store.snapshot().revision
+    let clearResult = Mutex<Result<Bool, any Error>?>(nil)
+    let clearReturned = DispatchSemaphore(value: 0)
+    clearGateArmed.withLock { $0 = true }
+    DispatchQueue.global().async {
+      let result = Result { try store.clear(ifRevision: revision) }
+      clearResult.withLock { $0 = result }
+      clearReturned.signal()
+    }
+    XCTAssertEqual(insideClear.wait(timeout: .now() + 5), .success)
+    store.append(.succeeded(operation: "clipboard.persist"))
+    releaseClear.signal()
+    XCTAssertEqual(clearReturned.wait(timeout: .now() + 5), .success)
+    let clearOutcome = clearResult.withLock { $0 }
+    let cleared = try XCTUnwrap(clearOutcome).get()
+
+    XCTAssertTrue(cleared)
+    let contents = try String(contentsOf: store.makeShareableFile(), encoding: .utf8)
+    XCTAssertFalse(contents.contains("operation=app.startup"))
+    XCTAssertTrue(
+      contents.contains("operation=clipboard.persist"),
+      "An append the store turned away as busy must land once clear releases the lock.")
   }
 
   func testSnapshotIncludesHeaderAndUsesTheRenderedExportBytes() throws {
