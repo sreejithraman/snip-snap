@@ -4238,6 +4238,70 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testDeletedListComposerKeepsTheDraftAnAgentMovedToInbox() async throws {
+        let research = SnipList(id: UUID(), name: "Research", systemImage: "folder", position: 1)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [], lists: [.inbox, research]),
+            defaults: defaults()
+        )
+        await model.reload()
+        model.saveComposerText("Moved by an agent", for: research.id)
+        let researchRevision = try await cliDraftRevision("Research", in: model)
+        let inboxRevision = try await cliDraftRevision("Inbox", in: model)
+        _ = try await model.handleCLIRequest(SnipCLIRequest(
+            action: .extended(.data(.moveDraft(
+                list: "Research", destination: "Inbox",
+                expectedRevision: researchRevision,
+                expectedDestinationRevision: inboxRevision
+            ))),
+            scopeToken: model.cliScopeToken
+        ))
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Moved by an agent")
+
+        await model.deleteList(research)
+        XCTAssertFalse(model.lists.contains(where: { $0.id == research.id }))
+        model.saveComposerText("Typed after the deletion", for: research.id)
+
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text,
+                       "Moved by an agent\n\nTyped after the deletion")
+    }
+
+    @MainActor
+    func testListThatLeavesAgainDoesNotReplaceItsEarlierInboxRedirection() async {
+        let research = SnipList(id: UUID(), name: "Research", systemImage: "folder", position: 1)
+        let scope = SnipRecoveryScope("same-account")
+        let withResearch = InMemorySnipLibrary(snips: [], lists: [.inbox, research])
+        let withoutResearch = InMemorySnipLibrary(snips: [], lists: [.inbox])
+        let model = AppModel(library: withResearch, defaults: defaults(), recoveryScope: scope)
+        await model.reload()
+        model.saveComposerText("Research draft", for: research.id)
+
+        await model.replaceLibrary(withoutResearch, recoveryScope: scope)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Research draft")
+        await model.replaceLibrary(withResearch, recoveryScope: scope)
+        XCTAssertTrue(model.lists.contains(where: { $0.id == research.id }))
+        XCTAssertEqual(model.composerDraft(for: research.id).text, "")
+        await model.replaceLibrary(withoutResearch, recoveryScope: scope)
+        model.saveComposerText("Typed after it left again", for: research.id)
+
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text,
+                       "Research draft\n\nTyped after it left again")
+    }
+
+    @MainActor
+    private func cliDraftRevision(_ list: String, in model: AppModel) async throws -> String {
+        let receipt = try await model.handleCLIRequest(SnipCLIRequest(
+            action: .extended(.data(.showDraft(list: list))),
+            scopeToken: model.cliScopeToken
+        ))
+        guard case .data(let result) = receipt.extendedResult else {
+            XCTFail("Expected a draft result")
+            return ""
+        }
+        return try XCTUnwrap(result.drafts?.first?.revision)
+    }
+
+    @MainActor
     func testComposerRejectsQueuedSendAfterSameScopeLibraryReplacement() async throws {
         let root = try storeURL().deletingLastPathComponent()
         let original = try JSONSnipLibrary(fileURL: root.appendingPathComponent("original.json"))
