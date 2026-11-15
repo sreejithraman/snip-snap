@@ -755,17 +755,23 @@ package actor SwiftDataSyncModePersistence {
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
     guard let transition = manifest.transition, manifest.activeStoreID == transition.sourceStoreID else { return }
     var next = manifest
-    if let candidate = store(id: transition.candidateStoreID) {
-      do {
-        try removeStoreFiles(candidate)
-        next.stores.removeAll { $0.id == transition.candidateStoreID }
-      } catch {
-        next.stores[try storeIndex(id: candidate.id)].lifecycle = .deleting
-      }
+    if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
+      next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
     next.attentionReason = reason
+    // Commit before removing any files. A candidate whose files are gone but whose manifest
+    // entry survives a failed commit is reopened empty by the next enable.
     try commitRollback(next)
+    guard let candidate = store(id: transition.candidateStoreID) else { return }
+    do {
+      try removeStoreFiles(candidate)
+      var removed = manifest
+      removed.stores.removeAll { $0.id == candidate.id }
+      try commit(removed)
+    } catch {
+      // The candidate stays deleting, for reopen or a later cleanup to finish.
+    }
   }
 
   private func commitRollback(_ next: Manifest) throws {
