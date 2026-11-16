@@ -864,7 +864,7 @@ package actor ICloudSyncModeCoordinator {
         } else {
             .transitionFailure
         }
-        if [.firstSendStarted, .firstSendComplete].contains(transition.phase) {
+        if [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase) {
             let modeAdapter = try? await adapter(storeID: transition.candidateStoreID)
             let candidates = transition.seedSettlementCandidates
             let settlement: SyncModeSeedSettlementProof?

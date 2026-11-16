@@ -100,7 +100,10 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(storageAfterChoice, storageBeforeChoice)
         XCTAssertEqual(sourceAfterChoice.snips, sourceBeforeChoice.snips)
         let result = try await retry.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
+        let facts: String
+        if result.state == .on { facts = "" }
+        else { facts = await reopened.failedEnableC72Facts() }
+        XCTAssertEqual(result.state, .on, facts)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [snip.id])
         XCTAssertEqual(final.snips.first?.content, "offline edit survives retry")

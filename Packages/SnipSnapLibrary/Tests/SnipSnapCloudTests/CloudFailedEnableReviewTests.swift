@@ -16,15 +16,35 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             XCTFail("Expected the pre-send interruption")
         } catch ReviewFixtureError.injected {}
         let before = try await f.persistence.snapshot()
+        XCTAssertEqual(before.transition?.phase, .candidateReady,
+            "A pre-send interruption must enter the receipt-retiring retry path")
+        let transition = try XCTUnwrap(before.transition)
+        let rawCandidate = try await f.persistence.libraryForTransition(storeID: transition.candidateStoreID)
+        let completedReceipt = try await rawCandidate.failedEnableC72ReceiptDigest(
+            namespace: f.namespace.namespaceKey, transitionID: transition.id)
+        XCTAssertNotNil(completedReceipt, "The first candidate apply completed before the interruption")
         let bundle = try XCTUnwrap(try FailedEnableEvidenceFile(root: f.root).read(before.activeStore.id))
         let capture = try XCTUnwrap(bundle.namespaces.flatMap(\.captures).last)
         XCTAssertFalse(capture.armed)
+        let applied = try XCTUnwrap(bundle.transfers.last { $0.sourceCaptureIDs == [capture.id] })
+        XCTAssertEqual(applied.state, .checked)
+        XCTAssertEqual(completedReceipt.map(FailedEnableEncoding.hex), applied.planDigest)
         let events = await f.transports.events()
         XCTAssertFalse(events.contains { if case .sent = $0 { true } else { false } })
         let reopened = try SwiftDataSyncModePersistence(rootURL: f.root)
         let mode = coordinator(reopened, fixture: f)
-        let result = try await mode.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
+        let result: ICloudSyncModeStatus
+        do {
+            result = try await mode.enableOrRetry()
+        } catch {
+            let facts = await reopened.failedEnableC72Facts()
+            XCTFail("[SM23-F5-C72] unarmed retry threw \(error); \(facts)")
+            throw error
+        }
+        let facts: String
+        if result.state == .on { facts = "" }
+        else { facts = await reopened.failedEnableC72Facts() }
+        XCTAssertEqual(result.state, .on, facts)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [f.snip.id])
         XCTAssertEqual(final.snips.first?.content, "review fixture")
@@ -96,7 +116,10 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         XCTAssertEqual(view.issues.first(where: { $0.id == issue.id })?.selection, previous)
         _ = try await facade.choose(fresh.id, selection: .useDevice, expecting: fresh.expectation)
         let result = try await f.mode.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
+        let facts: String
+        if result.state == .on { facts = "" }
+        else { facts = await f.persistence.failedEnableC72Facts() }
+        XCTAssertEqual(result.state, .on, facts)
         let final = try await f.persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [f.snip.id])
         XCTAssertEqual(final.snips.first?.content, "review fixture")
@@ -397,5 +420,205 @@ private final class ReviewTransportFactory: Sendable {
         var result: [FakeCloudTransportEvent] = []
         for value in values { result += await value.events() }
         return result
+    }
+}
+
+// [SM23-F5-C72] Temporary fixture-only facts. No identifiers, content, archives or bytes are logged.
+extension SwiftDataSyncModePersistence {
+    func failedEnableC72Facts() async -> String {
+        var facts = ["[SM23-F5-C72]"]
+        do {
+            let before = manifest
+            let storage = try snapshot()
+            facts += ["active=\(storage.activeStore.kind.rawValue)",
+                "attention=\(String(describing: storage.attentionReason))"]
+            guard let transition = storage.transition, let namespace = transition.namespace else {
+                facts.append("transition=none")
+                if let namespace = storage.activeStore.namespace {
+                    let active = try libraryForTransition(storeID: storage.activeStore.id)
+                    let cloud = try await active.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+                    let recovery = try await active.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
+                    facts += ["activeNamespace=\(cloud.namespaceState.phase.rawValue)",
+                        "activeConflicts=\(cloud.conflicts.count)", "activeDeferred=\(cloud.deferredEntities.count)",
+                        "activeRecovery=\(recovery.map { $0.kind.rawValue }.sorted().joined(separator: ","))"]
+                }
+                return facts.joined(separator: "; ")
+            }
+            facts += ["stage=\(transition.phase.rawValue)", "intent=\(transition.hasDurableFullReenableIntent)",
+                "provenance=\(transition.seedProvenance.count)", "attempt=\(transition.sendAttempt != nil)"]
+            let checked = try await withFailedEnableRead(transition: transition) { source, candidate in
+                var details: [String] = []
+                let bundle = try self.failedEnableFiles.read(transition.sourceStoreID)
+                let group = bundle?.namespaces.first { $0.binding == FailedEnableBinding(namespace) }
+                let sourceImages = try source.images()
+                let candidateImages = try candidate.images()
+                let continuity = try self.failedEnableContinuityMatches(bundle, source: source,
+                    sourceID: transition.sourceStoreID)
+                details += ["continuity=\(continuity)", "namespace=\(candidate.storage.namespaceState.phase.rawValue)",
+                    "namespaceRevision=\(candidate.storage.namespaceState.revision)",
+                    "candidateRevision=\(candidate.snapshot.revision)",
+                    "ready=\(candidate.storage.readyEntities.count)", "deferred=\(candidate.storage.deferredEntities.count)",
+                    "conflicts=\(candidate.storage.conflicts.count)", "quarantines=\(candidate.storage.quarantines.count)",
+                    "deletes=\(candidate.storage.pendingDeletes.count)", "alternatives=\(group?.alternatives.count ?? 0)"]
+                var represented: Set<String> = []
+                for id in self.failedEnableSourceIDs() {
+                    guard let saved = try self.failedEnableFiles.read(id) else { continue }
+                    represented.formUnion(saved.namespaces.flatMap(\.captures).map(\.candidateStoreID))
+                    for transfer in saved.transfers {
+                        represented.insert(transfer.sourceStoreID)
+                        represented.insert(transfer.destinationStoreID)
+                    }
+                }
+                let unknownRoots = self.manifest.stores.filter {
+                    $0.id != transition.candidateStoreID && $0.id != transition.sourceStoreID
+                        && $0.kind == .iCloudSync && $0.namespace == namespace
+                        && [.deleting, .retired, .recovery].contains($0.lifecycle)
+                        && !represented.contains(FailedEnableEncoding.uuid($0.id))
+                }.count
+                details.append("unknownRoots=\(unknownRoots)")
+                let capture = group?.captures.last {
+                    $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+                        && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+                }
+                let transfer = capture.flatMap { saved in bundle?.transfers.last { $0.sourceCaptureIDs == [saved.id] } }
+                details += ["currentCapture=\(capture != nil)", "armed=\(capture?.armed == true)",
+                    "currentTransfer=\(transfer?.state.rawValue ?? "none")"]
+                for record in capture?.records ?? [] {
+                    let output = transfer?.outputs.first { $0.reference == record.reference }
+                    let reference = try record.reference.domain
+                    let accepted = candidate.storage.readyEntities.first { $0.reference == reference }
+                    var qMatches = false
+                    var fetchedRevisionMatches = false
+                    if let accepted {
+                        let value = try CloudFailedEnablePolicy.fields(accepted, namespace: namespace)
+                        if let q = record.preparation.value.value { qMatches = CloudFailedEnablePolicy.same(q.fields, value) }
+                        fetchedRevisionMatches = record.preparation.fetchedDigest.value == (try
+                            CloudFailedEnablePolicy.acceptedRevisionDigest(accepted,
+                                namespaceRevision: candidate.storage.namespaceState.revision))
+                    }
+                    let outputMatches = output != nil && candidateImages.first {
+                        $0.reference == record.reference
+                    } == output
+                    var decisionBound = false
+                    if let capture, let bundle {
+                        decisionBound = self.hasFailedEnableReviewDecision(record, capture: capture, bundle: bundle)
+                    }
+                    details.append("record[\(record.reference.kind.rawValue)]=\(record.preparation.classification.rawValue)/\(record.preparation.baseKind.rawValue),Q=\(record.preparation.value.value != nil),observed=\(record.observedAccepted.value != nil),choiceBound=\(decisionBound),output=\(outputMatches),acceptedQ=\(qMatches),fetchedCAS=\(fetchedRevisionMatches)")
+                }
+                if let semantics = self.failedEnableSemantics {
+                    if let policy = semantics as? CloudFailedEnablePolicy {
+                        var seen: Set<FailedEnableReference> = []
+                        for saved in (group?.captures ?? []).sorted(by: {
+                            (UInt64($0.ordinal) ?? 0) > (UInt64($1.ordinal) ?? 0)
+                        }) {
+                            for record in saved.records where seen.insert(record.reference).inserted {
+                                var qualified = false
+                                if let observed = record.observedAccepted.value {
+                                    qualified = try policy.qualifies(record, observation: observed, candidate: nil)
+                                }
+                                let present = sourceImages.contains { $0.reference == record.reference }
+                                let reviewed = group?.reviews.contains { $0.reference == record.reference } == true
+                                details.append("strand[\(record.reference.kind.rawValue)]=\(record.preparation.classification.rawValue)/\(record.preparation.baseKind.rawValue),sourcePresent=\(present),ancestry=\(qualified),review=\(reviewed)")
+                            }
+                        }
+                    }
+                    if let capture, let bundle {
+                        for requiresAccepted in [false, true] {
+                            do {
+                                try semantics.validateExposure(capture: capture, candidate: candidate,
+                                    evidence: bundle, requiresAccepted: requiresAccepted)
+                                details.append("exposure[\(requiresAccepted)]=valid")
+                            } catch {
+                                let code = (error as? FailedEnableEvidenceError).map { String(describing: $0) }
+                                    ?? String(reflecting: type(of: error))
+                                details.append("exposure[\(requiresAccepted)]=\(code)")
+                            }
+                        }
+                    }
+                    do {
+                        let drafts = try semantics.reviewDrafts(FailedEnableReviewRead(source: source,
+                            candidate: candidate, transition: transition, evidence: bundle))
+                        details.append("drafts=\(drafts.count)")
+                        for row in group?.reviews ?? [] {
+                            let draft = drafts.first { $0.id == row.id }
+                            var comparisons: [String] = []
+                            let reference = try row.reference.domain
+                            if let observation = row.server.observation.value,
+                                let actual = candidate.storage.readyEntities.first(where: { $0.reference == reference }) {
+                                let saved = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: observation.entityBase64)
+                                let savedFields = try CloudFailedEnablePolicy.fields(CloudFailedEnablePolicy.entity(saved), namespace: namespace)
+                                let actualFields = try CloudFailedEnablePolicy.fields(actual, namespace: namespace)
+                                comparisons += ["fields=\(savedFields == actualFields)",
+                                    "userFields=\(CloudFailedEnablePolicy.same(savedFields, actualFields))",
+                                    "identity=\(saved.identity == actual.identity)",
+                                    "acceptedBytes=\(saved.acceptedData == actual.acceptedData)",
+                                    "presenceBytes=\(saved.presenceData == actual.presenceData)",
+                                    "shadowBytes=\(saved.shadowData == actual.shadowData)",
+                                    "systemFields=\(saved.systemFields == actual.systemFields)",
+                                    "dependency=\(saved.dependencyListID == actual.dependencyListID)"]
+                            }
+                            let localMatches = sourceImages.first { $0.reference == row.reference } == row.local.image.value
+                            let allowed = try semantics.choices(for: row).map(\.rawValue).joined(separator: ",")
+                            details.append("review=\(row.reason.rawValue),selected=\(row.decision.value?.choice.rawValue ?? "none"),source=\(localMatches),current=\(draft != nil),comparison=\(draft?.issueDigest == row.issueDigest),draftSelected=\(draft?.decision.value != nil),allowed=\(allowed),\(comparisons.joined(separator: ","))")
+                        }
+                    } catch {
+                        let code = (error as? FailedEnableEvidenceError).map { String(describing: $0) }
+                            ?? String(reflecting: type(of: error))
+                        details.append("draftError=\(code)")
+                    }
+                }
+                guard let candidateStore = self.store(id: transition.candidateStoreID) else {
+                    throw SyncModePersistenceError.missingStore
+                }
+                let planRoot = self.storeURL(candidateStore)
+                    .appendingPathComponent("full-reenable-v1", isDirectory: true)
+                    .appendingPathComponent(transition.id.uuidString.lowercased(), isDirectory: true)
+                let planURL = planRoot.appendingPathComponent("plan.json")
+                if FileManager.default.fileExists(atPath: planURL.path) {
+                    let plan = try JSONDecoder().decode(CloudFullReenableStagedPlan.self, from: Data(contentsOf: planURL))
+                    let accepted = Dictionary(uniqueKeysWithValues: candidate.storage.readyEntities.map { ($0.reference, $0) })
+                    let sameReferences = Set(plan.acceptedCAS.map { $0.accepted.reference }) == Set(accepted.keys)
+                    let casMatches = plan.acceptedCAS.allSatisfy { expected in
+                        accepted[expected.accepted.reference].map(CloudFullReenableAcceptedCAS.init) == expected
+                    }
+                    details += ["stagedPlan=true", "planCASReferences=\(sameReferences)", "planCASValues=\(casMatches)",
+                        "planNamespaceRevision=\(plan.expectedNamespaceRevision == candidate.storage.namespaceState.revision)",
+                        "planTargetRevision=\(plan.targetRevision == candidate.snapshot.revision)",
+                        "planTargetDigest=\(plan.targetDigest == SnipLibraryTransferPlanner.digest(snapshot: candidate.snapshot))"]
+                } else { details.append("stagedPlan=false") }
+                return (details.joined(separator: "; "), transfer?.planDigest)
+            }
+            facts.append(checked.0)
+            let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+            let receipt = try await candidate.failedEnableC72ReceiptDigest(namespace: namespace.namespaceKey,
+                transitionID: transition.id)
+            let receiptMatches = receipt.map { FailedEnableEncoding.hex($0) == checked.1 } ?? false
+            let staged = try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey)
+            facts.append("stagedBatches=\(staged.count),withRaw=\(staged.filter { $0.rawBatchData != nil }.count)")
+            let engine = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey).engineState
+            let checkpoint = try engine.map { try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: $0) }
+            facts += ["receipt=\(receipt != nil),matchesTransfer=\(receiptMatches)",
+                "checkpoint=\(checkpoint != nil),initialFetch=\(String(describing: checkpoint?.requiresInitialFetch))",
+                "manifestStable=\(manifest == before)"]
+            return facts.joined(separator: "; ")
+        } catch {
+            let code = (error as? FailedEnableEvidenceError).map { String(describing: $0) }
+                ?? String(reflecting: type(of: error))
+            facts.append("factsError=\(code)")
+            return facts.joined(separator: "; ")
+        }
+    }
+}
+
+private extension SwiftDataSnipLibrary {
+    func failedEnableC72ReceiptDigest(namespace: CloudSyncNamespaceKey, transitionID: UUID) throws -> Data? {
+        guard let container else { throw SnipLibraryError.storeUnavailable }
+        let lock = try SnipStoreFileLock(url: lockURL)
+        defer { withExtendedLifetime(lock) {} }
+        let context = Self.makeContext(container: container)
+        let digest = try SwiftDataCloudFullOperationReceipts.digest(for: .reenableTransition(transitionID),
+            namespaceKey: namespace.rawValue, context: context)
+        try lock.check()
+        return digest
     }
 }
