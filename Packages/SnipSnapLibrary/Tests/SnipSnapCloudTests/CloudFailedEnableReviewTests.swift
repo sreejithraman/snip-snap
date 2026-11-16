@@ -3,6 +3,7 @@ import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import Synchronization
+import SwiftData
 import XCTest
 
 final class CloudFailedEnableReviewTests: XCTestCase {
@@ -427,26 +428,35 @@ private final class ReviewTransportFactory: Sendable {
 extension SwiftDataSyncModePersistence {
     func failedEnableC72Facts() async -> String {
         var facts = ["[SM23-F5-C72]"]
+        let before = manifest
         do {
-            let before = manifest
-            let storage = try snapshot()
+            guard let active = before.stores.first(where: { $0.id == before.activeStoreID }) else {
+                throw SyncModePersistenceError.missingStore
+            }
+            let storage = SyncModeStorageSnapshot(activeStore: active, transition: before.transition,
+                accountIsolation: before.accountIsolation, attentionReason: before.attentionReason,
+                hasActiveMutationReservation: before.writeReservation != nil)
             facts += ["active=\(storage.activeStore.kind.rawValue)",
                 "attention=\(String(describing: storage.attentionReason))"]
             guard let transition = storage.transition, let namespace = transition.namespace else {
                 facts.append("transition=none")
                 if let namespace = storage.activeStore.namespace {
-                    let active = try libraryForTransition(storeID: storage.activeStore.id)
-                    let cloud = try await active.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
-                    let recovery = try await active.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
+                    let url = storeFileURL(storage.activeStore)
+                    let locks = try FailedEnableReadLocks(stores: [(storage.activeStore.id, url.appendingPathExtension("lock"))])
+                    defer { withExtendedLifetime(locks) {} }
+                    let read = try FailedEnableC72StoreRead.read(storeURL: url, revision: storage.activeStore.revision,
+                        namespace: namespace, transitionID: nil, locks: locks)
+                    let cloud = read.value.storage
                     facts += ["activeNamespace=\(cloud.namespaceState.phase.rawValue)",
                         "activeConflicts=\(cloud.conflicts.count)", "activeDeferred=\(cloud.deferredEntities.count)",
-                        "activeRecovery=\(recovery.map { $0.kind.rawValue }.sorted().joined(separator: ","))"]
+                        "activeRecovery=\(read.recoveryKinds.sorted().joined(separator: ","))"]
                 }
+                facts.append("manifestStable=\(manifest == before)")
                 return facts.joined(separator: "; ")
             }
             facts += ["stage=\(transition.phase.rawValue)", "intent=\(transition.hasDurableFullReenableIntent)",
                 "provenance=\(transition.seedProvenance.count)", "attempt=\(transition.sendAttempt != nil)"]
-            let checked = try await withFailedEnableRead(transition: transition) { source, candidate in
+            let checked = try withFailedEnableC72Read(transition: transition) { source, candidate in
                 var details: [String] = []
                 let bundle = try self.failedEnableFiles.read(transition.sourceStoreID)
                 let group = bundle?.namespaces.first { $0.binding == FailedEnableBinding(namespace) }
@@ -588,14 +598,12 @@ extension SwiftDataSyncModePersistence {
                 } else { details.append("stagedPlan=false") }
                 return (details.joined(separator: "; "), transfer?.planDigest)
             }
-            facts.append(checked.0)
-            let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-            let receipt = try await candidate.failedEnableC72ReceiptDigest(namespace: namespace.namespaceKey,
-                transitionID: transition.id)
-            let receiptMatches = receipt.map { FailedEnableEncoding.hex($0) == checked.1 } ?? false
-            let staged = try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey)
-            facts.append("stagedBatches=\(staged.count),withRaw=\(staged.filter { $0.rawBatchData != nil }.count)")
-            let engine = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey).engineState
+            facts.append(checked.0.0)
+            let candidate = checked.1
+            let receipt = candidate.receipt
+            let receiptMatches = receipt.map { FailedEnableEncoding.hex($0) == checked.0.1 } ?? false
+            facts.append("stagedBatches=\(candidate.staged.count),withRaw=\(candidate.staged.filter { $0.rawBatchData != nil }.count)")
+            let engine = candidate.engineState
             let checkpoint = try engine.map { try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: $0) }
             facts += ["receipt=\(receipt != nil),matchesTransfer=\(receiptMatches)",
                 "checkpoint=\(checkpoint != nil),initialFetch=\(String(describing: checkpoint?.requiresInitialFetch))",
@@ -604,9 +612,33 @@ extension SwiftDataSyncModePersistence {
         } catch {
             let code = (error as? FailedEnableEvidenceError).map { String(describing: $0) }
                 ?? String(reflecting: type(of: error))
-            facts.append("factsError=\(code)")
+            facts += ["factsError=\(code)", "manifestStable=\(manifest == before)"]
             return facts.joined(separator: "; ")
         }
+    }
+
+    private func withFailedEnableC72Read<Value: Sendable>(transition: SyncModeTransition,
+        _ body: (FailedEnableStoreRead, FailedEnableStoreRead) throws -> Value
+    ) throws -> (Value, FailedEnableC72StoreRead) {
+        guard failedEnablePublicationInFlight == nil, fullReenableMergeInFlight == nil,
+            failedEnableSendInFlight == nil, manifest.writeReservation == nil,
+            manifest.transition == transition,
+            let source = store(id: transition.sourceStoreID),
+            let candidate = store(id: transition.candidateStoreID),
+            let namespace = transition.namespace else { throw FailedEnableEvidenceError.changed }
+        let before = manifest
+        let sourceURL = storeFileURL(source)
+        let candidateURL = storeFileURL(candidate)
+        let locks = try FailedEnableReadLocks(stores: [
+            (source.id, sourceURL.appendingPathExtension("lock")),
+            (candidate.id, candidateURL.appendingPathExtension("lock"))])
+        defer { withExtendedLifetime(locks) {} }
+        let local = try FailedEnableC72StoreRead.read(storeURL: sourceURL, revision: source.revision,
+            namespace: namespace, transitionID: nil, locks: locks)
+        let remote = try FailedEnableC72StoreRead.read(storeURL: candidateURL, revision: candidate.revision,
+            namespace: namespace, transitionID: transition.id, locks: locks)
+        guard manifest == before else { throw FailedEnableEvidenceError.changed }
+        return (try body(local.value, remote.value), remote)
     }
 }
 
@@ -620,5 +652,101 @@ private extension SwiftDataSnipLibrary {
             namespaceKey: namespace.rawValue, context: context)
         try lock.check()
         return digest
+    }
+}
+
+// Saves are disabled; the diagnostic never runs the library initializer or its backfills.
+private struct FailedEnableC72StoreRead: Sendable {
+    let value: FailedEnableStoreRead
+    let receipt: Data?
+    let staged: [CloudFullBatchCommit]
+    let engineState: Data?
+    let recoveryKinds: [String]
+
+    static func read(storeURL: URL, revision: UInt64, namespace: ICloudSyncNamespaceBinding,
+        transitionID: UUID?, locks: FailedEnableReadLocks
+    ) throws -> Self {
+        let lockURL = storeURL.appendingPathExtension("lock")
+        try locks.require(lockURL)
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            throw SyncModePersistenceError.missingStore
+        }
+        let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
+        let configuration = ModelConfiguration("SnipSnapLocal", schema: schema, url: storeURL,
+            allowsSave: false, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = SwiftDataSnipLibrary.makeContext(container: container)
+        let loaded = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: [])
+        let snips = loaded.state.allSnips(sortMode: .manual)
+        // These three failing fixtures have no attachments. Do not invent missing-byte evidence.
+        guard !loaded.lists.isEmpty, snips.allSatisfy({ $0.attachments.isEmpty }) else {
+            throw FailedEnableEvidenceError.unsupported
+        }
+        let metadata = try SwiftDataSnipLibrary.transferMetadata(context: context)
+        let snapshot = SnipLibraryTransferSnapshot(revision: revision, snips: snips,
+            lists: loaded.state.allLists(), attachmentData: [:],
+            legacyManualPositions: metadata.legacyManualPositions,
+            opaqueSyncStateDigest: metadata.opaqueSyncStateDigest,
+            opaqueSyncStatePayload: metadata.opaqueSyncStatePayload,
+            additionalSeenRequestIDs: loaded.state.seenRequestIDs)
+        let key = namespace.namespaceKey.rawValue
+        let entities = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+            .filter { $0.namespaceKey == key }.map(SwiftDataSnipLibrary.entity(from:))
+        let conflicts = try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
+            .filter { $0.namespaceKey == key }.map { record -> CloudStoredConflict in
+                let prefix = "\(key)|conflict|"
+                guard let kind = CloudEntityKind(rawValue: record.kind),
+                    let format = CloudConflictFormat(rawValue: record.format), record.id.hasPrefix(prefix)
+                else { throw SnipLibraryError.invalidStore }
+                return CloudStoredConflict(key: String(record.id.dropFirst(prefix.count)),
+                    reference: CloudEntityReference(kind: kind, domainID: record.domainID),
+                    format: format, payload: record.payload)
+            }
+        let enrollment = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
+            .first { $0.namespaceKey == key }
+        let state = try SwiftDataSnipLibrary.fullEnrollmentState(from: enrollment?.referencesData)
+        let deletes = try SwiftDataSnipLibrary.cloudPendingDeletes(namespaceKey: key, context: context).map {
+            guard let value = $0.value else { throw SnipLibraryError.invalidStore }
+            return value
+        }
+        let recoveries = try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
+            .filter { $0.namespaceKey == key }.sorted { $0.eventKey < $1.eventKey }
+        let kinds = try recoveries.filter { $0.eventKey.hasPrefix("full-recovery-") }.map { record in
+            guard let envelope = CloudWirePayloadEnvelope.decode(record.payload), envelope.format == .fullRecordV1 else {
+                throw CloudFullStorageError.invalidBatchReplay
+            }
+            let input = try JSONDecoder().decode(CloudFullRecoveryInput.self, from: envelope.payload)
+            guard input.storageVersion == 1, input.namespaceKey == key,
+                record.eventKey == "full-recovery-\(input.batchID.uuidString.lowercased())" else {
+                throw CloudFullStorageError.invalidBatchReplay
+            }
+            return input.kind.rawValue
+        }
+        let staged = try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
+            .filter { $0.namespaceKey == key }.compactMap { record -> CloudFullBatchCommit? in
+                guard let envelope = CloudWirePayloadEnvelope.decode(record.payload), envelope.format == .fullRecordV1 else {
+                    return nil
+                }
+                let batch = try JSONDecoder().decode(CloudFullBatchCommit.self, from: envelope.payload)
+                guard batch.namespaceKey == key, batch.batchID == record.batchID, batch.storageVersion == 1 else {
+                    throw CloudFullStorageError.invalidBatchReplay
+                }
+                return batch
+            }
+        let engine = try context.fetch(FetchDescriptor<StoredCloudEngineState>())
+            .first { $0.namespaceKey == key }?.envelopeData
+        let receipt = try transitionID.flatMap {
+            try SwiftDataCloudFullOperationReceipts.digest(for: .reenableTransition($0),
+                namespaceKey: key, context: context)
+        }
+        let read = FailedEnableStoreRead(snapshot: snapshot, seenRequestIDs: loaded.state.seenRequestIDs,
+            storage: CloudFullStorageSnapshot(readyEntities: entities.filter { !$0.isDeferred },
+                deferredEntities: entities.filter(\.isDeferred), pendingDeletes: deletes,
+                conflicts: conflicts, enrolledEntities: state.references,
+                quarantines: try SwiftDataSnipLibrary.quarantines(namespaceKey: key, context: context),
+                namespaceState: state.namespaceState), recoveryDescriptors: recoveries.map(\.payload))
+        guard !context.hasChanges else { throw FailedEnableEvidenceError.changed }
+        try locks.require(lockURL)
+        return Self(value: read, receipt: receipt, staged: staged, engineState: engine, recoveryKinds: kinds)
     }
 }
