@@ -41,14 +41,14 @@ package enum CloudAttachmentOrderWrite {
   }
 
   /// Snips whose metadata saves wait for the next fetch after this send: an order-carrying
-  /// conflict shows only part of the other device's order, and a companion that met another
-  /// device's delete would only meet it again.
-  /// - Parameter acknowledgedMetadataIDs: metadata records of present, acknowledged attachments
-  ///   after the send committed. A save of one of those was a companion.
+  /// conflict shows only part of the other device's order, and a position-only save that met
+  /// another device's delete would only meet it again.
+  /// - Parameter presentMetadataIDs: metadata records of attachments still present at the same
+  ///   identity after the send committed. Content edits remap to a new identity instead.
   package static func snipsAwaitingFetch(
     after sent: CloudSentBatch,
     outbound: CloudOutboundBatch,
-    acknowledgedMetadataIDs: Set<CloudRecordID>
+    presentMetadataIDs: Set<CloudRecordID>
   ) -> Set<UUID> {
     var drafts: [CloudRecordID: CloudRecordDraft] = [:]
     for case .save(let draft) in outbound.operations
@@ -61,7 +61,7 @@ package enum CloudAttachmentOrderWrite {
       switch item {
       case .conflict(_, let server) where carriesOrder(conflict: server, draft: draft):
         held.insert(snipID)
-      case .unknownItem(let id) where acknowledgedMetadataIDs.contains(id):
+      case .unknownItem(let id) where presentMetadataIDs.contains(id):
         held.insert(snipID)
       default:
         continue

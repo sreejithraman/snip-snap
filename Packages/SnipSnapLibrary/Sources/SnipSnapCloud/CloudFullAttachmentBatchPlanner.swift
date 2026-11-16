@@ -196,9 +196,9 @@ struct CloudFullAttachmentBatchPlanner {
               expectedRevision: local.revision
             ))
           }
-          // SM33-F2A: an acknowledged row is saved only to carry its snip's order. It waits for
-          // the fetch that brings the other device's delete instead of returning under a new ID.
-          if local.metadataAccepted { return .handled(nil) }
+          // SM33-D8-2: a move or sibling shift doesn't protect an attachment from deletion.
+          // Keep its identity until a fetch brings the delete; content edits still remap.
+          if local.metadataAccepted || onlyChangesPosition(local) { return .handled(nil) }
           return .handled(metadataUnknown(local))
         }
         guard local.isLocallyPresent, local.payloadAccepted, !local.metadataAccepted else {
@@ -225,6 +225,20 @@ struct CloudFullAttachmentBatchPlanner {
       expectedRevision: local.revision,
       failure: Self.attachmentFailure(failure)
     ))
+  }
+
+  private func onlyChangesPosition(_ local: CloudAttachmentPublication) -> Bool {
+    guard let shadow = local.metadataShadowData,
+      let base = try? CloudAttachmentRecordCodec.acknowledgedMetadata(shadow)
+    else { return false }
+    let metadata = local.metadata
+    return metadata.attachmentID == base.attachmentID
+      && metadata.snipID == base.snipID
+      && metadata.fileName == base.fileName
+      && metadata.contentType == base.contentType
+      && metadata.byteCount == base.byteCount
+      && metadata.sha256 == base.sha256
+      && metadata.payloadIdentity == base.payloadIdentity
   }
 
   private func metadataUnknown(_ local: CloudAttachmentPublication) -> CloudAttachmentTransition {

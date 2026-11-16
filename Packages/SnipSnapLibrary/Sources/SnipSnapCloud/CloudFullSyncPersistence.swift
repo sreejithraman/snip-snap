@@ -697,16 +697,16 @@ extension CloudFullSyncPersistence {
       orderWritesAwaitingFetch = []
     case .sent(let sent)?:
       guard let outbound = committed?.outbound else { return }
-      var acknowledgedMetadataIDs: Set<CloudRecordID> = []
+      var presentMetadataIDs: Set<CloudRecordID> = []
       if sent.items.contains(where: { if case .unknownItem = $0 { true } else { false } }) {
-        acknowledgedMetadataIDs = Set(
+        presentMetadataIDs = Set(
           try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey).publications
-            .filter { $0.isLocallyPresent && $0.metadataAccepted }
+            .filter(\.isLocallyPresent)
             .map { CloudAttachmentRecordCodec.recordID($0.metadataIdentity) }
         )
       }
       orderWritesAwaitingFetch.formUnion(CloudAttachmentOrderWrite.snipsAwaitingFetch(
-        after: sent, outbound: outbound, acknowledgedMetadataIDs: acknowledgedMetadataIDs
+        after: sent, outbound: outbound, presentMetadataIDs: presentMetadataIDs
       ))
     case nil:
       return
