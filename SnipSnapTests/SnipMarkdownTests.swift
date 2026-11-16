@@ -18,7 +18,7 @@ final class SnipMarkdownTests: XCTestCase {
         let rendered = await SnipMarkdown.prepare("# Main\nBody\n\n###### Small\nMore").fullText
 
         XCTAssertEqual(String(rendered.characters), "Main\nBody\n\nSmall\nMore")
-        let headings = rendered.runs.filter { $0.font == .body.weight(.semibold) }
+        let headings = rendered.runs.filter { $0.font == AppTypography.markdownHeadingFont }
         XCTAssertEqual(headings.map { String(rendered[$0.range].characters) }, ["Main", "Small"])
     }
 

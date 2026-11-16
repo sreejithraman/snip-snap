@@ -197,19 +197,19 @@ struct ClipboardItemRow: View {
                 if showsSyncStatus {
                     if !entry.isSyncEligible {
                         Label(model.localDeviceLabel, systemImage: "iphone")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .appFont(.caption).foregroundStyle(.secondary)
                         if model.syncIsActive {
-                            Text("Pin to sync this file").font(.caption).foregroundStyle(.secondary)
+                            Text("Pin to sync this file").appFont(.caption).foregroundStyle(.secondary)
                         }
                     } else if model.syncIsActive && model.pendingUploadIDs.contains(entry.id) {
                         if model.syncErrorMessage != nil {
                             Label("Upload failed", systemImage: "exclamationmark.icloud")
-                                .font(.caption).foregroundStyle(.red)
+                                .appFont(.caption).foregroundStyle(.red)
                             Button("Retry clipboard sync") { Task { await model.synchronize() } }
                                 .buttonStyle(.borderless)
                         } else {
                             Label(model.isSyncing ? "Uploading…" : "Waiting for sync", systemImage: "icloud.and.arrow.up")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .appFont(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }

@@ -74,7 +74,7 @@ struct ShortcutSettingsView: View {
 
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(SnipSnapColors.textError)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding([.horizontal, .bottom])
@@ -143,7 +143,7 @@ private struct ShortcutSettingRow: View {
                     .frame(width: 122, height: 28)
             }
         }
-        .font(.body)
+        .appFont(.body)
     }
 }
 

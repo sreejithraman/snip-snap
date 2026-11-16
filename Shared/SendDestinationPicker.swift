@@ -180,7 +180,7 @@ private struct SendPickerMeasure: View {
 private struct SendPickerHeading: View {
     var body: some View {
         Text(ListDestinationPurpose.send.title)
-            .font(.subheadline.weight(.semibold))
+            .appFont(.subheadline, weight: .semibold)
             .foregroundStyle(.secondary)
             .accessibilityAddTraits(.isHeader)
             .frame(maxWidth: .infinity, alignment: .leading)

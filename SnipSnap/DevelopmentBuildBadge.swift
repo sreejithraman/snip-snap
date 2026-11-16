@@ -63,7 +63,7 @@ struct DevelopmentBuildBadge: View {
 
     var body: some View {
         Text(identity.badgeTitle)
-            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .font(AppTypography.font(size: 8, weight: .bold))
             .foregroundStyle(
                 SnipSnapColors.developmentBadgeLabel(
                     tone: identity.badgeTone,

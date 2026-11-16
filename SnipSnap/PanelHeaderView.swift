@@ -82,7 +82,7 @@ struct PanelHeaderView: View {
 
                 TextField("Search", text: $model.query)
                     .textFieldStyle(.plain)
-                    .font(.body)
+                    .appFont(.body)
                     .foregroundStyle(SnipSnapColors.textPrimary)
                     .focused($focusedTarget, equals: .search)
                     .disabled(model.editingID != nil)

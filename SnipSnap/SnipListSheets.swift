@@ -92,7 +92,7 @@ private struct SnipListIconBrowser: View {
                                 }
                             } header: {
                                 Text(category.title)
-                                    .font(.caption.weight(.semibold))
+                                    .appFont(.caption, weight: .semibold)
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, 10)
@@ -153,7 +153,7 @@ struct NewSnipListSheet: View {
     var body: some View {
         VStack(alignment: .leading) {
             Text("New list")
-                .font(.system(size: 15, weight: .semibold))
+                .font(AppTypography.font(size: 15, weight: .semibold))
             SnipListNameAndIconField(name: $name, selection: $systemImage)
                 .tint(SnipListAppearance(preset: color).color)
                 .textFieldStyle(.automatic)
@@ -225,7 +225,7 @@ struct SnipListEditSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
             Text("Edit list")
-                .font(.headline)
+                .appFont(.headline)
 
             HStack(spacing: SnipSnapSpacing.paneContentInset) {
                 Button { showsIcons = true } label: {
@@ -236,7 +236,7 @@ struct SnipListEditSheet: View {
                         .background(appearance.selectionFill, in: RoundedRectangle(cornerRadius: 16))
                         .overlay(alignment: .bottomTrailing) {
                             Image(systemName: "pencil.circle.fill")
-                                .font(.body)
+                                .appFont(.body)
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.primary, .background)
                                 .offset(x: 4, y: 4)
@@ -251,11 +251,11 @@ struct SnipListEditSheet: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(cleanedName.isEmpty ? list.displayName : cleanedName)
-                        .font(.system(.title2, design: .rounded, weight: .bold))
+                        .appFont(.title2, weight: .bold)
                         .lineLimit(2)
                         .foregroundStyle(appearance.color)
                     Text("Choose a look for your list.")
-                        .font(.subheadline)
+                        .appFont(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -263,7 +263,7 @@ struct SnipListEditSheet: View {
             .accessibilityElement(children: .contain)
 
             VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
-                Text("Name").font(.subheadline.weight(.semibold))
+                Text("Name").appFont(.subheadline, weight: .semibold)
                 TextField("List name", text: $name)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.large)

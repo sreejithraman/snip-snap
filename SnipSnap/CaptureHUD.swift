@@ -42,6 +42,7 @@ final class CaptureHUDController {
         dismissWorkItem?.cancel()
         let hostingView = NSHostingView(
             rootView: CaptureHUDView(message: message, symbol: symbol, detail: detail)
+                .appFont(.body)
         )
         panel.contentView = hostingView
         if let screen = NSScreen.main {
@@ -81,11 +82,11 @@ private struct CaptureHUDView: View {
                 .font(.system(size: 12, weight: .semibold))
             VStack(alignment: .leading, spacing: 2) {
                 Text(message)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(AppTypography.font(size: 13, weight: .medium))
                     .lineLimit(2)
                 if let detail {
                     Text(detail)
-                        .font(.caption)
+                        .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }

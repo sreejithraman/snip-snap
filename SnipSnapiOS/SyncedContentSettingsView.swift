@@ -79,7 +79,7 @@ struct SyncedContentSettingsView: View {
                     }
                     if let clipboard, let message = clipboard.persistentErrorMessage {
                         Label(message, systemImage: "exclamationmark.triangle")
-                            .font(.subheadline)
+                            .appFont(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if clipboard.syncIsActive {
@@ -151,7 +151,7 @@ struct SyncedContentSettingsView: View {
                             settingsLabel("Privacy policy", systemImage: "hand.raised")
                             Spacer()
                             Image(systemName: "arrow.up.right")
-                                .font(.footnote.weight(.semibold))
+                                .appFont(.footnote, weight: .semibold)
                                 .foregroundStyle(.tertiary)
                                 .accessibilityHidden(true)
                         }
@@ -273,7 +273,7 @@ struct SyncedContentSettingsView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.footnote)
+            .appFont(.footnote)
             .foregroundStyle(.secondary)
         }
     }

@@ -288,9 +288,9 @@ struct ClipboardEntryRow: View {
             } metadata: {
                 ClipboardEntryMetadata(entry: entry)
                 if let syncStatus, entry.isSyncEligible {
-                    Text(syncStatus).font(.caption2).foregroundStyle(.secondary)
+                    Text(syncStatus).appFont(.caption2).foregroundStyle(.secondary)
                     if syncStatus == String(localized: "Upload failed"), let retrySync {
-                        Button("Retry", action: retrySync).font(.caption2)
+                        Button("Retry", action: retrySync).appFont(.caption2)
                     }
                 }
             }
@@ -444,7 +444,7 @@ private struct ClipboardEntryMetadata: View {
             sourceApplication: entry.sourceApplication
         )
         if !entry.fileURLs.isEmpty && !entry.isSyncEligible {
-            Text("Only on this Mac").font(.caption2).foregroundStyle(.secondary)
+            Text("Only on this Mac").appFont(.caption2).foregroundStyle(.secondary)
                 .help("Pin to sync this file when clipboard sync is enabled.")
         }
     }

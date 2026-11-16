@@ -24,6 +24,8 @@ struct ItemRowText: View {
     var onActivate: (_ isPointerClick: Bool) -> Bool = { _ in true }
     var onDoubleClick: (() -> Void)? = nil
 
+    @Environment(\.fontResolutionContext) private var fontContext
+
     static var previewLineLimit: Int {
         SnipTextPresentation.previewLineLimit
     }
@@ -59,7 +61,7 @@ struct ItemRowText: View {
                     onDoubleClick: onDoubleClick
                 )
             } else {
-                let label = Text(content.presentation(lineLimit: lineLimit).preview)
+                let label = Text(AppTypography.attributedText(content.presentation(lineLimit: lineLimit).preview, in: fontContext))
                 (isDone ? label.strikethrough(color: strikethroughColor) : label)
                     .lineLimit(lineLimit)
                     .lineSpacing(lineSpacing)
@@ -70,7 +72,7 @@ struct ItemRowText: View {
         .redacted(reason: content.isLoading ? .placeholder : [])
         .accessibilityLabel(Text(content.accessibilityText))
         .allowsHitTesting(!content.isLoading)
-        .font(.body)
+        .appFont(.body)
 #if os(macOS)
         .foregroundStyle(SnipSnapColors.textPrimary)
         .opacity(isDone ? SnipSnapColors.doneTextOpacity : 1)

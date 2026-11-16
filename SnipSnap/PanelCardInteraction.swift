@@ -384,6 +384,7 @@ extension NSMenu {
 
     func addPanelSubmenu(_ title: String, systemImage: String? = nil, build: (NSMenu) -> Void) {
         let submenu = NSMenu(title: title)
+        submenu.font = AppTypography.nativeFont(size: NSFont.systemFontSize)
         submenu.autoenablesItems = false
         build(submenu)
 

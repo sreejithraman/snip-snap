@@ -228,6 +228,14 @@
 		AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */; };
 		AF7100000000000000000006 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
 		AF7100000000000000000007 /* AppFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7200000000000000000003 /* AppFeedbackTests.swift */; };
+		CFA100000000000000000001 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000001 /* AppTypography.swift */; };
+		CFA100000000000000000002 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000001 /* AppTypography.swift */; };
+		CFA100000000000000000003 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000001 /* AppTypography.swift */; };
+		CFA100000000000000000004 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000002 /* Fonts */; };
+		CFA100000000000000000005 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000002 /* Fonts */; };
+		CFA100000000000000000006 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000002 /* Fonts */; };
+		CFA100000000000000000007 /* AppTypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000003 /* AppTypographyTests.swift */; };
+		CFA100000000000000000008 /* AppTypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000003 /* AppTypographyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -474,6 +482,9 @@
 		AF7200000000000000000002 /* AppErrorDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppErrorDetailsView.swift; sourceTree = "<group>"; };
 		AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnackbarAndErrorPresentation.swift; sourceTree = "<group>"; };
 		AF7200000000000000000003 /* AppFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeedbackTests.swift; sourceTree = "<group>"; };
+		CFA200000000000000000001 /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
+		CFA200000000000000000002 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
+		CFA200000000000000000003 /* AppTypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/AppTypographyTests.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -540,6 +551,7 @@
 			children = (
 				D00000000000000000000005 /* Config */,
 				D70000000000000000000006 /* Shared */,
+				CFA200000000000000000003 /* AppTypographyTests.swift */,
 				700000000000000000000002 /* SnipSnap */,
 				700000000000000000000003 /* SnipSnapTests */,
 				E70000000000000000000001 /* SnipSnapiOS */,
@@ -697,6 +709,8 @@
 				A20000000000000000000004 /* Localizable.xcstrings */,
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
 				A20000000000000000000001 /* SnipSnapTheme.swift */,
+				CFA200000000000000000001 /* AppTypography.swift */,
+				CFA200000000000000000002 /* Fonts */,
 				AF7200000000000000000001 /* AppFailure.swift */,
 				AF7200000000000000000002 /* AppErrorDetailsView.swift */,
 				AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */,
@@ -1016,6 +1030,7 @@
 				A1000000000000000000000B /* AppIconDev.icon in Resources */,
 				A10000000000000000000007 /* Localizable.xcstrings in Resources */,
 				100000000000000000000008 /* Assets.xcassets in Resources */,
+				CFA100000000000000000004 /* Fonts in Resources */,
 				B10000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1035,6 +1050,7 @@
 				A1000000000000000000000C /* AppIconDev.icon in Resources */,
 				A10000000000000000000008 /* Localizable.xcstrings in Resources */,
 				E10000000000000000000008 /* Assets.xcassets in Resources */,
+				CFA100000000000000000005 /* Fonts in Resources */,
 				E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1058,6 +1074,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */,
+				CFA100000000000000000006 /* Fonts in Resources */,
 				A10000000000000000000009 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1139,6 +1156,7 @@
 				BC1000000000000000000004 /* SnipMarkdownContent.swift in Sources */,
 				AB9100000000000000000001 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000001 /* SnipSnapTheme.swift in Sources */,
+				CFA100000000000000000001 /* AppTypography.swift in Sources */,
 				AF7100000000000000000001 /* AppFailure.swift in Sources */,
 				AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */,
 				AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */,
@@ -1155,6 +1173,7 @@
 			files = (
 				10000000000000000000001F /* TestSupport.swift in Sources */,
 				100000000000000000000020 /* SnipRepositoryTests.swift in Sources */,
+				CFA100000000000000000007 /* AppTypographyTests.swift in Sources */,
 				100000000000000000000021 /* AppModelTests.swift in Sources */,
 				C2610B260000000000000100 /* AppModelCLISequentialTests.swift in Sources */,
 				AF7100000000000000000006 /* AppFeedbackTests.swift in Sources */,
@@ -1231,6 +1250,7 @@
 				BC1000000000000000000005 /* SnipMarkdownContent.swift in Sources */,
 				AB9100000000000000000002 /* ItemRowContent.swift in Sources */,
 				A10000000000000000000002 /* SnipSnapTheme.swift in Sources */,
+				CFA100000000000000000002 /* AppTypography.swift in Sources */,
 				AF7100000000000000000002 /* AppFailure.swift in Sources */,
 				AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */,
 				AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */,
@@ -1246,6 +1266,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1000000000000000000000B /* IOSAppModelTests.swift in Sources */,
+				CFA100000000000000000008 /* AppTypographyTests.swift in Sources */,
 				C2610B260000000000000201 /* IOSAttachmentTestSupport.swift in Sources */,
 				C2610B260000000000000200 /* IOSCloudTestSupport.swift in Sources */,
 				C2610B260000000000000010 /* IOSModelTestSupport.swift in Sources */,
@@ -1293,6 +1314,7 @@
 			files = (
 				A1000000000000000000000A /* SnipCompletionLanguage.swift in Sources */,
 				A10000000000000000000011 /* SnipSnapTheme.swift in Sources */,
+				CFA100000000000000000003 /* AppTypography.swift in Sources */,
 				AF7100000000000000000003 /* AppFailure.swift in Sources */,
 				AC1000000000000000000003 /* SnipListAppearance.swift in Sources */,
 				F10000000000000000000001 /* ShareViewController.swift in Sources */,

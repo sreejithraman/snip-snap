@@ -605,12 +605,12 @@ struct CollectionEmptyState: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: systemImage)
-                .font(.title3.weight(.regular))
+                .appFont(.title3, weight: .regular)
                 .foregroundStyle(.tertiary)
                 .accessibilityHidden(true)
-            Text(title).font(.subheadline.weight(.semibold))
+            Text(title).appFont(.subheadline, weight: .semibold)
             Text(detail)
-                .font(.footnote)
+                .appFont(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }

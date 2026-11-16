@@ -29,6 +29,7 @@ struct ExpandableSnipText: View {
     var onActivate: (_ isPointerClick: Bool) -> Bool = { _ in true }
     var onDoubleClick: (() -> Void)? = nil
 
+    @Environment(\.fontResolutionContext) private var fontContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expansion = SnipTextExpansion.closed
     @State private var limitedHeight: CGFloat = 0
@@ -101,7 +102,7 @@ struct ExpandableSnipText: View {
     }
 
     private func snipText(_ value: AttributedString) -> some View {
-        let text = Text(value)
+        let text = Text(AppTypography.attributedText(value, in: fontContext))
         return (isDone ? text.strikethrough(color: strikethroughColor) : text)
             .lineSpacing(lineSpacing)
     }

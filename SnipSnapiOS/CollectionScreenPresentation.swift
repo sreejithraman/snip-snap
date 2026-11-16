@@ -30,7 +30,7 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(title.isEmpty ? .inline : .large)
             .background {
-                RoundedNavigationTitle(color: UIColor(titleColor))
+                AppNavigationTitle(color: UIColor(titleColor))
                     .frame(width: 0, height: 0)
             }
             .toolbar {
@@ -66,7 +66,7 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
 }
 
 /// Style this screen's native title while keeping its scroll and accessibility behavior.
-private struct RoundedNavigationTitle: UIViewControllerRepresentable {
+private struct AppNavigationTitle: UIViewControllerRepresentable {
     let color: UIColor
 
     func makeUIViewController(context: Context) -> TitleController {
@@ -104,8 +104,8 @@ private struct RoundedNavigationTitle: UIViewControllerRepresentable {
             }
             func styled(_ source: UINavigationBarAppearance) -> UINavigationBarAppearance {
                 let appearance = source.copy() as! UINavigationBarAppearance
-                appearance.titleTextAttributes[.font] = UIFont.rounded(size: 17, weight: .semibold)
-                appearance.largeTitleTextAttributes[.font] = UIFont.rounded(size: 34, weight: .bold)
+                appearance.titleTextAttributes[.font] = AppTypography.preferredFont(.headline, compatibleWith: traitCollection)
+                appearance.largeTitleTextAttributes[.font] = AppTypography.preferredFont(.largeTitle, weight: .bold, compatibleWith: traitCollection)
                 appearance.titleTextAttributes[.foregroundColor] = titleColor
                 appearance.largeTitleTextAttributes[.foregroundColor] = titleColor
                 return appearance

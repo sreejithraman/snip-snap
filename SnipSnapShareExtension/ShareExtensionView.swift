@@ -40,7 +40,7 @@ struct ShareExtensionView: View {
                                 action: { Task { await model.save() } }
                             ) {
                                 Image(systemName: "arrow.up")
-                                    .font(.body.weight(.semibold))
+                                    .appFont(.body, weight: .semibold)
                             }
                             // The glass style keeps the first tint unless the button's identity changes.
                             .id(model.destinationListID)
@@ -81,7 +81,7 @@ struct ShareExtensionView: View {
                                         countStyle: .file
                                     )
                                 )
-                                .font(.caption)
+                                .appFont(.caption)
                                 .foregroundStyle(.secondary)
                             }
                         } icon: {

@@ -323,7 +323,7 @@ struct CompactItemPreviews<Item: Identifiable, Preview: View>: View {
                 }
                 if items.count > 3 {
                     Text("+\(items.count - 3)")
-                        .font(.caption)
+                        .appFont(.caption)
                         .foregroundStyle(.secondary)
                 }
             }

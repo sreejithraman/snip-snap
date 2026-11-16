@@ -14,7 +14,7 @@ struct RecoveredSnipRow: View {
                 .lineLimit(3)
                 .foregroundStyle(.primary)
             Label("Recovered snip", systemImage: "arrow.uturn.backward.circle.fill")
-                .font(.caption.weight(.semibold))
+                .appFont(.caption, weight: .semibold)
                 .foregroundStyle(.orange)
         }
         .padding(.vertical, 4)
