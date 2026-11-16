@@ -284,7 +284,8 @@ package enum ClipboardBindingResetStep: Sendable {
 
     /// Invoke before the saved-snips generation is deleted, using its current scope.
     /// While an account reset is pending, it leaves the reset marker in place of the binding.
-    /// It deletes and binds nothing unless the device's iCloud account is the generation's account.
+    /// It deletes and binds nothing unless the device's iCloud account is the generation's account,
+    /// which it checks before binding and before each delete attempt.
     public func deleteSyncedHistory(generation: String) async throws {
         let unbinding = try await beginUnbinding()
         defer { endUnbinding(unbinding) }
@@ -292,7 +293,11 @@ package enum ClipboardBindingResetStep: Sendable {
         try requireCurrentUnbinding(unbinding)
         let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
         let transport = try bind(to: generation)
-        try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { try await transport.deleteAll() }
+        try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { @MainActor in
+            try await self.requireAccount(for: generation)
+            try self.requireCurrentUnbinding(unbinding)
+            try await transport.deleteAll()
+        }
         if hadBinding { try await store.setAside() }
         try releaseBinding()
         await worker.reset()

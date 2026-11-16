@@ -93,12 +93,16 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         _ = try await calls.saveZone(CKRecordZone(zoneID: zone), .small)
         zoneReady = true
     }
+    /// Reads without creating the zone; only `save` creates it.
     package func fetch() async throws -> ClipboardCloudSnapshot {
-        try await prepare()
         let record: CKRecord
         do { record = try await transferRecord(CKRecord.ID(recordName: "manifest", zoneID: zone)) }
         catch let error as CKError where error.code == .unknownItem {
             cache = [:]; uploaded = []; fetchedReferences = []
+            return ClipboardCloudSnapshot()
+        } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
+            // The zone is gone, so the next save creates it again.
+            cache = [:]; uploaded = []; fetchedReferences = []; zoneReady = false
             return ClipboardCloudSnapshot()
         }
         guard let asset = record["payload"] as? CKAsset, let url = asset.fileURL else { throw ClipboardCloudError.invalidPayload }

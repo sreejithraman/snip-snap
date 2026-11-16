@@ -1,5 +1,6 @@
 #if DEBUG
 import CloudKit
+import CryptoKit
 import Foundation
 
 @_spi(Maintainer)
@@ -71,18 +72,110 @@ public enum CloudDevelopmentTransportContract {
           try await validateAccount()
           try await cleanupZone(
             delete: { try await database.deleteRecordZone(withID: zoneID) },
-            zoneExists: {
-              do {
-                _ = try await database.recordZone(for: zoneID)
-                return true
-              } catch let error as CKError where error.code == .zoneNotFound {
-                return false
-              }
-            }
+            zoneExists: { try await zoneExists(zoneID, in: database) }
           )
         }
       }
     )
+
+    let clipboardGeneration = "snipsnap-contract-clipboard-\(UUID().uuidString.lowercased())"
+    let clipboard = CloudKitClipboardTransport(database: database, generation: clipboardGeneration)
+    let clipboardZone = clipboardZoneID(generation: clipboardGeneration)
+    try await runWithCleanup(
+      operation: {
+        try await exerciseClipboard(
+          transport: clipboard, name: "CloudKit",
+          zoneExists: { try await zoneExists(clipboardZone, in: database) },
+          requireMissingZone: { try await requireManifestReadReportsZoneNotFound(clipboardZone, in: database) },
+          validateAccount: validateAccount
+        )
+      },
+      cleanup: {
+        try await step("CloudKit: cleanup \(clipboardZone.zoneName)") {
+          try await validateAccount()
+          try await cleanupZone(
+            delete: { try await database.deleteRecordZone(withID: clipboardZone) },
+            zoneExists: { try await zoneExists(clipboardZone, in: database) }
+          )
+        }
+      }
+    )
+  }
+
+  private static func zoneExists(_ zoneID: CKRecordZone.ID, in database: CKDatabase) async throws -> Bool {
+    do {
+      _ = try await database.recordZone(for: zoneID)
+      return true
+    } catch let error as CKError where error.code == .zoneNotFound {
+      return false
+    }
+  }
+
+  /// A missing clipboard zone must read as `.zoneNotFound`, the code that makes the transport create
+  /// its zone again on the next save.
+  private static func requireManifestReadReportsZoneNotFound(
+    _ zoneID: CKRecordZone.ID, in database: CKDatabase
+  ) async throws {
+    do {
+      _ = try await database.record(for: CKRecord.ID(recordName: "manifest", zoneID: zoneID))
+    } catch let error as CKError where error.code == .zoneNotFound {
+      return
+    } catch let error as CKError {
+      throw ContractError.missingZoneReadReturned(code: error.code.rawValue)
+    }
+    throw ContractError.missingZoneReadReturned(code: nil)
+  }
+
+  /// The zone `CloudKitClipboardTransport` names for `generation`; the transport keeps its own private.
+  static func clipboardZoneID(generation: String) -> CKRecordZone.ID {
+    let digest = SHA256.hash(data: Data(generation.utf8)).map { String(format: "%02x", $0) }.joined()
+    return CKRecordZone.ID(zoneName: "SnipSnapClipboard-" + String(digest.prefix(24)))
+  }
+
+  /// A clipboard fetch reads without creating the zone; only a save creates it, and `deleteAll()`
+  /// removes it. `requireMissingZone` checks the code a read of the missing zone returns.
+  static func exerciseClipboard(
+    transport: any ClipboardCloudTransport,
+    name: String,
+    zoneExists: () async throws -> Bool,
+    requireMissingZone: () async throws -> Void,
+    validateAccount: () async throws -> Void = {}
+  ) async throws {
+    try await step("\(name) clipboard: a zone never created reads as missing") {
+      try await requireMissingZone()
+    }
+    try await step("\(name) clipboard: empty fetch") {
+      try await validateAccount()
+      let fetched = try await transport.fetch()
+      guard fetched.entries.isEmpty, fetched.tombstones.isEmpty, fetched.version == nil else {
+        throw ContractError.clipboardFetchWasNotEmpty
+      }
+    }
+    try await step("\(name) clipboard: fetch created no zone") {
+      guard try await !zoneExists() else { throw ContractError.clipboardFetchCreatedZone }
+    }
+    let entryID = UUID()
+    let payload = Data("Snip Snap Cloud Dev clipboard contract".utf8)
+    try await step("\(name) clipboard: save creates zone") {
+      try await validateAccount()
+      try await transport.save(
+        ClipboardCloudSnapshot(entries: [entryID: payload]), cancellation: ClipboardCloudCancellation()
+      )
+      guard try await zoneExists() else { throw ContractError.clipboardZoneWasNotCreated }
+    }
+    try await step("\(name) clipboard: fetch saved entry") {
+      guard try await transport.fetch().entries == [entryID: payload] else {
+        throw ContractError.clipboardEntryWasNotFetched
+      }
+    }
+    try await step("\(name) clipboard: delete all") {
+      try await validateAccount()
+      try await transport.deleteAll()
+      guard try await !zoneExists() else { throw ContractError.clipboardZoneStillExists }
+    }
+    try await step("\(name) clipboard: a deleted zone reads as missing") {
+      try await requireMissingZone()
+    }
   }
 
   static func runWithCleanup(
@@ -269,6 +362,13 @@ public enum CloudDevelopmentTransportContract {
     case deleteWasNotAccepted
     case deletedRecordStillExists
     case zoneCleanupWasNotConfirmed
+    case clipboardFetchWasNotEmpty
+    case clipboardFetchCreatedZone
+    case clipboardZoneWasNotCreated
+    case clipboardEntryWasNotFetched
+    case clipboardZoneStillExists
+    /// A read of a missing zone returned this `CKError.Code` raw value, or nil when it found a record.
+    case missingZoneReadReturned(code: Int?)
   }
 }
 #endif

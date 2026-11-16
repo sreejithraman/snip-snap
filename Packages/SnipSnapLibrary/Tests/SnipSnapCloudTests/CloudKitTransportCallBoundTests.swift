@@ -124,14 +124,70 @@ final class CloudKitTransportCallBoundTests: XCTestCase {
             DatabaseCall(name: "modifyRecords", kind: .small),
             DatabaseCall(name: "modifyRecordZones", kind: .small),
         ])
+        // The fetch creates no zone; the save creates it before writing.
         XCTAssertEqual(clipboardLog.calls, [
+            DatabaseCall(name: "record", kind: .transfer),
+            DatabaseCall(name: "record", kind: .transfer),
             DatabaseCall(name: "saveZone", kind: .small),
-            DatabaseCall(name: "record", kind: .transfer),
-            DatabaseCall(name: "record", kind: .transfer),
             DatabaseCall(name: "modifyRecords", kind: .transfer),
             DatabaseCall(name: "modifyRecords", kind: .transfer),
             DatabaseCall(name: "deleteZone", kind: .small),
         ])
+    }
+
+    func testAFetchFromAMissingZoneCreatesNoZoneAndTheNextSaveDoes() async throws {
+        try await assertMissingZoneReadsAsEmpty(.zoneNotFound)
+    }
+
+    func testAFetchFromAUserDeletedZoneCreatesNoZoneAndTheNextSaveDoes() async throws {
+        try await assertMissingZoneReadsAsEmpty(.userDeletedZone)
+    }
+
+    func testAFetchWithNoManifestReadsAsEmptyAndKeepsTheZone() async throws {
+        let log = DatabaseCallLog()
+        let transport = makeClipboardTransport(calls: recordingCalls(log) { _ in throw CKError(.unknownItem) })
+
+        for _ in 0..<2 {
+            let fetched = try await transport.fetch()
+            assertEmpty(fetched)
+            try await transport.save(oneEntry, cancellation: ClipboardCloudCancellation())
+        }
+
+        // The zone exists, so only the first save creates it.
+        XCTAssertEqual(log.calls, [read, saveZone, write, write, read, write, write])
+    }
+
+    /// Every read fails with `code`. Each fetch reads as empty with no zone call, and the save after it
+    /// creates the zone again, since it may be gone.
+    private func assertMissingZoneReadsAsEmpty(
+        _ code: CKError.Code, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let log = DatabaseCallLog()
+        let transport = makeClipboardTransport(calls: recordingCalls(log) { _ in throw CKError(code) })
+
+        for _ in 0..<2 {
+            let fetched = try await transport.fetch()
+            assertEmpty(fetched, file: file, line: line)
+            try await transport.save(oneEntry, cancellation: ClipboardCloudCancellation())
+        }
+
+        let fetchThenSave = [read, saveZone, write, write]
+        XCTAssertEqual(log.calls, fetchThenSave + fetchThenSave, file: file, line: line)
+    }
+
+    private var oneEntry: ClipboardCloudSnapshot {
+        ClipboardCloudSnapshot(entries: [UUID(): Data("new entry".utf8)])
+    }
+    private var read: DatabaseCall { DatabaseCall(name: "record", kind: .transfer) }
+    private var saveZone: DatabaseCall { DatabaseCall(name: "saveZone", kind: .small) }
+    private var write: DatabaseCall { DatabaseCall(name: "modifyRecords", kind: .transfer) }
+
+    private func assertEmpty(
+        _ snapshot: ClipboardCloudSnapshot, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertTrue(snapshot.entries.isEmpty, file: file, line: line)
+        XCTAssertTrue(snapshot.tombstones.isEmpty, file: file, line: line)
+        XCTAssertNil(snapshot.version, file: file, line: line)
     }
 
     private func makeClipboardFixture() throws -> ClipboardFixture {
