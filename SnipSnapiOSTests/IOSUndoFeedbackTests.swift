@@ -408,6 +408,38 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         XCTAssertFalse(model.canRetryFailure(failure))
     }
 
+    func testCopyMarksUnchangedContentDoneAfterRepositoryMetadataRefresh() async throws {
+        let original = Snip(content: "Copied snapshot", origin: .quickEntry)
+        let destination = SnipList(id: UUID(), name: "Moved", systemImage: "folder", position: 1)
+        let library = ModelTestLibrary(snips: [original], lists: [.inbox, destination])
+        let model = IOSAppModel(library: library)
+        await model.load()
+        var refreshed = original
+        refreshed.source = SnipSource(applicationName: "Updated source")
+        refreshed.listID = destination.id
+        refreshed.manualPosition = 42
+        refreshed.updatedAt = original.updatedAt.addingTimeInterval(60)
+        _ = try await library.perform(
+            .restoreReplacing(snips: [refreshed], id: original.id, expectedUpdatedAt: original.updatedAt),
+            sortedBy: .manual
+        )
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+
+        let copiedAndMarked = await coordinator.copyText(snips: [original], model: model)
+
+        XCTAssertTrue(copiedAndMarked)
+        XCTAssertEqual(pasteboard.writes, [[.text("Copied snapshot")]])
+        let snapshot = await library.checkedSnapshot(sortedBy: .manual)
+        let current = try XCTUnwrap(snapshot.snips.first)
+        XCTAssertTrue(current.isDone)
+        XCTAssertEqual(current.source, refreshed.source)
+        XCTAssertEqual(current.listID, destination.id)
+        XCTAssertEqual(current.manualPosition, 42)
+        XCTAssertNil(model.failure)
+        XCTAssertEqual(model.toast?.action, .undoDone)
+    }
+
     func testCopyDoesNotMarkNewerRepositoryContentDoneFromAStaleModel() async throws {
         let original = Snip(content: "Copied snapshot", origin: .quickEntry)
         let library = ModelTestLibrary(snips: [original])
