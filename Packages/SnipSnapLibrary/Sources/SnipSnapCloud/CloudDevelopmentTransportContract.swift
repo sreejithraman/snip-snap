@@ -184,10 +184,11 @@ public enum CloudDevelopmentTransportContract {
   indirect enum Cause: Sendable {
     case contract(String), cloud(Int), oracle(String), deadline(String)
     case step(String, [Cause]), cleanup(CloudDevelopmentCleanupFailure)
-    case redacted, invalidEvidence, evidenceWrite
+    case redacted, invalidEvidence, evidenceWrite, cancelled
 
     init(_ error: Error) {
       switch error {
+      case is CancellationError: self = .cancelled
       case let error as StepFailure: self = .step(Self.stage(error.stage), error.causes)
       case let error as ContractError: self = .contract(String(describing: error))
       case let error as CKError: self = .cloud(error.errorCode)
@@ -214,6 +215,7 @@ public enum CloudDevelopmentTransportContract {
       case .redacted: "redacted-error"
       case .invalidEvidence: "invalid-contract-evidence"
       case .evidenceWrite: "evidence-write-failed"
+      case .cancelled: "cancelled"
       }
     }
 
