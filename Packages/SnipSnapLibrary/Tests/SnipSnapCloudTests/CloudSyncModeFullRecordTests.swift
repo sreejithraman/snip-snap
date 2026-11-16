@@ -60,6 +60,27 @@ extension ICloudSyncModeCoordinatorTests {
 
         let result = try await retry.enableOrRetry()
 
+        let review = try await SnipSyncModeStore(reopened).failedEnableReview.snapshot()
+        XCTAssertEqual(review.sourceStoreID, interrupted.activeStore.id)
+        let issue = try XCTUnwrap(
+            review.issues.first { $0.entityID == .snip(snip.id) },
+            "The checked rejected-value retry must durably expose its local setup alternative"
+        )
+        guard case .snip(let localVersion)? = issue.localVersionAtReview else {
+            return XCTFail("The setup comparison must retain the source snip")
+        }
+        XCTAssertEqual(localVersion.id, snip.id)
+        XCTAssertEqual(localVersion.content, "offline edit survives retry")
+        XCTAssertFalse(localVersion.isDone)
+        let retainedBundle = try FailedEnableEvidenceFile(root: root)
+            .read(interrupted.activeStore.id)
+        let retained = try XCTUnwrap(retainedBundle)
+        let storedIssue = try XCTUnwrap(retained.namespaces.flatMap(\.reviews).first {
+            $0.reference.kind == .snip
+                && $0.reference.domainID == snip.id.uuidString.lowercased()
+        })
+        XCTAssertEqual(issue.id.uuidString.lowercased(), storedIssue.id)
+
         XCTAssertEqual(result.state, .on)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [snip.id])
