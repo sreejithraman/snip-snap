@@ -7400,6 +7400,10 @@ private struct AttachmentSettlement: Equatable, CustomTestStringConvertible {
   }
 }
 
+private enum AttachmentEditProtectedFromDeletion: CaseIterable, Sendable {
+  case name, type, payload
+}
+
 @Suite(.serialized)
 private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport {
   @Test(arguments: AttachmentMatrixCell.holderCells)
@@ -7664,6 +7668,125 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     let fetchedPlan = try await local.store.pendingChanges()
     #expect(metadataSavePositions(in: fetchedPlan) == [.b: 0, .a: 1],
       "L=\(role.rawValue) the order write goes again without C.")
+  }
+
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testAPositionOnlyMoveWaitsForAnotherDevicesDelete(_ role: AttachmentMatrixRole) async throws {
+    try await assertPositionOnlyEditWaitsForDelete(role, removingSibling: false)
+  }
+
+  @Test(arguments: AttachmentMatrixRole.allCases)
+  func testASiblingRemovalShiftWaitsForAnotherDevicesDelete(_ role: AttachmentMatrixRole) async throws {
+    try await assertPositionOnlyEditWaitsForDelete(role, removingSibling: true)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAMovedAttachmentWithAContentEditStillRemapsAfterAnotherDevicesDelete(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = (clients.holder, clients.downloaded)
+    let c = AttachmentMatrixMember.c.id
+    let expectedName = edit == .name ? "edited C.txt" : "C.txt"
+    let expectedType = edit == .type ? "public.json" : "public.plain-text"
+    let expectedBytes = Data((edit == .payload ? "locally edited C payload" : "C payload").utf8)
+    try await keepAttachments([c, AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id],
+      ofSnip: local.snipID, in: local.library)
+    var snips = try await local.library.checkedSnapshot(sortedBy: .manual).snips
+    let snipIndex = try #require(snips.firstIndex { $0.id == local.snipID })
+    let attachmentIndex = try #require(snips[snipIndex].attachments.firstIndex { $0.id == c })
+    switch edit {
+    case .name:
+      snips[snipIndex].attachments[attachmentIndex].fileName = expectedName
+      _ = try await local.library.perform(.replaceAll(snips), sortedBy: .manual)
+    case .type:
+      snips[snipIndex].attachments[attachmentIndex].contentType = expectedType
+      _ = try await local.library.perform(.replaceAll(snips), sortedBy: .manual)
+    case .payload:
+      let saved = try await local.library.checkedSnapshot(sortedBy: .manual)
+      try expectedBytes.write(to: #require(saved.attachmentURLs[c]))
+    }
+    _ = try await local.store.pendingChanges()
+    try await keepAttachments([AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id],
+      ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sendPendingUntilSettled()
+    #expect(await local.server.fullSnapshot(for: metadataID(.c)) == nil)
+
+    try await local.sync.sendPendingUntilSettled()
+
+    let publications = try await snapshot(local.library, local.namespace).publications
+    let originalIDs = Set(AttachmentMatrixMember.initial.map(\.id))
+    let replacement = try #require(publications.first {
+      $0.isLocallyPresent && !originalIDs.contains($0.metadata.attachmentID)
+    }, "A name, type, or payload edit must survive under a new identity.")
+    let replacementID = replacement.metadata.attachmentID
+    #expect(!publications.contains { $0.isLocallyPresent && $0.metadata.attachmentID == c })
+    #expect(replacement.metadata.fileName == expectedName)
+    #expect(replacement.metadata.contentType == expectedType)
+    #expect(replacement.metadata.sha256 == Data(SHA256.hash(data: expectedBytes)))
+    #expect(replacement.metadata.byteCount == Int64(expectedBytes.count))
+    try await settle(lastSender: local, other: remote, local: local, remote: remote)
+
+    let expectedOrder = [replacementID, AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id]
+    for client in [local, remote] {
+      let saved = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = try #require(saved.snips.first { $0.id == client.snipID })
+      #expect(snip.attachments.map(\.id) == expectedOrder)
+      #expect(try await client.library.storedAttachmentReferencePositions(for: client.snipID)
+        == compactPositions(expectedOrder))
+      #expect(try await client.store.isSyncSettled())
+    }
+    let server = try #require(await local.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)))
+    #expect(server.encryptedFields["fileName"] == .string(expectedName))
+    #expect(server.encryptedFields["contentType"] == .string(expectedType))
+    #expect(server.encryptedFields["sha256"] == .data(Data(SHA256.hash(data: expectedBytes))))
+    #expect(await local.server.fullSnapshot(for: metadataID(.c)) == nil)
+    let downloads = CloudAttachmentTransferCoordinator(library: remote.library,
+      namespace: remote.namespace, payloadZone: CloudZoneID(name: "payload", ownerName: "owner"),
+      transport: remote.transport, maximumCacheBytes: 1_024)
+    let downloaded = try await downloads.download(attachmentID: replacementID)
+    #expect(try Data(contentsOf: downloaded) == expectedBytes)
+  }
+
+  private func assertPositionOnlyEditWaitsForDelete(
+    _ role: AttachmentMatrixRole,
+    removingSibling: Bool
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let (local, remote) = clients.devices(localRole: role)
+    let c = AttachmentMatrixMember.c.id
+    let localOrder: [AttachmentMatrixMember] = removingSibling ? [.b, .c] : [.c, .a, .b]
+    let survivors: [AttachmentMatrixMember] = removingSibling ? [.b] : [.a, .b]
+    try await keepAttachments(localOrder.map(\.id), ofSnip: local.snipID, in: local.library)
+    _ = try await local.store.pendingChanges()
+    let before = try #require(try await snapshot(local.library, local.namespace).publications.first {
+      $0.metadata.attachmentID == c
+    })
+    #expect(!before.metadataAccepted)
+    try await keepAttachments([AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id],
+      ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sendPendingUntilSettled()
+    #expect(await local.server.fullSnapshot(for: metadataID(.c)) == nil)
+
+    try await local.sync.sendPendingUntilSettled()
+
+    let held = try await snapshot(local.library, local.namespace).publications
+    #expect(held.first { $0.metadata.attachmentID == c } == before,
+      "A position-only change keeps its identity and base until the delete is fetched.")
+    #expect(Set(held.filter(\.isLocallyPresent).map { $0.metadata.attachmentID }) == Set(localOrder.map(\.id)),
+      "A move or sibling shift must never resurrect the deleted attachment under a new ID.")
+    #expect(try await local.store.isSyncSettled() == false)
+    let heldPlan = try await local.store.pendingChanges()
+    #expect(metadataSavePositions(in: heldPlan).isEmpty, "The snip waits for a fetch instead of resending.")
+    try await local.sync.fetchRemote()
+    let fetched = try await snapshot(local.library, local.namespace).publications
+    #expect(!fetched.contains { $0.isLocallyPresent && $0.metadata.attachmentID == c })
+    try await settle(lastSender: local, other: remote, local: local, remote: remote)
+    let result = try await settlement(of: AttachmentMatrixMember.initial, in: clients)
+    #expect(result == .agreed(on: survivors))
   }
 
   /// A held snip holds only its attachment metadata. Its text and other snips keep sending.
