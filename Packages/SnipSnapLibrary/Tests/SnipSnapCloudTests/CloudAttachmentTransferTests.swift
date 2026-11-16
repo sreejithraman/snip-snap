@@ -8243,6 +8243,174 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     #expect(try Data(contentsOf: await downloads.download(attachmentID: replacementID)) == expectedBytes)
   }
 
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testASentUnknownItemRemapsTheLatestPublicIntentBeforeStaging(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertSentUnknownRemapPreserves(edit, timing: .inFlight)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAStagedSentUnknownItemReplansTheLatestPublicIntent(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertSentUnknownRemapPreserves(edit, timing: .staged)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAReopenedSentUnknownItemRecoversBeforeOutboundReconciliation(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertSentUnknownRemapPreserves(edit, timing: .reopen)
+  }
+
+  @Test func testASentUnknownRemapDoesNotReconcileAnUnsubmittedSiblingsTerminalIntent() async throws {
+    try await assertSentUnknownRemapPreserves(.name, timing: .inFlight, editsUnsubmittedSibling: true)
+  }
+
+  private enum SentUnknownEditTiming { case inFlight, staged, reopen }
+
+  private func assertSentUnknownRemapPreserves(
+    _ edit: AttachmentEditProtectedFromDeletion,
+    timing: SentUnknownEditTiming,
+    editsUnsubmittedSibling: Bool = false
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    let remote = clients.downloaded
+    var local = holder
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let (a, b, c) = (AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id, AttachmentMatrixMember.c.id)
+    if editsUnsubmittedSibling {
+      try await renameAttachment(ofSnip: holder.snipID, attachmentID: a,
+        to: "failed A.txt", in: holder.library)
+      await holder.transport.failNextSentItem(metadataID(.a), failure: .accessDenied)
+      try await holder.sync.sendPendingUntilSettled()
+    }
+    let original = try await snapshot(holder.library, holder.namespace)
+    let originalC = try #require(original.publications.first { $0.metadata.attachmentID == c })
+    let originalA = try #require(original.publications.first { $0.metadata.attachmentID == a })
+    if editsUnsubmittedSibling { #expect(originalA.lastFailure == .accessDenied) }
+    try await keepAttachments([a, b], ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sendPendingUntilSettled()
+    #expect(await holder.server.fullSnapshot(for: metadataID(.c)) == nil)
+    try await renameAttachment(ofSnip: holder.snipID, attachmentID: c,
+      to: "submitted C.txt", in: holder.library)
+    let outbound = try await holder.store.pendingChanges()
+    #expect(outbound.operations.map(\.id) == [metadataID(.c)], "Only C's metadata save was submitted.")
+    guard case .save(let submitted)? = outbound.operations.first else {
+      Issue.record("Expected the actual submitted C metadata save.")
+      return
+    }
+    #expect(submitted.recordType == CloudAttachmentRecordCodec.metadataRecordType)
+    #expect(submitted.encryptedFields["attachmentID"] == .string(c.uuidString.lowercased()))
+    #expect(submitted.encryptedFields["fileName"] == .string("submitted C.txt"))
+    let submittedC = try #require(try await snapshot(holder.library, holder.namespace).publications.first {
+      $0.metadata.attachmentID == c
+    })
+    #expect(!submittedC.metadataAccepted && submittedC.payloadAccepted)
+    let sent = try await holder.transport.send(outbound)
+    #expect(sent.items == [.unknownItem(metadataID(.c))], "Use the real fake-server missing-record result.")
+    if timing != .inFlight { try await holder.store.stage(.sent(sent), outbound: outbound) }
+    let expectedName = edit == .name ? "latest C.txt" : "submitted C.txt"
+    let expectedType = edit == .type ? "public.json" : "public.plain-text"
+    let expectedBytes = Data((edit == .payload ? "latest C payload bytes" : "C payload").utf8)
+    switch edit {
+    case .name:
+      try await renameAttachment(ofSnip: holder.snipID, attachmentID: c,
+        to: expectedName, in: holder.library)
+    case .type:
+      var snips = try await holder.library.checkedSnapshot(sortedBy: .manual).snips
+      let index = try #require(snips.firstIndex { $0.id == holder.snipID })
+      let indexC = try #require(snips[index].attachments.firstIndex { $0.id == c })
+      snips[index].attachments[indexC].contentType = expectedType
+      _ = try await holder.library.perform(.replaceAll(snips), sortedBy: .manual)
+    case .payload:
+      let saved = try await holder.library.checkedSnapshot(sortedBy: .manual)
+      try expectedBytes.write(to: #require(saved.attachmentURLs[c]))
+    }
+    if editsUnsubmittedSibling {
+      try await renameAttachment(ofSnip: holder.snipID, attachmentID: a,
+        to: "unsubmitted A.txt", in: holder.library)
+    }
+    let unreconciled = try await snapshot(holder.library, holder.namespace)
+    #expect(unreconciled.publications.first { $0.metadata.attachmentID == c } == submittedC,
+      "The latest public edit must not have passed through pendingChanges before stage/apply.")
+    let publicIntent = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let latest = try #require(publicIntent.snips.first { $0.id == holder.snipID }?.attachments.first { $0.id == c })
+    #expect(latest.fileName == expectedName && latest.contentType == expectedType)
+    #expect(try Data(contentsOf: #require(publicIntent.attachmentURLs[c])) == expectedBytes)
+    if timing == .inFlight { try await holder.store.stage(.sent(sent), outbound: outbound) }
+    let stage = try #require(try await holder.store.stagedBatches().first { $0.batchID == sent.id })
+    let raw = try JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: #require(stage.rawBatchData))
+    #expect(raw.outbound == outbound, "Preparation must retain the original submitted draft, not rewrite history.")
+    guard case .sent(let rawSent) = raw.batch else {
+      Issue.record("Expected a durable raw sent batch.")
+      return
+    }
+    #expect(rawSent.items == [.unknownItem(metadataID(.c))])
+    if timing == .reopen {
+      local = try attachmentClient(root: holder.root, storeURL: holder.storeURL,
+        namespace: holder.namespace, server: holder.server, snipID: holder.snipID)
+      #expect(await local.transport.events().isEmpty)
+      #expect(try await local.store.stagedBatches().contains { $0.batchID == sent.id })
+      try await local.sync.fetchRemote() // Recovers raw sent stages before normal outbound preparation.
+      #expect(!((await local.transport.events()).contains { if case .sent = $0 { true } else { false } }))
+    } else {
+      try await local.store.applyStaged(sent.id)
+      try await local.transport.confirmApplied(sent.id)
+    }
+    #expect(try await local.store.stagedBatches().isEmpty, "Recovery must retire the stage instead of repeatedly stalling.")
+    let remapped = try await snapshot(local.library, local.namespace)
+    let replacement = try #require(remapped.publications.first {
+      $0.isLocallyPresent && ![a, b, c].contains($0.metadata.attachmentID)
+    })
+    let replacementID = replacement.metadata.attachmentID
+    #expect(replacement.metadataIdentity != originalC.metadataIdentity)
+    #expect(replacement.metadata.payloadIdentity != originalC.metadata.payloadIdentity)
+    #expect(replacement.metadata.fileName == expectedName && replacement.metadata.contentType == expectedType)
+    #expect(replacement.metadata.sha256 == Data(SHA256.hash(data: expectedBytes)))
+    #expect(replacement.metadata.byteCount == Int64(expectedBytes.count))
+    #expect(try Data(contentsOf: #require(replacement.localSourceURL)) == expectedBytes)
+    #expect(!remapped.publications.contains { $0.metadata.attachmentID == c })
+    let owed = remapped.cleanups.filter { $0.identity == originalC.metadata.payloadIdentity }
+    #expect(owed.count == 1 && owed.first?.blockedByAttachmentID == replacementID)
+    if editsUnsubmittedSibling {
+      #expect(remapped.publications.first { $0.metadata.attachmentID == a } == originalA,
+        "C's preparation must not reconcile an unsubmitted sibling or clear its terminal failure.")
+      #expect(try await local.store.unresolvedSyncIssue() == .accessDenied)
+    }
+    try await local.store.applyStaged(sent.id)
+    #expect(try await snapshot(local.library, local.namespace) == remapped,
+      "Replaying the already-consumed stage must not remap twice or duplicate cleanup.")
+    try await settle(lastSender: local, other: remote, local: local, remote: remote)
+    let expectedOrder = [a, b, replacementID]
+    let expectedAName = editsUnsubmittedSibling ? "unsubmitted A.txt" : "A.txt"
+    for client in [local, remote] {
+      let saved = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let snip = try #require(saved.snips.first { $0.id == holder.snipID })
+      #expect(snip.attachments.map(\.id) == expectedOrder)
+      #expect(snip.attachments.first { $0.id == a }?.fileName == expectedAName)
+      let shown = try #require(snip.attachments.first { $0.id == replacementID })
+      #expect(shown.fileName == expectedName && shown.contentType == expectedType)
+      #expect(try await client.library.storedAttachmentReferencePositions(for: holder.snipID)
+        == compactPositions(expectedOrder))
+      #expect(try await client.store.pendingChanges().operations.isEmpty)
+      #expect(try await client.store.isSyncSettled())
+      #expect(try await snapshot(client.library, client.namespace).cleanups.isEmpty)
+    }
+    let record = try #require(await local.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)))
+    #expect(record.encryptedFields["fileName"] == .string(expectedName))
+    #expect(record.encryptedFields["contentType"] == .string(expectedType))
+    #expect(record.encryptedFields["sha256"] == .data(Data(SHA256.hash(data: expectedBytes))))
+    #expect(await local.server.fullSnapshot(for: metadataID(.a))?.encryptedFields["fileName"] == .string(expectedAName))
+    #expect(await local.server.fullSnapshot(for: metadataID(.c)) == nil)
+    #expect(await local.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(originalC.metadata.payloadIdentity)) == nil)
+    let downloads = CloudAttachmentTransferCoordinator(library: remote.library, namespace: remote.namespace,
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner"), transport: remote.transport, maximumCacheBytes: 1_024)
+    #expect(try Data(contentsOf: await downloads.download(attachmentID: replacementID)) == expectedBytes)
+  }
+
   private enum HeldDeleteEditTiming { case beforeSend, duringHold, afterFetchStaged }
 
   private func assertHeldDeletePreserves(
