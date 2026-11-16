@@ -7,6 +7,192 @@ extension CloudFailedEnablePolicy {
 
   static let reviewedSnipFields = ["isDone", "pinnedAt", "placement", "source", "text"]
 
+  // Comparison values only: the actual accepted archives and revision CAS stay byte-exact.
+  private struct ReviewAcceptedComparison: Encodable, Equatable {
+    let reference: CloudEntityReference
+    let identity: CloudTextStorageIdentity
+    let schemaVersion: Int
+    let acceptedJSON: Data
+    let presenceJSON: Data
+    let shadow: Data
+    let systemFields: Data
+    let dependency: UUID?
+  }
+
+  private struct ReviewServerComparison: Encodable, Equatable {
+    let namespace: FailedEnableBinding
+    let state: FailedEnableServerState
+    let accepted: ReviewAcceptedComparison?
+  }
+
+  func sameReviewServer(_ lhs: FailedEnableServerExpectation,
+    _ rhs: FailedEnableServerExpectation
+  ) throws -> Bool {
+    try reviewServerComparison(lhs) == reviewServerComparison(rhs)
+  }
+
+  private func reviewServerComparison(_ expectation: FailedEnableServerExpectation) throws -> ReviewServerComparison {
+    let accepted: ReviewAcceptedComparison?
+    if expectation.state == .value {
+      guard let observation = expectation.observation.value,
+        let revision = expectation.acceptedRevisionDigest.value else { throw FailedEnableEvidenceError.unsupported }
+      let entity = try reviewObservedEntity(observation)
+      guard try Self.acceptedRevisionDigest(entity,
+        namespaceRevision: FailedEnableEncoding.revision(observation.namespaceRevision)) == revision else {
+        throw FailedEnableEvidenceError.unsupported
+      }
+      accepted = try reviewAcceptedComparison(entity)
+    } else {
+      guard expectation.observation.value == nil, expectation.acceptedRevisionDigest.value == nil else {
+        throw FailedEnableEvidenceError.unsupported
+      }
+      accepted = nil
+    }
+    return ReviewServerComparison(namespace: FailedEnableBinding(namespace.binding),
+      state: expectation.state, accepted: accepted)
+  }
+
+  private func reviewObservedEntity(_ observation: FailedEnableObservation) throws -> CloudAcceptedEntity {
+    guard observation.kind == .fullRecord, !observation.isDeferred,
+      !observation.hasUnresolvedLegacyAbsence else { throw FailedEnableEvidenceError.unsupported }
+    _ = try FailedEnableEncoding.uuid(observation.candidateStoreID)
+    _ = try FailedEnableEncoding.revision(observation.namespaceRevision)
+    let input = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: observation.entityBase64)
+    guard input.dependencyListID.map(FailedEnableEncoding.uuid) == observation.dependencyListID.value else {
+      throw FailedEnableEvidenceError.unsupported
+    }
+    let entity = CloudAcceptedEntity(reference: input.reference, identity: input.identity,
+      schemaVersion: input.schemaVersion, acceptedData: input.acceptedData, presenceData: input.presenceData,
+      shadowData: input.shadowData, systemFields: input.systemFields, dependencyListID: input.dependencyListID,
+      isDeferred: false, localRevision: try FailedEnableEncoding.revision(observation.localRevision))
+    _ = try Self.fields(entity, namespace: namespace.binding)
+    return entity
+  }
+
+  private func reviewAcceptedComparison(_ entity: CloudAcceptedEntity) throws -> ReviewAcceptedComparison {
+    guard !entity.isDeferred, entity.deferredLocalMutation == nil else { throw FailedEnableEvidenceError.unsupported }
+    _ = try Self.fields(entity, namespace: namespace.binding)
+    return try ReviewAcceptedComparison(reference: entity.reference, identity: entity.identity,
+      schemaVersion: entity.schemaVersion, acceptedJSON: Self.reviewJSON(entity.acceptedData),
+      presenceJSON: Self.reviewJSON(entity.presenceData), shadow: entity.shadowData,
+      systemFields: entity.systemFields, dependency: entity.dependencyListID)
+  }
+
+  private func reviewServerExpectation(_ entity: CloudAcceptedEntity?, candidateID: UUID,
+    namespaceRevision: UInt64
+  ) throws -> FailedEnableServerExpectation {
+    let observation = try entity.map { value in
+      FailedEnableObservation(kind: .fullRecord, candidateStoreID: FailedEnableEncoding.uuid(candidateID),
+        namespaceRevision: String(namespaceRevision), localRevision: String(value.localRevision),
+        isDeferred: value.isDeferred, hasUnresolvedLegacyAbsence: value.hasUnresolvedLegacyAbsence,
+        dependencyListID: .init(value.dependencyListID.map(FailedEnableEncoding.uuid)),
+        entityBase64: try Self.existingEnvelope(value))
+    }
+    return FailedEnableServerExpectation.make(state: entity == nil ? .deleted : .value,
+      observation: .init(observation), acceptedRevisionDigest: .init(try entity.map {
+        try Self.acceptedRevisionDigest($0, namespaceRevision: namespaceRevision)
+      }))
+  }
+
+  func retainsReviewedObservation(_ record: FailedEnableRecord) throws -> Bool {
+    guard record.sourceMembership == .present, record.source.value != nil,
+      record.preparation.baseKind == .unverified,
+      [.nonconflicting, .equalFetched].contains(record.preparation.classification),
+      record.preparation.normalizer == 1, record.preparation.knownFields == Self.keys(record.reference.kind),
+      let q = record.preparation.value.value, q.presence.keys.sorted() == Self.keys(record.reference.kind),
+      let observed = record.unqualifiedObservation.value else { return false }
+    let entity = try reviewObservedEntity(observed)
+    guard entity.reference == (try record.reference.domain), entity.identity == record.identity.domain else { return false }
+    return Self.same(q.fields, try Self.fields(entity, namespace: namespace.binding))
+  }
+
+  // Sort object members without dropping unknown keys, changing numbers or accepting duplicates.
+  private static func reviewJSON(_ data: Data) throws -> Data {
+    guard try JSONSerialization.jsonObject(with: data) is [String: Any] else {
+      throw FailedEnableEvidenceError.unsupported
+    }
+    let bytes = Array(data)
+    var index = 0
+    func whitespace() {
+      while index < bytes.count && [9, 10, 13, 32].contains(bytes[index]) { index += 1 }
+    }
+    func string() throws -> String {
+      guard index < bytes.count, bytes[index] == 34 else { throw FailedEnableEvidenceError.unsupported }
+      let start = index
+      index += 1
+      while index < bytes.count && bytes[index] != 34 {
+        if bytes[index] == 92 { index += 1 }
+        index += 1
+      }
+      guard index < bytes.count else { throw FailedEnableEvidenceError.unsupported }
+      let value = try JSONDecoder().decode(String.self, from: Data(bytes[start...index]))
+      index += 1
+      return value
+    }
+    func value() throws -> Data {
+      whitespace()
+      guard index < bytes.count else { throw FailedEnableEvidenceError.unsupported }
+      if bytes[index] == 34 { return try JSONEncoder().encode(string()) }
+      if bytes[index] == 123 {
+        index += 1
+        whitespace()
+        var members: [(String, Data)] = []
+        var names: Set<String> = []
+        while index < bytes.count && bytes[index] != 125 {
+          let name = try string()
+          guard names.insert(name).inserted else { throw FailedEnableEvidenceError.unsupported }
+          whitespace()
+          guard index < bytes.count, bytes[index] == 58 else { throw FailedEnableEvidenceError.unsupported }
+          index += 1
+          members.append((name, try value()))
+          whitespace()
+          if index < bytes.count, bytes[index] == 125 { break }
+          guard index < bytes.count, bytes[index] == 44 else { throw FailedEnableEvidenceError.unsupported }
+          index += 1
+          whitespace()
+        }
+        guard index < bytes.count else { throw FailedEnableEvidenceError.unsupported }
+        index += 1
+        var output = Data("{".utf8)
+        for (offset, member) in members.sorted(by: { $0.0 < $1.0 }).enumerated() {
+          if offset > 0 { output.append(44) }
+          output.append(try JSONEncoder().encode(member.0))
+          output.append(58)
+          output.append(member.1)
+        }
+        output.append(125)
+        return output
+      }
+      if bytes[index] == 91 {
+        index += 1
+        whitespace()
+        var output = Data("[".utf8)
+        var first = true
+        while index < bytes.count && bytes[index] != 93 {
+          if !first { output.append(44) }
+          output.append(try value())
+          first = false
+          whitespace()
+          if index < bytes.count, bytes[index] == 93 { break }
+          guard index < bytes.count, bytes[index] == 44 else { throw FailedEnableEvidenceError.unsupported }
+          index += 1
+        }
+        guard index < bytes.count else { throw FailedEnableEvidenceError.unsupported }
+        index += 1
+        output.append(93)
+        return output
+      }
+      let start = index
+      while index < bytes.count && ![9, 10, 13, 32, 44, 93, 125].contains(bytes[index]) { index += 1 }
+      guard index > start else { throw FailedEnableEvidenceError.unsupported }
+      return Data(bytes[start..<index])
+    }
+    let output = try value()
+    whitespace()
+    guard index == bytes.count else { throw FailedEnableEvidenceError.unsupported }
+    return output
+  }
+
   static func definitelyUnsent(_ record: FailedEnableRecord, capture: FailedEnableCapture,
     accepted: CloudAcceptedEntity?
   ) -> Bool {
@@ -52,18 +238,13 @@ extension CloudFailedEnablePolicy {
           try qualifies(record, observation: observation, candidate: nil) { continue }
         if Self.definitelyUnsent(record, capture: capture, accepted: server) { continue }
       }
-      let observation: FailedEnableObservation?
-      if let server {
-        _ = try Self.fields(server, namespace: namespace.binding)
-        observation = FailedEnableObservation(kind: .fullRecord,
-          candidateStoreID: FailedEnableEncoding.uuid(input.transition.candidateStoreID),
-          namespaceRevision: String(input.candidate.storage.namespaceState.revision),
-          localRevision: String(server.localRevision), isDeferred: server.isDeferred,
-          hasUnresolvedLegacyAbsence: server.hasUnresolvedLegacyAbsence,
-          dependencyListID: .init(server.dependencyListID.map(FailedEnableEncoding.uuid)),
-          entityBase64: try Self.existingEnvelope(server))
-      } else { observation = nil }
-      let state: FailedEnableServerState = server == nil ? .deleted : .value
+      let fetched = try reviewServerExpectation(server, candidateID: input.transition.candidateStoreID,
+        namespaceRevision: input.candidate.storage.namespaceState.revision)
+      let state = fetched.state
+      let local = FailedEnableLocalExpectation.make(
+        sourceStoreID: FailedEnableEncoding.uuid(input.transition.sourceStoreID),
+        sourceRevision: String(input.source.snapshot.revision), sourceDigest: sourceDigest,
+        membership: .present, image: .init(image))
       let rows = oldReviews[image.reference] ?? []
       var earlier: [FailedEnableImage] = []
       for saved in group?.captures ?? [] {
@@ -73,8 +254,8 @@ extension CloudFailedEnablePolicy {
       }
       for row in rows {
         if let version = row.local.image.value, version != image, !earlier.contains(version) { earlier.append(version) }
-        let sameLocal = row.local.sourceDigest == sourceDigest
-        let sameServer = row.server.state == state && row.server.observation.value?.entityBase64 == observation?.entityBase64
+        let sameLocal = row.local == local
+        let sameServer = try sameReviewServer(row.server, fetched)
         if !sameLocal || !sameServer {
           for map in row.decision.value?.outputIDs ?? [] {
             for transfer in input.evidence?.transfers ?? [] {
@@ -94,58 +275,57 @@ extension CloudFailedEnablePolicy {
         let namespace: FailedEnableBinding
         let sourceDigest: String
         let reference: FailedEnableReference
-        let server: Data?
+        let server: ReviewServerComparison
         let state: FailedEnableServerState
         let earlierVersions: [FailedEnableImage]
       }
       let digest = try FailedEnableEncoding.digest(Comparison(
         sourceID: FailedEnableEncoding.uuid(input.transition.sourceStoreID), namespace: binding,
         sourceDigest: sourceDigest, reference: image.reference,
-        server: observation?.entityBase64, state: state, earlierVersions: earlierVersions))
+        server: reviewServerComparison(fetched), state: state, earlierVersions: earlierVersions))
       var completedChoice: FailedEnableReview?
       if let server {
         let actual = try Self.fields(server, namespace: namespace.binding)
         for row in rows where row.local.sourceDigest == sourceDigest && row.decision.value?.choice == .useDevice {
           for transfer in input.evidence?.transfers ?? [] where transfer.state == .checked {
             guard let savedCapture = group?.captures.first(where: { transfer.sourceCaptureIDs == [$0.id] }),
-              savedCapture.records.contains(where: { $0.reference == image.reference
+              let savedRecord = savedCapture.records.first(where: { $0.reference == image.reference
                 && $0.source.value == image && $0.preparation.baseKind == .unverified }),
+              let savedObservation = savedRecord.unqualifiedObservation.value,
+              try retainsReviewedObservation(savedRecord),
+              savedObservation.candidateStoreID == transfer.destinationStoreID,
+              row.local == local, row.reason == .unknownOutcome, row.earlierAlternativeIDs.isEmpty,
               row.server.observation.value?.candidateStoreID != transfer.destinationStoreID,
               let output = transfer.outputs.first(where: { $0.reference == image.reference }) else { continue }
-            if Self.same(actual, try Self.unbasedSource(output)) { completedChoice = row }
+            let checkpoint = try reviewAcceptedComparison(reviewObservedEntity(savedObservation))
+            let current = try reviewAcceptedComparison(server)
+            if checkpoint == current, Self.same(actual, try Self.unbasedSource(output)) { completedChoice = row }
           }
         }
       }
-      let prior = completedChoice ?? rows.first(where: { $0.issueDigest == digest })
-        ?? rows.first(where: { $0.decision.value == nil })
-      // Re-fetching the same value in another candidate is not a new server edit.
-      let sameComparison = completedChoice != nil || prior?.issueDigest == digest
-      let serverExpectation: FailedEnableServerExpectation
-      if sameComparison, prior?.decision.value != nil, let prior {
-        serverExpectation = prior.server
-      } else {
-        serverExpectation = FailedEnableServerExpectation.make(state: state,
-          observation: .init(observation), acceptedRevisionDigest: .init(try server.map {
-            try Self.acceptedRevisionDigest($0,
-              namespaceRevision: input.candidate.storage.namespaceState.revision)
-          }))
-      }
       let hasEarlier = !earlierVersions.isEmpty
+      let reason: FailedEnableReviewReason = hasEarlier ? .earlierLocalVersion : .unknownOutcome
+      let alternativeIDs = group?.alternatives.filter { $0.reference == image.reference }.map(\.id).sorted() ?? []
+      let matching = try rows.filter { row in
+        guard row.local == local, row.identity.value == record.identity,
+          row.reason == reason, row.earlierAlternativeIDs == alternativeIDs,
+          try sameReviewServer(row.server, fetched) else { return false }
+        // Old issue digests encoded the inner JSON's member order. Retain their identity
+        // only after checking the complete still-applicable comparison, never the digest alone.
+        return row.issueDigest == digest || !hasEarlier
+      }
+      let prior = completedChoice ?? matching.first(where: { $0.decision.value != nil })
+        ?? matching.first ?? rows.first(where: { $0.decision.value == nil })
+      let sameComparison = completedChoice != nil || matching.contains(where: { $0.id == prior?.id })
+      let serverExpectation = sameComparison ? prior?.server ?? fetched : fetched
       let id: String
       if let prior { id = prior.id }
       else { id = try Self.reviewID(sourceID: input.transition.sourceStoreID,
         reference: image.reference, binding: binding, comparison: digest) }
       result.append(FailedEnableReview.make(id: id,
         reference: image.reference, identity: .init(record.identity),
-        reason: hasEarlier ? .earlierLocalVersion : .unknownOutcome,
-        issueDigest: completedChoice?.issueDigest ?? digest,
-        local: FailedEnableLocalExpectation.make(
-          sourceStoreID: FailedEnableEncoding.uuid(input.transition.sourceStoreID),
-          sourceRevision: String(input.source.snapshot.revision), sourceDigest: sourceDigest,
-          membership: .present, image: .init(image)),
-        server: serverExpectation, earlierAlternativeIDs: group?.alternatives.filter {
-          $0.reference == image.reference
-        }.map(\.id).sorted() ?? [],
+        reason: reason, issueDigest: sameComparison ? prior?.issueDigest ?? digest : digest,
+        local: local, server: serverExpectation, earlierAlternativeIDs: alternativeIDs,
         decision: .init(sameComparison ? prior?.decision.value : nil)))
     }
     return result.sorted { $0.reference.sortKey < $1.reference.sortKey }
@@ -409,9 +589,20 @@ extension CloudFailedEnablePolicy {
         if let accepted = candidate.storage.readyEntities.first(where: { $0.reference == reference }) {
           let value = try Self.fields(accepted, namespace: namespace.binding)
           let q = try Self.unbasedSource(planned)
-          let matchesOutput = Self.same(value, q)
-          let envelope = try Self.existingEnvelope(accepted)
-          let matchesPreimage = review.server.observation.value?.entityBase64 == envelope
+          var matchesOutput = Self.same(value, q)
+          if decision.choice == .useDevice {
+            if let checkpoint = record.unqualifiedObservation.value,
+              checkpoint.candidateStoreID == capture.candidateStoreID,
+              try retainsReviewedObservation(record) {
+              let saved = try reviewAcceptedComparison(reviewObservedEntity(checkpoint))
+              let actual = try reviewAcceptedComparison(accepted)
+              matchesOutput = matchesOutput && saved == actual
+            } else { matchesOutput = false }
+          }
+          let current = try reviewServerExpectation(accepted,
+            candidateID: FailedEnableEncoding.uuid(capture.candidateStoreID),
+            namespaceRevision: candidate.storage.namespaceState.revision)
+          let matchesPreimage = try sameReviewServer(review.server, current)
           guard matchesOutput || (!requiresAccepted && decision.choice == .useDevice && matchesPreimage) else { continue }
           if requiresAccepted, let dependency = accepted.dependencyListID {
             guard candidate.storage.readyEntities.contains(where: {

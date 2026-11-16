@@ -261,6 +261,8 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
         let entity = committed[try record.reference.domain],
         entity.identity == record.identity.domain
       else { continue }
+      // A selected output's actual observation remains a replay checkpoint, never ancestry.
+      if try retainsReviewedObservation(record) { continue }
       let observation = FailedEnableObservation(kind: .fullRecord,
         candidateStoreID: FailedEnableEncoding.uuid(candidateStoreID),
         namespaceRevision: String(candidate.storage.namespaceState.revision),

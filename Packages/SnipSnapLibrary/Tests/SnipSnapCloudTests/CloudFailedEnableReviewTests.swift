@@ -319,6 +319,229 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         }
     }
 
+    func testReviewChoiceSurvivesOnlyTypedJSONMemberOrderChanges() async throws {
+        let crash = ReviewCrashSwitch()
+        let f = try await fixture(crash: crash)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let first = try await publishIssue(f)
+        let facade = SnipSyncModeStore(f.persistence).failedEnableReview
+        _ = try await facade.choose(first.id, selection: .recoverAsNew, expecting: first.expectation)
+        let remote = Snip(id: f.snip.id, requestID: f.snip.requestID, createdAt: f.snip.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 40), content: "comparison preimage", origin: f.snip.origin,
+            manualSortKey: f.snip.manualSortKey)
+        let draft = try CloudFullRecordCodec.snipDraft(remote, in: f.zone)
+        var encrypted = draft.encryptedFields
+        encrypted["f5ComparisonFuture"] = .string("retained unknown")
+        let writer = FakeCloudRecordTransport(server: f.server, namespace: f.namespace)
+        _ = try await writer.send(CloudOutboundBatch(operations: [.save(CloudRecordDraft(id: draft.id,
+            recordType: draft.recordType, schemaVersion: draft.schemaVersion, routingFields: draft.routingFields,
+            encryptedFields: encrypted))]))
+        let waiting = try await f.mode.enableOrRetry()
+        XCTAssertEqual(waiting.state, .needsAttention)
+        let view = try await facade.snapshot()
+        let issue = try XCTUnwrap(view.issues.first { $0.allowedChoices == [.useDevice] })
+        let receipt = try await facade.choose(issue.id, selection: .useDevice, expecting: issue.expectation)
+        XCTAssertTrue(receipt.outputs.isEmpty)
+        let state = try await f.persistence.snapshot()
+        let transition = try XCTUnwrap(state.transition)
+        let read = try await f.persistence.withFailedEnableC72Read(transition: transition) { ($0, $1) }
+        let source = read.0.0
+        let candidate = read.0.1
+        let file = FailedEnableEvidenceFile(root: f.root)
+        let evidence = try XCTUnwrap(try file.read(state.activeStore.id))
+        let before = try Data(contentsOf: file.url(state.activeStore.id))
+        let row = try XCTUnwrap(evidence.namespaces.flatMap(\.reviews).first {
+            $0.id == FailedEnableEncoding.uuid(issue.id)
+        })
+        XCTAssertEqual(row.local.sourceDigest, try source.sourceDigest(sourceID: transition.sourceStoreID))
+        XCTAssertEqual(row.local.sourceRevision, String(source.snapshot.revision))
+        XCTAssertEqual(row.local.image.value, try source.images().first { $0.reference == row.reference })
+        let reference = try row.reference.domain
+        let original = try XCTUnwrap(candidate.storage.readyEntities.first { $0.reference == reference })
+        let policy = CloudFailedEnablePolicy(namespace: f.namespace, dataZone: f.zone)
+        let ascending = comparisonEntity(original, accepted: try comparisonJSON(original.acceptedData, descending: false),
+            presence: try comparisonJSON(original.presenceData, descending: false), revision: original.localRevision + 10)
+        let descending = comparisonEntity(original, accepted: try comparisonJSON(original.acceptedData, descending: true),
+            presence: try comparisonJSON(original.presenceData, descending: true), revision: original.localRevision + 20)
+        XCTAssertNotEqual(ascending.acceptedData, descending.acceptedData)
+        XCTAssertNotEqual(ascending.presenceData, descending.presenceData)
+        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: ascending.acceptedData),
+            try JSONDecoder().decode(CloudTypedSnipRecord.self, from: descending.acceptedData))
+        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: ascending.presenceData),
+            try JSONDecoder().decode(CloudTypedSnipRecord.self, from: descending.presenceData))
+        XCTAssertNotEqual(CloudFullReenableAcceptedCAS(ascending), CloudFullReenableAcceptedCAS(descending))
+        for value in [ascending, descending] {
+            XCTAssertEqual(value.shadowData, original.shadowData)
+            XCTAssertEqual(value.systemFields, original.systemFields)
+            _ = try CloudFailedEnablePolicy.fields(value, namespace: f.namespace.binding)
+            let input = FailedEnableReviewRead(source: source, candidate: comparisonCandidate(candidate, replacing: value),
+                transition: transition, evidence: evidence)
+            let rows = try policy.reviewDrafts(input)
+            let applicable = try XCTUnwrap(rows.first { $0.id == row.id })
+            XCTAssertEqual(applicable.issueDigest, row.issueDigest)
+            XCTAssertEqual(applicable.decision, row.decision)
+            XCTAssertEqual(applicable.server, row.server, "Retain the actual original observation bytes")
+        }
+
+        let typed = try JSONDecoder().decode(CloudTypedSnipRecord.self, from: original.acceptedData)
+        let savedDraft = try CloudFullRecordCodec.snipDraft(remote, accepted: typed)
+        func changed(_ fields: [String: CloudFieldValue], removed: Set<String> = [], version: Int? = nil) throws -> CloudAcceptedEntity {
+            var routing = savedDraft.routingFields
+            let schema = version ?? savedDraft.schemaVersion
+            routing["schemaVersion"] = .int64(Int64(schema))
+            let snapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: CloudRecordDraft(
+                id: savedDraft.id, recordType: savedDraft.recordType, schemaVersion: schema, routingFields: routing,
+                encryptedFields: fields, removedEncryptedFields: removed, base: savedDraft.base)))
+            let input = try CloudFullBatchPlanner.acceptedInput(CloudFullRecordCodec.snip(from: snapshot), snapshot: snapshot)
+            return CloudFailedEnablePolicy.entity(input)
+        }
+        let missingDone = try changed([:], removed: ["isDone"])
+        let unknownChanged = try changed(["f5ComparisonFuture": .string("different unknown")])
+        let system = try CloudRecordShadow(data: typed.shadow.data, systemFields: Data("different local comparison token".utf8))
+        let changedTyped = CloudTypedSnipRecord(storageVersion: typed.storageVersion, id: typed.id,
+            domainID: typed.domainID, binding: typed.binding, schemaVersion: typed.schemaVersion,
+            requestID: typed.requestID, createdAt: typed.createdAt, updatedAt: typed.updatedAt, origin: typed.origin,
+            text: typed.text, source: typed.source, isDone: typed.isDone, pinnedAt: typed.pinnedAt,
+            placement: typed.placement, shadow: system)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let systemJSON = try encoder.encode(changedTyped)
+        let systemChanged = comparisonEntity(original, accepted: systemJSON, presence: systemJSON,
+            systemFields: system.systemFields)
+        let extraObject = try JSONSerialization.jsonObject(with: original.acceptedData)
+        var extra = try XCTUnwrap(extraObject as? [String: Any])
+        extra["futureTypedMember"] = ["first", "second"]
+        let extraJSON = try JSONSerialization.data(withJSONObject: extra, options: [.sortedKeys])
+        let variants: [(String, CloudAcceptedEntity)] = [
+            ("field", try changed(["text": .string("different server value")])),
+            ("presence", missingDone),
+            ("immutable", try changed(["requestID": .string(UUID().uuidString.lowercased())])),
+            ("schema", try changed([:], version: 2)),
+            ("dependency", try changed(["listID": .string(UUID().uuidString.lowercased())])),
+            ("system", systemChanged), ("shadow and unknown field", unknownChanged),
+            ("unknown typed member", comparisonEntity(original, accepted: extraJSON, presence: original.presenceData))]
+        XCTAssertEqual(try CloudFailedEnablePolicy.fields(missingDone, namespace: f.namespace.binding),
+            try CloudFailedEnablePolicy.fields(original, namespace: f.namespace.binding))
+        XCTAssertEqual(try CloudFailedEnablePolicy.fields(unknownChanged, namespace: f.namespace.binding),
+            try CloudFailedEnablePolicy.fields(original, namespace: f.namespace.binding))
+        for (name, value) in variants {
+            _ = try CloudFailedEnablePolicy.fields(value, namespace: f.namespace.binding)
+            let rows = try policy.reviewDrafts(FailedEnableReviewRead(source: source,
+                candidate: comparisonCandidate(candidate, replacing: value), transition: transition, evidence: evidence))
+            let fresh = try XCTUnwrap(rows.first { $0.reference == row.reference }, name)
+            XCTAssertNil(fresh.decision.value, name)
+            XCTAssertNotEqual(fresh.issueDigest, row.issueDigest, name)
+        }
+        var precisionDigests: [String] = []
+        for literal in ["9007199254740992.0", "9007199254740993.0"] {
+            let json = Data(original.acceptedData.dropLast()) + Data(",\"futurePrecision\":\(literal)}".utf8)
+            let value = comparisonEntity(original, accepted: json, presence: original.presenceData)
+            let rows = try policy.reviewDrafts(FailedEnableReviewRead(source: source,
+                candidate: comparisonCandidate(candidate, replacing: value), transition: transition, evidence: evidence))
+            precisionDigests.append(try XCTUnwrap(rows.first { $0.reference == row.reference }).issueDigest)
+        }
+        XCTAssertNotEqual(precisionDigests[0], precisionDigests[1], "Unknown numbers must not be rounded into equality")
+        let badIdentity = CloudAcceptedEntity(reference: original.reference,
+            identity: CloudTextStorageIdentity(zoneName: "other-zone", ownerName: "owner", recordName: original.identity.recordName),
+            schemaVersion: original.schemaVersion, acceptedData: original.acceptedData, presenceData: original.presenceData,
+            shadowData: original.shadowData, systemFields: original.systemFields,
+            dependencyListID: original.dependencyListID, isDeferred: false, localRevision: original.localRevision)
+        XCTAssertThrowsError(try policy.reviewDrafts(FailedEnableReviewRead(source: source,
+            candidate: comparisonCandidate(candidate, replacing: badIdentity), transition: transition, evidence: evidence)))
+        let duplicate = Data(("{\"storageVersion\":1," + String(decoding: ascending.acceptedData.dropFirst(), as: UTF8.self)).utf8)
+        let ambiguous = comparisonEntity(original, accepted: duplicate, presence: original.presenceData)
+        XCTAssertThrowsError(try policy.reviewDrafts(FailedEnableReviewRead(source: source,
+            candidate: comparisonCandidate(candidate, replacing: ambiguous), transition: transition, evidence: evidence)))
+        XCTAssertEqual(try Data(contentsOf: file.url(state.activeStore.id)), before)
+        let reread = try await f.persistence.withFailedEnableC72Read(transition: transition) { $1 }
+        XCTAssertEqual(reread.0.storage, candidate.storage, "Pure comparisons cannot rewrite accepted CAS or archives")
+
+        crash.arm(.beforePointerSwap)
+        do {
+            _ = try await f.mode.enableOrRetry()
+            XCTFail("Expected the selected output interruption")
+        } catch ReviewFixtureError.injected {}
+        let interrupted = try await f.persistence.snapshot()
+        let retry = try XCTUnwrap(interrupted.transition)
+        let after = try await f.persistence.withFailedEnableC72Read(transition: retry) { ($0, $1) }
+        let completed = try XCTUnwrap(try file.read(interrupted.activeStore.id))
+        let applicable = try policy.reviewDrafts(FailedEnableReviewRead(source: after.0.0, candidate: after.0.1,
+            transition: retry, evidence: completed))
+        XCTAssertEqual(applicable.first(where: { $0.reference == row.reference })?.decision, row.decision)
+        let completedGroup = try XCTUnwrap(completed.namespaces.first { $0.binding == FailedEnableBinding(f.namespace.binding) })
+        let capture = try XCTUnwrap(completedGroup.captures.last { $0.candidateStoreID == FailedEnableEncoding.uuid(retry.candidateStoreID) })
+        let originalObservation = try XCTUnwrap(capture.records.first { $0.reference == row.reference }?.unqualifiedObservation.value)
+        let post = try XCTUnwrap(after.0.1.storage.readyEntities.first { $0.reference == row.reference })
+        let postTyped = try CloudFullSyncPersistence.snipRecord(post)
+        let postSnip = try XCTUnwrap(after.0.1.snapshot.snips.first { $0.id == f.snip.id })
+        let postDraft = try CloudFullRecordCodec.snipDraft(postSnip, accepted: postTyped)
+        let driftSnapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: CloudRecordDraft(
+            id: postDraft.id, recordType: postDraft.recordType, schemaVersion: postDraft.schemaVersion,
+            routingFields: postDraft.routingFields, encryptedFields: ["f5ComparisonFuture": .string("different unknown")],
+            base: postDraft.base)))
+        let driftInput = try CloudFullBatchPlanner.acceptedInput(CloudFullRecordCodec.snip(from: driftSnapshot), snapshot: driftSnapshot)
+        let driftEntity = CloudFailedEnablePolicy.entity(driftInput)
+        XCTAssertEqual(try CloudFailedEnablePolicy.fields(driftEntity, namespace: f.namespace.binding),
+            try CloudFailedEnablePolicy.fields(post, namespace: f.namespace.binding))
+        let drifted = comparisonCandidate(after.0.1, replacing: driftEntity)
+        let observed = try policy.observe(capture: capture, candidate: drifted,
+            candidateStoreID: retry.candidateStoreID, namespace: f.namespace.binding)
+        XCTAssertEqual(observed.records.first { $0.reference == row.reference }?.unqualifiedObservation.value,
+            originalObservation, "A later observation cannot replace the selected output's actual checkpoint")
+        let reorderedPost = comparisonEntity(post, accepted: try comparisonJSON(post.acceptedData, descending: true),
+            presence: try comparisonJSON(post.presenceData, descending: true))
+        XCTAssertNoThrow(try policy.validateExposure(capture: capture,
+            candidate: comparisonCandidate(after.0.1, replacing: reorderedPost), evidence: completed, requiresAccepted: true))
+        XCTAssertThrowsError(try policy.validateExposure(capture: capture, candidate: drifted,
+            evidence: completed, requiresAccepted: true))
+        let driftedRows = try policy.reviewDrafts(FailedEnableReviewRead(source: after.0.0, candidate: drifted,
+            transition: retry, evidence: completed))
+        XCTAssertNil(driftedRows.first { $0.reference == row.reference }?.decision.value)
+        let result = try await f.mode.enableOrRetry()
+        XCTAssertEqual(result.state, .on)
+        let final = try await f.persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [f.snip.id])
+        XCTAssertEqual(final.snips.first?.content, "review fixture")
+        let remoteValue = await f.server.fullSnapshot(for: .snip(f.snip.id, in: f.zone))
+        XCTAssertEqual(remoteValue?.encryptedFields["f5ComparisonFuture"], .string("retained unknown"))
+        let texts = await f.server.storedTextValues()
+        XCTAssertEqual(texts, ["review fixture"])
+    }
+
+    private func comparisonJSON(_ data: Data, descending: Bool) throws -> Data {
+        let json = try JSONSerialization.jsonObject(with: data)
+        let object = try XCTUnwrap(json as? [String: Any])
+        let keys = descending ? object.keys.sorted().reversed().map { $0 } : object.keys.sorted()
+        let members = try keys.map { key in
+            let value = try XCTUnwrap(object[key])
+            return try JSONSerialization.data(withJSONObject: [key: value], options: [.sortedKeys]).dropFirst().dropLast()
+        }
+        return Data("{".utf8) + members.enumerated().reduce(into: Data()) { result, pair in
+            if pair.offset > 0 { result.append(contentsOf: ",".utf8) }
+            result.append(contentsOf: pair.element)
+        } + Data("}".utf8)
+    }
+
+    private func comparisonEntity(_ value: CloudAcceptedEntity, accepted: Data, presence: Data,
+        systemFields: Data? = nil, revision: UInt64? = nil
+    ) -> CloudAcceptedEntity {
+        CloudAcceptedEntity(reference: value.reference, identity: value.identity, schemaVersion: value.schemaVersion,
+            acceptedData: accepted, presenceData: presence, shadowData: value.shadowData,
+            systemFields: systemFields ?? value.systemFields, dependencyListID: value.dependencyListID,
+            isDeferred: value.isDeferred, wasMaterializedBeforeDeferral: value.wasMaterializedBeforeDeferral,
+            hasUnresolvedLegacyAbsence: value.hasUnresolvedLegacyAbsence, graphRepair: value.graphRepair,
+            deferredLocalMutation: value.deferredLocalMutation, localRevision: revision ?? value.localRevision)
+    }
+
+    private func comparisonCandidate(_ read: FailedEnableStoreRead, replacing entity: CloudAcceptedEntity) -> FailedEnableStoreRead {
+        let stored = read.storage
+        return FailedEnableStoreRead(snapshot: read.snapshot, seenRequestIDs: read.seenRequestIDs,
+            storage: CloudFullStorageSnapshot(readyEntities: stored.readyEntities.map { $0.reference == entity.reference ? entity : $0 },
+                deferredEntities: stored.deferredEntities, pendingDeletes: stored.pendingDeletes,
+                conflicts: stored.conflicts, enrolledEntities: stored.enrolledEntities, quarantines: stored.quarantines,
+                namespaceState: stored.namespaceState), recoveryDescriptors: read.recoveryDescriptors)
+    }
+
     private func publishIssue(_ f: ReviewFixture) async throws -> FailedEnableSetupIssue {
         await f.transports.first.failNextSentItem(.snip(f.snip.id, in: f.zone), failure: .rejected)
         do {
@@ -462,6 +685,7 @@ extension SwiftDataSyncModePersistence {
                 let group = bundle?.namespaces.first { $0.binding == FailedEnableBinding(namespace) }
                 let sourceImages = try source.images()
                 let candidateImages = try candidate.images()
+                let currentSourceDigest = try source.sourceDigest(sourceID: transition.sourceStoreID)
                 let continuity = try self.failedEnableContinuityMatches(bundle, source: source,
                     sourceID: transition.sourceStoreID)
                 details += ["continuity=\(continuity)", "namespace=\(candidate.storage.namespaceState.phase.rawValue)",
@@ -569,7 +793,7 @@ extension SwiftDataSyncModePersistence {
                             }
                             let localMatches = sourceImages.first { $0.reference == row.reference } == row.local.image.value
                             let allowed = try semantics.choices(for: row).map(\.rawValue).joined(separator: ",")
-                            details.append("review=\(row.reason.rawValue),selected=\(row.decision.value?.choice.rawValue ?? "none"),source=\(localMatches),current=\(draft != nil),comparison=\(draft?.issueDigest == row.issueDigest),draftSelected=\(draft?.decision.value != nil),allowed=\(allowed),\(comparisons.joined(separator: ","))")
+                            details.append("review=\(row.reason.rawValue),selected=\(row.decision.value?.choice.rawValue ?? "none"),source=\(localMatches),sourceDigest=\(row.local.sourceDigest == currentSourceDigest),sourceRevision=\(row.local.sourceRevision == String(source.snapshot.revision)),current=\(draft != nil),comparison=\(draft?.issueDigest == row.issueDigest),draftSelected=\(draft?.decision.value != nil),allowed=\(allowed),\(comparisons.joined(separator: ","))")
                         }
                     } catch {
                         let code = (error as? FailedEnableEvidenceError).map { String(describing: $0) }
@@ -617,7 +841,7 @@ extension SwiftDataSyncModePersistence {
         }
     }
 
-    private func withFailedEnableC72Read<Value: Sendable>(transition: SyncModeTransition,
+    fileprivate func withFailedEnableC72Read<Value: Sendable>(transition: SyncModeTransition,
         _ body: (FailedEnableStoreRead, FailedEnableStoreRead) throws -> Value
     ) throws -> (Value, FailedEnableC72StoreRead) {
         guard failedEnablePublicationInFlight == nil, fullReenableMergeInFlight == nil,
