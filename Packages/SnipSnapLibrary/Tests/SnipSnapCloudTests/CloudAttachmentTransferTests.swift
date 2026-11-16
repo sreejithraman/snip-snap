@@ -5174,6 +5174,22 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await assertAnUndoneReorderBesideAnUnpublishedAddSurvivesFetchingItsUnacknowledgedSave(on: .downloaded)
   }
 
+  func testALostAcknowledgementRenameKeepsALaterRemoteReorderOnTheDeviceHoldingTheFiles() async throws {
+    try await assertLostAcknowledgementRenamesKeepLaterPeerEdits(on: .holder)
+  }
+
+  func testALostAcknowledgementRenameKeepsALaterRemoteReorderOnADownloadOnlyDevice() async throws {
+    try await assertLostAcknowledgementRenamesKeepLaterPeerEdits(on: .downloaded)
+  }
+
+  func testALostAcknowledgementRenameKeepsAPeerRenameAndReorderOnTheDeviceHoldingTheFiles() async throws {
+    try await assertLostAcknowledgementRenamesKeepLaterPeerEdits(on: .holder, peerRenamesC: true)
+  }
+
+  func testALostAcknowledgementRenameKeepsAPeerRenameAndReorderOnADownloadOnlyDevice() async throws {
+    try await assertLostAcknowledgementRenamesKeepLaterPeerEdits(on: .downloaded, peerRenamesC: true)
+  }
+
   // SM33 D7b known gap: once reconcile records the undo, nothing shows what was sent, so the
   // fetched save can replace the undo. This guard checks only that both devices and iCloud agree
   // and go quiet. It doesn't assert which name wins.
@@ -6064,6 +6080,57 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     XCTAssertEqual(positions, canonicalPositions(expected.map(\.id)), file: file, line: line)
     try await assertAttachmentsSettle(expected.map { (id: $0.id, fileName: $0.fileName) },
       between: relaunched, and: peer, file: file, line: line)
+  }
+
+  private func assertLostAcknowledgementRenamesKeepLaterPeerEdits(
+    on role: AttachmentMatrixRole,
+    peerRenamesC: Bool = false,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let editor = role == .holder ? clients.holder : clients.downloaded
+    let peer = role == .holder ? clients.downloaded : clients.holder
+    let a = AttachmentMatrixMember.a.id
+    let b = AttachmentMatrixMember.b.id
+    let c = AttachmentMatrixMember.c.id
+    try await renameAttachment(ofSnip: editor.snipID, attachmentID: a,
+      to: "local-A.txt", in: editor.library)
+    try await renameAttachment(ofSnip: editor.snipID, attachmentID: b,
+      to: "local-B.txt", in: editor.library)
+    let relaunched = try await relaunchAfterCloudKitStoresAnUnacknowledgedEdit(editor,
+      file: file, line: line)
+
+    try await peer.sync.sync()
+    let peerSnapshot = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    let peerSnip = try XCTUnwrap(peerSnapshot.snips.first(where: { $0.id == peer.snipID }),
+      file: file, line: line)
+    XCTAssertEqual(peerSnip.attachments.map(\.fileName), ["local-A.txt", "local-B.txt", "C.txt"],
+      "The peer must receive both stored renames before editing.", file: file, line: line)
+    if peerRenamesC {
+      try await renameAttachment(ofSnip: peer.snipID, attachmentID: c,
+        to: "peer-C.txt", in: peer.library)
+    }
+    try await keepAttachments([c, b, a], ofSnip: peer.snipID, in: peer.library)
+    try await peer.sync.sync()
+
+    try await relaunched.sync.fetchRemote()
+
+    let expected = [(id: c, fileName: peerRenamesC ? "peer-C.txt" : "C.txt"),
+      (id: b, fileName: "local-B.txt"), (id: a, fileName: "local-A.txt")]
+    let local = try await relaunched.library.checkedSnapshot(sortedBy: .manual)
+    let shown = try XCTUnwrap(local.snips.first(where: { $0.id == relaunched.snipID }),
+      file: file, line: line).attachments
+    XCTAssertEqual(shown.map(\.id), [c, b, a],
+      "Pending renames must keep the peer's later C,B,A reorder.", file: file, line: line)
+    XCTAssertEqual(Dictionary(uniqueKeysWithValues: shown.map { ($0.id, $0.fileName) }),
+      Dictionary(uniqueKeysWithValues: expected.map { ($0.id, $0.fileName) }),
+      "Each device's independent rename must survive.", file: file, line: line)
+    let positions = try await relaunched.library.storedAttachmentReferencePositions(for: relaunched.snipID)
+    XCTAssertEqual(positions, [c: 0, b: 1, a: 2],
+      "Stored positions must represent C,B,A immediately.", file: file, line: line)
+    try await assertAttachmentsSettle(expected, between: relaunched, and: peer, file: file, line: line)
   }
 
   private func canonicalPositions(_ order: [UUID]) -> [UUID: Int] {
