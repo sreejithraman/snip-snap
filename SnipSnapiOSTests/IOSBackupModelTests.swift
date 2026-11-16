@@ -84,7 +84,10 @@ final class IOSBackupModelTests: IOSModelTestCase {
     func testIOSBackupCreationDownloadsAnExternallyCommittedAttachmentBeforeModelRefresh() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("IOSFreshRemoteBackupTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer {
+            // SwiftData's deferred container cleanup has no public completion receipt.
+            NSLog("IOSFreshRemoteBackupTests retained store root: %@", root.path)
+        }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let downloaded = root.appendingPathComponent("remote-attachment.txt")
         let bytes = Data("Remote attachment committed after the screen loaded".utf8)
