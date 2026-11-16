@@ -71,40 +71,40 @@ final class AppTypographyTests: XCTestCase {
         XCTAssertEqual(width("1111", font: tabular), width("8888", font: tabular), accuracy: 0.01)
     }
 
-    func testSemanticSizingAndDynamicType() {
-        var environment = EnvironmentValues()
-        environment.dynamicTypeSize = .large
-        let body = AppTypography.font(.body, in: environment.fontResolutionContext).resolve(in: environment.fontResolutionContext)
-        let nativeBody = Font.body.resolve(in: environment.fontResolutionContext)
-        XCTAssertEqual(body.pointSize, nativeBody.pointSize, accuracy: 0.1)
-        XCTAssertGreaterThan(AppTypography.font(.title, in: environment.fontResolutionContext).resolve(in: environment.fontResolutionContext).pointSize, body.pointSize)
+    func testSemanticSizingAndDynamicType() throws {
+        for size in [DynamicTypeSize.large, .xxxLarge, .accessibility1, .accessibility3, .accessibility5] {
+            var environment = EnvironmentValues()
+            environment.dynamicTypeSize = size
+            let context = environment.fontResolutionContext
+            let expectedBodySize = try nativeCustomBodySize(in: environment)
+            let body = AppTypography.font(.body, in: context).resolve(in: context)
+            XCTAssertEqual(body.pointSize, expectedBodySize, accuracy: 0.1, "\(size)")
+            XCTAssertGreaterThan(AppTypography.font(.title, in: context).resolve(in: context).pointSize, body.pointSize)
 #if os(iOS)
-        environment.dynamicTypeSize = .accessibility3
-        XCTAssertGreaterThan(AppTypography.font(.body, in: environment.fontResolutionContext).resolve(in: environment.fontResolutionContext).pointSize, body.pointSize * 2)
-        let traits = UITraitCollection(preferredContentSizeCategory: .accessibilityExtraExtraLarge)
-        let scaled = AppTypography.preferredFont(.body, compatibleWith: traits)
-        XCTAssertEqual(scaled.familyName, "Allo")
-        XCTAssertGreaterThan(scaled.pointSize, 34)
+            let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(size))
+            let editor = AppTypography.preferredFont(.body, compatibleWith: traits)
+            XCTAssertEqual(editor.familyName, "Allo")
+            XCTAssertEqual(editor.pointSize, expectedBodySize, accuracy: 0.1, "\(size)")
 #endif
+        }
     }
 
     @MainActor
     func testAttributedHeadingsScaleAndKeepCodeFonts() async throws {
         let content = await SnipMarkdown.prepare("# aIl10\n`literal -> 1/2`")
-        var environment = EnvironmentValues()
-        environment.dynamicTypeSize = .accessibility3
-        let context = environment.fontResolutionContext
-        let styled = AppTypography.attributedText(content.fullText, in: context)
-        let heading = try XCTUnwrap(styled.runs.first?.font).resolve(in: context)
-        XCTAssertEqual(CTFontCopyFamilyName(heading.ctFont) as String, "Allo")
-        XCTAssertEqual(heading.pointSize, Font.body.resolve(in: context).pointSize, accuracy: 0.1)
-        XCTAssertEqual(CTFontCopyPostScriptName(heading.ctFont) as String, "Allo-SemiBold")
-#if os(iOS)
-        XCTAssertGreaterThan(heading.pointSize, 34)
-#endif
-        let code = styled.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }
-        XCTAssertEqual(code?.font, Font.body.monospaced())
-        XCTAssertEqual(String(styled.characters), "aIl10\nliteral -> 1/2")
+        for size in [DynamicTypeSize.large, .xxxLarge, .accessibility1, .accessibility3, .accessibility5] {
+            var environment = EnvironmentValues()
+            environment.dynamicTypeSize = size
+            let context = environment.fontResolutionContext
+            let styled = AppTypography.attributedText(content.fullText, in: context)
+            let heading = try XCTUnwrap(styled.runs.first?.font).resolve(in: context)
+            XCTAssertEqual(CTFontCopyFamilyName(heading.ctFont) as String, "Allo")
+            XCTAssertEqual(heading.pointSize, try nativeCustomBodySize(in: environment), accuracy: 0.1, "\(size)")
+            XCTAssertEqual(CTFontCopyPostScriptName(heading.ctFont) as String, "Allo-SemiBold")
+            let code = styled.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }
+            XCTAssertEqual(code?.font, Font.body.monospaced())
+            XCTAssertEqual(String(styled.characters), "aIl10\nliteral -> 1/2")
+        }
     }
 
     func testMissingScriptsUseNativeFallback() {
@@ -112,5 +112,16 @@ final class AppTypographyTests: XCTestCase {
         let font = AppTypography.font(.body, in: context).resolve(in: context).ctFont
         let fallback = CTFontCreateForString(font, "日本語" as CFString, CFRange(location: 0, length: 3))
         XCTAssertNotEqual(CTFontCopyFamilyName(fallback) as String, "Allo")
+    }
+
+    private func nativeCustomBodySize(in environment: EnvironmentValues) throws -> CGFloat {
+#if os(iOS)
+        // Custom fonts follow UIFontMetrics; the preferred SF font can use different point sizes.
+        let font = try XCTUnwrap(UIFont(name: "Allo-Regular", size: 17))
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(environment.dynamicTypeSize))
+        return UIFontMetrics(forTextStyle: .body).scaledFont(for: font, compatibleWith: traits).pointSize
+#else
+        return Font.body.resolve(in: environment.fontResolutionContext).pointSize
+#endif
     }
 }
