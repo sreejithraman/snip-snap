@@ -71,11 +71,13 @@ public enum CloudDevelopmentTransportContract {
     validateAccount: () async throws -> Void = {}
   ) async throws {
     try await step("\(name): start") {
+      try await validateAccount()
       try await transport.start(state: nil)
       try await reader.start(state: nil)
     }
     // New zones must exist before the first fetch; records wait for its confirmation.
     try await step("\(name): create zone") {
+      try await validateAccount()
       let created = try await transport.send(CloudOutboundBatch(operations: [], zonesToSave: [zone]))
       guard created.databaseEvents.contains(.zoneSaved(zone)) else {
         throw ContractError.zoneWasNotCreated
@@ -93,6 +95,7 @@ public enum CloudDevelopmentTransportContract {
     for draft in drafts {
       let label = "\(name) / \(draft.recordType)"
       let accepted: CloudRecordSnapshot = try await step("\(label): save record") {
+        try await validateAccount()
         let sent = try await transport.send(CloudOutboundBatch(operations: [.save(draft)]))
         guard case .saved(let accepted) = sent.items.first else {
           throw ContractError.saveWasNotAccepted
@@ -133,6 +136,7 @@ public enum CloudDevelopmentTransportContract {
         }
       }
       try await step("\(label): delete record") {
+        try await validateAccount()
         let deleted = try await transport.send(
           CloudOutboundBatch(operations: [.delete(draft.id, base: accepted.shadow)])
         )
