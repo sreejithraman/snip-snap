@@ -733,6 +733,7 @@ struct SnipListView: View {
 
     private func makeSelectionMenu(for ids: Set<UUID>) -> NSMenu {
         let menu = NSMenu()
+        menu.font = AppTypography.nativeFont(size: NSFont.systemFontSize)
         guard !ids.isEmpty else { return menu }
 
         menu.addPanelAction(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy, on: ids) }

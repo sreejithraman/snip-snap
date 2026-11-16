@@ -64,6 +64,7 @@ struct SnipSnapApp: App {
                     : nil,
                 diagnostics: diagnosticSettings
             )
+            .appFont(.body)
         }
         .defaultSize(width: 560, height: 500)
         .windowResizability(.contentSize)
@@ -473,6 +474,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     await cloudSyncHandler?.retrySyncWhenPossible()
                 }
             )
+                .appFont(.body)
                 .environmentObject(model)
                 .environmentObject(shortcutSettings)
         let hostingView = PanelFileDropHostingView(
@@ -688,16 +690,16 @@ struct AppleAccountNoticeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Needs attention")
-                .font(.caption.weight(.semibold))
+                .appFont(.caption, weight: .semibold)
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
             Label(
                 model.title,
                 systemImage: model.systemImage
             )
-                .font(.headline)
+                .appFont(.headline)
             Text(model.message)
-                .font(.subheadline)
+                .appFont(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if model.showsResolutionActions {
@@ -718,7 +720,7 @@ struct AppleAccountNoticeView: View {
             }
             if let errorMessage = model.errorMessage {
                 Text(errorMessage)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.red)
             }
         }

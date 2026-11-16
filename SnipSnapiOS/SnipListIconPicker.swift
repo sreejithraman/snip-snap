@@ -109,7 +109,7 @@ struct ListIconGrid: View {
                         }
                     } header: {
                         Text(category.title)
-                            .font(.caption.weight(.semibold))
+                            .appFont(.caption, weight: .semibold)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 8)
@@ -128,7 +128,7 @@ struct ListIconGrid: View {
             didSelect()
         } label: {
             Image(systemName: icon)
-                .font(.body.weight(.medium))
+                .appFont(.body, weight: .medium)
                 .foregroundStyle(.primary)
                 .frame(width: 44, height: 44)
                 .background {

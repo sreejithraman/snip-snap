@@ -73,7 +73,7 @@ struct MacRecoveryReviewSheet: View {
                                 )
                                     .lineLimit(2)
                                 Text("Recovered snip")
-                                    .font(.caption.weight(.semibold))
+                                    .appFont(.caption, weight: .semibold)
                                     .foregroundStyle(.orange)
                             }
                         }

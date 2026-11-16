@@ -12,11 +12,11 @@ struct PanelEmptyStateView: View {
                 .font(.system(size: 19, weight: .regular))
                 .foregroundStyle(SnipSnapColors.textTertiary)
             Text(title)
-                .font(.system(size: 12.5, weight: .medium))
+                .font(AppTypography.font(size: 12.5, weight: .medium))
                 .foregroundStyle(SnipSnapColors.textSecondary)
             if !model.isSearchExpanded, model.completionFilter == .all, model.originFilter == .all {
                 Text("Select text, then press \(captureShortcutName) to save it.")
-                    .font(.system(size: 10.5))
+                    .font(AppTypography.font(size: 10.5))
                     .foregroundStyle(SnipSnapColors.textTertiary)
             }
             Spacer()

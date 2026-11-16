@@ -414,7 +414,7 @@ struct CompactLibraryControls: View {
                 ))
             }) {
                 Image(systemName: isPreview ? "plus" : (storage.isStaging ? "hourglass" : "plus"))
-                    .font(.title3.weight(.medium))
+                    .appFont(.title3, weight: .medium)
                     .frame(width: controlLength, height: controlLength)
                     .contentShape(Circle())
             }
@@ -986,7 +986,7 @@ private struct CompactDraftAttachment: View {
 
             Button(action: remove) {
                 Image(systemName: "xmark")
-                    .font(.caption2.weight(.bold))
+                    .appFont(.caption2, weight: .bold)
                     .foregroundStyle(.primary)
                     .frame(width: 22, height: 22)
                     .background(.thickMaterial, in: Circle())

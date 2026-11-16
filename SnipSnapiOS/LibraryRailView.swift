@@ -569,7 +569,7 @@ private struct CountBadge: View {
         Text(count, format: .number)
             .lineLimit(1)
             .fixedSize()
-            .font(.caption2.weight(.semibold))
+            .appFont(.caption2, weight: .semibold)
             .foregroundStyle(.white)
             .padding(.horizontal, 5)
             .frame(minWidth: 18, minHeight: 18)

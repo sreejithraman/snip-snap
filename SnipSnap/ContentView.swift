@@ -721,7 +721,7 @@ struct ContentView: View {
             Button("Capture Screen Area…") { captureScreenArea(for: listID) }
         } label: {
             Image(systemName: "plus")
-                .font(.body.weight(.semibold))
+                .appFont(.body, weight: .semibold)
                 .frame(
                     width: PanelControlMetrics.floatingIconLength,
                     height: PanelControlMetrics.floatingIconLength

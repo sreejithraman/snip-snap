@@ -77,7 +77,7 @@ struct PanelCommandNumberButton: View {
         Button(action: action) {
             PanelLeadingChip(appearance: appearance) {
                 Text(String(number))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(AppTypography.font(size: 12, weight: .semibold).monospacedDigit())
             }
             .overlay(alignment: .bottomTrailing) {
                 if isPinned {

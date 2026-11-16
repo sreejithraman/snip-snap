@@ -102,7 +102,7 @@ enum PanelTextInputReturnAction: Equatable {
 
 enum PanelTextInputLayout {
     static var lineHeight: CGFloat {
-        let font = NSFont.preferredFont(forTextStyle: .body)
+        let font = AppTypography.nativeFont(size: NSFont.preferredFont(forTextStyle: .body).pointSize)
         return ceil(font.ascender - font.descender + font.leading)
     }
 
@@ -252,7 +252,7 @@ struct PanelMultilineTextInput: View {
                 lineSpacing: lineSpacing
             )
         )
-        .font(.body)
+        .appFont(.body)
         .foregroundStyle(SnipSnapColors.textPrimary)
         .lineSpacing(lineSpacing)
         .focused($editorFocused)

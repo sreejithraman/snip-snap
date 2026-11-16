@@ -68,12 +68,12 @@ private struct ListManagementPanel: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Lists")
-                    .font(.body.weight(.semibold))
+                    .appFont(.body, weight: .semibold)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
+                        .appFont(.body, weight: .semibold)
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
                 }
@@ -109,7 +109,7 @@ private struct ListManagementPanel: View {
                 createList()
             } label: {
                 Label("New List", systemImage: "plus")
-                    .font(.body.weight(.semibold))
+                    .appFont(.body, weight: .semibold)
                     .frame(maxWidth: .infinity, minHeight: max(48, rowHeight))
                     .contentShape(Rectangle())
             }
@@ -165,7 +165,7 @@ private struct ListManagementPanel: View {
             HStack(spacing: 10) {
                 SnipListMarkView(mark: mark, appearance: appearance, diameter: 26)
                 Text(title)
-                    .font(.body.weight(model.selectedPage == page ? .semibold : .regular))
+                    .appFont(.body, weight: model.selectedPage == page ? .semibold : .regular)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)

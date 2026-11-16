@@ -37,7 +37,7 @@ struct ComposerTextInput: UIViewRepresentable {
         defer { context.coordinator.isUpdatingView = false }
         view.onPasteAttachments = onPasteAttachments
         view.isPasteEnabled = isPasteEnabled
-        view.font = .preferredFont(forTextStyle: .body)
+        view.font = AppTypography.preferredFont(.body, compatibleWith: view.traitCollection)
         view.textColor = .label
         view.isEditable = isEnabled
         view.isSelectable = isEnabled
