@@ -2270,6 +2270,68 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCopyMarksDoneAfterPersistedSourceNormalization() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: false)
+    }
+
+    @MainActor
+    func testCopyMarksDoneAfterUnobservedReordering() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: true)
+    }
+
+    @MainActor
+    func testDoneControlCopiesAndMarksDoneAfterUnobservedReordering() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: true, useDoneControl: true)
+    }
+
+    @MainActor
+    private func checkCopyAndDoneAfterMetadataChange(reorder: Bool, useDoneControl: Bool = false) async throws {
+        let repository = try SwiftDataSnipLibrary(storeURL: storeURL().appendingPathExtension("store"))
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let added = await model.add(
+            content: "Copy me", origin: reorder ? .quickEntry : .agent,
+            source: reorder ? nil : SnipSource(applicationName: "Agent", windowTitle: "Older task")
+        )
+        XCTAssertTrue(added)
+        let snip = try XCTUnwrap(model.snips.first)
+        if reorder {
+            let otherAdded = await model.add(content: "Keep me", origin: .quickEntry)
+            XCTAssertTrue(otherAdded)
+            let other = try XCTUnwrap(model.snips.first { $0.id != snip.id })
+            _ = try await repository.perform(
+                .place(ids: [snip.id], in: snip.listID, before: other.id, basedOn: .manual),
+                sortedBy: .manual
+            )
+        }
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-metadata-copy-\(UUID())"))
+
+        if useDoneControl {
+            await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+        } else {
+            let copied = await model.copySnipsAndMarkDoneNow([snip], to: pasteboard)
+            XCTAssertTrue(copied, "Copy and Done must tolerate metadata changes: \(String(describing: model.latestFailure))")
+        }
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Copy me")
+        let saved = try await repository.checkedSnapshot(sortedBy: .manual)
+        XCTAssertTrue(try XCTUnwrap(saved.snips.first { $0.id == snip.id }).isDone)
+        if reorder {
+            let copied = try XCTUnwrap(saved.snips.first { $0.id == snip.id })
+            let other = try XCTUnwrap(saved.snips.first { $0.id != snip.id })
+            XCTAssertLessThan(copied.manualSortKey, other.manualSortKey)
+            XCTAssertFalse(other.isDone)
+        }
+
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        await model.performToastActionNow(undo)
+        let restored = try await repository.checkedSnapshot(sortedBy: .manual)
+        XCTAssertFalse(try XCTUnwrap(restored.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Copy me")
+    }
+
+    @MainActor
     func testRapidDoneTogglesOnlyApplyTheSuccessfulCopy() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Snip", origin: .quickEntry)
