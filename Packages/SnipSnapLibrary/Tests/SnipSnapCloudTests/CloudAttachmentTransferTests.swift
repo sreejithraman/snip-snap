@@ -4708,6 +4708,10 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     try await pair.receiver.sendPending()
     let stillHeld = try await snapshot(pair.receiverLibrary, pair.namespace)
     XCTAssertEqual(try publication(of: deleted.id, in: stillHeld), pendingDeleted)
+    XCTAssertFalse(
+      stillHeld.cleanups.contains(where: { $0.identity == deletedPayload }),
+      "The held save must not queue payload cleanup before the metadata delete is fetched."
+    )
 
     try await pair.receiver.fetchRemote()
 
@@ -4724,10 +4728,17 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       [kept.id],
       "Client 2 must not republish the deleted attachment under any ID."
     )
-    XCTAssertFalse(
-      storage.cleanups.contains(where: { $0.identity == deletedPayload }),
-      "Client 1 owns the deleted payload's cleanup."
-    )
+    // A normal metadata fetch can owe an already-deleted payload a duplicate cleanup.
+    XCTAssertEqual(storage.cleanups.map(\.identity), [deletedPayload])
+    let duplicateCleanup = try XCTUnwrap(storage.cleanups.first)
+    XCTAssertNil(duplicateCleanup.shadowData, "This metadata-only fetch read no payload record.")
+    XCTAssertNil(duplicateCleanup.blockedByAttachmentID, "No replacement may block deletion.")
+    XCTAssertNil(duplicateCleanup.lastFailure, "A missing payload is not a sync failure.")
+    let cleanupPlan = try await pair.receiverStore.pendingChanges()
+    XCTAssertTrue(cleanupPlan.operations.contains(.delete(deletedPayloadID, base: nil)),
+      "The retained entry is active work for exactly the removed, unreferenced payload.")
+    let settledWithCleanup = try await pair.receiverStore.isSyncSettled()
+    XCTAssertFalse(settledWithCleanup, "Sync cannot be settled while the duplicate cleanup is owed.")
     XCTAssertFalse(
       storage.cacheEntries.contains(where: { $0.attachmentID == deleted.id }),
       "Client 2 must drop the deleted attachment's download."
@@ -4737,7 +4748,20 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       "Client 2 must remove the deleted attachment's cached file."
     )
 
-    try await pair.receiver.sendPending()
+    let acceptedBeforeDuplicate = await pair.server.acceptedOperationCount(for: deletedPayloadID)
+    let duplicateDelete = try await pair.receiver.sendPending(beforeSend: { outbound in
+      XCTAssertTrue(outbound.operations.contains(.delete(deletedPayloadID, base: nil)))
+    })
+    XCTAssertNil(duplicateDelete.issue, "Deleting an already-missing payload must succeed.")
+    let afterDuplicate = try await snapshot(pair.receiverLibrary, pair.namespace)
+    XCTAssertFalse(afterDuplicate.cleanups.contains { $0.identity == deletedPayload },
+      "The missing-payload acknowledgement must retire the active cleanup, not keep a tombstone.")
+    let afterCleanupPlan = try await pair.receiverStore.pendingChanges()
+    XCTAssertFalse(afterCleanupPlan.operations.contains { $0.id == deletedPayloadID },
+      "A settled cleanup must not retry the old payload.")
+    let acceptedAfterDuplicate = await pair.server.acceptedOperationCount(for: deletedPayloadID)
+    XCTAssertEqual(acceptedAfterDuplicate, acceptedBeforeDuplicate,
+      "The payload was already absent; this cleanup must accept unknownItem without writing it.")
 
     let metadataRecordCount = await pair.server.storedRecordTypes(in: dataZone)
       .filter { $0 == CloudAttachmentRecordCodec.metadataRecordType }
@@ -4763,6 +4787,14 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
         fetchedStorage.publications.contains { $0.metadata.payloadIdentity == deletedPayload },
         "Nothing on \(client) may reference the deleted payload."
       )
+      XCTAssertFalse(fetchedStorage.cleanups.contains { $0.identity == deletedPayload },
+        "Later fetches must not recreate the settled cleanup on \(client).")
+    }
+    for store in [pair.senderStore, pair.receiverStore] {
+      let next = try await store.pendingChanges()
+      XCTAssertFalse(next.operations.contains { $0.id == deletedPayloadID })
+      let settled = try await store.isSyncSettled()
+      XCTAssertTrue(settled, "Both devices must settle with no payload cleanup retry.")
     }
   }
 
