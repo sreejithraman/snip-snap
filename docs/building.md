@@ -440,7 +440,9 @@ companions, ordinary/group isolation, provider/event membership, atomic zone
 capability, and actual three/five-attachment planner batches. It records raw SDK
 throws and pending state. Three quiescent fetch samples measure whole-cycle
 delivery; passing them does not establish general CloudKit snapshot coherence.
-Batch/save counts are logical SDK costs, not HTTP requests or billing.
+Batch/save counts are logical SDK costs, not HTTP requests or billing. Each planner
+creates and confirms its exact zone pair before its first fetch; account and budget
+checks protect coordinator apply, account-notice and pre-send boundaries.
 
 The runner starts a 40-minute cooperative budget before preflight/build. Work
 stops admitting new phases after 30 minutes, reserving ten for cleanup. Cases
@@ -469,7 +471,11 @@ ignored evidence directory under
 `.xcresult`, its JSON summary, the `xcodebuild` log, and a local-store directory.
 `atomic-proof/manifest.json` records source/harness revisions, a hashed account
 fingerprint and all six zones before the first write. `sdk-trace.json` records
-sanitized provider sets, terminal errors/tag hashes and pending state. Success
+sanitized provider sets, terminal errors/tag hashes and pending state. The manifest's
+`cleanupOutcomes` retains each exact zone's absence verdict and sanitized delete/read
+attempts, including failures followed by recovery. Baseline diagnostics retain
+structured stages/known causes and numeric CloudKit codes without reflected details.
+Success
 requires every phase and verified absence of every manifest zone, in addition
 to the unchanged one-passing/non-skipped-host-test summary guard.
 The host uses a unique store path there; the file appears only if it writes

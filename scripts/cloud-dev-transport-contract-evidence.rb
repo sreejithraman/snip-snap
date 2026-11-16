@@ -20,6 +20,15 @@ begin
   raise 'wrong synthetic zones' unless manifest['zones'] == expected
   cleanup = manifest.fetch('cleanup')
   raise 'unresolved cleanup' unless cleanup.keys.sort == expected.sort && cleanup.values.all? { |v| v == 'verified-absent' }
+  outcomes = manifest.fetch('cleanupOutcomes')
+  raise 'missing exact-zone cleanup outcomes' unless outcomes.keys.sort == expected.sort
+  outcomes.each do |zone, outcome|
+    raise 'inconsistent cleanup outcome' unless outcome['zoneName'] == zone && outcome['verifiedAbsent'] == true
+    attempts = outcome.fetch('attempts')
+    raise 'missing or unbounded cleanup attempts' unless attempts.is_a?(Array) && (2..6).cover?(attempts.length)
+    raise 'invalid cleanup attempt' unless attempts.all? { |a| (1..3).cover?(a['number']) && %w[delete read].include?(a['operation']) && a['result'].is_a?(String) }
+    raise 'cleanup absence not observed' unless attempts.last['operation'] == 'read' && attempts.last['result'] == 'absent'
+  end
   results = manifest.fetch('results')
   raise 'missing/failed phase' unless required.all? { |key| results[key] == 'pass' }
   [3, 5].each do |count|

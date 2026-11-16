@@ -86,9 +86,9 @@ final class CloudDevelopmentAtomicContract: Sendable {
   }
 
   private func preservedFailure(_ original: Error) -> CloudDevelopmentTransportContract.StepFailure {
-    var detail = Self.safe(original)
-    do { try persist() } catch { detail += "; evidence-write-failed" }
-    return CloudDevelopmentTransportContract.StepFailure(stage: "atomic-contract", detail: detail)
+    var causes = [CloudDevelopmentTransportContract.Cause(original)]
+    do { try persist() } catch { causes.append(.evidenceWrite) }
+    return CloudDevelopmentTransportContract.StepFailure(stage: "atomic-contract", causes: causes)
   }
 
   private func phase(_ name: String, operation: @escaping @Sendable () async throws -> Void) async throws {
@@ -107,7 +107,7 @@ final class CloudDevelopmentAtomicContract: Sendable {
     await left.reset(); await right.reset()
     do {
       try await budget.perform("cleanup", seconds: 600, cleanup: true) {
-        try await CloudDevelopmentTransportContract.cleanupZones(self.zones, validateAccount: self.validateAccount,
+        _ = try await CloudDevelopmentTransportContract.cleanupZones(self.zones, validateAccount: self.validateAccount,
         delete: { zone in
           try self.budget.check("cleanup", cleanup: true)
           _ = try await self.database.deleteRecordZone(withID: CloudKitRecordMapper.zoneID(for: zone))
@@ -115,8 +115,12 @@ final class CloudDevelopmentAtomicContract: Sendable {
           try self.budget.check("cleanup", cleanup: true)
           do { _ = try await self.database.recordZone(for: CloudKitRecordMapper.zoneID(for: zone)); return true }
           catch let error as CKError where error.code == .zoneNotFound { return false }
-        }, checkBudget: { try self.budget.check("cleanup", cleanup: true) }, didFinish: { zone, success in
-          self.manifest.withLock { $0.cleanup[zone.name] = success ? "verified-absent" : "UNRESOLVED" }
+        }, checkBudget: { try self.budget.check("cleanup", cleanup: true) }, recordOutcome: { outcome in
+          self.manifest.withLock {
+            $0.cleanup[outcome.zoneName] = outcome.verifiedAbsent ? "verified-absent" : "UNRESOLVED"
+            $0.cleanupOutcomes[outcome.zoneName] = outcome
+          }
+          try self.persist()
         })
       }
     } catch {
@@ -126,17 +130,28 @@ final class CloudDevelopmentAtomicContract: Sendable {
   }
 
   static func safe(_ error: Error) -> String {
-    if let ck = error as? CKError { return "CKError(\(ck.errorCode))" }
-    if let failure = error as? Failure { return String(describing: failure) }
-    if let failure = error as? CloudDevelopmentTransportContract.StepFailure {
-      // These two stages contain only errors already sanitized at this boundary.
-      if failure.stage == "operation and cleanup failed" || failure.stage == "atomic-contract" {
-        return "\(failure.stage): \(failure.detail)"
-      }
-      return failure.stage
+    CloudDevelopmentTransportContract.Cause(error).text
+  }
+
+  static func preparePlanner(_ coordinator: CloudFullSyncCoordinator, transport: any CloudRecordTransport,
+    zones: Set<CloudZoneID>, validate: @escaping @Sendable () async throws -> Void) async throws {
+    try await validate()
+    try await transport.start(state: nil)
+    try await validate()
+    let created = try await transport.send(CloudOutboundBatch(operations: [], zonesToSave: zones))
+    for zone in zones {
+      try require(created.databaseEvents.contains(.zoneSaved(zone)), "planner-zone-create-not-confirmed")
     }
-    if let failure = error as? CloudDevelopmentTransportContract.ContractError { return String(describing: failure) }
-    return error is CancellationError ? "cancelled" : "operation-failed"
+    try await CloudDevelopmentTransportContract.confirm(.sent(created), transport: transport, validateAccount: validate)
+    let fetched = try await coordinator.fetchRemote(beforeApply: validate)
+    try require(!fetched.blocksOutbound, "planner-initial-fetch-blocked")
+    try await sendPlanner(coordinator, validate: validate)
+  }
+
+  static func sendPlanner(_ coordinator: CloudFullSyncCoordinator,
+    validate: @escaping @Sendable () async throws -> Void) async throws {
+    try await validate()
+    _ = try await coordinator.sendPendingUntilSettled(beforeApply: validate, beforeSend: { _ in try await validate() })
   }
 
   private func exercise() async throws {
@@ -557,8 +572,10 @@ final class CloudDevelopmentAtomicContract: Sendable {
       diagnostics: AppDiagnosticRecorder(record: { _ in }))
     do {
       try await phase("setup-planner-\(count)") {
-        _ = try await coordinator.sync()
-        _ = try await coordinator.sendPendingUntilSettled()
+        try await Self.preparePlanner(coordinator, transport: transport, zones: Set(pair), validate: {
+          try self.budget.check("planner-boundary")
+          try await self.validateAccount()
+        })
         let remaining = try await store.pendingChanges()
         try Self.require(remaining.operations.isEmpty, "planner-bootstrap-not-settled")
       }
@@ -587,7 +604,10 @@ final class CloudDevelopmentAtomicContract: Sendable {
           "planner-reorder-changed-published-identities")
         let groups = CloudAttachmentOrderWrite.groups(in: plan.operations)
         try Self.require(groups.count == 1 && groups[snipID]?.count == count, "planner-logical-group-count")
-        _ = try await coordinator.sendPendingUntilSettled()
+        try await Self.sendPlanner(coordinator, validate: {
+          try self.budget.check("planner-boundary")
+          try await self.validateAccount()
+        })
         let trace = try self.evidence.entries(phase: "10-planner-\(count)", client: "planner-\(count)")
         let batches = trace.filter { $0.kind == "provider-batch" }
         try Self.require(batches.count == 1 && batches[0].atomic == true

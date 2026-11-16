@@ -17,6 +17,7 @@ struct CloudDevelopmentContractManifest: Codable, Sendable {
   let zones: [String]
   var results: [String: String] = [:]
   var cleanup: [String: String] = [:]
+  var cleanupOutcomes: [String: CloudDevelopmentCleanupOutcome] = [:]
   var observations: [String: [String: String]] = [:]
 }
 
@@ -252,44 +253,91 @@ struct CloudDevelopmentContractBudget: Sendable {
   }
 }
 
+struct CloudDevelopmentCleanupOutcome: Codable, Sendable {
+  struct Attempt: Codable, Sendable {
+    let number: Int
+    let operation: String
+    let result: String
+  }
+  let zoneName: String
+  let verifiedAbsent: Bool
+  let attempts: [Attempt]
+}
+
+struct CloudDevelopmentCleanupFailure: Error, LocalizedError, Encodable, Sendable {
+  let outcomes: [CloudDevelopmentCleanupOutcome]
+  let evidenceFailures: [String]
+  var summary: String {
+    let zones = outcomes.map { outcome in
+      let name = outcome.zoneName.hasPrefix("snipsnap-contract-") ? outcome.zoneName : "<foreign-zone>"
+      let attempts = outcome.attempts.map { "\($0.number)-\($0.operation):\($0.result)" }.joined(separator: "|")
+      return "\(name): \(outcome.verifiedAbsent ? "verified-absent" : "zoneCleanupWasNotConfirmed"); attempts: \(attempts)"
+    }
+    return (zones + evidenceFailures).joined(separator: "; ")
+  }
+  var errorDescription: String? { summary }
+}
+
 extension CloudDevelopmentTransportContract {
-  /// Always attempt every exact manifest zone, including partial creation/first cleanup failure.
+  /// One outcome owns absence and retry evidence, including recovered failures.
+  @discardableResult
   static func cleanupZones(_ zones: [CloudZoneID], validateAccount: () async throws -> Void,
     delete: (CloudZoneID) async throws -> Void, exists: (CloudZoneID) async throws -> Bool,
-    checkBudget: () throws -> Void = {}, didFinish: (CloudZoneID, Bool) -> Void = { _, _ in }) async throws {
-    var failures: [String] = []
+    checkBudget: () throws -> Void = {}, didFinish: (CloudZoneID, Bool) -> Void = { _, _ in },
+    recordOutcome: (CloudDevelopmentCleanupOutcome) throws -> Void = { _ in }) async throws -> [CloudDevelopmentCleanupOutcome] {
+    struct Recording: Sendable {
+      var number = 0
+      var attempts: [CloudDevelopmentCleanupOutcome.Attempt] = []
+    }
+    var outcomes: [CloudDevelopmentCleanupOutcome] = []
+    var evidenceFailures: [String] = []
     for zone in zones {
-      let causes = Mutex<[String]>([])
+      let recording = Mutex(Recording())
+      var absent = false
       do {
         try checkBudget()
         try await validateAccount()
         try await cleanupZone(delete: {
+          let number = recording.withLock { $0.number += 1; return $0.number }
           do {
             try checkBudget()
             try await validateAccount()
             try await delete(zone)
+            recording.withLock { $0.attempts.append(.init(number: number, operation: "delete", result: "ok")) }
           } catch {
-            causes.withLock { $0.append(CloudDevelopmentAtomicContract.safe(error)) }
+            recording.withLock { $0.attempts.append(.init(number: number, operation: "delete", result: CloudDevelopmentAtomicContract.safe(error))) }
             throw error
           }
         }, zoneExists: {
+          let number = recording.withLock { $0.number }
           do {
             try checkBudget()
             try await validateAccount()
-            return try await exists(zone)
+            let present = try await exists(zone)
+            recording.withLock { $0.attempts.append(.init(number: number, operation: "read", result: present ? "present" : "absent")) }
+            return present
           } catch {
-            causes.withLock { $0.append(CloudDevelopmentAtomicContract.safe(error)) }
+            recording.withLock { $0.attempts.append(.init(number: number, operation: "read", result: CloudDevelopmentAtomicContract.safe(error))) }
             throw error
           }
         })
-        didFinish(zone, true)
+        absent = true
       } catch {
-        let attempts = causes.withLock { $0.joined(separator: "|") }
-        failures.append("\(zone.name): \(CloudDevelopmentAtomicContract.safe(error)); attempts: \(attempts)")
-        didFinish(zone, false)
+        recording.withLock {
+          if $0.attempts.isEmpty { $0.attempts.append(.init(number: 0, operation: "admission", result: CloudDevelopmentAtomicContract.safe(error))) }
+        }
       }
+      let outcome = CloudDevelopmentCleanupOutcome(zoneName: zone.name, verifiedAbsent: absent,
+        attempts: recording.withLock { $0.attempts })
+      outcomes.append(outcome)
+      didFinish(zone, absent)
+      do { try recordOutcome(outcome) }
+      catch { evidenceFailures.append("\(zone.name): cleanup-evidence-write-failed") }
     }
-    if !failures.isEmpty { throw CloudDevelopmentContractFailure.cleanup(failures) }
+    if outcomes.contains(where: { !$0.verifiedAbsent }) || !evidenceFailures.isEmpty {
+      throw CloudDevelopmentCleanupFailure(outcomes: outcomes, evidenceFailures: evidenceFailures)
+    }
+    return outcomes
   }
 }
 #endif

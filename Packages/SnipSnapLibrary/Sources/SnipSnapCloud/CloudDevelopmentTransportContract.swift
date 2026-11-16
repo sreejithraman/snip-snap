@@ -11,7 +11,7 @@ public enum CloudDevelopmentTransportContract {
         evidenceDirectory: evidenceDirectory, sourceRevision: sourceRevision,
         harnessRevision: harnessRevision, sessionStartedAt: sessionStartedAt)
     } catch {
-      throw StepFailure(stage: "Development contract", detail: CloudDevelopmentAtomicContract.safe(error))
+      throw StepFailure(stage: "Development contract", error: error)
     }
   }
 
@@ -29,7 +29,8 @@ public enum CloudDevelopmentTransportContract {
     catch {
       if case .failure(let original) = result {
         throw StepFailure(stage: "operation and cleanup failed",
-          detail: "\(original.localizedDescription); cleanup: \(error.localizedDescription)")
+          causes: [.step("operation", [Cause(original)]), .step("cleanup", [Cause(error)])],
+          legacyDetail: "\(legacyDescription(original)); cleanup: \(legacyDescription(error))")
       }
       throw error
     }
@@ -177,13 +178,91 @@ public enum CloudDevelopmentTransportContract {
     _ name: String, operation: () async throws -> Value
   ) async throws -> Value {
     do { return try await operation() }
-    catch { throw StepFailure(stage: name, detail: String(reflecting: error)) }
+    catch { throw StepFailure(stage: name, error: error) }
+  }
+
+  indirect enum Cause: Sendable {
+    case contract(String), cloud(Int), oracle(String), deadline(String)
+    case step(String, [Cause]), cleanup(CloudDevelopmentCleanupFailure)
+    case redacted, invalidEvidence, evidenceWrite
+
+    init(_ error: Error) {
+      switch error {
+      case let error as StepFailure: self = .step(Self.stage(error.stage), error.causes)
+      case let error as ContractError: self = .contract(String(describing: error))
+      case let error as CKError: self = .cloud(error.errorCode)
+      case let error as CloudDevelopmentCleanupFailure: self = .cleanup(error)
+      case let error as CloudDevelopmentContractFailure:
+        switch error {
+        case .invalidEvidence: self = .invalidEvidence
+        case .oracle(let label): self = .oracle(Self.label(label))
+        case .deadline(let label): self = .deadline(Self.label(label))
+        case .cleanup: self = .redacted
+        }
+      default: self = .redacted
+      }
+    }
+
+    var text: String {
+      switch self {
+      case .contract(let code): "contract:\(code)"
+      case .cloud(let code): "CKError(\(code))"
+      case .oracle(let code): "oracle:\(code)"
+      case .deadline(let code): "deadline:\(code)"
+      case .step(let stage, let causes): "\(stage): \(causes.map(\.text).joined(separator: "; "))"
+      case .cleanup(let failure): failure.summary
+      case .redacted: "redacted-error"
+      case .invalidEvidence: "invalid-contract-evidence"
+      case .evidenceWrite: "evidence-write-failed"
+      }
+    }
+
+    static func label(_ value: String) -> String {
+      // Typed oracle/deadline labels are source-owned identifiers, never record bodies or paths.
+      value.utf8.count <= 80 && !value.isEmpty && value.utf8.allSatisfy {
+        (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45
+      } ? value : "redacted-label"
+    }
+
+    static func stage(_ value: String) -> String {
+      let fixed = ["atomic-contract", "Development contract", "operation and cleanup failed", "operation", "cleanup"]
+      if fixed.contains(value) { return value }
+      for step in ["start", "create zone", "initial fetch", "save record", "second client fetch", "attachment bytes", "delete record", "second client deletion"] {
+        if value.hasSuffix(": \(step)") {
+          for client in ["fake", "CloudKit"] {
+            for prefix in [client, "\(client) / Snip", "\(client) / AttachmentPayload"] {
+              if value == "\(prefix): \(step)" { return value }
+            }
+          }
+          return "baseline: \(step)"
+        }
+      }
+      return "contract-step"
+    }
   }
 
   struct StepFailure: Error, LocalizedError {
     let stage: String
     let detail: String
-    var errorDescription: String? { "\(stage): \(detail)" }
+    let causes: [Cause]
+    init(stage: String, detail: String) {
+      self.stage = stage; self.detail = detail; causes = [.redacted]
+    }
+    init(stage: String, error: Error) {
+      self.init(stage: stage, causes: [Cause(error)])
+    }
+    init(stage: String, causes: [Cause], legacyDetail: String? = nil) {
+      self.stage = stage; self.causes = causes
+      detail = legacyDetail ?? causes.map(\.text).joined(separator: "; ")
+    }
+    var errorDescription: String? { "\(Cause.stage(stage)): \(causes.map(\.text).joined(separator: "; "))" }
+  }
+
+  private static func legacyDescription(_ error: Error) -> String {
+    // Retain old package-test introspection for plain Swift errors; never emit this compatibility detail.
+    if !(error is any LocalizedError), !(error is any CustomNSError), !(type(of: error) is NSError.Type),
+      (error as NSError).userInfo.isEmpty { return error.localizedDescription }
+    return Cause(error).text
   }
 
   enum ContractError: Error, Equatable {

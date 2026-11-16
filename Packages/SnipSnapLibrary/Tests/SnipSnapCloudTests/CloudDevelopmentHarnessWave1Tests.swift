@@ -17,7 +17,9 @@ final class CloudDevelopmentHarnessWave1Tests: XCTestCase {
     try await f.transport.confirmApplied(missing.id)
     let created = try await f.transport.send(.init(operations: [], zonesToSave: f.zones))
     let physical = await f.server.hasZone(f.data)
+    let payloadExists = await f.server.hasZone(f.payload)
     XCTAssertTrue(physical)
+    XCTAssertTrue(payloadExists)
     do {
       _ = try await f.transport.fetch(scope: .all)
       XCTFail("The real receipt gate must reject fetch before creation confirmation")
@@ -236,14 +238,11 @@ final class CloudDevelopmentHarnessWave1Tests: XCTestCase {
 #endif
 }
 
-// The pre-repair bootstrap used by the existing account-free 3/5 planner fixture.
-// The fix binds both live and account-free callers to one DEBUG implementation.
+// Live and account-free planner callers use the same DEBUG orchestration.
 enum ContractPlannerTestDriver {
   static func bootstrap(_ coordinator: CloudFullSyncCoordinator, transport: any CloudRecordTransport,
     zones: Set<CloudZoneID>, validate: @escaping @Sendable () async throws -> Void) async throws {
-    try await validate()
-    _ = try await coordinator.sync()
-    _ = try await coordinator.sendPendingUntilSettled()
+    try await CloudDevelopmentAtomicContract.preparePlanner(coordinator, transport: transport, zones: zones, validate: validate)
   }
 }
 
@@ -290,6 +289,7 @@ actor StrictContractTransport: CloudRecordTransport {
   let server: FakeCloudServer
   let base: FakeCloudRecordTransport
   let data: CloudZoneID
+  let requiredZones: Set<CloudZoneID>
   let account: Wave1Account
   var confirmedZones: Set<CloudZoneID> = []
   var creations: [UUID: Set<CloudZoneID>] = [:]
@@ -301,7 +301,7 @@ actor StrictContractTransport: CloudRecordTransport {
   var changeAfterFetch = false
   var fetchedID: UUID?
   init(server: FakeCloudServer, namespace: CloudSyncNamespace, data: CloudZoneID, account: Wave1Account = Wave1Account()) {
-    self.server = server; self.data = data; self.account = account
+    self.server = server; self.data = data; self.account = account; requiredZones = namespace.zones
     base = FakeCloudRecordTransport(server: server, namespace: namespace, automaticallyFetchedZones: [data])
   }
   func injectAccountNoticeOnFetch(changed: Bool) { onFetch = changed }
@@ -311,8 +311,11 @@ actor StrictContractTransport: CloudRecordTransport {
   func reset() async { await base.reset() }
   func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
     if !creations.isEmpty { return try await base.fetch(scope: scope) }
-    let exists = await server.hasZone(data)
-    if !confirmedZones.contains(data) || !exists { await base.failNextFetchedZone(data, failure: .zoneMissing) }
+    var missing = requiredZones.subtracting(confirmedZones)
+    for zone in requiredZones {
+      if !(await server.hasZone(zone)) { missing.insert(zone) }
+    }
+    if !missing.isEmpty { await base.failNextFetchedZone(data, failure: .zoneMissing) }
     let fetched = try await base.fetch(scope: scope)
     fetchedID = fetched.id
     if let changed = onFetch {
@@ -324,7 +327,10 @@ actor StrictContractTransport: CloudRecordTransport {
   func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
     if account.changed.withLock({ $0 }) { sendsAfterChange += 1 }
     let sent = try await base.send(batch)
-    creations[sent.id] = batch.zonesToSave
+    creations[sent.id] = Set(sent.databaseEvents.compactMap { event in
+      guard case .zoneSaved(let zone) = event, batch.zonesToSave.contains(zone) else { return nil }
+      return zone
+    })
     return sent
   }
   func pendingEvent() async -> CloudRecordTransportEvent? {

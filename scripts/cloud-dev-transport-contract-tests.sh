@@ -21,6 +21,9 @@ print -r -- "store=$SNIP_SNAP_STORE_PATH :: forwarded-store=${TEST_RUNNER_SNIP_S
 if [[ "${SNIP_SNAP_CONTRACT_EVIDENCE:-complete}" != missing ]]; then
     /usr/bin/ruby "$SNIP_SNAP_CONTRACT_EVIDENCE_FIXTURE"
 fi
+if [[ "${SNIP_SNAP_CONTRACT_MUTATE_SOURCE:-}" == 1 ]]; then
+    print -r -- "changed during stub build" >> "$SNIP_SNAP_CONTRACT_SOURCE_FIXTURE/tracked.txt"
+fi
 previous=""
 for argument in "$@"; do
     if [[ "$previous" == "-resultBundlePath" ]]; then
@@ -61,8 +64,10 @@ started = Time.at(ENV.fetch('TEST_RUNNER_SNIP_SNAP_CONTRACT_STARTED_AT').to_i)
 results = phases.to_h { |phase| [phase, 'pass'] }
 [3, 5].each { |n| results["10-cost-#{n}"] = "atomic-provider-batches=1; metadata-member-saves=#{n}; all-provider-batches=1; logical-not-HTTP" }
 cleanup = zones.to_h { |zone| [zone, 'verified-absent'] }
+outcomes = zones.to_h { |zone| [zone, {zoneName: zone, verifiedAbsent: true, attempts: [{number: 1, operation: 'delete', result: 'ok'}, {number: 1, operation: 'read', result: 'absent'}]}] }
 cleanup[zones.first] = 'UNRESOLVED' if ENV['SNIP_SNAP_CONTRACT_EVIDENCE'] == 'partial-cleanup'
-manifest = {runID: run_id, sourceRevision: ENV.fetch('TEST_RUNNER_SNIP_SNAP_CONTRACT_SOURCE_REVISION'), harnessRevision: ENV.fetch('TEST_RUNNER_SNIP_SNAP_CONTRACT_HARNESS_REVISION'), accountFingerprint: 'a' * 64, startedAt: started.iso8601, workDeadline: (started + 1800).iso8601, cleanupDeadline: (started + 2400).iso8601, zones: zones, results: results, cleanup: cleanup}
+manifest = {runID: run_id, sourceRevision: ENV.fetch('TEST_RUNNER_SNIP_SNAP_CONTRACT_SOURCE_REVISION'), harnessRevision: ENV.fetch('TEST_RUNNER_SNIP_SNAP_CONTRACT_HARNESS_REVISION'), accountFingerprint: 'a' * 64, startedAt: started.iso8601, workDeadline: (started + 1800).iso8601, cleanupDeadline: (started + 2400).iso8601, zones: zones, results: results, cleanup: cleanup, cleanupOutcomes: outcomes}
+manifest.delete(:cleanupOutcomes) if ENV['SNIP_SNAP_CONTRACT_EVIDENCE'] == 'missing-cleanup-outcomes'
 File.write(File.join(directory, 'manifest.json'), JSON.generate(manifest))
 trace = phases.flat_map { |phase| %w[provider-batch sent-event-before].map { |kind| {phase: phase, kind: kind} } }
 trace = [] if ENV['SNIP_SNAP_CONTRACT_EVIDENCE'] == 'no-sdk-trace'
@@ -71,7 +76,17 @@ File.write(File.join(directory, 'sdk-trace.json'), JSON.generate(trace))
 RUBY
 export SNIP_SNAP_CONTRACT_EVIDENCE_FIXTURE="$test_root/evidence-fixture.rb"
 
-contract="$script_dir/cloud-dev-transport-contract.sh"
+# Source guards remain real; only the stub policy cases get a clean, owned Git fixture.
+fixture_repo="$test_root/live-source"
+/bin/mkdir -p "$fixture_repo/scripts"
+/bin/cp "$script_dir/cloud-dev-transport-contract.sh" "$script_dir/cloud-dev-transport-contract-evidence.rb" "$fixture_repo/scripts/"
+print -r -- "source fixture" > "$fixture_repo/tracked.txt"
+git -C "$fixture_repo" -c init.defaultBranch=contract init -q
+git -C "$fixture_repo" add .
+git -C "$fixture_repo" -c user.name='Contract Test' -c user.email=contract@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm fixture
+export SNIP_SNAP_CONTRACT_SOURCE_FIXTURE="$fixture_repo"
+contract="$fixture_repo/scripts/cloud-dev-transport-contract.sh"
 export SNIP_SNAP_SIGNED_LANE_PREFLIGHT="$test_root/bin/preflight"
 export SNIP_SNAP_XCODEBUILD="$test_root/bin/xcodebuild"
 export SNIP_SNAP_XCRESULTTOOL="$test_root/bin/xcresulttool"
@@ -80,7 +95,7 @@ export SNIP_SNAP_CONTRACT_XCODEBUILD_ARGS="$test_root/xcodebuild-args"
 export SNIP_SNAP_DERIVED_DATA="$test_root/derived-data"
 export SNIP_SNAP_CLOUD_DEV_TRANSPORT_CONTRACT_ARTIFACTS="$test_root/artifacts"
 unset SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT SNIP_SNAP_CONTRACT_RESULT \
-    SNIP_SNAP_CONTRACT_XCODEBUILD_STATUS SNIP_SNAP_CONTRACT_EVIDENCE
+    SNIP_SNAP_CONTRACT_XCODEBUILD_STATUS SNIP_SNAP_CONTRACT_EVIDENCE SNIP_SNAP_CONTRACT_MUTATE_SOURCE
 
 if "$contract" >/dev/null 2>&1; then
     fail_test "the maintainer-only lane ran without its explicit opt-in"
@@ -220,12 +235,36 @@ fi
 [[ "$multiple_output" == *"expected one passing, non-skipped test"* ]] || \
     fail_test "the exact-one-test guard did not explain a multiple-test summary"
 
-for mode in missing partial-cleanup no-sdk-trace; do
+for mode in missing partial-cleanup no-sdk-trace missing-cleanup-outcomes; do
     if evidence_output="$(SNIP_SNAP_CONTRACT_EVIDENCE="$mode" "$contract" 2>&1)"; then
         fail_test "a single passing host test hid $mode evidence"
     fi
     [[ "$evidence_output" == *"atomic evidence or exact-zone cleanup is incomplete"* ]] || \
         fail_test "the $mode evidence guard did not report its cause"
+done
+
+for source_case in tracked untracked during-run; do
+    : > "$test_root/preflight-args"
+    : > "$test_root/xcodebuild-args"
+    case "$source_case" in
+    tracked) print -r -- "dirty tracked" >> "$fixture_repo/tracked.txt" ;;
+    untracked) print -r -- "dirty untracked" > "$fixture_repo/untracked.txt" ;;
+    esac
+    mutate_source=0
+    [[ "$source_case" == during-run ]] && mutate_source=1
+    if source_output="$(SNIP_SNAP_CONTRACT_MUTATE_SOURCE="$mutate_source" "$contract" 2>&1)"; then
+        fail_test "the live runner accepted $source_case source"
+    fi
+    if [[ "$source_case" == during-run ]]; then
+        [[ "$source_output" == *"source changed during the run"* && -s "$test_root/xcodebuild-args" ]] || \
+            fail_test "the live exit source guard did not detect the stubbed mutation"
+    else
+        [[ "$source_output" == *"Commit the harness before a live run"* \
+            && ! -s "$test_root/preflight-args" && ! -s "$test_root/xcodebuild-args" ]] || \
+            fail_test "the live entry source guard touched tools or hid $source_case source"
+    fi
+    git -C "$fixture_repo" restore --worktree -- tracked.txt
+    /bin/rm -f "$fixture_repo/untracked.txt"
 done
 
 print "Cloud Dev transport contract checks passed."
