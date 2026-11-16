@@ -41,8 +41,11 @@ final class CloudDevTransportContractTests: XCTestCase {
     }
     var signing: CFDictionary?
     let runningCode = try XCTUnwrap(code)
+    var staticCode: SecStaticCode?
     guard SecCodeCheckValidity(runningCode, [], nil) == errSecSuccess,
-      SecCodeCopySigningInformation(runningCode,
+      SecCodeCopyStaticCode(runningCode, [], &staticCode) == errSecSuccess,
+      let staticCode,
+      SecCodeCopySigningInformation(staticCode,
         SecCSFlags(rawValue: kSecCSSigningInformation), &signing) == errSecSuccess else {
       return XCTFail("The test host requires valid Development signing.")
     }
