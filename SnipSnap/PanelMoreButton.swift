@@ -120,8 +120,16 @@ struct PanelViewOptionsButton: View {
                     }
                     .pickerStyle(.inline)
                 }
-                Toggle("Agent snips only", isOn: agentSnipsOnlyBinding)
-                    .accessibilityIdentifier("filter-agent-snips-only")
+                Section("Origin") {
+                    Picker("Origin", selection: originFilterBinding) {
+                        ForEach(SnipOriginFilter.allCases, id: \.self) { filter in
+                            Text(filter.title)
+                                .tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.inline)
+                }
                 Section("Sort") {
                     Picker("Sort", selection: sortModeBinding) {
                         Text("Newest first").tag(SnipSortMode.chronological)
@@ -155,10 +163,10 @@ struct PanelViewOptionsButton: View {
         )
     }
 
-    private var agentSnipsOnlyBinding: Binding<Bool> {
+    private var originFilterBinding: Binding<SnipOriginFilter> {
         Binding(
-            get: { model.agentSnipsOnly },
-            set: { model.agentSnipsOnly = $0 }
+            get: { model.originFilter },
+            set: { model.originFilter = $0 }
         )
     }
 

@@ -61,12 +61,12 @@ final class AppModel: ObservableObject {
             reconcileSelection()
         }
     }
-    @Published private var storedAgentSnipsOnly = false
-    var agentSnipsOnly: Bool {
-        get { storedAgentSnipsOnly }
+    @Published private var storedOriginFilter: SnipOriginFilter = .all
+    var originFilter: SnipOriginFilter {
+        get { storedOriginFilter }
         set {
-            guard editingID == nil || newValue == storedAgentSnipsOnly else { return }
-            storedAgentSnipsOnly = newValue
+            guard editingID == nil || newValue == storedOriginFilter else { return }
+            storedOriginFilter = newValue
             reconcileSelection()
         }
     }
@@ -309,7 +309,7 @@ final class AppModel: ObservableObject {
     func canReorder(ids: Set<UUID>) -> Bool {
         guard !hasActiveQuery,
               completionFilter == .all,
-              !agentSnipsOnly,
+              originFilter == .all,
               !ids.isEmpty,
               !snips.contains(where: { ids.contains($0.id) && $0.isPinned }) else { return false }
         return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
@@ -414,7 +414,7 @@ final class AppModel: ObservableObject {
             snips: snips,
             query: query,
             completionFilter: hasActiveQuery ? .all : completionFilter,
-            agentSnipsOnly: agentSnipsOnly,
+            originFilter: originFilter,
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: { $0.displaySourceLabel }
         )

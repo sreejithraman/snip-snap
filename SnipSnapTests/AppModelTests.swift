@@ -55,7 +55,7 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
-    func testAgentSnipsOnlyComposesWithCompletionListAndSearch() async {
+    func testOriginFilterComposesWithCompletionListAndSearch() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let manual = Snip(content: "Review manual", origin: .quickEntry)
         let agent = Snip(content: "Review agent", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
@@ -66,11 +66,11 @@ final class AppModelTests: StoreBackedTestCase {
             defaults: defaults()
         )
         await model.waitForInitialLoad()
-        XCTAssertFalse(model.agentSnipsOnly)
+        XCTAssertEqual(model.originFilter, .all)
         let originalOrder = model.filteredSnips.map(\.id)
         model.selection = [manual.id, agent.id]
 
-        model.agentSnipsOnly = true
+        model.originFilter = .agent
 
         XCTAssertEqual(Set(model.filteredSnips.map(\.id)), [agent.id, done.id])
         XCTAssertEqual(model.selection, [agent.id])
@@ -83,28 +83,43 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.filteredSnips.map(\.id), [elsewhere.id])
         model.exitSearch()
         model.completionFilter = .all
-        model.agentSnipsOnly = false
+        model.originFilter = .human
+        XCTAssertEqual(model.filteredSnips.map(\.id), [manual.id])
+        model.selection = [manual.id]
+        model.originFilter = .agent
+        XCTAssertTrue(model.selection.isEmpty)
+        model.originFilter = .human
+        model.query = "Review"
+        XCTAssertEqual(model.filteredSnips.map(\.id), [manual.id])
+        model.exitSearch()
+        model.completionFilter = .done
+        XCTAssertTrue(model.filteredSnips.isEmpty)
+        model.completionFilter = .all
+        model.originFilter = .all
         XCTAssertEqual(model.filteredSnips.map(\.id), originalOrder)
     }
 
     @MainActor
-    func testAgentFilterCannotHideInlineEditorOrReorderFilteredSubset() async throws {
+    func testOriginFilterCannotHideInlineEditorOrReorderFilteredSubset() async throws {
         let manual = Snip(content: "Manual draft", origin: .quickEntry)
         let agent = Snip(content: "Agent", origin: .agent)
         let model = AppModel(library: InMemorySnipLibrary(snips: [manual, agent]), defaults: defaults())
         await model.waitForInitialLoad()
         let opened = await model.beginEditing(manual.id)
         XCTAssertTrue(opened)
-        model.agentSnipsOnly = true
-        XCTAssertFalse(model.agentSnipsOnly)
+        model.originFilter = .agent
+        model.originFilter = .human
+        XCTAssertEqual(model.originFilter, .all)
         XCTAssertTrue(model.filteredSnips.contains { $0.id == manual.id })
         model.cancelEditing()
         let before = model.snips
-        model.agentSnipsOnly = true
-        XCTAssertFalse(model.canReorder(ids: [agent.id]))
-        await model.moveSelectionNow(by: -1, ids: [agent.id])
-        XCTAssertEqual(model.snips, before)
-        XCTAssertEqual(model.sortMode, .chronological)
+        for filter in [SnipOriginFilter.agent, .human] {
+            model.originFilter = filter
+            XCTAssertFalse(model.canReorder(ids: [agent.id]))
+            await model.moveSelectionNow(by: -1, ids: [agent.id])
+            XCTAssertEqual(model.snips, before)
+            XCTAssertEqual(model.sortMode, .chronological)
+        }
     }
 
     @MainActor

@@ -4,6 +4,30 @@ import SnipSnapCore
 import XCTest
 
 final class SnipCLIApplicationParserTests: XCTestCase {
+  func testOriginFilterAcceptsThreeChoicesAndRetainsAgentOnlyAlias() throws {
+    let revision = String(repeating: "a", count: 64)
+    for value in ["all", "agent", "human"] {
+      let action = try XCTUnwrap(SnipCLIApplicationParser.parse([
+        "settings", "set", "origin-filter", value, "--if-revision", revision,
+      ]))
+      guard case .extended(.application(.setSetting(let key, let parsedValue, _))) = action else {
+        return XCTFail("Expected an origin-filter setting.")
+      }
+      XCTAssertEqual(key.rawValue, "origin-filter")
+      XCTAssertEqual(parsedValue, value)
+    }
+    for value in ["on", "off"] {
+      XCTAssertNotNil(try SnipCLIApplicationParser.parse([
+        "settings", "set", "agent-snips-only", value, "--if-revision", revision,
+      ]))
+    }
+    for value in ["on", "manual", "", "Human"] {
+      XCTAssertThrowsError(try SnipCLIApplicationParser.parse([
+        "settings", "set", "origin-filter", value, "--if-revision", revision,
+      ]))
+    }
+  }
+
   func testDiagnosticLogsFetchIsReadOnlyAndKeepsTheRequestedFilters() throws {
     let action = try XCTUnwrap(SnipCLIApplicationParser.parse([
       "diagnostics", "logs", "--range", "7d", "--errors-only", "--limit", "3",

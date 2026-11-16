@@ -18,7 +18,7 @@ public struct LibrarySearchResults: Sendable {
         lists: [SnipList],
         clipboard: [ClipboardEntry],
         sortMode: SnipSortMode,
-        agentSnipsOnly: Bool = false,
+        originFilter: SnipOriginFilter = .all,
         sourceLabel: (Snip) -> String
     ) {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,7 +31,7 @@ public struct LibrarySearchResults: Sendable {
             snips: snips,
             query: needle,
             completionFilter: .all,
-            agentSnipsOnly: agentSnipsOnly,
+            originFilter: originFilter,
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: sourceLabel
         )

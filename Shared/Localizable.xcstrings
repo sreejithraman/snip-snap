@@ -1,7 +1,10 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Agent snips only" : {},
+    "Agent only" : {},
+    "Human only" : {},
+    "No human snips" : {},
+    "Origin" : {},
     "No agent snips" : {},
     "Loading snip" : {},
     "Retry Undo" : {},

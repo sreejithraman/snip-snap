@@ -213,12 +213,12 @@ final class IOSAppModel {
     }
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
-    private var storedAgentSnipsOnly = false
-    var agentSnipsOnly: Bool {
-        get { storedAgentSnipsOnly }
+    private var storedOriginFilter: SnipOriginFilter = .all
+    var originFilter: SnipOriginFilter {
+        get { storedOriginFilter }
         set {
             guard snipEditorDraft == nil else { return }
-            storedAgentSnipsOnly = newValue
+            storedOriginFilter = newValue
         }
     }
     var sortMode: SnipSortMode = .chronological
@@ -501,7 +501,7 @@ final class IOSAppModel {
             snips: selected,
             query: query,
             completionFilter: completionFilter,
-            agentSnipsOnly: agentSnipsOnly,
+            originFilter: originFilter,
             sourceLabel: { $0.displaySourceLabel }
         )
         return Snip.sorted(matches, by: sortMode)
@@ -510,7 +510,7 @@ final class IOSAppModel {
     var canReorderVisibleSnips: Bool {
         snipEditorDraft == nil
             && completionFilter == .all
-            && !agentSnipsOnly
+            && originFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

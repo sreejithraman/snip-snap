@@ -18,9 +18,17 @@ struct WorkflowOptionsMenu: View {
                 .labelsHidden()
                 .pickerStyle(.inline)
             }
-            Toggle("Agent snips only", isOn: agentSnipsOnly)
+            Section("Origin") {
+                Picker("Origin", selection: originFilter) {
+                    ForEach(SnipOriginFilter.allCases, id: \.self) { filter in
+                        Text(filter.title)
+                            .tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.inline)
                 .disabled(model.snipEditorDraft != nil)
-                .accessibilityIdentifier("filter-agent-snips-only")
+            }
             Section("Sort") {
                 Picker("Sort", selection: sortMode) {
                     ForEach(SnipSortMode.allCases, id: \.self) { mode in
@@ -49,12 +57,12 @@ struct WorkflowOptionsMenu: View {
         )
     }
 
-    private var agentSnipsOnly: Binding<Bool> {
+    private var originFilter: Binding<SnipOriginFilter> {
         Binding(
-            get: { model.agentSnipsOnly },
+            get: { model.originFilter },
             set: {
                 model.haptics.invalidatePendingFeedback()
-                model.agentSnipsOnly = $0
+                model.originFilter = $0
             }
         )
     }
