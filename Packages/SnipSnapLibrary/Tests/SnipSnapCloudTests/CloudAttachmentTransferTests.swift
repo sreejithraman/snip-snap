@@ -8020,6 +8020,229 @@ private struct AttachmentEditInvariantMatrixTests: AttachmentTransferTestSupport
     try await assertHeldDeletePreserves(edit, timing: .afterFetchStaged)
   }
 
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAReconciledGenuineEditInvalidatesAnAlreadyStagedDelete(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertDeletionCheckpointPreserves(edit, scenario: .reconciledAfterStage)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAReopenedStorePreservesGenuineIntentBeforeFetchingAHeldDelete(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertDeletionCheckpointPreserves(edit, scenario: .reopenBeforeFetch)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAReopenedStoreReplansAStagedDeleteBeforeStartingItsTransport(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertDeletionCheckpointPreserves(edit, scenario: .reopenAfterStage)
+  }
+
+  @Test(arguments: AttachmentEditProtectedFromDeletion.allCases)
+  func testAGenuineEditRelocatedOutOfAHeldSnipSurvivesItsFetchedDelete(
+    _ edit: AttachmentEditProtectedFromDeletion
+  ) async throws {
+    try await assertDeletionCheckpointPreserves(edit, scenario: .relocate)
+  }
+
+  private enum DeletionCheckpointScenario {
+    case reconciledAfterStage, reopenBeforeFetch, reopenAfterStage, relocate
+  }
+
+  private func assertDeletionCheckpointPreserves(
+    _ edit: AttachmentEditProtectedFromDeletion,
+    scenario: DeletionCheckpointScenario
+  ) async throws {
+    let clients = try await makeAttachmentEditClients()
+    let holder = clients.holder
+    let remote = clients.downloaded
+    var local = holder
+    defer { try? FileManager.default.removeItem(at: holder.root) }
+    let (a, b, c) = (AttachmentMatrixMember.a.id, AttachmentMatrixMember.b.id, AttachmentMatrixMember.c.id)
+    let zone = CloudZoneID(name: "data", ownerName: "owner")
+    let expectedName = edit == .name ? "checkpoint C.txt" : "C.txt"
+    let expectedType = edit == .type ? "public.json" : "public.plain-text"
+    let expectedBytes = Data((edit == .payload ? "checkpoint C replacement bytes" : "C payload").utf8)
+    var targetSnipID: UUID?
+    if scenario == .relocate {
+      let added = try await holder.library.perform(.add(content: "existing destination", origin: .quickEntry,
+        source: nil, listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(),
+        now: Date(timeIntervalSince1970: 6)), sortedBy: .manual)
+      targetSnipID = try #require(added.snapshot.snips.first { $0.id != holder.snipID }?.id)
+      try await holder.sync.sendPendingUntilSettled()
+      try await remote.sync.fetchRemote()
+      #expect(await holder.server.fullSnapshot(for: .snip(try #require(targetSnipID), in: zone)) != nil,
+        "T must already exist remotely before any hold or relocation.")
+    }
+    let originalC = try #require(try await snapshot(holder.library, holder.namespace).publications.first {
+      $0.metadata.attachmentID == c
+    })
+    let base = try CloudAttachmentRecordCodec.acknowledgedMetadata(#require(originalC.metadataShadowData))
+    #expect(base.attachmentID == c && base.snipID == holder.snipID && base.position == 2)
+    #expect(base.fileName == "C.txt" && base.contentType == "public.plain-text")
+    #expect(base.sha256 == Data(SHA256.hash(data: Data("C payload".utf8))))
+    func editC() async throws {
+      switch edit {
+      case .name:
+        try await renameAttachment(ofSnip: holder.snipID, attachmentID: c,
+          to: expectedName, in: holder.library)
+      case .type:
+        var snips = try await holder.library.checkedSnapshot(sortedBy: .manual).snips
+        let index = try #require(snips.firstIndex { $0.id == holder.snipID })
+        let indexC = try #require(snips[index].attachments.firstIndex { $0.id == c })
+        snips[index].attachments[indexC].contentType = expectedType
+        _ = try await holder.library.perform(.replaceAll(snips), sortedBy: .manual)
+      case .payload:
+        let saved = try await holder.library.checkedSnapshot(sortedBy: .manual)
+        try expectedBytes.write(to: #require(saved.attachmentURLs[c]))
+      }
+    }
+    try await keepAttachments([b, a, c], ofSnip: holder.snipID, in: holder.library)
+    try await keepAttachments([a], ofSnip: remote.snipID, in: remote.library)
+    try await remote.sync.sendPendingUntilSettled()
+    await holder.transport.reportOnlyFirstAtomicFailure()
+    let outbound = try await holder.store.pendingChanges()
+    #expect(CloudAttachmentOrderWrite.groups(in: outbound.operations)[holder.snipID]
+      == [AttachmentMatrixMember.b, .c, .a].map(metadataID))
+    let sent = try await holder.transport.send(outbound)
+    #expect(sent.items == [.unknownItem(metadataID(.b))], "C must have no own result that could remap it.")
+    let transport: any CloudRecordTransport = holder.transport
+    guard case .batch(let pending)? = await transport.pendingEvent() else {
+      Issue.record("Expected B-only reported outbound subset.")
+      return
+    }
+    #expect(pending.outbound?.operations.map(\.id) == [metadataID(.b)])
+    try await holder.store.stage(pending.batch, outbound: pending.outbound)
+    try await holder.store.applyStaged(sent.id)
+    try await holder.transport.confirmApplied(sent.id)
+    #expect(await holder.store.orderWritesAwaitingFetch == [holder.snipID])
+    #expect(metadataSavePositions(in: try await holder.store.pendingChanges()).isEmpty)
+    let unchangedC = try #require(try await snapshot(holder.library, holder.namespace).publications.first {
+      $0.metadata.attachmentID == c
+    })
+    #expect(unchangedC.metadataAccepted && unchangedC.metadata == originalC.metadata)
+    #expect(await holder.server.fullSnapshot(for: metadataID(.b)) == nil)
+    #expect(await holder.server.fullSnapshot(for: metadataID(.c)) == nil)
+
+    var stagedFetchID: UUID?
+    if scenario == .reconciledAfterStage || scenario == .reopenAfterStage {
+      let fetched = try await holder.transport.fetch(scope: .zones([zone]))
+      #expect(fetched.items.contains(.deleted(metadataID(.c))))
+      try await holder.store.stage(.fetched(fetched))
+      let stage = try #require(try await holder.store.stagedBatches().first { $0.batchID == fetched.id })
+      #expect(stage.attachmentTransitions.contains(.remoteMetadataDeleted(metadataIdentity: originalC.metadataIdentity)),
+        "The earlier plan chose deletion while C was unchanged.")
+      let raw = try JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: #require(stage.rawBatchData))
+      guard case .fetched(let durableFetch) = raw.batch else {
+        Issue.record("The stage must retain the real fetched tombstone for replanning.")
+        return
+      }
+      #expect(durableFetch.id == fetched.id && durableFetch.items.contains(.deleted(metadataID(.c))))
+      stagedFetchID = fetched.id
+    }
+    try await editC()
+    if let targetSnipID {
+      var snips = try await holder.library.checkedSnapshot(sortedBy: .manual).snips
+      let source = try #require(snips.firstIndex { $0.id == holder.snipID })
+      let target = try #require(snips.firstIndex { $0.id == targetSnipID })
+      let attachment = try #require(snips[source].attachments.first { $0.id == c })
+      snips[source].attachments.removeAll { $0.id == c }
+      snips[target].attachments.append(attachment)
+      _ = try await holder.library.perform(.replaceAll(snips), sortedBy: .manual)
+      let moved = try await holder.library.checkedSnapshot(sortedBy: .manual)
+      #expect(moved.snips.flatMap(\.attachments).filter { $0.id == c }.count == 1)
+      #expect(moved.snips.first { $0.id == holder.snipID }?.attachments.map(\.id) == [b, a])
+      #expect(moved.snips.first { $0.id == targetSnipID }?.attachments.map(\.id) == [c])
+    }
+    if scenario != .reopenAfterStage {
+      _ = try await holder.store.pendingChanges() // Reconcile the genuine edit before applying/fetching.
+      let current = try #require(try await snapshot(holder.library, holder.namespace).publications.first {
+        $0.metadata.attachmentID == c
+      })
+      #expect(!current.metadataAccepted && current.revision > unchangedC.revision)
+      #expect(current.metadata.fileName == expectedName && current.metadata.contentType == expectedType)
+      #expect(current.metadata.sha256 == Data(SHA256.hash(data: expectedBytes)))
+      #expect(current.metadataShadowData == originalC.metadataShadowData, "Reconciliation must retain the actual base.")
+      #expect(current.metadata.snipID == (targetSnipID ?? holder.snipID))
+    } else {
+      #expect(try await snapshot(holder.library, holder.namespace).publications.first {
+        $0.metadata.attachmentID == c
+      } == unchangedC, "This public edit deliberately has not reached the publication before reopen.")
+    }
+    let editedLibrary = try await holder.library.checkedSnapshot(sortedBy: .manual)
+    let edited = try #require(editedLibrary.snips.flatMap(\.attachments).first { $0.id == c })
+    #expect(edited.fileName == expectedName && edited.contentType == expectedType)
+    #expect(try Data(contentsOf: #require(editedLibrary.attachmentURLs[c])) == expectedBytes)
+    if scenario == .relocate {
+      #expect(await holder.store.orderWritesAwaitingFetch == [holder.snipID], "T must remain unheld after relocation.")
+    }
+    if scenario == .reopenBeforeFetch || scenario == .reopenAfterStage {
+      local = try attachmentClient(root: holder.root, storeURL: holder.storeURL,
+        namespace: holder.namespace, server: holder.server, snipID: holder.snipID)
+      #expect(await local.store.orderWritesAwaitingFetch.isEmpty, "No volatile hold survives construction.")
+      #expect(await local.transport.events().isEmpty)
+      let stages = try await local.store.stagedBatches()
+      if let stagedFetchID { #expect(stages.contains { $0.batchID == stagedFetchID }) }
+      else { #expect(stages.isEmpty) }
+      try await local.sync.fetchRemote() // Existing coordinator recovers stages before transport startup.
+      #expect(try await local.store.stagedBatches().isEmpty)
+      #expect(!((await local.transport.events()).contains { if case .sent = $0 { true } else { false } }),
+        "Recovery must not depend on another send recreating a hold.")
+    } else if let stagedFetchID {
+      try await local.store.applyStaged(stagedFetchID)
+      try await local.transport.confirmApplied(stagedFetchID)
+    } else {
+      try await local.sync.fetchRemote()
+    }
+    let after = try await snapshot(local.library, local.namespace)
+    let replacement = try #require(after.publications.first {
+      $0.isLocallyPresent && ![a, b, c].contains($0.metadata.attachmentID)
+    }, "Existing genuine intent must survive stale deletion, reopening and relocation.")
+    let replacementID = replacement.metadata.attachmentID
+    let destination = targetSnipID ?? holder.snipID
+    #expect(replacement.metadata.snipID == destination)
+    #expect(replacement.metadataIdentity != originalC.metadataIdentity)
+    #expect(replacement.metadata.payloadIdentity != originalC.metadata.payloadIdentity)
+    #expect(replacement.metadata.fileName == expectedName && replacement.metadata.contentType == expectedType)
+    #expect(replacement.metadata.sha256 == Data(SHA256.hash(data: expectedBytes)))
+    #expect(replacement.metadata.byteCount == Int64(expectedBytes.count))
+    #expect(try Data(contentsOf: #require(replacement.localSourceURL)) == expectedBytes)
+    #expect(!after.publications.contains { [b, c].contains($0.metadata.attachmentID) })
+    try await settle(lastSender: local, other: remote, local: local, remote: remote)
+    for client in [local, remote] {
+      let saved = try await client.library.checkedSnapshot(sortedBy: .manual)
+      let expectedSource = targetSnipID == nil ? [a, replacementID] : [a]
+      #expect(saved.snips.first { $0.id == holder.snipID }?.attachments.map(\.id) == expectedSource)
+      #expect(try await client.library.storedAttachmentReferencePositions(for: holder.snipID)
+        == compactPositions(expectedSource))
+      if let targetSnipID {
+        let target = try #require(saved.snips.first { $0.id == targetSnipID })
+        #expect(target.content == "existing destination" && target.attachments.map(\.id) == [replacementID])
+        #expect(try await client.library.storedAttachmentReferencePositions(for: targetSnipID) == [replacementID: 0])
+      }
+      let visible = try #require(saved.snips.flatMap(\.attachments).first { $0.id == replacementID })
+      #expect(visible.fileName == expectedName && visible.contentType == expectedType)
+      #expect(try await client.store.isSyncSettled())
+      #expect(try await client.store.pendingChanges().operations.isEmpty)
+      #expect(try await snapshot(client.library, client.namespace).cleanups.isEmpty)
+    }
+    let record = try #require(await local.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)))
+    #expect(record.encryptedFields["snipID"] == .string(destination.uuidString.lowercased()))
+    #expect(record.encryptedFields["position"] == .int64(targetSnipID == nil ? 1 : 0))
+    #expect(record.encryptedFields["fileName"] == .string(expectedName))
+    #expect(record.encryptedFields["contentType"] == .string(expectedType))
+    #expect(record.encryptedFields["sha256"] == .data(Data(SHA256.hash(data: expectedBytes))))
+    #expect(await local.server.fullSnapshot(for: metadataID(.b)) == nil, "Position-only B must never resurrect.")
+    #expect(await local.server.fullSnapshot(for: metadataID(.c)) == nil)
+    #expect(await local.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(originalC.metadata.payloadIdentity)) == nil)
+    let downloads = CloudAttachmentTransferCoordinator(library: remote.library, namespace: remote.namespace,
+      payloadZone: CloudZoneID(name: "payload", ownerName: "owner"), transport: remote.transport, maximumCacheBytes: 1_024)
+    #expect(try Data(contentsOf: await downloads.download(attachmentID: replacementID)) == expectedBytes)
+  }
+
   private enum HeldDeleteEditTiming { case beforeSend, duringHold, afterFetchStaged }
 
   private func assertHeldDeletePreserves(
