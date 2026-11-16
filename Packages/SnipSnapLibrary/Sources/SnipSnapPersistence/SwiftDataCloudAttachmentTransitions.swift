@@ -7,8 +7,7 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
-    context: ModelContext,
-    heldSnipIDs: Set<UUID> = []
+    context: ModelContext
   ) throws -> CloudAttachmentRemoteChanges {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
@@ -112,20 +111,23 @@ extension SwiftDataSnipLibrary {
       context.delete(row)
       byAttachment.removeValue(forKey: row.attachmentID)
     }
-    // A staged held-delete plan must not remove a public-library edit made after planning.
-    // Validate under the commit lock; a mismatch uses the existing reconcile/replan path.
-    func requireCurrentHeldIntent(_ row: StoredCloudAttachmentPublication) throws {
-      guard heldSnipIDs.contains(row.snipID) else { return }
+    // An unreconciled public edit invalidates a staged removal or remap. A reconciled edit
+    // needs the separate deletion-eligibility check below; consistency alone is not authority.
+    func requireCurrentSourceIntent(_ row: StoredCloudAttachmentPublication) throws {
+      let attachment = storedAttachments[row.attachmentID]?.first
+      var localSource: String?
+      if let attachment, !attachment.relativePath.hasPrefix("CloudDownloads/") {
+        localSource = attachment.relativePath
+      }
+      guard row.lifecycle.localSourceRelativePath != nil || localSource != nil else { return }
       let reference = storedReferences[row.attachmentID]?.first { $0.snipID == row.snipID }
       guard row.lifecycle.isLocallyPresent == (reference != nil) else {
         throw CloudAttachmentStorageError.staleTransition
       }
       guard row.lifecycle.isLocallyPresent else { return }
-      guard let reference, reference.position == row.position,
-        let attachment = storedAttachments[row.attachmentID]?.first,
+      guard let reference, reference.position == row.position, let attachment,
         attachment.fileName == row.fileName, attachment.contentType == row.contentType
       else { throw CloudAttachmentStorageError.staleTransition }
-      let localSource = attachment.relativePath.hasPrefix("CloudDownloads/") ? nil : attachment.relativePath
       guard localSource == row.lifecycle.localSourceRelativePath else {
         throw CloudAttachmentStorageError.staleTransition
       }
@@ -263,7 +265,7 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        try requireCurrentHeldIntent(row)
+        try requireCurrentSourceIntent(row)
         let replacementLifecycle = try row.lifecycle.remappedReplacement(
           expectedRevision: expected,
           freshPayload: CloudTextStorageIdentity(
@@ -381,7 +383,16 @@ extension SwiftDataSnipLibrary {
       case .remoteMetadataDeleted(let metadataIdentity):
         guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
-        try requireCurrentHeldIntent(row)
+        try requireCurrentSourceIntent(row)
+        if row.lifecycle.isLocallyPresent, row.lifecycle.localSourceRelativePath != nil {
+          guard let shadow = row.lifecycle.metadataShadowData else { throw CloudAttachmentStorageError.invalidMetadata }
+          let base = try acknowledgedValues.metadata(fromShadow: shadow)
+          // The old identity-only proposal may predate a genuine edit already reconciled into
+          // this row. Replan from its durable tombstone rather than delete that newer intent.
+          if try row.metadata.hasContentChanges(from: base) {
+            throw CloudAttachmentStorageError.staleTransition
+          }
+        }
         cleanupQueue.queue(row.lifecycle.payloadCleanup)
         for cleanup in row.lifecycle.payloadCleanupsAfterMetadataDeletion {
           cleanupQueue.queue(cleanup)

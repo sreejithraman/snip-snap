@@ -8,16 +8,29 @@ extension CloudFullSyncPersistence {
     outbound: CloudOutboundBatch?,
     rawBatchData: Data
   ) async throws -> CloudFullBatchCommit {
-    if case .fetched = batch, !orderWritesAwaitingFetch.isEmpty, let payloadZone {
-      // Edits can arrive while every metadata save is held, without another outbound plan.
-      try await library.reconcileCloudAttachments(
-        namespaceKey: namespaceKey,
-        metadataZoneName: dataZone.name,
-        metadataOwnerName: dataZone.ownerName,
-        payloadZoneName: payloadZone.name,
-        payloadOwnerName: payloadZone.ownerName,
-        snipIDs: orderWritesAwaitingFetch
-      )
+    if case .fetched(let fetched) = batch, let payloadZone {
+      let deleted = Set(fetched.items.compactMap { item -> CloudTextStorageIdentity? in
+        guard case .deleted(let id) = item else { return nil }
+        return Self.storageIdentity(id)
+      })
+      if !deleted.isEmpty {
+        let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+        let affectedSnipIDs = Set(attachments.publications.filter {
+          deleted.contains($0.metadataIdentity)
+        }.map { $0.metadata.snipID })
+        if !affectedSnipIDs.isEmpty {
+          // Identity selects the affected rows. Reconciliation also follows a row moved out of
+          // its prior parent; neither restart nor current hold membership grants deletion.
+          try await library.reconcileCloudAttachments(
+            namespaceKey: namespaceKey,
+            metadataZoneName: dataZone.name,
+            metadataOwnerName: dataZone.ownerName,
+            payloadZoneName: payloadZone.name,
+            payloadOwnerName: payloadZone.ownerName,
+            snipIDs: affectedSnipIDs
+          )
+        }
+      }
     }
     let wire = try await library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
     let local = try await library.checkedSnapshot(sortedBy: .manual)
@@ -34,8 +47,7 @@ extension CloudFullSyncPersistence {
       local: local,
       stored: stored,
       attachmentStorage: attachmentStorage,
-      recoveryEvents: try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey),
-      heldAttachmentSnipIDs: orderWritesAwaitingFetch
+      recoveryEvents: try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     ).plan(
       recoveryFetchBatch(batch, stored: stored, recovery: recovery), inventorySource: batch,
       blockedReplayIDs: recovery.unpreparedRecordIDs,

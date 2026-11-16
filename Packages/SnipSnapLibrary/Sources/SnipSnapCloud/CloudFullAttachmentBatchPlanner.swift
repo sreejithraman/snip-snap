@@ -10,7 +10,6 @@ struct CloudFullAttachmentBatchPlanner {
 
   private let dataZone: CloudZoneID
   private let payloadZone: CloudZoneID?
-  private let heldSnipIDs: Set<UUID>
   private let attachmentOperationIDs: Set<CloudRecordID>
   private let outboundOperations: [CloudRecordID: CloudOutboundOperation]
   private let sentItemResults: [CloudRecordID: CloudSendItemResult]
@@ -24,10 +23,8 @@ struct CloudFullAttachmentBatchPlanner {
     attachmentOperationIDs: Set<CloudRecordID>,
     outboundOperations: [CloudRecordID: CloudOutboundOperation],
     sentItemResults: [CloudRecordID: CloudSendItemResult],
-    storage: CloudAttachmentStorageSnapshot,
-    heldSnipIDs: Set<UUID> = []
+    storage: CloudAttachmentStorageSnapshot
   ) {
-    self.heldSnipIDs = heldSnipIDs
     self.dataZone = dataZone
     self.payloadZone = payloadZone
     self.attachmentOperationIDs = attachmentOperationIDs
@@ -55,7 +52,7 @@ struct CloudFullAttachmentBatchPlanner {
     case .record(let snapshot):
       return try reduceRecord(snapshot)
     case .deleted(let id):
-      return reduceDeletion(id)
+      return try reduceDeletion(id)
     case .failed(let id, let failure):
       return reduceFailure(id: id, failure: failure)
     }
@@ -155,17 +152,19 @@ struct CloudFullAttachmentBatchPlanner {
     ))
   }
 
-  private func reduceDeletion(_ id: CloudRecordID) -> Result {
+  private func reduceDeletion(_ id: CloudRecordID) throws -> Result {
     let identity = CloudFullSyncPersistence.storageIdentity(id)
     let operation = outboundOperations[id]
     if let local = publicationByMetadataIdentity[identity] {
       if operation == nil {
-        // A held sibling may never receive its own unknownItem. Preserve its current genuine
-        // edit through the same remap; a move or unchanged companion still yields to deletion.
-        if heldSnipIDs.contains(local.metadata.snipID), local.isLocallyPresent,
-          local.localSourceURL != nil, !local.metadataAccepted, !onlyChangesPosition(local)
-        {
-          return .handled(metadataUnknown(local))
+        // A fetched delete must preserve genuine source-backed intent even when its own send
+        // result was omitted, the store reopened, or the attachment changed parent.
+        if local.isLocallyPresent, local.localSourceURL != nil {
+          guard let shadow = local.metadataShadowData else { throw CloudAttachmentStorageError.invalidMetadata }
+          let base = try CloudAttachmentRecordCodec.acknowledgedMetadata(shadow)
+          if try local.metadata.hasContentChanges(from: base) {
+            return .handled(metadataUnknown(local))
+          }
         }
         return .handled(.remoteMetadataDeleted(metadataIdentity: identity))
       }

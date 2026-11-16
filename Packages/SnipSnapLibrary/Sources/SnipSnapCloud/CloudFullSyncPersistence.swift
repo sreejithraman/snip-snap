@@ -662,8 +662,7 @@ extension CloudFullSyncPersistence {
       observedDestructiveReset = reason
     }
     do {
-      _ = try await library.commitCloudFullBatch(batch, acknowledgedValues: .cloudKit,
-        heldAttachmentSnipIDs: orderWritesAwaitingFetch)
+      _ = try await library.commitCloudFullBatch(batch, acknowledgedValues: .cloudKit)
       try await updateOrderWritesAwaitingFetch(after: staged)
       try await clearRecoveredFailure(in: batch)
       try await afterCommitHook()
@@ -685,8 +684,7 @@ extension CloudFullSyncPersistence {
         rawBatchData: rawData
       )
       try await library.replaceStagedCloudFullBatch(replacement)
-      _ = try await library.commitCloudFullBatch(replacement, acknowledgedValues: .cloudKit,
-        heldAttachmentSnipIDs: orderWritesAwaitingFetch)
+      _ = try await library.commitCloudFullBatch(replacement, acknowledgedValues: .cloudKit)
       try await updateOrderWritesAwaitingFetch(after: raw)
       try await clearRecoveredFailure(in: replacement)
       try await afterCommitHook()

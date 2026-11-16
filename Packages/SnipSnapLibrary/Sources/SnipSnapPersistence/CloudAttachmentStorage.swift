@@ -32,6 +32,15 @@ package struct CloudAttachmentMetadataValue: Codable, Equatable, Sendable {
   }
 }
 
+extension CloudAttachmentMetadataValue {
+  /// A move, parent change or companion shift alone does not protect against remote deletion.
+  package func hasContentChanges(from base: Self) throws -> Bool {
+    guard attachmentID == base.attachmentID else { throw CloudAttachmentStorageError.invalidMetadata }
+    return fileName != base.fileName || contentType != base.contentType
+      || byteCount != base.byteCount || sha256 != base.sha256 || payloadIdentity != base.payloadIdentity
+  }
+}
+
 /// Reads the metadata iCloud last acknowledged from a stored metadata shadow.
 /// SnipSnapCloud supplies the reader, because only it can decode CloudKit records.
 package struct CloudAttachmentAcknowledgedValues: Sendable {
