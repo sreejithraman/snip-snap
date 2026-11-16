@@ -275,11 +275,11 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
       guard case .add(.added(let snipID)) = added.outcome else { return XCTFail("Missing public add result") }
       let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: data, payloadZone: payload)
       try await store.approveEnrollment(references: [.init(kind: .list, domainID: SnipList.inbox.id), .init(kind: .snip, domainID: snipID)])
-      let fake = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace, automaticallyFetchedZones: [data])
+      let fake = StrictContractTransport(server: FakeCloudServer(), namespace: namespace, data: data)
       let coordinator = CloudFullSyncCoordinator(store: store, transport: fake, fetchScope: .zones([data]))
-      _ = try await coordinator.sync(); _ = try await coordinator.sendPendingUntilSettled()
+      try await ContractPlannerTestDriver.bootstrap(coordinator, transport: fake, zones: [data, payload], validate: {})
       let quiet = try await store.pendingChanges()
-      XCTAssertTrue(quiet.operations.isEmpty)
+      guard quiet.operations.isEmpty else { return XCTFail("Planner bootstrap requires created and confirmed zones") }
       let before = try await library.checkedSnapshot(sortedBy: .manual)
       let snip = try XCTUnwrap(before.snips.first { $0.id == snipID })
       XCTAssertEqual(snip.attachments.map(\.fileName), names)
