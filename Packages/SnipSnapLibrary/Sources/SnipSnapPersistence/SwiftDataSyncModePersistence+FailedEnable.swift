@@ -328,11 +328,13 @@ extension SwiftDataSyncModePersistence {
     source: FailedEnableStoreRead, sourceID: UUID
   ) throws -> Bool {
     guard let bundle else { return !failedEnableUncertainSources.contains(sourceID) }
-    return !failedEnableUncertainSources.contains(sourceID)
-      && bundle.continuity.state == .verified && bundle.continuity.inFlight.value == nil
-      && bundle.continuity.activationDigest == failedEnableActivationDigest(manifest)
-      && bundle.continuity.sourceRevision == String(source.snapshot.revision)
-      && bundle.continuity.sourceDigest == (try source.sourceDigest(sourceID: sourceID))
+    guard !failedEnableUncertainSources.contains(sourceID),
+      bundle.continuity.state == .verified, bundle.continuity.inFlight.value == nil,
+      bundle.continuity.activationDigest == failedEnableActivationDigest(manifest),
+      bundle.continuity.sourceRevision == String(source.snapshot.revision)
+    else { return false }
+    let digest = try source.sourceDigest(sourceID: sourceID)
+    return bundle.continuity.sourceDigest == digest
   }
 
   private func newFailedEnableBundle(sourceID: UUID, source: FailedEnableStoreRead,
