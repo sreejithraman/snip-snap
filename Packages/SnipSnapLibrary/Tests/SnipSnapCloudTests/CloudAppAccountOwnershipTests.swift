@@ -6,6 +6,61 @@ import SnipSnapCore
 import XCTest
 
 final class CloudAppAccountOwnershipTests: XCTestCase {
+  func testOfflineLocalFeedbackAttachmentStatesReachSuspendedControlFetch() async throws {
+    let fixture = try await Fixture.make()
+    var canRemoveRoot = true
+    defer { if canRemoveRoot { try? FileManager.default.removeItem(at: fixture.root) } }
+    let library = try await fixture.persistence.activeLibrary()
+    try await Self.add("durable content before control lookup", to: library)
+    let before = try await fixture.persistence.snapshot()
+    let pause = OwnerControlTransport.FetchPause()
+    await fixture.control.pauseNextFetch(pause)
+    let finished = XCTestExpectation(description: "attachment-state handler returned")
+    let cancelled = XCTestExpectation(description: "attachment-state handler cleanup joined")
+    let read = Task {
+      defer { finished.fulfill(); cancelled.fulfill() }
+      return try await fixture.handler.syncedAttachmentStates()
+    }
+
+    do {
+      let entered = await XCTWaiter.fulfillment(of: [pause.entered], timeout: 30)
+      XCTAssertEqual(entered, .completed, "The real handler must reach fetchControl")
+      if entered == .completed {
+        XCTAssertTrue(pause.isHeld)
+        let fetches = await fixture.control.fetchCount()
+        XCTAssertEqual(fetches, 1)
+        let current = try await fixture.persistence.snapshot()
+        XCTAssertEqual(current.activeStore, before.activeStore)
+        XCTAssertNil(current.transition)
+        XCTAssertNil(current.accountIsolation)
+        let persisted = try await library.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(persisted.snips.map(\.content), ["durable content before control lookup"])
+        XCTAssertTrue(pause.isHeld, "Managed local reads must not release the control fetch")
+      }
+    } catch {
+      pause.release()
+      read.cancel()
+      let settled = await XCTWaiter.fulfillment(of: [finished], timeout: 30)
+      XCTAssertEqual(settled, .completed, "Cancelled handler must settle during cleanup")
+      canRemoveRoot = settled == .completed
+      if settled == .completed { _ = await read.result }
+      throw error
+    }
+    pause.release()
+    let settled = await XCTWaiter.fulfillment(of: [finished], timeout: 30)
+    XCTAssertEqual(settled, .completed, "Released handler must settle during cleanup")
+    if settled == .completed {
+      let states = try await read.value
+      XCTAssertTrue(states.isEmpty)
+    } else {
+      read.cancel()
+      let joined = await XCTWaiter.fulfillment(of: [cancelled], timeout: 30)
+      XCTAssertEqual(joined, .completed, "Cancelled handler must settle during cleanup")
+      canRemoveRoot = joined == .completed
+      if joined == .completed { _ = await read.result }
+    }
+  }
+
   func testUnboundLocalStoreDoesNotWaitForCloudAccountLookup() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("LocalReadiness-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -343,12 +398,17 @@ private actor OwnerControlTransport: CloudCollectionControlTransport {
   let base: FakeCloudControlTransport
   var rejects = false
   var fetches = 0
+  private var nextFetchPause: FetchPause?
   init(base: FakeCloudControlTransport) { self.base = base }
   func rejectFetches() { rejects = true }
+  func pauseNextFetch(_ pause: FetchPause) { nextFetchPause = pause }
   func fetchCount() -> Int { fetches }
   func fetchControl() async throws -> CloudCollectionControlRecord? {
     fetches += 1
     if rejects { throw CloudTransportError.fetchFailed }
+    let pause = nextFetchPause
+    nextFetchPause = nil
+    try await pause?.suspend()
     return await base.fetchControl()
   }
   func createZones(_ zones: Set<CloudZoneID>) async throws { await base.createZones(zones) }
@@ -356,6 +416,44 @@ private actor OwnerControlTransport: CloudCollectionControlTransport {
     await base.saveControl(descriptor, replacing: version)
   }
   func deleteZones(_ zones: Set<CloudZoneID>) async throws { try await base.deleteZones(zones) }
+
+  final class FetchPause: @unchecked Sendable {
+    let entered = XCTestExpectation(description: "fetchControl suspended")
+    private let lock = NSLock()
+    private var released = false
+    private var suspended = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    var isHeld: Bool { lock.withLock { suspended && !released } }
+
+    func suspend() async throws {
+      try Task.checkCancellation()
+      await withTaskCancellationHandler {
+        await withCheckedContinuation { pending in
+          let resume = lock.withLock {
+            suspended = true
+            if released || Task.isCancelled { return true }
+            continuation = pending
+            return false
+          }
+          entered.fulfill()
+          if resume { pending.resume() }
+        }
+      } onCancel: {
+        self.release()
+      }
+      try Task.checkCancellation()
+    }
+
+    func release() {
+      let pending = lock.withLock {
+        released = true
+        let pending = continuation
+        continuation = nil
+        return pending
+      }
+      pending?.resume()
+    }
+  }
 }
 
 private actor OwnerAttachmentCoordinator: CloudAttachmentTransferring {
