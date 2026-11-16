@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 273
+
+## Mac
+
+- Create clipboard CloudKit zones only when saving
+
+## iOS
+
+- Create clipboard CloudKit zones only when saving
