@@ -244,6 +244,25 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
     XCTAssertFalse(started.withLock { $0 })
   }
 
+  func testCombinedFailurePreservesOriginalOracleAndExactZoneRetryCause() async {
+    let zone = CloudZoneID(name: "snipsnap-contract-denied-cleanup", ownerName: "owner")
+    do {
+      try await CloudDevelopmentTransportContract.runWithCleanup(operation: {
+        throw CloudDevelopmentContractFailure.oracle("literal-original-failure")
+      }, cleanup: {
+        try await CloudDevelopmentTransportContract.cleanupZones([zone], validateAccount: {},
+          delete: { _ in throw CKError(.permissionFailure) }, exists: { _ in true })
+      })
+      XCTFail("The failed operation and denied cleanup cannot become success")
+    } catch {
+      let detail = (error as? CloudDevelopmentTransportContract.StepFailure)?.detail ?? ""
+      XCTAssertTrue(detail.contains("literal-original-failure"))
+      XCTAssertTrue(detail.contains(zone.name))
+      XCTAssertTrue(detail.contains("CKError(\(CKError.Code.permissionFailure.rawValue))"))
+      XCTAssertTrue(detail.contains("zoneCleanupWasNotConfirmed"))
+    }
+  }
+
   func testPublicThreeAndFiveAttachmentReordersSupplyEveryCompanionInOneLogicalAtomicBatch() async throws {
     for count in [3, 5] {
       let f = try ObserverFixture()
