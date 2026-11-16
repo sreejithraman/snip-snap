@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 import XCTest
 @testable import SnipSnap
@@ -14,12 +15,19 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertEqual(rendered.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }?.font, .body.monospaced())
     }
 
-    func testHeadingsStayBodySizedAndKeepSeparateLines() async {
+    func testHeadingsStayBodySizedAndKeepSeparateLines() async throws {
         let rendered = await SnipMarkdown.prepare("# Main\nBody\n\n###### Small\nMore").fullText
 
         XCTAssertEqual(String(rendered.characters), "Main\nBody\n\nSmall\nMore")
-        let headings = rendered.runs.filter { $0.font == AppTypography.markdownHeadingFont }
+        let headings = rendered.runs.filter { $0.font != nil }
         XCTAssertEqual(headings.map { String(rendered[$0.range].characters) }, ["Main", "Small"])
+        let context = EnvironmentValues().fontResolutionContext
+        let bodySize = Font.body.resolve(in: context).pointSize
+        for heading in headings {
+            let font = try XCTUnwrap(heading.font).resolve(in: context)
+            XCTAssertEqual(font.pointSize, bodySize, accuracy: 0.1)
+            XCTAssertEqual(CTFontCopyPostScriptName(font.ctFont) as String, "Allo-SemiBold")
+        }
     }
 
     func testListsKeepMarkersAndShallowNesting() async {

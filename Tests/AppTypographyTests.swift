@@ -97,6 +97,8 @@ final class AppTypographyTests: XCTestCase {
         let styled = AppTypography.attributedText(content.fullText, in: context)
         let heading = try XCTUnwrap(styled.runs.first?.font).resolve(in: context)
         XCTAssertEqual(CTFontCopyFamilyName(heading.ctFont) as String, "Allo")
+        XCTAssertEqual(heading.pointSize, Font.body.resolve(in: context).pointSize, accuracy: 0.1)
+        XCTAssertEqual(CTFontCopyPostScriptName(heading.ctFont) as String, "Allo-SemiBold")
 #if os(iOS)
         XCTAssertGreaterThan(heading.pointSize, 34)
 #endif
