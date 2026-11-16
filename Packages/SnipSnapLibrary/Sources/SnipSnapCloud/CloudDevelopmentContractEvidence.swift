@@ -20,11 +20,20 @@ struct CloudDevelopmentContractManifest: Codable, Sendable {
   var observations: [String: [String: String]] = [:]
 }
 
-enum CloudDevelopmentContractFailure: Error, Equatable {
+enum CloudDevelopmentContractFailure: Error, Equatable, LocalizedError {
   case invalidEvidence
   case deadline(String)
   case oracle(String)
   case cleanup([String])
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidEvidence: "invalid-contract-evidence"
+    case .deadline(let phase): "deadline: \(phase)"
+    case .oracle(let reason): "oracle: \(reason)"
+    case .cleanup(let failures): "cleanup: \(failures.joined(separator: "; "))"
+    }
+  }
 }
 
 final class CloudDevelopmentContractEvidence: Sendable {
@@ -250,21 +259,33 @@ extension CloudDevelopmentTransportContract {
     checkBudget: () throws -> Void = {}, didFinish: (CloudZoneID, Bool) -> Void = { _, _ in }) async throws {
     var failures: [String] = []
     for zone in zones {
+      let causes = Mutex<[String]>([])
       do {
         try checkBudget()
         try await validateAccount()
         try await cleanupZone(delete: {
-          try checkBudget()
-          try await validateAccount()
-          try await delete(zone)
+          do {
+            try checkBudget()
+            try await validateAccount()
+            try await delete(zone)
+          } catch {
+            causes.withLock { $0.append(CloudDevelopmentAtomicContract.safe(error)) }
+            throw error
+          }
         }, zoneExists: {
-          try checkBudget()
-          try await validateAccount()
-          return try await exists(zone)
+          do {
+            try checkBudget()
+            try await validateAccount()
+            return try await exists(zone)
+          } catch {
+            causes.withLock { $0.append(CloudDevelopmentAtomicContract.safe(error)) }
+            throw error
+          }
         })
         didFinish(zone, true)
       } catch {
-        failures.append("\(zone.name): \(CloudDevelopmentAtomicContract.safe(error))")
+        let attempts = causes.withLock { $0.joined(separator: "|") }
+        failures.append("\(zone.name): \(CloudDevelopmentAtomicContract.safe(error)); attempts: \(attempts)")
         didFinish(zone, false)
       }
     }
