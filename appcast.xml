@@ -4,6 +4,23 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Mon, 16 Nov 2026 00:46:10 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.271</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.271-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>271</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.271/Snip-Snap-0.6.1.zip" length="18974155" type="application/octet-stream" sparkle:edSignature="tTLFutoFZzHgEcJX9cjTkYyJbEI/lNHQHfVawq4XKUaO159qAAP+0Uciy5tl1IFI1pC+BRPySPIzHpg0vVicBA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 271 — Mac
+
+- Stop a stalled iCloud call from holding the sync gate
+- Check the iCloud account before clipboard sync binds or uploads
+- Test that control and clipboard iCloud calls stay time-limited
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sun, 15 Nov 2026 22:12:56 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.266</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.266-mac.txt</sparkle:fullReleaseNotesLink>

@@ -1,0 +1,13 @@
+# Snip Snap 0.6.1 Beta 271
+
+## Mac
+
+- Stop a stalled iCloud call from holding the sync gate
+- Check the iCloud account before clipboard sync binds or uploads
+- Test that control and clipboard iCloud calls stay time-limited
+
+## iOS
+
+- Stop a stalled iCloud call from holding the sync gate
+- Check the iCloud account before clipboard sync binds or uploads
+- Test that control and clipboard iCloud calls stay time-limited
