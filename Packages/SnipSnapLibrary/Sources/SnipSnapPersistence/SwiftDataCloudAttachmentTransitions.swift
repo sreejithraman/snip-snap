@@ -75,10 +75,15 @@ extension SwiftDataSnipLibrary {
     ).mapValues { rows in
       rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
     }
-    // A row iCloud never held has no acknowledged base to mix, so it can't decide whether the
-    // snip's unacknowledged edit came back.
-    let publishedAwaitingIDsBySnip = Dictionary(grouping: awaitingRows, by: \.snipID).mapValues {
-      Set($0.filter(\.lifecycle.hasPublishedMetadata).map(\.attachmentID))
+    // Only a pending move can mix order bases. Other metadata edits keep the same position
+    // whether their own save came back or not.
+    let movedAwaitingIDsBySnip = Dictionary(grouping: awaitingRows, by: \.snipID).mapValues {
+      Set($0.filter { row in
+        guard row.lifecycle.hasPublishedMetadata,
+          let base = row.acknowledgedMetadata(acknowledgedValues)
+        else { return false }
+        return row.snipID != base.snipID || row.position != base.position
+      }.map(\.attachmentID))
     }
     func removeCache(for attachmentID: UUID) {
       for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
@@ -366,9 +371,9 @@ extension SwiftDataSnipLibrary {
       }
     }
     let ownSaveIDs = Set(changes.adoptions.filter { $0.value.ownSave != nil }.keys)
-    for (snipID, published) in publishedAwaitingIDsBySnip {
-      let returned = published.intersection(ownSaveIDs)
-      if returned == published {
+    for (snipID, moved) in movedAwaitingIDsBySnip {
+      let returned = moved.intersection(ownSaveIDs)
+      if returned == moved {
         changes.ownSaveSnipIDs.insert(snipID)
       } else if !returned.isEmpty {
         changes.partlyReturnedSnipIDs.insert(snipID)
