@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import SnipSnapCore
 @testable import SnipSnapPersistence
@@ -385,17 +386,24 @@ final class CloudFailedEnableReviewTests: XCTestCase {
 
         let typed = try JSONDecoder().decode(CloudTypedSnipRecord.self, from: original.acceptedData)
         let savedDraft = try CloudFullRecordCodec.snipDraft(remote, accepted: typed)
-        func changed(_ fields: [String: CloudFieldValue], removed: Set<String> = [], version: Int? = nil) throws -> CloudAcceptedEntity {
+        func changed(_ fields: [String: CloudFieldValue], version: Int? = nil) throws -> CloudAcceptedEntity {
             var routing = savedDraft.routingFields
             let schema = version ?? savedDraft.schemaVersion
             routing["schemaVersion"] = .int64(Int64(schema))
             let snapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: CloudRecordDraft(
                 id: savedDraft.id, recordType: savedDraft.recordType, schemaVersion: schema, routingFields: routing,
-                encryptedFields: fields, removedEncryptedFields: removed, base: savedDraft.base)))
+                encryptedFields: fields, base: savedDraft.base)))
             let input = try CloudFullBatchPlanner.acceptedInput(CloudFullRecordCodec.snip(from: snapshot), snapshot: snapshot)
             return CloudFailedEnablePolicy.entity(input)
         }
-        let missingDone = try changed([:], removed: ["isDone"])
+        let missingRecord = try typed.shadow.record()
+        missingRecord.encryptedValues["isDone"] = nil
+        let missingSnapshot = try CloudKitRecordMapper.snapshot(missingRecord)
+        let missingTyped = try CloudFullRecordCodec.snip(from: missingSnapshot)
+        XCTAssertEqual(typed.isDone, .value(false))
+        XCTAssertEqual(missingTyped.isDone, .missing)
+        let missingDone = CloudFailedEnablePolicy.entity(
+            try CloudFullBatchPlanner.acceptedInput(missingTyped, snapshot: missingSnapshot))
         let unknownChanged = try changed(["f5ComparisonFuture": .string("different unknown")])
         let system = try CloudRecordShadow(data: typed.shadow.data, systemFields: Data("different local comparison token".utf8))
         let changedTyped = CloudTypedSnipRecord(storageVersion: typed.storageVersion, id: typed.id,
