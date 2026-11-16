@@ -5,6 +5,7 @@ public enum SnipCLIApplicationSetting: String, Codable, CaseIterable, Sendable {
   case appearance
   case sort
   case completionFilter = "completion-filter"
+  case agentSnipsOnly = "agent-snips-only"
   case clipboardOnlyPinned = "clipboard-only-pinned"
   case clipboardNewestFirst = "clipboard-newest-first"
   case betaUpdates = "beta-updates"
@@ -14,7 +15,7 @@ public enum SnipCLIApplicationSetting: String, Codable, CaseIterable, Sendable {
     case .appearance: ["system", "light", "dark"].contains(value)
     case .sort: ["chronological", "manual"].contains(value)
     case .completionFilter: ["all", "done", "notDone"].contains(value)
-    case .clipboardOnlyPinned, .clipboardNewestFirst, .betaUpdates: ["on", "off"].contains(value)
+    case .agentSnipsOnly, .clipboardOnlyPinned, .clipboardNewestFirst, .betaUpdates: ["on", "off"].contains(value)
     }
   }
 }

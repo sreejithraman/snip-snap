@@ -130,7 +130,7 @@ clipboard history open. `app close-search` clears the query and closes search
 while keeping the current list and snip or clipboard view. These navigation
 commands refuse active editing, dialogs, and reserved library transitions.
 
-Settings include appearance, sort, completion filter, clipboard view options,
+Settings include appearance, sort, completion filter, `agent-snips-only` (`on` or `off`), clipboard view options,
 keyboard shortcuts, and beta updates. Setters use the revision from the
 corresponding settings or status read. Shortcut commands accept physical key
 codes and Carbon modifier bits, or the supported double-Shift gestures.

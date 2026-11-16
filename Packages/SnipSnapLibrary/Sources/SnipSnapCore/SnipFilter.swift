@@ -5,6 +5,7 @@ public enum SnipFilter {
         snips: [Snip],
         query: String,
         completionFilter: SnipCompletionFilter,
+        agentSnipsOnly: Bool = false,
         listNames: [UUID: String] = [:],
         sourceLabel: (Snip) -> String = {
             guard let label = $0.source?.conciseLabel, !label.isEmpty else {
@@ -15,6 +16,7 @@ public enum SnipFilter {
     ) -> [Snip] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return snips.filter { snip in
+            guard !agentSnipsOnly || snip.origin == .agent else { return false }
             switch completionFilter {
             case .all:
                 break

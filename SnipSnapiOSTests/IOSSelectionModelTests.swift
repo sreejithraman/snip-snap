@@ -11,6 +11,54 @@ import XCTest
 
 @MainActor
 final class IOSSelectionModelTests: IOSModelTestCase {
+    func testAgentSnipsOnlyComposesWithoutDiscardingGatheredSelection() async {
+        let manual = Snip(content: "Review manual", origin: .quickEntry)
+        let agent = Snip(content: "Review agent", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
+        let done = Snip(content: "Review done", origin: .agent, isDone: true)
+        let other = SnipList(id: UUID(), name: "Other", systemImage: "folder", position: 1)
+        let elsewhere = Snip(content: "Review elsewhere", origin: .agent, listID: other.id)
+        let model = makeModel(library: ModelTestLibrary(snips: [manual, agent, done, elsewhere], lists: [.inbox, other]))
+        await model.load()
+        XCTAssertFalse(model.agentSnipsOnly)
+        let originalOrder = model.visibleSnips.map(\.id)
+        model.selectSnips([manual.id])
+        model.agentSnipsOnly = true
+        XCTAssertEqual(Set(model.visibleSnips.map(\.id)), [agent.id, done.id])
+        XCTAssertEqual(model.selectedSnipIDs, [manual.id])
+        model.completionFilter = .done
+        XCTAssertEqual(model.visibleSnips.map(\.id), [done.id])
+        model.searchText = "Review agent"
+        XCTAssertTrue(model.visibleSnips.isEmpty)
+        model.completionFilter = .notDone
+        XCTAssertEqual(model.visibleSnips.map(\.id), [agent.id])
+        model.searchText = ""
+        model.completionFilter = .all
+        XCTAssertEqual(model.visibleSnips(in: other.id).map(\.id), [elsewhere.id])
+        model.agentSnipsOnly = false
+        XCTAssertEqual(model.visibleSnips.map(\.id), originalOrder)
+    }
+
+    func testAgentFilterCannotHideInlineEditorOrReorderFilteredSubset() async {
+        let manual = Snip(content: "Manual", origin: .quickEntry)
+        let agent = Snip(content: "Agent", origin: .agent)
+        let library = ModelTestLibrary(snips: [manual, agent])
+        let model = makeModel(library: library)
+        await model.load()
+        XCTAssertTrue(model.beginInlineSnipEdit(manual))
+        model.agentSnipsOnly = true
+        XCTAssertFalse(model.agentSnipsOnly)
+        XCTAssertTrue(model.visibleSnips.contains { $0.id == manual.id })
+        model.cancelInlineSnipEdit()
+        let before = await library.snapshot(sortedBy: .manual)
+        model.agentSnipsOnly = true
+        XCTAssertFalse(model.canReorderVisibleSnips)
+        let moved = await model.placeVisibleSnips([agent.id])
+        XCTAssertFalse(moved)
+        let after = await library.snapshot(sortedBy: .manual)
+        XCTAssertEqual(after.snips, before.snips)
+        XCTAssertEqual(model.sortMode, .chronological)
+    }
+
     func testMergeSelectionPreservesAttachmentsAndShowsTheSavedResult() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

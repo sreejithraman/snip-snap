@@ -279,6 +279,7 @@ struct IOSAppRootView: View {
             model.sortMode = SnipSortMode(rawValue: savedSortMode) ?? .chronological
             await session.launch()
 #if DEBUG
+            await model.seedAgentSnipsUITestFixtureIfRequested()
             await seedGatheringFixtureIfRequested()
             await seedLongListFixtureIfRequested()
             await seedClipboardFixtureIfRequested()

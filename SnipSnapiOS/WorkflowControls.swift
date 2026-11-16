@@ -18,6 +18,9 @@ struct WorkflowOptionsMenu: View {
                 .labelsHidden()
                 .pickerStyle(.inline)
             }
+            Toggle("Agent snips only", isOn: agentSnipsOnly)
+                .disabled(model.snipEditorDraft != nil)
+                .accessibilityIdentifier("filter-agent-snips-only")
             Section("Sort") {
                 Picker("Sort", selection: sortMode) {
                     ForEach(SnipSortMode.allCases, id: \.self) { mode in
@@ -43,6 +46,16 @@ struct WorkflowOptionsMenu: View {
         Binding(
             get: { model.completionFilter },
             set: { model.completionFilter = $0 }
+        )
+    }
+
+    private var agentSnipsOnly: Binding<Bool> {
+        Binding(
+            get: { model.agentSnipsOnly },
+            set: {
+                model.haptics.invalidatePendingFeedback()
+                model.agentSnipsOnly = $0
+            }
         )
     }
 

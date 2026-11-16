@@ -14,7 +14,7 @@ struct PanelEmptyStateView: View {
             Text(title)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(SnipSnapColors.textSecondary)
-            if !model.isSearchExpanded, model.completionFilter == .all {
+            if !model.isSearchExpanded, model.completionFilter == .all, !model.agentSnipsOnly {
                 Text("Select text, then press \(captureShortcutName) to save it.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(SnipSnapColors.textTertiary)
@@ -27,7 +27,7 @@ struct PanelEmptyStateView: View {
 
     private var icon: String {
         if model.isSearchExpanded { return "magnifyingglass" }
-        if model.completionFilter != .all { return "line.3.horizontal.decrease.circle" }
+        if model.completionFilter != .all || model.agentSnipsOnly { return "line.3.horizontal.decrease.circle" }
         return "tray"
     }
 
@@ -36,6 +36,9 @@ struct PanelEmptyStateView: View {
             return String(localized: "Search all lists and Clipboard")
         }
         if model.hasActiveQuery { return String(localized: "No results") }
+        if model.agentSnipsOnly && model.completionFilter == .all {
+            return String(localized: "No agent snips")
+        }
         return model.completionFilter.emptyStateTitle
     }
 }

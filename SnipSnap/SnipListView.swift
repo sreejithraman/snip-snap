@@ -271,6 +271,7 @@ struct SnipListView: View {
     private var canDragReorder: Bool {
         model.editingID == nil
             && model.completionFilter == .all
+            && !model.agentSnipsOnly
             && !model.hasActiveQuery
     }
 
@@ -632,7 +633,7 @@ struct SnipListView: View {
                     Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
                         model.toggleDone(id: snip.id)
                     }
-                    if !model.hasActiveQuery, model.completionFilter == .all, snapshot.canReorder(snip) {
+                    if !model.hasActiveQuery, model.completionFilter == .all, !model.agentSnipsOnly, snapshot.canReorder(snip) {
                         Button("Move Up") {
                             let ids = contextSelection(for: snip.id)
                             Task { await model.moveSelectionNow(by: -1, ids: ids) }
