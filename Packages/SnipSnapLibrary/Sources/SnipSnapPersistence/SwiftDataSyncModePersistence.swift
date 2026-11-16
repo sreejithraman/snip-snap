@@ -134,6 +134,7 @@ package actor SyncModeActiveMutationLease {
 }
 
 package enum SyncModeCrashPoint: Equatable, Sendable {
+  case afterFailedEnableReviewDecision
   case afterCandidateManifest
   case beforeCandidateDurability
   case afterCandidateDurability
@@ -256,6 +257,9 @@ package actor SwiftDataSyncModePersistence {
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
   var failedEnableSemantics: (any FailedEnableSemantics)?
+  var failedEnableAccountCheck: (@Sendable () async -> Bool)?
+  var failedEnableSemanticRegistration = UUID()
+  var failedEnableSendInFlight: UUID?
   var failedEnablePublicationInFlight: UUID?
   let failedEnableOwnerNonce = UUID()
   var failedEnableUncertainSources: Set<UUID> = []
@@ -545,7 +549,9 @@ package actor SwiftDataSyncModePersistence {
       let evidence = try self.failedEnableFiles.read(transition.sourceStoreID)
       guard try self.failedEnableContinuityMatches(evidence, source: source,
         sourceID: transition.sourceStoreID) else { throw FailedEnableEvidenceError.reviewRequired }
-      try policy.validateExposure(capture: capture, candidate: candidate)
+      guard let evidence else { throw FailedEnableEvidenceError.reviewRequired }
+      try policy.validateExposure(capture: capture, candidate: candidate,
+        evidence: evidence, requiresAccepted: true)
       // This synchronous pointer commit stays inside both store locks. No actor suspension
       // separates its final source/candidate checks from publication.
       self.failedEnablePublicationInFlight = nil

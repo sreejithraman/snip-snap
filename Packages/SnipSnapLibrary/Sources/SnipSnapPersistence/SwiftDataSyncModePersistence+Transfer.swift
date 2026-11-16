@@ -135,7 +135,8 @@ extension SwiftDataSyncModePersistence {
       prior: transition.seedProvenance,
       source: source,
       candidate: candidateSnapshot,
-      transitionID: transition.id
+      transitionID: transition.id,
+      reviewSources: try failedEnableReviewSourceMap(plan: plan)
     )
     let priorCandidate = try await libraryForTransition(storeID: transition.candidateStoreID)
       .transferSnapshot(revision: plan.targetRevision)
@@ -418,7 +419,8 @@ extension SwiftDataSyncModePersistence {
     prior: [SyncModeSeedProvenance],
     source: SnipLibraryTransferSnapshot,
     candidate: SnipLibraryTransferSnapshot,
-    transitionID: UUID
+    transitionID: UUID,
+    reviewSources: [UUID: UUID] = [:]
   ) throws -> [SyncModeSeedProvenance] {
     let sourceByID = Dictionary(uniqueKeysWithValues: source.snips.map { ($0.id, $0) })
     let candidateByID = Dictionary(uniqueKeysWithValues: candidate.snips.map { ($0.id, $0) })
@@ -433,6 +435,8 @@ extension SwiftDataSyncModePersistence {
       let sourceID: UUID
       if sourceByID[candidateID] != nil {
         sourceID = candidateID
+      } else if let reviewedSource = reviewSources[candidateID], sourceByID[reviewedSource] != nil {
+        sourceID = reviewedSource
       } else if let recoveredSource = source.snips.first(where: {
         SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: $0.id)
           == candidateID

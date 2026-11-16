@@ -436,7 +436,11 @@ package actor ICloudSyncModeCoordinator {
         try begin(.enable)
         defer { end() }
         await persistence.installFailedEnableSemantics(
-            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone)
+            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone),
+            accountCheck: { [accountStateSource, namespace] in
+                guard case .available(let lineage) = await accountStateSource.currentAccountState() else { return false }
+                return lineage == namespace.accountLineage
+            }
         )
         let initial = try await persistence.snapshot()
         if initial.activeStore.kind == .iCloudSync, initial.transition == nil {
@@ -455,6 +459,7 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
+        try await persistence.prepareFailedEnableReviewContinuation()
         var transition = try await persistence.beginOrResumeTransition(
             to: .iCloudSync,
             namespace: namespace.binding
@@ -613,7 +618,11 @@ package actor ICloudSyncModeCoordinator {
         try begin(.optOut)
         defer { end() }
         await persistence.installFailedEnableSemantics(
-            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone)
+            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone),
+            accountCheck: { [accountStateSource, namespace] in
+                guard case .available(let lineage) = await accountStateSource.currentAccountState() else { return false }
+                return lineage == namespace.accountLineage
+            }
         )
         if choice == .cancel {
             currentOperation = nil
@@ -798,14 +807,20 @@ package actor ICloudSyncModeCoordinator {
         adapter: any ICloudSyncAdapter
     ) async throws {
         for _ in 0..<8 {
-            try await adapter.sendPending { [persistence, namespace] outbound in
-                try await self.requireMatchingAccount()
-                let attempt = try await adapter.modeSendAttempt(
-                    for: outbound,
-                    namespace: namespace.binding
-                )
-                try await persistence.recordSendAttempt(attempt)
+            do {
+                try await adapter.sendPending { [persistence, namespace] outbound in
+                    try await self.requireMatchingAccount()
+                    let attempt = try await adapter.modeSendAttempt(
+                        for: outbound,
+                        namespace: namespace.binding
+                    )
+                    try await persistence.recordSendAttempt(attempt)
+                }
+            } catch {
+                await persistence.finishFailedEnableSend()
+                throw error
             }
+            await persistence.finishFailedEnableSend()
             try await persistence.observeFailedEnableCommittedValues()
             let issue = await adapter.takeSyncIssue()
             let evidence = try await adapter.enrollmentEvidence()

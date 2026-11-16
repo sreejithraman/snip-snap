@@ -31,13 +31,19 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       bases[entry.reference] = Self.entity(envelope)
     }
     let group = input.evidence?.namespaces.first { $0.binding == FailedEnableBinding(namespace.binding) }
-    if let group, !group.alternatives.isEmpty || !group.reviews.isEmpty {
+    if let group, !group.alternatives.isEmpty {
+      throw FailedEnableEvidenceError.reviewRequired
+    }
+    let reviews = try reviewDrafts(input.reviewRead)
+    guard reviews.allSatisfy({ $0.decision.value != nil }) else { throw FailedEnableEvidenceError.reviewRequired }
+    let reviewed = Set(reviews.map(\.reference))
+    guard Set((group?.reviews ?? []).map(\.reference)).isSubset(of: reviewed) else {
       throw FailedEnableEvidenceError.reviewRequired
     }
     var operational: [CloudEntityReference: FailedEnableFields] = [:]
     var predecessors: Set<String> = []
     if let group, !group.captures.isEmpty {
-      guard input.continuityVerified, group.alternatives.isEmpty, group.reviews.isEmpty else {
+      guard input.continuityVerified, group.alternatives.isEmpty else {
         throw FailedEnableEvidenceError.reviewRequired
       }
       // The newest capture of a record is a barrier even when an older one qualified.
@@ -48,6 +54,10 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
         guard capture.candidateDeletes.isEmpty else { throw FailedEnableEvidenceError.reviewRequired }
         for record in capture.records where seen.insert(record.reference).inserted {
           guard let image = record.source.value, record.sourceMembership == .present else { continue }
+          if reviewed.contains(record.reference) { continue }
+          if Self.definitelyUnsent(record, capture: capture, accepted: accepted[try record.reference.domain]) {
+            continue
+          }
           guard let observed = record.observedAccepted.value,
             try qualifies(record, observation: observed, candidate: nil),
             let prepared = record.preparation.value.value
@@ -74,6 +84,13 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     var anchorKinds: [CloudEntityReference: FailedEnableBaseKind] = [:]
     for image in sourceImages {
       let reference = try image.reference.domain
+      if reviewed.contains(image.reference) {
+        anchorKinds[reference] = .unverified
+        if let server = accepted[reference] {
+          normalization[reference] = try Self.normalizedSource(image, accepted: server)
+        }
+        continue
+      }
       if operational[reference] != nil { anchorKinds[reference] = .sourceCapture; continue }
       if let server = accepted[reference] {
         let remote = try Self.fields(server, namespace: namespace.binding)
@@ -96,9 +113,17 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
         anchorKinds[reference] = .checkedTurnOff
       }
     }
-    let plan = try CloudFullSyncPersistence.failedEnableApplyPlan(source: source,
+    let automaticSource = SnipLibraryTransferSnapshot(revision: source.revision,
+      snips: source.snips.filter { !reviewed.contains(FailedEnableReference(
+        CloudEntityReference(kind: .snip, domainID: $0.id))) }, lists: source.lists,
+      attachmentData: source.attachmentData, legacyManualPositions: source.legacyManualPositions,
+      opaqueSyncStateDigest: source.opaqueSyncStateDigest,
+      opaqueSyncStatePayload: source.opaqueSyncStatePayload,
+      additionalSeenRequestIDs: source.additionalSeenRequestIDs)
+    let automatic = try CloudFullSyncPersistence.failedEnableApplyPlan(source: automaticSource,
       target: input.candidate.snapshot, stored: stored, namespace: namespace,
       transitionID: input.transition.id, operationalBases: operational)
+    let plan = try applyingReviews(reviews, to: automatic, input: input)
     let planned = SnipLibraryTransferSnapshot(revision: source.revision,
       snips: plan.snips, lists: plan.lists, attachmentData: plan.attachmentData)
     var records: [FailedEnableRecord] = []
@@ -183,7 +208,9 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     return try prior.merging(CloudDormantAcceptedBaseBundle(entries: accepted)).encoded()
   }
 
-  func validateExposure(capture: FailedEnableCapture, candidate: FailedEnableStoreRead) throws {
+  func validateExposure(capture: FailedEnableCapture, candidate: FailedEnableStoreRead,
+    evidence: FailedEnableInstalledEvidence, requiresAccepted: Bool
+  ) throws {
     guard capture.normalizer == 1, capture.candidateDeletes.isEmpty,
       candidate.storage.deferredEntities.isEmpty, candidate.storage.quarantines.isEmpty else {
       throw FailedEnableEvidenceError.reviewRequired
@@ -209,6 +236,8 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
         _ = try Self.fields(entity, namespace: namespace.binding)
       }
     }
+    try validateReviewedOutcomes(capture: capture, candidate: candidate,
+      evidence: evidence, requiresAccepted: requiresAccepted)
     for record in capture.records where record.sourceMembership == .present {
       guard let prepared = record.preparation.value.value,
         Self.same(prepared.fields, try Self.plannedValue(record.reference.domain,
@@ -253,7 +282,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     return result
   }
 
-  private func qualifies(_ record: FailedEnableRecord, observation: FailedEnableObservation,
+  func qualifies(_ record: FailedEnableRecord, observation: FailedEnableObservation,
     candidate: FailedEnableStoreRead?
   ) throws -> Bool {
     guard record.sourceMembership == .present, record.source.value != nil,
@@ -304,23 +333,23 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     if case .list(let value)? = value { return try list(value) }
     return try CloudFullSyncPersistence.listFields(CloudFullSyncPersistence.listRecord(fallback))
   }
-  private static func keys(_ kind: CloudEntityKind) -> [String] { kind == .snip ? snipKeys : listKeys }
-  private static func identity(_ reference: CloudEntityReference, zone: CloudZoneID) -> CloudTextStorageIdentity {
+  static func keys(_ kind: CloudEntityKind) -> [String] { kind == .snip ? snipKeys : listKeys }
+  static func identity(_ reference: CloudEntityReference, zone: CloudZoneID) -> CloudTextStorageIdentity {
     CloudTextStorageIdentity(zoneName: zone.name, ownerName: zone.ownerName,
       recordName: "\(reference.kind == .snip ? "s" : "l")-\(reference.domainID.uuidString.lowercased())")
   }
-  private static func entity(_ input: CloudAcceptedEntityInput) -> CloudAcceptedEntity {
+  static func entity(_ input: CloudAcceptedEntityInput) -> CloudAcceptedEntity {
     CloudAcceptedEntity(reference: input.reference, identity: input.identity, schemaVersion: input.schemaVersion,
       acceptedData: input.acceptedData, presenceData: input.presenceData, shadowData: input.shadowData,
       systemFields: input.systemFields, dependencyListID: input.dependencyListID,
       isDeferred: false, localRevision: 0)
   }
-  private static func existingEnvelope(_ entity: CloudAcceptedEntity) throws -> Data {
+  static func existingEnvelope(_ entity: CloudAcceptedEntity) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(CloudFullSyncPersistence.acceptedInput(entity))
   }
-  private static func acceptedRevisionDigest(_ entity: CloudAcceptedEntity, namespaceRevision: UInt64) throws -> String {
+  static func acceptedRevisionDigest(_ entity: CloudAcceptedEntity, namespaceRevision: UInt64) throws -> String {
     struct Revision: Encodable {
       let envelope: Data
       let localRevision: String
@@ -336,7 +365,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       dependency: .init(entity.dependencyListID.map(FailedEnableEncoding.uuid))))
   }
 
-  private static func fields(_ entity: CloudAcceptedEntity, namespace: ICloudSyncNamespaceBinding) throws -> FailedEnableFields {
+  static func fields(_ entity: CloudAcceptedEntity, namespace: ICloudSyncNamespaceBinding) throws -> FailedEnableFields {
     guard entity.graphRepair == nil else { throw FailedEnableEvidenceError.unsupported }
     return try canonicalFields(entity, namespace: namespace)
   }
@@ -376,7 +405,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       return .list(try wire(CloudFullSyncPersistence.listFields(record)))
     }
   }
-  private static func presence(_ entity: CloudAcceptedEntity) throws -> [String: FailedEnablePresence] {
+  static func presence(_ entity: CloudAcceptedEntity) throws -> [String: FailedEnablePresence] {
     func present<Value: Equatable & Sendable>(_ field: CloudFieldPresence<Value>) -> FailedEnablePresence {
       if case .missing = field { .missing } else { .value }
     }
@@ -407,7 +436,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       systemImage: f.systemImage, colorPreset: .init(f.color?.rawValue), orderKey: f.orderKey.data,
       updatedAt: FailedEnableEncoding.date(f.updatedAt))
   }
-  private static func snip(_ f: FailedEnableSnipValue) throws -> CloudSnipMergeFields {
+  static func snip(_ f: FailedEnableSnipValue) throws -> CloudSnipMergeFields {
     try CloudSnipMergeFields(id: FailedEnableEncoding.uuid(f.id), requestID: FailedEnableEncoding.uuid(f.requestID),
       createdAt: FailedEnableEncoding.date(f.createdAt), originRaw: f.originRaw, text: f.text,
       source: f.source.value?.domain, isDone: f.isDone, pinnedAt: f.pinnedAt.value.map(FailedEnableEncoding.date),
@@ -419,7 +448,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       systemImage: f.systemImage, color: f.colorPreset.value.flatMap(SnipListColorPreset.init(rawValue:)),
       orderKey: SnipOrderKey(data: f.orderKey), updatedAt: FailedEnableEncoding.date(f.updatedAt))
   }
-  private static func same(_ a: FailedEnableFields, _ b: FailedEnableFields) -> Bool {
+  static func same(_ a: FailedEnableFields, _ b: FailedEnableFields) -> Bool {
     var a = a, b = b
     switch (a, b) {
     case (.snip(var x), .snip(var y)): x.updatedAt = ""; y.updatedAt = ""; a = .snip(x); b = .snip(y)
@@ -428,14 +457,14 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     }
     return a == b
   }
-  private static func unbasedSource(_ image: FailedEnableImage) throws -> FailedEnableFields {
+  static func unbasedSource(_ image: FailedEnableImage) throws -> FailedEnableFields {
     switch image {
     case .snip(let image): return .snip(try wire(CloudFullSyncPersistence.snipFields(image.domain, accepted: nil)))
     case .list(let image): return .list(try wire(CloudFullSyncPersistence.listFields(image.domain,
       updatedAt: Date(timeIntervalSinceReferenceDate: 0))))
     }
   }
-  private static func normalizedSource(_ image: FailedEnableImage, projection: FailedEnableFields) throws -> FailedEnableFields {
+  static func normalizedSource(_ image: FailedEnableImage, projection: FailedEnableFields) throws -> FailedEnableFields {
     switch (image, projection) {
     case (.snip, .snip(let accepted)):
       guard case .snip(var local) = try unbasedSource(image) else { throw FailedEnableEvidenceError.unsupported }
@@ -448,7 +477,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     default: throw FailedEnableEvidenceError.unsupported
     }
   }
-  private static func normalizedSource(_ image: FailedEnableImage, accepted: CloudAcceptedEntity) throws -> FailedEnableFields {
+  static func normalizedSource(_ image: FailedEnableImage, accepted: CloudAcceptedEntity) throws -> FailedEnableFields {
     switch image {
     case .snip(let image):
       return .snip(try wire(CloudFullSyncPersistence.snipFields(image.domain,
@@ -470,7 +499,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       return try normalizedSource(.list(FailedEnableListImage(list)), projection: projection)
     }
   }
-  private static func changedFields(base: FailedEnableFields?, local: FailedEnableFields) throws -> [String] {
+  static func changedFields(base: FailedEnableFields?, local: FailedEnableFields) throws -> [String] {
     guard let base else {
       switch local { case .snip: return snipKeys; case .list: return listKeys; case .absent: return [] }
     }

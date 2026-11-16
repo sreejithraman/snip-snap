@@ -58,7 +58,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
 
-        let result = try await retry.enableOrRetry()
+        let waitingForChoice = try await retry.enableOrRetry()
 
         let review = try await SnipSyncModeStore(reopened).failedEnableReview.snapshot()
         XCTAssertEqual(review.sourceStoreID, interrupted.activeStore.id)
@@ -81,12 +81,45 @@ extension ICloudSyncModeCoordinatorTests {
         })
         XCTAssertEqual(issue.id.uuidString.lowercased(), storedIssue.id)
 
+        XCTAssertEqual(waitingForChoice.state, .needsAttention)
+        XCTAssertEqual(issue.reason, .unknownOutcome)
+        XCTAssertEqual(issue.allowedChoices, [.useDevice])
+        guard case .snip(let serverVersion)? = issue.serverFieldsAtReview else {
+            return XCTFail("The checked iCloud fields must be visible for comparison")
+        }
+        XCTAssertEqual(serverVersion.content, "before opting out")
+        let sourceBeforeChoice = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        let storageBeforeChoice = try await reopened.snapshot()
+        let chosen = try await SnipSyncModeStore(reopened).failedEnableReview.choose(
+            issue.id, selection: .useDevice, expecting: issue.expectation
+        )
+        XCTAssertEqual(chosen.selection, .useDevice)
+        XCTAssertTrue(chosen.outputs.isEmpty)
+        let storageAfterChoice = try await reopened.snapshot()
+        let sourceAfterChoice = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(storageAfterChoice, storageBeforeChoice)
+        XCTAssertEqual(sourceAfterChoice.snips, sourceBeforeChoice.snips)
+        let result = try await retry.enableOrRetry()
         XCTAssertEqual(result.state, .on)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [snip.id])
         XCTAssertEqual(final.snips.first?.content, "offline edit survives retry")
+        XCTAssertEqual(final.snips.first?.isDone, false)
+        let completedStorage = try await reopened.snapshot()
+        XCTAssertNil(completedStorage.transition)
+        let activeStore = try await reopened.libraryForTransition(storeID: completedStorage.activeStore.id)
+        let activeRecovery = try await activeStore.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
+        XCTAssertFalse(activeRecovery.contains { $0.kind == .terminalSend })
         let remoteText = await server.storedTextValues()
         XCTAssertEqual(remoteText, ["offline edit survives retry"])
+        let remoteValue = await server.fullSnapshot(for: .snip(snip.id, in: zone))
+        let remoteSnapshot = try XCTUnwrap(remoteValue)
+        let remote = try CloudFullRecordCodec.snip(from: remoteSnapshot)
+        XCTAssertEqual(remote.domainID, snip.id)
+        XCTAssertEqual(remote.text, .value("offline edit survives retry"))
+        XCTAssertEqual(remote.isDone, .value(false))
+        XCTAssertEqual(remote.source, .value(nil))
+        XCTAssertNil(final.snips.first?.source)
     }
 
     func testFullRecordEnableRetryClearsTerminalSendFailure() async throws {
@@ -736,6 +769,28 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
+        let reviewStatus = try await retry.enableOrRetry()
+        XCTAssertEqual(reviewStatus.state, .needsAttention)
+        let facade = SnipSyncModeStore(reopened).failedEnableReview
+        let review = try await facade.snapshot()
+        let issue = try XCTUnwrap(review.issues.first { $0.entityID == .snip(snip.id) })
+        XCTAssertEqual(issue.serverState, .absent)
+        XCTAssertEqual(issue.allowedChoices, [.recoverAsNew])
+        let chosen = try await facade.choose(issue.id, selection: .recoverAsNew, expecting: issue.expectation)
+        let output = try XCTUnwrap(chosen.outputs.first)
+        XCTAssertEqual(chosen.outputs.count, 1)
+        XCTAssertEqual(output.original, .snip(snip.id))
+        guard case .snip(let recoveredID) = output.output else { return XCTFail("Expected a snip mapping") }
+        let requestID = try XCTUnwrap(output.requestID)
+        let attachmentMap = try XCTUnwrap(output.attachments.first)
+        XCTAssertEqual(output.attachments.count, 1)
+        XCTAssertEqual(attachmentMap.originalID, attachmentID)
+        XCTAssertEqual(Set([recoveredID, requestID, attachmentMap.outputID]).count, 3)
+        XCTAssertTrue(Set([recoveredID, requestID, attachmentMap.outputID]).isDisjoint(with:
+            Set([snip.id, snip.requestID, attachmentID])))
+        let sourceAfterChoice = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(sourceAfterChoice.snips.map(\.id), [snip.id])
+        XCTAssertEqual(sourceAfterChoice.snips.first?.content, "partial attachment enable")
         let completed = try await retry.enableOrRetry()
 
         XCTAssertEqual(completed.state, .on)
@@ -749,11 +804,50 @@ extension ICloudSyncModeCoordinatorTests {
         let publication = try XCTUnwrap(settled.publications.first)
         XCTAssertTrue(publication.payloadAccepted)
         XCTAssertTrue(publication.metadataAccepted)
-        XCTAssertEqual(publication.metadata.attachmentID, attachmentID)
+        XCTAssertEqual(publication.metadata.attachmentID, attachmentMap.outputID)
+        XCTAssertEqual(publication.metadata.snipID, recoveredID)
+        let final = try await active.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [recoveredID])
+        XCTAssertEqual(final.snips.first?.requestID, requestID)
+        XCTAssertEqual(final.snips.first?.content, "partial attachment enable")
+        XCTAssertEqual(final.snips.first?.isDone, false)
+        let localURL = try XCTUnwrap(final.attachmentURLs[attachmentMap.outputID])
+        let expectedBytes = Data("partial attachment".utf8)
+        XCTAssertEqual(try Data(contentsOf: localURL), expectedBytes)
+        XCTAssertEqual(publication.metadata.byteCount, Int64(expectedBytes.count))
+        XCTAssertEqual(publication.metadata.sha256, Data(SHA256.hash(data: expectedBytes)))
+        let oldOriginal = await server.fullSnapshot(for: .snip(snip.id, in: dataZone))
+        XCTAssertNil(oldOriginal)
+        let remoteSnipValue = await server.fullSnapshot(for: .snip(recoveredID, in: dataZone))
+        let remoteSnipSnapshot = try XCTUnwrap(remoteSnipValue)
+        let remoteSnip = try CloudFullRecordCodec.snip(from: remoteSnipSnapshot)
+        XCTAssertEqual(remoteSnip.domainID, recoveredID)
+        XCTAssertEqual(remoteSnip.text, .value("partial attachment enable"))
+        XCTAssertEqual(remoteSnip.isDone, .value(false))
+        XCTAssertEqual(remoteSnip.requestID, .value(requestID))
+        XCTAssertEqual(remoteSnip.createdAt, .value(snip.createdAt))
+        XCTAssertEqual(remoteSnip.origin, .value(SnipOrigin.quickEntry.rawValue))
+        let assetURL = await server.asset(for: CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity),
+            field: CloudAttachmentRecordCodec.assetField)
+        let remoteAssetURL = try XCTUnwrap(assetURL)
+        XCTAssertEqual(try Data(contentsOf: remoteAssetURL), expectedBytes)
+        let retainedPayload = await server.fullSnapshot(
+            for: CloudAttachmentRecordCodec.recordID(partialPublication.metadata.payloadIdentity))
+        XCTAssertNotNil(retainedPayload)
         let remoteMetadata = await server.fullSnapshot(
             for: CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
         )
         XCTAssertNotNil(remoteMetadata)
+        let remoteMetadataSnapshot = try XCTUnwrap(remoteMetadata)
+        let metadata = try CloudAttachmentRecordCodec.metadata(from: remoteMetadataSnapshot,
+            metadataZone: dataZone, payloadZone: payloadZone)
+        XCTAssertEqual(metadata.snipID, recoveredID)
+        XCTAssertEqual(metadata.attachmentID, attachmentMap.outputID)
+        XCTAssertEqual(metadata.sha256, Data(SHA256.hash(data: expectedBytes)))
+        let repeated = try await retry.enableOrRetry()
+        XCTAssertEqual(repeated.state, .on)
+        let afterRepeated = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(afterRepeated.snips.map(\.id), [recoveredID])
     }
 
     func testLocalOnlyAttachmentSaveNeverCreatesCloudUploadWork() async throws {
@@ -2066,17 +2160,59 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
+        let reviewStatus = try await retry.enableOrRetry()
+        XCTAssertEqual(reviewStatus.state, .needsAttention)
+        let facade = SnipSyncModeStore(reopened).failedEnableReview
+        let review = try await facade.snapshot()
+        XCTAssertEqual(review.issues.map(\.entityID), [.snip(failed.id)])
+        let issue = try XCTUnwrap(review.issues.first)
+        let chosen = try await facade.choose(issue.id, selection: .recoverAsNew, expecting: issue.expectation)
+        let output = try XCTUnwrap(chosen.outputs.first)
+        guard case .snip(let recoveredID) = output.output else { return XCTFail("Expected the failed member mapping") }
+        XCTAssertEqual(output.original, .snip(failed.id))
+        XCTAssertNotEqual(recoveredID, failed.id)
+        XCTAssertNotEqual(recoveredID, edited.id)
+        let recoveredRequestID = try XCTUnwrap(output.requestID)
+        XCTAssertEqual(chosen.outputs.count, 1)
+        XCTAssertTrue(output.attachments.isEmpty)
+        XCTAssertEqual(Set([recoveredID, recoveredRequestID]).count, 2)
+        XCTAssertTrue(Set([recoveredID, recoveredRequestID]).isDisjoint(with:
+            Set([edited.id, edited.requestID, failed.id, failed.requestID])))
         let result = try await retry.enableOrRetry()
         XCTAssertEqual(result.state, .on)
         let active = try await reopened.activeLibrary()
         let final = await active.snapshot(sortedBy: .chronological)
-        XCTAssertEqual(Set(final.snips.map(\.id)), Set([edited.id, failed.id]))
+        XCTAssertEqual(Set(final.snips.map(\.id)), Set([edited.id, recoveredID]))
         XCTAssertEqual(
             final.snips.map(\.content).sorted(),
             ["edited after hard reopen", "retry full item"]
         )
         let remoteTexts = await server.storedTextValues()
         XCTAssertEqual(remoteTexts, ["edited after hard reopen", "retry full item"])
+        XCTAssertEqual(final.snips.first(where: { $0.id == edited.id })?.content, "edited after hard reopen")
+        XCTAssertEqual(final.snips.first(where: { $0.id == recoveredID })?.requestID, recoveredRequestID)
+        XCTAssertEqual(final.snips.first(where: { $0.id == recoveredID })?.isDone, false)
+        XCTAssertEqual(final.snips.first(where: { $0.id == edited.id })?.isDone, false)
+        let remoteEditedValue = await server.fullSnapshot(for: .snip(edited.id, in: textZone(namespace)))
+        let remoteEditedSnapshot = try XCTUnwrap(remoteEditedValue)
+        let remoteEdited = try CloudFullRecordCodec.snip(from: remoteEditedSnapshot)
+        XCTAssertEqual(remoteEdited.text, .value("edited after hard reopen"))
+        XCTAssertEqual(remoteEdited.isDone, .value(false))
+        let remoteRecoveredValue = await server.fullSnapshot(for: .snip(recoveredID, in: textZone(namespace)))
+        let remoteRecoveredSnapshot = try XCTUnwrap(remoteRecoveredValue)
+        let remoteRecovered = try CloudFullRecordCodec.snip(from: remoteRecoveredSnapshot)
+        XCTAssertEqual(remoteRecovered.text, .value("retry full item"))
+        XCTAssertEqual(remoteRecovered.requestID, .value(recoveredRequestID))
+        XCTAssertEqual(remoteRecovered.isDone, .value(false))
+        let oldOriginal = await server.fullSnapshot(for: .snip(failed.id, in: textZone(namespace)))
+        XCTAssertNil(oldOriginal)
+        let hardReopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let repeated = ICloudSyncModeCoordinator(persistence: hardReopened, namespace: namespace,
+            textZone: textZone(namespace), makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) })
+        let repeatedStatus = try await repeated.enableOrRetry()
+        XCTAssertEqual(repeatedStatus.state, .on)
+        let repeatedSnapshot = try await hardReopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(repeatedSnapshot.snips.map(\.id)), Set([edited.id, recoveredID]))
     }
 
     func testFullPartialFirstSendRetryThreeWayMergesListAndSnipFields() async throws {

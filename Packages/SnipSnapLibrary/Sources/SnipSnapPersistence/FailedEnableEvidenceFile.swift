@@ -94,6 +94,20 @@ struct FailedEnableEvidenceFile {
     }
     var captureIDs: Set<String> = []
     var ordinals: Set<UInt64> = []
+    var issueIDs: Set<String> = []
+    var outputIDs: Set<String> = []
+    var existingIDs: Set<String> = []
+    for group in value.namespaces {
+      let images = group.captures.flatMap(\.records).compactMap(\.source.value)
+        + group.reviews.compactMap(\.local.image.value)
+      for image in images {
+        existingIDs.insert(image.reference.domainID)
+        if case .snip(let snip) = image {
+          existingIDs.insert(snip.requestID)
+          existingIDs.formUnion(snip.attachments.map(\.id))
+        }
+      }
+    }
     for namespace in value.namespaces {
       let binding = try namespace.binding.domain
       guard FailedEnableBinding(binding) == namespace.binding else { throw FailedEnableEvidenceError.unsupported }
@@ -122,8 +136,100 @@ struct FailedEnableEvidenceFile {
           }
         }
       }
+      var alternativeIDs: Set<String> = []
       for alternative in namespace.alternatives {
-        try alternative.image.value?.validate(blobs: value.blobs)
+        _ = try FailedEnableEncoding.uuid(alternative.id)
+        _ = try alternative.reference.domain
+        guard alternativeIDs.insert(alternative.id).inserted,
+          alternative.image.value != nil || alternative.opaqueHistoricalBytes.value != nil,
+          alternative.attachmentHashes == Array(Set(alternative.attachmentHashes)).sorted() else {
+          throw FailedEnableEvidenceError.unsupported
+        }
+        if let image = alternative.image.value {
+          guard image.reference == alternative.reference else { throw FailedEnableEvidenceError.unsupported }
+          try image.validate(blobs: value.blobs)
+        }
+        for hash in alternative.attachmentHashes {
+          try requireDigest(hash)
+          guard value.blobs[hash] != nil else { throw FailedEnableEvidenceError.unavailable }
+        }
+      }
+      let reviewKeys = namespace.reviews.map { $0.reference.sortKey + "|" + $0.id }
+      guard reviewKeys == reviewKeys.sorted() else { throw FailedEnableEvidenceError.unsupported }
+      for review in namespace.reviews {
+        _ = try FailedEnableEncoding.uuid(review.id)
+        _ = try review.reference.domain
+        _ = try FailedEnableEncoding.revision(review.local.sourceRevision)
+        try requireDigest(review.issueDigest)
+        try requireDigest(review.local.sourceDigest)
+        guard issueIDs.insert(review.id).inserted,
+          review.local.sourceStoreID == value.sourceStoreID,
+          Set(review.earlierAlternativeIDs).count == review.earlierAlternativeIDs.count,
+          Set(review.earlierAlternativeIDs).isSubset(of: Set(namespace.alternatives.map(\.id))) else {
+          throw FailedEnableEvidenceError.unsupported
+        }
+        if let image = review.local.image.value {
+          guard image.reference == review.reference else { throw FailedEnableEvidenceError.unsupported }
+          try image.validate(blobs: value.blobs)
+        }
+        if let identity = review.identity.value {
+          guard namespace.binding.zones.contains(where: {
+            $0.owner == identity.owner && $0.name == identity.zone
+          }), !identity.name.isEmpty else { throw FailedEnableEvidenceError.unsupported }
+        }
+        switch review.server.state {
+        case .value:
+          guard let observed = review.server.observation.value,
+            let digest = review.server.acceptedRevisionDigest.value else {
+            throw FailedEnableEvidenceError.unsupported
+          }
+          try requireDigest(digest)
+          _ = try FailedEnableEncoding.uuid(observed.candidateStoreID)
+          _ = try FailedEnableEncoding.revision(observed.namespaceRevision)
+          _ = try FailedEnableEncoding.revision(observed.localRevision)
+        case .deleted, .unknown, .unavailable:
+          guard review.server.observation.value == nil,
+            review.server.acceptedRevisionDigest.value == nil else {
+            throw FailedEnableEvidenceError.unsupported
+          }
+        }
+        guard let decision = review.decision.value else { continue }
+        let allowedFields: Set<String> = ["isDone", "pinnedAt", "placement", "source", "text"]
+        guard Set(decision.fieldMask).count == decision.fieldMask.count,
+          Set(decision.fieldMask) == allowedFields,
+          decision.fieldMask == decision.fieldMask.sorted(),
+          decision.selectedImage.value == review.local.image.value,
+          review.local.membership == .present,
+          case .snip(let selected)? = decision.selectedImage.value,
+          selected.attachments.allSatisfy({ $0.availability.kind == .embedded }),
+          decision.resolvedAlternativeIDs.isEmpty, review.earlierAlternativeIDs.isEmpty else {
+          throw FailedEnableEvidenceError.unsupported
+        }
+        try decision.selectedImage.value?.validate(blobs: value.blobs)
+        switch decision.choice {
+        case .useDevice:
+          guard review.server.state == .value, decision.outputIDs.isEmpty else {
+            throw FailedEnableEvidenceError.unsupported
+          }
+        case .recoverAsNew:
+          guard review.server.state == .deleted, decision.outputIDs.count == 1,
+            let map = decision.outputIDs.first, map.original == review.reference,
+            map.output.kind == .snip, let requestID = map.requestID.value,
+            Set(map.attachments.map(\.originalID)) == Set(selected.attachments.map(\.id)),
+            map.attachments.count == selected.attachments.count else {
+            throw FailedEnableEvidenceError.unsupported
+          }
+          _ = try map.output.domain
+          _ = try FailedEnableEncoding.uuid(requestID)
+          let ids = [map.output.domainID, requestID] + map.attachments.map(\.newID)
+          for id in ids {
+            _ = try FailedEnableEncoding.uuid(id)
+            guard !existingIDs.contains(id), outputIDs.insert(id).inserted else {
+              throw FailedEnableEvidenceError.unsupported
+            }
+          }
+        default: throw FailedEnableEvidenceError.unsupported
+        }
       }
     }
     for transfer in value.transfers {

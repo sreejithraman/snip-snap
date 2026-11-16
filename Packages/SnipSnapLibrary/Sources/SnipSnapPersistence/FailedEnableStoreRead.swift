@@ -111,6 +111,24 @@ package struct FailedEnablePreparationRead: Sendable {
   package let token: SyncModeFreezeToken
   package let evidence: FailedEnableInstalledEvidence?
   package let continuityVerified: Bool
+
+  package var reviewRead: FailedEnableReviewRead {
+    FailedEnableReviewRead(source: source, candidate: candidate, transition: transition, evidence: evidence)
+  }
+}
+
+package struct FailedEnableReviewRead: Sendable {
+  package let source: FailedEnableStoreRead
+  package let candidate: FailedEnableStoreRead
+  package let transition: SyncModeTransition
+  package let evidence: FailedEnableInstalledEvidence?
+  package init(source: FailedEnableStoreRead, candidate: FailedEnableStoreRead,
+    transition: SyncModeTransition, evidence: FailedEnableInstalledEvidence?) {
+    self.source = source
+    self.candidate = candidate
+    self.transition = transition
+    self.evidence = evidence
+  }
 }
 
 package struct FailedEnablePreparedMerge: Sendable {
@@ -126,9 +144,19 @@ package struct FailedEnablePreparedMerge: Sendable {
 
 /// Only the installed Cloud policy produces preparation and accepted-value decisions.
 package protocol FailedEnableSemantics: Sendable {
+  var reviewNamespace: ICloudSyncNamespaceBinding { get }
+  func reviewDrafts(_ input: FailedEnableReviewRead) throws -> [FailedEnableReview]
+  func reviewCaptureRecords(_ input: FailedEnablePreparationRead,
+    reviews: [FailedEnableReview]) throws -> [FailedEnableRecord]
+  func choices(for review: FailedEnableReview) throws -> [FailedEnableSetupSelection]
+  func decision(for review: FailedEnableReview, selection: FailedEnableSetupSelection,
+    outputIDs: [FailedEnableCopyIDs]) throws -> FailedEnableReviewDecision
+  func serverFields(for reference: FailedEnableReference,
+    in candidate: FailedEnableStoreRead) throws -> FailedEnableSetupLocalVersion?
   func prepare(_ input: FailedEnablePreparationRead) throws -> FailedEnablePreparedMerge
   func checkedTurnOffPayload(source: FailedEnableStoreRead) throws -> Data?
-  func validateExposure(capture: FailedEnableCapture, candidate: FailedEnableStoreRead) throws
+  func validateExposure(capture: FailedEnableCapture, candidate: FailedEnableStoreRead,
+    evidence: FailedEnableInstalledEvidence, requiresAccepted: Bool) throws
   func observe(
     capture: FailedEnableCapture,
     candidate: FailedEnableStoreRead,

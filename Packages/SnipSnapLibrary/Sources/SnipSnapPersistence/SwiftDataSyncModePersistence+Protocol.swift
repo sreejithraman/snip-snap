@@ -25,6 +25,11 @@ extension SwiftDataSyncModePersistence {
     try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
+    if transition?.syncProtocol == .fullRecordV1 { failedEnableSendInFlight = transition?.id }
+  }
+
+  package func finishFailedEnableSend() {
+    failedEnableSendInFlight = nil
   }
 
   package func recordFirstSendComplete() throws {

@@ -4,8 +4,12 @@ import SnipSnapCore
 extension SwiftDataSyncModePersistence {
   var failedEnableFiles: FailedEnableEvidenceFile { FailedEnableEvidenceFile(root: rootURL) }
 
-  package func installFailedEnableSemantics(_ semantics: any FailedEnableSemantics) async {
+  package func installFailedEnableSemantics(_ semantics: any FailedEnableSemantics,
+    accountCheck: (@Sendable () async -> Bool)? = nil
+  ) async {
     failedEnableSemantics = semantics
+    failedEnableAccountCheck = accountCheck
+    failedEnableSemanticRegistration = UUID()
     await reconcileFailedEnableOnOpen()
   }
 
@@ -16,7 +20,7 @@ extension SwiftDataSyncModePersistence {
       transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace
     else { throw FailedEnableEvidenceError.reviewRequired }
     try requireNoUncapturedFailedEnableRoots(transition)
-    let prepared: FailedEnablePreparedMerge = try await withFailedEnableRead(transition: transition) {
+    let prepared: FailedEnablePreparedMerge? = try await withFailedEnableRead(transition: transition) {
       source, candidate in
       var prior = try self.failedEnableFiles.read(transition.sourceStoreID)
       let verified = try self.failedEnableContinuityMatches(prior, source: source,
@@ -39,8 +43,29 @@ extension SwiftDataSyncModePersistence {
           prior = try self.failedEnableFiles.read(transition.sourceStoreID)
         }
       }
-      let input = FailedEnablePreparationRead(source: source, candidate: candidate,
+      var input = FailedEnablePreparationRead(source: source, candidate: candidate,
         transition: transition, token: token, evidence: prior, continuityVerified: verified)
+      let reviews = try policy.reviewDrafts(input.reviewRead)
+      if !reviews.isEmpty {
+        var applicable = true
+        for row in reviews {
+          guard let decision = row.decision.value,
+            let selection = FailedEnableSetupSelection(rawValue: decision.choice.rawValue),
+            try policy.choices(for: row).contains(selection) else { applicable = false; continue }
+        }
+        let alternatives = prior?.namespaces.first {
+          $0.binding == FailedEnableBinding(namespace)
+        }?.alternatives ?? []
+        let blocked = !applicable || !alternatives.isEmpty
+        let records: [FailedEnableRecord]?
+        if blocked { records = try policy.reviewCaptureRecords(input, reviews: reviews) }
+        else { records = nil }
+        try self.publishFailedEnableReviews(reviews, input: input, captureRecords: records)
+        prior = try self.failedEnableFiles.read(transition.sourceStoreID)
+        if blocked { return nil }
+        input = FailedEnablePreparationRead(source: source, candidate: candidate,
+          transition: transition, token: token, evidence: prior, continuityVerified: verified)
+      }
       let prepared = try policy.prepare(input)
       let sourceDigest = try source.sourceDigest(sourceID: transition.sourceStoreID)
       let images = try source.images()
@@ -104,6 +129,10 @@ extension SwiftDataSyncModePersistence {
         return bundle
       }
       return prepared
+    }
+    guard let prepared else {
+      try unfreezeBeforePointerSwap(reason: .enrollmentBlocked)
+      throw FailedEnableEvidenceError.reviewRequired
     }
     let source = try await libraryForTransition(storeID: transition.sourceStoreID)
       .transferSnapshot(revision: token.revision)
@@ -208,7 +237,10 @@ extension SwiftDataSyncModePersistence {
       capture.normalizer == 1, capture.syncProtocol == .fullRecordV1,
       capture.records.allSatisfy({ $0.preparation.normalizer == 1 }),
       capture.records.allSatisfy({
-        [.nonconflicting, .equalFetched, .realConflict].contains($0.preparation.classification)
+        let reviewed = hasFailedEnableReviewDecision($0, capture: capture, bundle: bundle)
+        return ([.nonconflicting, .equalFetched, .realConflict].contains($0.preparation.classification)
+          && ($0.preparation.baseKind != .unverified || reviewed))
+          || ($0.preparation.classification == .deleteRecovery && reviewed)
       }),
       capture.candidateDeletes.isEmpty,
       bundle.transfers.contains(where: {
@@ -247,7 +279,9 @@ extension SwiftDataSyncModePersistence {
       guard try self.failedEnableContinuityMatches(prior, source: source, sourceID: transition.sourceStoreID) else {
         throw FailedEnableEvidenceError.reviewRequired
       }
-      try policy.validateExposure(capture: capture, candidate: candidate)
+      guard let prior else { throw FailedEnableEvidenceError.reviewRequired }
+      try policy.validateExposure(capture: capture, candidate: candidate,
+        evidence: prior, requiresAccepted: false)
       guard !capture.armed else { return }
       try self.failedEnableFiles.update(transition.sourceStoreID) { current in
         guard var current, current == prior else { throw FailedEnableEvidenceError.changed }
@@ -264,9 +298,12 @@ extension SwiftDataSyncModePersistence {
 
   func requireFailedEnableSwapEvidence() throws {
     guard let capture = try requireFailedEnableCapture() else { return }
-    guard capture.records.allSatisfy({ record in
-      [.nonconflicting, .equalFetched].contains(record.preparation.classification)
-        && record.observedAccepted.value != nil
+    guard let transition = manifest.transition,
+      let bundle = try failedEnableFiles.read(transition.sourceStoreID),
+      capture.records.allSatisfy({ record in
+      ([.nonconflicting, .equalFetched].contains(record.preparation.classification)
+        && record.observedAccepted.value != nil)
+        || hasFailedEnableReviewDecision(record, capture: capture, bundle: bundle)
     }) else { throw FailedEnableEvidenceError.reviewRequired }
   }
 
@@ -337,7 +374,7 @@ extension SwiftDataSyncModePersistence {
     return bundle.continuity.sourceDigest == digest
   }
 
-  private func newFailedEnableBundle(sourceID: UUID, source: FailedEnableStoreRead,
+  func newFailedEnableBundle(sourceID: UUID, source: FailedEnableStoreRead,
     digest: String
   ) -> FailedEnableInstalledEvidence {
     FailedEnableInstalledEvidence(version: 1, purpose: .installedEvidence,
@@ -353,7 +390,7 @@ extension SwiftDataSyncModePersistence {
       .sorted { $0.reference.sortKey < $1.reference.sortKey }
   }
 
-  private func failedEnableBlobs(images: [FailedEnableImage], bytes: [UUID: Data]) throws -> [String: Data] {
+  func failedEnableBlobs(images: [FailedEnableImage], bytes: [UUID: Data]) throws -> [String: Data] {
     var blobs: [String: Data] = [:]
     for image in images {
       guard case .snip(let snip) = image else { continue }
