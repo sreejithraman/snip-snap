@@ -359,6 +359,7 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         XCTAssertEqual(row.local.image.value, try source.images().first { $0.reference == row.reference })
         let reference = try row.reference.domain
         let original = try XCTUnwrap(candidate.storage.readyEntities.first { $0.reference == reference })
+        let typed = try JSONDecoder().decode(CloudTypedSnipRecord.self, from: original.acceptedData)
         let policy = CloudFailedEnablePolicy(namespace: f.namespace, dataZone: f.zone)
         let ascending = comparisonEntity(original, accepted: try comparisonJSON(original.acceptedData, descending: false),
             presence: try comparisonJSON(original.presenceData, descending: false), revision: original.localRevision + 10)
@@ -372,6 +373,11 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             try JSONDecoder().decode(CloudTypedSnipRecord.self, from: descending.presenceData))
         XCTAssertNotEqual(CloudFullReenableAcceptedCAS(ascending), CloudFullReenableAcceptedCAS(descending))
         for value in [ascending, descending] {
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: value.acceptedData), typed)
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: value.presenceData), typed)
+            XCTAssertEqual(value.identity, original.identity)
+            XCTAssertEqual(value.schemaVersion, original.schemaVersion)
+            XCTAssertEqual(value.dependencyListID, original.dependencyListID)
             XCTAssertEqual(value.shadowData, original.shadowData)
             XCTAssertEqual(value.systemFields, original.systemFields)
             _ = try CloudFailedEnablePolicy.fields(value, namespace: f.namespace.binding)
@@ -384,15 +390,11 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             XCTAssertEqual(applicable.server, row.server, "Retain the actual original observation bytes")
         }
 
-        let typed = try JSONDecoder().decode(CloudTypedSnipRecord.self, from: original.acceptedData)
         let savedDraft = try CloudFullRecordCodec.snipDraft(remote, accepted: typed)
-        func changed(_ fields: [String: CloudFieldValue], version: Int? = nil) throws -> CloudAcceptedEntity {
-            var routing = savedDraft.routingFields
-            let schema = version ?? savedDraft.schemaVersion
-            routing["schemaVersion"] = .int64(Int64(schema))
+        func changed(_ fields: [String: CloudFieldValue]) throws -> CloudAcceptedEntity {
             let snapshot = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: CloudRecordDraft(
-                id: savedDraft.id, recordType: savedDraft.recordType, schemaVersion: schema, routingFields: routing,
-                encryptedFields: fields, base: savedDraft.base)))
+                id: savedDraft.id, recordType: savedDraft.recordType, schemaVersion: savedDraft.schemaVersion,
+                routingFields: savedDraft.routingFields, encryptedFields: fields, base: savedDraft.base)))
             let input = try CloudFullBatchPlanner.acceptedInput(CloudFullRecordCodec.snip(from: snapshot), snapshot: snapshot)
             return CloudFailedEnablePolicy.entity(input)
         }
@@ -404,6 +406,18 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         XCTAssertEqual(missingTyped.isDone, .missing)
         let missingDone = CloudFailedEnablePolicy.entity(
             try CloudFullBatchPlanner.acceptedInput(missingTyped, snapshot: missingSnapshot))
+        let historicalRecord = try typed.shadow.record()
+        historicalRecord["schemaVersion"] = Int64(2)
+        let historicalSnapshot = try CloudKitRecordMapper.snapshot(historicalRecord)
+        let historicalTyped = try CloudFullRecordCodec.snip(from: historicalSnapshot)
+        let historicalSchema = CloudFailedEnablePolicy.entity(
+            try CloudFullBatchPlanner.acceptedInput(historicalTyped, snapshot: historicalSnapshot))
+        XCTAssertEqual(original.schemaVersion, 3)
+        XCTAssertEqual(typed.schemaVersion, 3)
+        XCTAssertEqual(historicalSnapshot.routingFields["schemaVersion"], .int64(2))
+        XCTAssertEqual(historicalSnapshot.schemaVersion, 2)
+        XCTAssertEqual(historicalTyped.schemaVersion, 2)
+        XCTAssertEqual(historicalSchema.schemaVersion, 2)
         let unknownChanged = try changed(["f5ComparisonFuture": .string("different unknown")])
         let system = try CloudRecordShadow(data: typed.shadow.data, systemFields: Data("different local comparison token".utf8))
         let changedTyped = CloudTypedSnipRecord(storageVersion: typed.storageVersion, id: typed.id,
@@ -420,12 +434,14 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         var extra = try XCTUnwrap(extraObject as? [String: Any])
         extra["futureTypedMember"] = ["first", "second"]
         let extraJSON = try JSONSerialization.data(withJSONObject: extra, options: [.sortedKeys])
+        let changedRequestID = UUID()
+        let changedListID = UUID()
         let variants: [(String, CloudAcceptedEntity)] = [
             ("field", try changed(["text": .string("different server value")])),
             ("presence", missingDone),
-            ("immutable", try changed(["requestID": .string(UUID().uuidString.lowercased())])),
-            ("schema", try changed([:], version: 2)),
-            ("dependency", try changed(["listID": .string(UUID().uuidString.lowercased())])),
+            ("immutable", try changed(["requestID": .string(changedRequestID.uuidString.lowercased())])),
+            ("schema", historicalSchema),
+            ("dependency", try changed(["listID": .string(changedListID.uuidString.lowercased())])),
             ("system", systemChanged), ("shadow and unknown field", unknownChanged),
             ("unknown typed member", comparisonEntity(original, accepted: extraJSON, presence: original.presenceData))]
         XCTAssertEqual(try CloudFailedEnablePolicy.fields(missingDone, namespace: f.namespace.binding),
@@ -433,6 +449,46 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         XCTAssertEqual(try CloudFailedEnablePolicy.fields(unknownChanged, namespace: f.namespace.binding),
             try CloudFailedEnablePolicy.fields(original, namespace: f.namespace.binding))
         for (name, value) in variants {
+            let actual = try JSONDecoder().decode(CloudTypedSnipRecord.self, from: value.acceptedData)
+            let snapshot = try CloudKitRecordMapper.snapshot(actual.shadow.record())
+            switch name {
+            case "field":
+                XCTAssertEqual(actual.text, .value("different server value"))
+                XCTAssertNotEqual(actual.text, typed.text)
+            case "presence":
+                XCTAssertNil(snapshot.encryptedFields["isDone"])
+                XCTAssertEqual(actual.isDone, .missing)
+                XCTAssertNotEqual(actual.isDone, typed.isDone)
+            case "immutable":
+                XCTAssertEqual(actual.requestID, .value(changedRequestID))
+                XCTAssertNotEqual(actual.requestID, typed.requestID)
+            case "schema":
+                XCTAssertEqual(actual.schemaVersion, 2)
+                XCTAssertEqual(snapshot.schemaVersion, 2)
+                XCTAssertNotEqual(actual.schemaVersion, typed.schemaVersion)
+            case "dependency":
+                XCTAssertEqual(snapshot.encryptedFields["listID"], .string(changedListID.uuidString.lowercased()))
+                XCTAssertEqual(value.dependencyListID, changedListID)
+                XCTAssertNotEqual(value.dependencyListID, original.dependencyListID)
+                XCTAssertNotEqual(actual.placement, typed.placement)
+            case "system":
+                XCTAssertEqual(value.systemFields, Data("different local comparison token".utf8))
+                XCTAssertEqual(actual.shadow.systemFields, value.systemFields)
+                XCTAssertNotEqual(value.systemFields, original.systemFields)
+                XCTAssertEqual(actual.shadow.data, typed.shadow.data)
+            case "shadow and unknown field":
+                XCTAssertEqual(snapshot.encryptedFields["f5ComparisonFuture"], .string("different unknown"))
+                XCTAssertEqual(try CloudKitRecordMapper.snapshot(typed.shadow.record()).encryptedFields["f5ComparisonFuture"],
+                    .string("retained unknown"))
+            case "unknown typed member":
+                let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: value.acceptedData) as? [String: Any])
+                let originalObject = try XCTUnwrap(extraObject as? [String: Any])
+                XCTAssertNil(originalObject["futureTypedMember"])
+                XCTAssertEqual(object["futureTypedMember"] as? [String], ["first", "second"])
+                XCTAssertEqual(actual, typed)
+            default:
+                XCTFail("Missing input discriminant for \(name)")
+            }
             _ = try CloudFailedEnablePolicy.fields(value, namespace: f.namespace.binding)
             let rows = try policy.reviewDrafts(FailedEnableReviewRead(source: source,
                 candidate: comparisonCandidate(candidate, replacing: value), transition: transition, evidence: evidence))
@@ -443,6 +499,8 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         var precisionDigests: [String] = []
         for literal in ["9007199254740992.0", "9007199254740993.0"] {
             let json = Data(original.acceptedData.dropLast()) + Data(",\"futurePrecision\":\(literal)}".utf8)
+            XCTAssertTrue(String(decoding: json, as: UTF8.self).hasSuffix(",\"futurePrecision\":\(literal)}"))
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: json), typed)
             let value = comparisonEntity(original, accepted: json, presence: original.presenceData)
             let rows = try policy.reviewDrafts(FailedEnableReviewRead(source: source,
                 candidate: comparisonCandidate(candidate, replacing: value), transition: transition, evidence: evidence))
@@ -454,9 +512,16 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             schemaVersion: original.schemaVersion, acceptedData: original.acceptedData, presenceData: original.presenceData,
             shadowData: original.shadowData, systemFields: original.systemFields,
             dependencyListID: original.dependencyListID, isDeferred: false, localRevision: original.localRevision)
+        XCTAssertEqual(badIdentity.identity.zoneName, "other-zone")
+        XCTAssertNotEqual(badIdentity.identity, original.identity)
+        XCTAssertEqual(badIdentity.acceptedData, original.acceptedData)
         XCTAssertThrowsError(try policy.reviewDrafts(FailedEnableReviewRead(source: source,
             candidate: comparisonCandidate(candidate, replacing: badIdentity), transition: transition, evidence: evidence)))
         let duplicate = Data(("{\"storageVersion\":1," + String(decoding: ascending.acceptedData.dropFirst(), as: UTF8.self)).utf8)
+        XCTAssertEqual(String(decoding: ascending.acceptedData, as: UTF8.self)
+            .components(separatedBy: "\"storageVersion\":").count, 2)
+        XCTAssertEqual(String(decoding: duplicate, as: UTF8.self)
+            .components(separatedBy: "\"storageVersion\":").count, 3)
         let ambiguous = comparisonEntity(original, accepted: duplicate, presence: original.presenceData)
         XCTAssertThrowsError(try policy.reviewDrafts(FailedEnableReviewRead(source: source,
             candidate: comparisonCandidate(candidate, replacing: ambiguous), transition: transition, evidence: evidence)))
@@ -489,6 +554,9 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             base: postDraft.base)))
         let driftInput = try CloudFullBatchPlanner.acceptedInput(CloudFullRecordCodec.snip(from: driftSnapshot), snapshot: driftSnapshot)
         let driftEntity = CloudFailedEnablePolicy.entity(driftInput)
+        XCTAssertEqual(driftSnapshot.encryptedFields["f5ComparisonFuture"], .string("different unknown"))
+        XCTAssertEqual(try CloudKitRecordMapper.snapshot(postTyped.shadow.record()).encryptedFields["f5ComparisonFuture"],
+            .string("retained unknown"))
         XCTAssertEqual(try CloudFailedEnablePolicy.fields(driftEntity, namespace: f.namespace.binding),
             try CloudFailedEnablePolicy.fields(post, namespace: f.namespace.binding))
         let drifted = comparisonCandidate(after.0.1, replacing: driftEntity)
@@ -498,6 +566,10 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             originalObservation, "A later observation cannot replace the selected output's actual checkpoint")
         let reorderedPost = comparisonEntity(post, accepted: try comparisonJSON(post.acceptedData, descending: true),
             presence: try comparisonJSON(post.presenceData, descending: true))
+        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: reorderedPost.acceptedData), postTyped)
+        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: reorderedPost.presenceData), postTyped)
+        XCTAssertEqual(reorderedPost.shadowData, post.shadowData)
+        XCTAssertEqual(reorderedPost.systemFields, post.systemFields)
         XCTAssertNoThrow(try policy.validateExposure(capture: capture,
             candidate: comparisonCandidate(after.0.1, replacing: reorderedPost), evidence: completed, requiresAccepted: true))
         XCTAssertThrowsError(try policy.validateExposure(capture: capture, candidate: drifted,
