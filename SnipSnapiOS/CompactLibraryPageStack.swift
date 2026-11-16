@@ -57,9 +57,8 @@ struct CompactLibraryPageStack: View {
                 top: 0, leading: safeArea.safeAreaInsets.leading,
                 bottom: 0, trailing: safeArea.safeAreaInsets.trailing
             )
-            // Pages span the horizontal safe area so system bar items placed there, such as
-            // the closed iPhone Duo's toolbar column, stay inside the clip, and neighbor pages
-            // enter from the screen edge. Each page gets the insets back for its own layout.
+            // Pages span the screen edges, keeping side toolbars inside the clip and rows
+            // behind the bottom glass. Each page restores the insets for its native layout.
             GeometryReader { proxy in
                 ListPageMotionStage(
                     state: motionState, pages: model.pages, selectedPage: model.selectedPage,
@@ -68,7 +67,10 @@ struct CompactLibraryPageStack: View {
                     content: mountedPages.map { page in
                         MountedListPage(
                             id: page,
-                            content: libraryPage(page, isActivePage: page == model.selectedPage)
+                            content: libraryPage(
+                                page, isActivePage: page == model.selectedPage,
+                                bottomSafeArea: safeArea.safeAreaInsets.bottom
+                            )
                                 .safeAreaPadding(pageSafeArea)
                         )
                     },
@@ -97,7 +99,7 @@ struct CompactLibraryPageStack: View {
                     )
                 }
             }
-            .ignoresSafeArea(.container, edges: .horizontal)
+            .ignoresSafeArea(.container, edges: [.horizontal, .bottom])
         }
         .onChange(of: model.pages) { _, pages in
             visitedPages.formIntersection(pages)
@@ -105,66 +107,70 @@ struct CompactLibraryPageStack: View {
         }
     }
 
-    private func libraryPage(_ page: LibraryPage, isActivePage: Bool) -> some View {
+    private func libraryPage(_ page: LibraryPage, isActivePage: Bool, bottomSafeArea: CGFloat) -> some View {
         NavigationStack {
-            Group {
-                switch page {
-                case .clipboard:
-                    IOSClipboardView(
-                        model: clipboard,
-                        libraryModel: model,
-                        copyShare: copyShare,
-                        syncedContentSettings: libraryActions.syncedContentSettings,
-                        syncNow: libraryActions.syncNow,
-                        sheet: $sheet,
-                        settings: { sheet = .settings },
-                        isActivePage: isActivePage,
-                        viewState: clipboardViewState
-                    )
-                case .list(let listID):
-                    SnipCollectionView(
-                        model: model,
-                        clipboard: clipboard,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        layout: .compactStack,
-                        listID: listID,
-                        isActivePage: isActivePage,
-                        editMode: $editMode,
-                        cancelNewList: cancelNewList,
-                        blocksPageSwipe: swipeBlockedBinding(for: page),
-                        selectionDockFrameChanged: { interactionState.selectionDock = $0 },
-                        dismissComposerKeyboard: dismissComposerKeyboard,
-                        libraryActions: libraryActions
-                    )
+            GeometryReader { geometry in
+                Group {
+                    switch page {
+                    case .clipboard:
+                        IOSClipboardView(
+                            model: clipboard,
+                            libraryModel: model,
+                            copyShare: copyShare,
+                            syncedContentSettings: libraryActions.syncedContentSettings,
+                            syncNow: libraryActions.syncNow,
+                            sheet: $sheet,
+                            settings: { sheet = .settings },
+                            isActivePage: isActivePage,
+                            viewState: clipboardViewState
+                        )
+                    case .list(let listID):
+                        SnipCollectionView(
+                            model: model,
+                            clipboard: clipboard,
+                            copyShare: copyShare,
+                            sheet: $sheet,
+                            layout: .compactStack,
+                            listID: listID,
+                            isActivePage: isActivePage,
+                            editMode: $editMode,
+                            cancelNewList: cancelNewList,
+                            blocksPageSwipe: swipeBlockedBinding(for: page),
+                            selectionDockFrameChanged: { interactionState.selectionDock = $0 },
+                            dismissComposerKeyboard: dismissComposerKeyboard,
+                            libraryActions: libraryActions
+                        )
+                    }
                 }
-            }
-            #if DEBUG
-            .background {
-                if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_PAGE_LAYOUT"] == "1",
-                   case .list(let id) = page,
-                   let list = model.lists.first(where: { $0.id == id }) {
-                    PageLayoutUITestProbe(name: list.name)
-                        .frame(width: 1, height: 1)
-                        .opacity(0.01)
-                        .allowsHitTesting(false)
+                // NavigationStack resets ancestor bottom insets; preserve its own bar clearance.
+                .safeAreaPadding(.bottom, max(0, bottomSafeArea - geometry.safeAreaInsets.bottom))
+                #if DEBUG
+                .background {
+                    if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_PAGE_LAYOUT"] == "1",
+                       case .list(let id) = page,
+                       let list = model.lists.first(where: { $0.id == id }) {
+                        PageLayoutUITestProbe(name: list.name)
+                            .frame(width: 1, height: 1)
+                            .opacity(0.01)
+                            .allowsHitTesting(false)
+                    }
                 }
-            }
-            #endif
-            .libraryToast(
-                model: model,
-                isHidden: !isActivePage || !model.isSearchPresented || sheet != nil
-                    || model.newListMoveRequest != nil || model.errorDetails != nil,
-                usesFixedExpiry: true
-            )
-            .background {
-                if isActivePage && model.isSearchPresented {
-                    CompactLibrarySearchHost(model: model)
+                #endif
+                .libraryToast(
+                    model: model,
+                    isHidden: !isActivePage || !model.isSearchPresented || sheet != nil
+                        || model.newListMoveRequest != nil || model.errorDetails != nil,
+                    usesFixedExpiry: true
+                )
+                .background {
+                    if isActivePage && model.isSearchPresented {
+                        CompactLibrarySearchHost(model: model)
+                    }
                 }
-            }
-            .toolbar {
-                if isActivePage && model.isSearchPresented {
-                    DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                .toolbar {
+                    if isActivePage && model.isSearchPresented {
+                        DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                    }
                 }
             }
         }

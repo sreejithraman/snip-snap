@@ -798,6 +798,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let newest = collectionRow(named: "Fixture 23", in: app)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertGreaterThanOrEqual(
+            activeSnipViewport(in: app).frame.maxY, selector.frame.maxY,
+            "The list must extend behind the floating composer and list selector."
+        )
         XCTAssertTrue(hasVisibleTouchTarget(newest, within: activeSnipViewport(in: app), in: app))
         let edgeStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.70))
             .withOffset(CGVector(dx: 8, dy: 0))
