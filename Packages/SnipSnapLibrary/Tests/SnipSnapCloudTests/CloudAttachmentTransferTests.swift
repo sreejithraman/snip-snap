@@ -1041,7 +1041,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     XCTAssertEqual(failedMetadataSends.count, 1)
   }
 
-  func testCorruptMetadataSaveShadowQuarantinesOnlyThatPublication() async throws {
+  func testCorruptMetadataSaveShadowHoldsOnlyItsSnipsOrderAndQuarantinesOnlyThatPublication() async throws {
     let fixture = try await makePendingAttachmentFixture(names: ["bad", "good"])
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let initial = try await snapshot(fixture.library, fixture.namespace)
@@ -1063,28 +1063,132 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     let badReady = try XCTUnwrap(payloadAccepted.publications.first(where: {
       $0.metadata.attachmentID == bad.metadata.attachmentID
     }))
+    let corruptShadow = Data("not-a-cloud-record-shadow".utf8)
     try await fixture.library.commitCloudAttachmentTransitions(
       namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.metadataConflict(
         attachmentID: badReady.metadata.attachmentID,
         expectedRevision: badReady.revision,
-        shadowData: Data("not-a-cloud-record-shadow".utf8),
+        shadowData: corruptShadow,
         systemFields: Data()
       )]
     )
 
+    let otherSource = fixture.root.appendingPathComponent("other-snip.txt")
+    try Data("independent attachment".utf8).write(to: otherSource)
+    let added = try await fixture.library.perform(.add(content: "independent snip", origin: .quickEntry,
+      source: nil, listID: SnipList.inbox.id, attachmentURLs: [otherSource], requestID: UUID(),
+      now: Date(timeIntervalSince1970: 3)), sortedBy: .manual)
+    guard case .add(.added(let otherSnipID)) = added.outcome else {
+      return XCTFail("The independent snip must be saved.")
+    }
+    _ = try await fixture.store.pendingChanges()
+    let withOtherSnip = try await snapshot(fixture.library, fixture.namespace)
+    let other = try XCTUnwrap(withOtherSnip.publications.first { $0.metadata.snipID == otherSnipID })
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.payloadAccepted(attachmentID: other.metadata.attachmentID,
+        expectedRevision: other.revision, shadowData: Data("payload-shadow".utf8), systemFields: Data())]
+    )
+
     let pending = try await fixture.store.pendingChanges()
 
-    XCTAssertTrue(pending.operations.contains(where: {
+    XCTAssertFalse(pending.operations.contains(where: {
       $0.id == CloudAttachmentRecordCodec.recordID(good.metadataIdentity)
-    }))
+    }), "The invalid published member holds its snip's whole order, including the good sibling.")
     XCTAssertFalse(pending.operations.contains(where: {
       $0.id == CloudAttachmentRecordCodec.recordID(bad.metadataIdentity)
     }))
+    XCTAssertTrue(pending.operations.contains(where: { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.id == CloudAttachmentRecordCodec.recordID(other.metadataIdentity)
+        && draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
+    }), "An independent snip's metadata must still publish.")
     let after = try await snapshot(fixture.library, fixture.namespace)
-    XCTAssertEqual(after.publications.first(where: {
+    let quarantined = try XCTUnwrap(after.publications.first {
       $0.metadata.attachmentID == bad.metadata.attachmentID
-    })?.lastFailure, .invalidRecord)
+    })
+    XCTAssertEqual(quarantined.lastFailure, .invalidRecord)
+    XCTAssertEqual(quarantined.metadataShadowData, corruptShadow, "Keep the exact invalid evidence.")
+    let heldGood = try XCTUnwrap(after.publications.first { $0.metadata.attachmentID == good.metadata.attachmentID })
+    XCTAssertNil(heldGood.lastFailure, "Waiting for completeness must not quarantine a healthy sibling.")
+    XCTAssertFalse(heldGood.metadataAccepted)
+    XCTAssertNil(after.publications.first { $0.metadata.attachmentID == other.metadata.attachmentID }?.lastFailure)
+  }
+
+  func testSubmittedAttachmentFailureKeepsItsOwnerWhenOrderCompletenessChanges() async throws {
+    let clients = try await makeAttachmentEditClients()
+    defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+    let client = clients.holder
+    try await keepAttachments(AttachmentMatrixMember.localOrder.map(\.id),
+      ofSnip: client.snipID, in: client.library)
+    let outbound = try await client.store.pendingChanges()
+    let before = try await snapshot(client.library, client.namespace)
+    let a = try XCTUnwrap(before.publications.first { $0.metadata.attachmentID == AttachmentMatrixMember.a.id })
+    let b = try XCTUnwrap(before.publications.first { $0.metadata.attachmentID == AttachmentMatrixMember.b.id })
+    let bID = CloudAttachmentRecordCodec.recordID(b.metadataIdentity)
+    XCTAssertTrue(outbound.operations.contains { $0.id == bID })
+    try await client.library.commitCloudAttachmentTransitions(namespaceKey: client.namespace.namespaceKey,
+      transitions: [.operationFailed(attachmentID: a.metadata.attachmentID,
+        expectedRevision: a.revision, failure: .accessDenied)])
+    let blockedPlan = try await client.store.pendingChanges()
+    XCTAssertFalse(blockedPlan.operations.contains { $0.id == bID }, "Completeness now blocks the submitted save.")
+    let sent = CloudSentBatch(id: UUID(), items: try outbound.operations.map { operation in
+      if operation.id == bID { return .failed(bID, .rejected) }
+      guard case .save(let draft) = operation else { return .deleted(operation.id) }
+      return .saved(try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(for: draft)))
+    }, engineState: nil)
+
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    try await client.store.applyStaged(sent.id)
+
+    let after = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(after.publications.first { $0.metadata.attachmentID == b.metadata.attachmentID }?.lastFailure,
+      .rejected, "The actual submitted attachment must retain its own terminal result.")
+    let recovery = try await client.library.cloudFullRecoveryEvents(namespaceKey: client.namespace.namespaceKey)
+    XCTAssertFalse(recovery.contains { $0.kind == .terminalSend }, "An attachment result must not become a core failure.")
+    let evidence = try await client.store.enrollmentEvidence()
+    XCTAssertFalse(evidence.needsAttention)
+  }
+
+  func testAnAttachmentSnapshotWithAnotherAttachmentIDCannotChangeTheSubmittedPublication() async throws {
+    for sendsConflict in [false, true] {
+      let clients = try await makeAttachmentEditClients()
+      defer { try? FileManager.default.removeItem(at: clients.holder.root) }
+      let client = clients.holder
+      try await renameAttachment(ofSnip: client.snipID, attachmentID: AttachmentMatrixMember.b.id,
+        to: "pending B.txt", in: client.library)
+      let outbound = try await client.store.pendingChanges()
+      let before = try await snapshot(client.library, client.namespace)
+      let b = try XCTUnwrap(before.publications.first { $0.metadata.attachmentID == AttachmentMatrixMember.b.id })
+      let bID = CloudAttachmentRecordCodec.recordID(b.metadataIdentity)
+      let wrongAttachmentID = UUID()
+      let sent = CloudSentBatch(id: UUID(), items: try outbound.operations.map { operation in
+        guard case .save(let draft) = operation else { return .deleted(operation.id) }
+        var record = try CloudKitRecordMapper.record(for: draft)
+        if draft.id == bID {
+          var fields = draft.encryptedFields
+          fields["attachmentID"] = .string(wrongAttachmentID.uuidString.lowercased())
+          record = try CloudKitRecordMapper.record(for: CloudRecordDraft(id: draft.id,
+            recordType: draft.recordType, schemaVersion: draft.schemaVersion,
+            routingFields: draft.routingFields, encryptedFields: fields, base: draft.base))
+        }
+        let snapshot = try CloudKitRecordMapper.snapshot(record)
+        return sendsConflict && draft.id == bID ? .conflict(bID, server: snapshot) : .saved(snapshot)
+      }, engineState: nil)
+
+      try await client.store.stage(.sent(sent), outbound: outbound)
+      try await client.store.applyStaged(sent.id)
+
+      let after = try await snapshot(client.library, client.namespace)
+      let rejected = try XCTUnwrap(after.publications.first { $0.metadata.attachmentID == b.metadata.attachmentID })
+      XCTAssertEqual(rejected.metadata, b.metadata)
+      XCTAssertEqual(rejected.metadataShadowData, b.metadataShadowData)
+      XCTAssertEqual(rejected.lastFailure, .invalidRecord)
+      XCTAssertFalse(after.publications.contains { $0.metadata.attachmentID == wrongAttachmentID })
+      let recovery = try await client.library.cloudFullRecoveryEvents(namespaceKey: client.namespace.namespaceKey)
+      XCTAssertFalse(recovery.contains { $0.kind == .terminalSend })
+    }
   }
 
   func testCorruptMetadataDeleteShadowQuarantinesOnlyThatPublication() async throws {

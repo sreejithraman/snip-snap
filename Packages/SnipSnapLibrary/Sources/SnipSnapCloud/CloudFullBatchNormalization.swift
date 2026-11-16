@@ -56,12 +56,11 @@ extension CloudFullBatchPlanner {
   ) throws -> NormalizedBatch {
     let operations = try CloudFullSyncPersistence.uniqueOperations(outbound.operations)
     let attachmentOperationIDs: Set<CloudRecordID> = if let payloadZone {
-      Set(operations.keys).intersection(
-        CloudFullSyncPersistence.plannedAttachmentOperationIDs(
-          attachmentStorage,
-          dataZone: dataZone,
-          payloadZone: payloadZone
-        )
+      CloudFullSyncPersistence.submittedAttachmentOperationIDs(
+        attachmentStorage,
+        submittedOperations: outbound.operations,
+        dataZone: dataZone,
+        payloadZone: payloadZone
       )
     } else {
       []
@@ -119,15 +118,16 @@ extension CloudFullBatchPlanner {
       guard case .save(let draft) = operation else {
         throw CloudTransportError.invalidRecord
       }
-      guard value.recordType == draft.recordType else {
-        return .failed(value.id, .invalidRecord)
+      guard matchesSubmittedRecord(value, draft: draft) else {
+        return .failed(draft.id, .invalidRecord)
       }
       return .saved(value)
     case .deleted(let id):
       guard case .delete = operation else { throw CloudTransportError.invalidRecord }
       return .deleted(id)
     case .conflict(let id, let value):
-      if case .save(let draft) = operation, value.recordType != draft.recordType {
+      guard value.id == id else { return .failed(id, .invalidRecord) }
+      if case .save(let draft) = operation, !matchesSubmittedRecord(value, draft: draft) {
         return .failed(id, .invalidRecord)
       }
       return .conflict(value)
@@ -142,6 +142,13 @@ extension CloudFullBatchPlanner {
     case .failed(let id, let failure):
       return .failed(id, failure)
     }
+  }
+
+  private static func matchesSubmittedRecord(_ value: CloudRecordSnapshot, draft: CloudRecordDraft) -> Bool {
+    guard value.id == draft.id, value.recordType == draft.recordType else { return false }
+    guard draft.recordType == CloudAttachmentRecordCodec.metadataRecordType else { return true }
+    return draft.encryptedFields["attachmentID"] != nil
+      && value.encryptedFields["attachmentID"] == draft.encryptedFields["attachmentID"]
   }
 
   static func fetchRecoveryKind(

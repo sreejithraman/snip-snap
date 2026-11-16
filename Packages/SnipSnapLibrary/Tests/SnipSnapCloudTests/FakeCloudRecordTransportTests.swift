@@ -545,7 +545,7 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         XCTAssertEqual(current.encryptedFields["position"], .int64(2))
         let b = await fixture.server.fullSnapshot(for: fixture.b)
         XCTAssertEqual(b?.shadow, fixture.shadows[fixture.b], "iCloud must apply no member of a failed group.")
-        guard case .batch(let pending)? = await fixture.transport.pendingEvent() else {
+        guard case .batch(let pending)? = await queuedTransportEvent(fixture.transport) else {
             return XCTFail("The send must commit through its reported records.")
         }
         XCTAssertEqual(pending.batch.id, sent.id)
@@ -553,7 +553,7 @@ final class FakeCloudRecordTransportTests: XCTestCase {
         let events = await fixture.transport.events()
         XCTAssertTrue(events.contains(.sentAtomic(fixture.snipID, [fixture.a, fixture.b])))
         try await fixture.transport.confirmApplied(sent.id)
-        let afterConfirm = await fixture.transport.pendingEvent()
+        let afterConfirm = await queuedTransportEvent(fixture.transport)
         XCTAssertNil(afterConfirm)
     }
 
@@ -586,13 +586,23 @@ final class FakeCloudRecordTransportTests: XCTestCase {
             .save(fixture.draft(fixture.b, position: 0)),
         ])
 
+        let aBefore = await fixture.server.fullSnapshot(for: fixture.a)
+        let bBefore = await fixture.server.fullSnapshot(for: fixture.b)
         let sent = try await fixture.transport.send(reorder)
 
         XCTAssertEqual(sent.items.map(\.id), [fixture.a], "The other stale member fails with its batch.")
-        guard case .batch(let pending)? = await fixture.transport.pendingEvent() else {
+        guard case .batch(let pending)? = await queuedTransportEvent(fixture.transport) else {
             return XCTFail("The send must commit through its reported records.")
         }
+        XCTAssertEqual(pending.batch.id, sent.id)
         XCTAssertEqual(pending.outbound?.operations.map(\.id), [fixture.a])
+        let aAfter = await fixture.server.fullSnapshot(for: fixture.a)
+        let bAfter = await fixture.server.fullSnapshot(for: fixture.b)
+        XCTAssertEqual(aAfter, aBefore, "The failed atomic group must write no member.")
+        XCTAssertEqual(bAfter, bBefore)
+        try await fixture.transport.confirmApplied(sent.id)
+        let afterConfirm = await queuedTransportEvent(fixture.transport)
+        XCTAssertNil(afterConfirm)
     }
 
     func testAnOrderWriteNeitherFailsNorIsFailedByUnrelatedRecordsInTheSameSend() async throws {
@@ -616,7 +626,7 @@ final class FakeCloudRecordTransportTests: XCTestCase {
               case .saved(let savedB) = first.items[2] else {
             return XCTFail("Only the stale text record may fail. Got \(first.items).")
         }
-        let noPendingEvent = await fixture.transport.pendingEvent()
+        let noPendingEvent = await queuedTransportEvent(fixture.transport)
         XCTAssertNil(noPendingEvent, "A send that reported every record commits directly.")
         try await fixture.transport.confirmApplied(first.id)
         let failing = CloudOutboundBatch(operations: [
@@ -649,6 +659,12 @@ final class FakeCloudRecordTransportTests: XCTestCase {
             .save(fixture.draft(fixture.b, position: 0)),
         ]), [fixture.snipID: [fixture.a, fixture.b]], "Every metadata save of a reordered snip joins its write.")
     }
+}
+
+// Use the same existential dispatch as the coordinator, rather than the concrete actor's
+// synchronous overload competing with the protocol's async default.
+private func queuedTransportEvent(_ transport: any CloudRecordTransport) async -> CloudRecordTransportEvent? {
+    await transport.pendingEvent()
 }
 
 /// One snip with attachment metadata records A0 and B1, published on a fake server.

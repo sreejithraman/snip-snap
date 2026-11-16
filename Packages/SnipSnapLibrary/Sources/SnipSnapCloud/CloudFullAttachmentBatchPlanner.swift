@@ -10,6 +10,7 @@ struct CloudFullAttachmentBatchPlanner {
 
   private let dataZone: CloudZoneID
   private let payloadZone: CloudZoneID?
+  private let attachmentOperationIDs: Set<CloudRecordID>
   private let outboundOperations: [CloudRecordID: CloudOutboundOperation]
   private let sentItemResults: [CloudRecordID: CloudSendItemResult]
   private let publicationByMetadataIdentity: [CloudTextStorageIdentity: CloudAttachmentPublication]
@@ -19,13 +20,14 @@ struct CloudFullAttachmentBatchPlanner {
   init(
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID?,
-    attachmentOperationIDs _: Set<CloudRecordID>,
+    attachmentOperationIDs: Set<CloudRecordID>,
     outboundOperations: [CloudRecordID: CloudOutboundOperation],
     sentItemResults: [CloudRecordID: CloudSendItemResult],
     storage: CloudAttachmentStorageSnapshot
   ) {
     self.dataZone = dataZone
     self.payloadZone = payloadZone
+    self.attachmentOperationIDs = attachmentOperationIDs
     self.outboundOperations = outboundOperations
     self.sentItemResults = sentItemResults
     publicationByMetadataIdentity = Dictionary(
@@ -43,6 +45,9 @@ struct CloudFullAttachmentBatchPlanner {
   }
 
   func reduce(_ result: CloudFetchItemResult) throws -> Result {
+    if let id = result.id, outboundOperations[id] != nil, !attachmentOperationIDs.contains(id) {
+      return .unhandled
+    }
     switch result {
     case .record(let snapshot):
       return try reduceRecord(snapshot)

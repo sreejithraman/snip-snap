@@ -467,16 +467,42 @@ extension CloudFullSyncPersistence {
     return (saves + companions).filter { !waitingSnipIDs.contains($0.snipID) }.map { $0.draft }
   }
 
-  /// Every publication's metadata record counts too: whether an order write went out depends on
-  /// its snip's other members, which may have changed since the send was planned.
-  static func plannedAttachmentOperationIDs(
+  /// Completeness can change after submission, so metadata candidates include every publication.
+  /// The submitted operation's type and identity decide ownership, even when the current plan waits.
+  static func submittedAttachmentOperationIDs(
     _ snapshot: CloudAttachmentStorageSnapshot,
+    submittedOperations: [CloudOutboundOperation],
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID
   ) -> Set<CloudRecordID> {
-    Set(attachmentOperations(snapshot, dataZone: dataZone, payloadZone: payloadZone)
+    let candidates = Set(attachmentOperations(snapshot, dataZone: dataZone, payloadZone: payloadZone)
       .operations.map(\.id))
       .union(snapshot.publications.map { CloudAttachmentRecordCodec.recordID($0.metadataIdentity) })
+    let metadataAttachmentIDs = Dictionary(snapshot.publications.compactMap { publication -> (CloudRecordID, UUID)? in
+      let id = CloudAttachmentRecordCodec.recordID(publication.metadataIdentity)
+      let attachmentID = publication.metadata.attachmentID
+      guard id.zone == dataZone, id.name == "a-\(attachmentID.uuidString.lowercased())" else { return nil }
+      return (id, attachmentID)
+    }, uniquingKeysWith: { first, _ in first })
+    return Set(submittedOperations.compactMap { operation in
+      guard candidates.contains(operation.id) else { return nil }
+      switch operation {
+      case .save(let draft):
+        switch draft.recordType {
+        case CloudAttachmentRecordCodec.metadataRecordType:
+          guard let attachmentID = metadataAttachmentIDs[draft.id],
+            draft.encryptedFields["attachmentID"] == .string(attachmentID.uuidString.lowercased())
+          else { return nil }
+        case CloudAttachmentRecordCodec.payloadRecordType:
+          guard draft.id.zone == payloadZone else { return nil }
+        default:
+          return nil
+        }
+      case .delete(let id, _):
+        guard metadataAttachmentIDs[id] != nil || id.zone == payloadZone else { return nil }
+      }
+      return operation.id
+    })
   }
 
   private static func isTerminalAttachmentFailure(
