@@ -71,6 +71,7 @@ extension SwiftDataSyncModePersistence {
   /// Whether no writer holds the active store. Retries a failed release first, so a
   /// transient storage failure does not keep refusing writes and mode changes.
   func writeAdmissionIsIdle() -> Bool {
+    guard failedEnablePublicationInFlight == nil else { return false }
     if case .releaseFailed = writeAdmission.phase { try? clearReservation() }
     if case .idle = writeAdmission.phase { return true }
     return false
@@ -161,6 +162,7 @@ extension SwiftDataSyncModePersistence {
       storeID: activeID,
       reservedRevision: revision
     )
+    beginFailedEnableSourceWrite(storeID: activeID, reservedRevision: revision)
     var next = manifest
     next.stores[index].revision = revision
     next.writeReservation = reservation
@@ -285,6 +287,15 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
+  package func importInitialLocalSource(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID
+  ) async throws -> SnipLibraryTransferResult {
+    try await managedWrite { library in
+      try await library.mergeTransferSnapshot(source, transitionID: transitionID)
+    }
+  }
+
   fileprivate func managedResolveRecovery(
     _ id: UUID,
     in scope: SnipRecoveryScope,
@@ -300,6 +311,8 @@ extension SwiftDataSyncModePersistence {
     _ operation: @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
     await finishRecoveryQuarantines()
+    await reconcileFailedEnableOnOpen()
+    await checkFailedEnableSourceBeforeWrite()
     let reservation = try await reserveMutation(
       storeID: manifest.activeStoreID, request: .libraryWrite)
     defer { abandonWriteAdmission(ifHeldBy: reservation) }
@@ -309,6 +322,7 @@ extension SwiftDataSyncModePersistence {
       let value = try await operation(libraryForTransition(storeID: reservation.storeID))
       try await writeHook(.beforeReservationCleared)
       try finishActiveMutation(reservation)
+      await completeFailedEnableSourceWrite(storeID: reservation.storeID)
       return value
     } catch {
       try? finishActiveMutation(reservation)
@@ -338,6 +352,8 @@ extension SwiftDataSyncModePersistence {
   fileprivate func managedApplyImport(
     _ preview: SnipImportPreview
   ) async throws -> SnipImportResult {
+    await reconcileFailedEnableOnOpen()
+    await checkFailedEnableSourceBeforeWrite()
     guard writeAdmissionIsIdle(), manifest.transition == nil
     else { throw blockedContentWrite(reason: currentWriteBlockReason) }
     let reservation = try reserveRevision(for: .libraryWrite)
@@ -348,6 +364,7 @@ extension SwiftDataSyncModePersistence {
         .applyImport(preview)
       try await writeHook(.beforeReservationCleared)
       try finishActiveMutation(reservation)
+      await completeFailedEnableSourceWrite(storeID: reservation.storeID)
       return result
     } catch {
       try? finishActiveMutation(reservation)

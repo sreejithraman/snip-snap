@@ -39,6 +39,9 @@ extension SwiftDataSyncModePersistence {
       source.revision == token.revision,
       let candidateStore = store(id: transition.candidateStoreID)
     else { throw SyncModePersistenceError.invalidFreezeToken }
+    if transition.targetKind == .iCloudSync, transition.syncProtocol == .fullRecordV1 {
+      return try await prepareFailedEnableMerge(using: token)
+    }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let candidateBefore = try await candidate.transferSnapshot(revision: candidateStore.revision)
     let acceptedTextBySnipID: [UUID: String]
@@ -103,7 +106,7 @@ extension SwiftDataSyncModePersistence {
     )
   }
 
-  package func mergeFullReenableSnapshot(
+  func mergeFullReenableSnapshot(
     _ source: SnipLibraryTransferSnapshot,
     using token: SyncModeFreezeToken,
     plan: CloudFullReenableApplyPlan
@@ -115,6 +118,7 @@ extension SwiftDataSyncModePersistence {
       plan.targetRevision == store(id: transition.candidateStoreID)?.revision,
       try plan.hasValidDigest()
     else { throw SyncModePersistenceError.invalidFreezeToken }
+    try requireFailedEnablePreparedPlan(plan, token: token)
     guard fullReenableMergeInFlight != transition.id else {
       throw SyncModePersistenceError.transitionInProgress
     }
@@ -192,6 +196,18 @@ extension SwiftDataSyncModePersistence {
     fullReenableMergeInFlight = transition.id
     defer { if fullReenableMergeInFlight == transition.id { fullReenableMergeInFlight = nil } }
     var intent = initialIntent
+    // A pre-upgrade intent cannot certify a missing historical source capture. Keep its
+    // candidate for review and release the source through the existing intent rollback.
+    guard let token = transition.freezeToken,
+      let evidence = try? failedEnableFiles.read(transition.sourceStoreID),
+      evidence.namespaces.flatMap(\.captures).contains(where: {
+        $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+          && $0.freeze.id == FailedEnableEncoding.uuid(token.id)
+      })
+    else {
+      try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
+      return
+    }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let proof = CloudFullReenableCommitProof(
       namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),
@@ -281,6 +297,16 @@ extension SwiftDataSyncModePersistence {
   }
 
   private func advanceFullReenableIntent(_ intent: SyncModeMergeIntent) throws {
+    if let transition = manifest.transition {
+      do {
+        try markFailedEnableApplied(transition: transition, planDigest: intent.planDigest)
+      } catch {
+        // The candidate receipt and published source capture survive. Evidence bookkeeping
+        // must withhold setup progress without adding a persistent source-content freeze.
+        try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
+        throw error
+      }
+    }
     var next = manifest
     try next.updateTransition { try $0.finishMerge(intent) }
     try commit(next)

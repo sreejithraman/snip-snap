@@ -202,9 +202,32 @@ extension CloudFullSyncPersistence {
     transitionID: UUID,
     targetRevision: UInt64
   ) async throws -> CloudFullReenableApplyPlan? {
+    let bundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
+    let allowedZones = Set(namespace.zones.map { "\($0.ownerName)|\($0.name)" })
+    guard bundle.entries.contains(where: { entry in
+      guard entry.namespaceKey == namespaceKey.rawValue,
+        allowedZones.contains("\(entry.identity.ownerName)|\(entry.identity.zoneName)"),
+        let input = try? JSONDecoder().decode(CloudAcceptedEntityInput.self, from: entry.payload)
+      else { return false }
+      return input.reference == entry.reference && input.identity == entry.identity
+    }) else { return nil }
+    let target = try await library.transferSnapshot(revision: targetRevision)
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    return try Self.failedEnableApplyPlan(source: source, target: target, stored: stored,
+      namespace: namespace, transitionID: transitionID, operationalBases: [:])
+  }
+
+  static func failedEnableApplyPlan(
+    source: SnipLibraryTransferSnapshot,
+    target: SnipLibraryTransferSnapshot,
+    stored: CloudFullStorageSnapshot,
+    namespace: CloudSyncNamespace,
+    transitionID: UUID,
+    operationalBases: [CloudEntityReference: FailedEnableFields]
+  ) throws -> CloudFullReenableApplyPlan {
+    let namespaceKey = namespace.binding.namespaceKey
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
     let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey.rawValue }
-    guard !exactEntries.isEmpty else { return nil }
     let allowedZones = Set(namespace.zones.map { "\($0.ownerName)|\($0.name)" })
     var bases: [CloudEntityReference: CloudAcceptedEntity] = [:]
     for entry in exactEntries {
@@ -215,10 +238,6 @@ extension CloudFullSyncPersistence {
       else { continue }
       bases[entry.reference] = Self.materializedEntity(input)
     }
-    guard !bases.isEmpty else { return nil }
-
-    let target = try await library.transferSnapshot(revision: targetRevision)
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard stored.deferredEntities.isEmpty else {
       throw CloudFullReenableError.deferredDependencies
     }
@@ -238,9 +257,10 @@ extension CloudFullSyncPersistence {
     for index in adjustedLists.indices.reversed() {
       let local = adjustedLists[index]
       let reference = CloudEntityReference(kind: .list, domainID: local.id)
-      guard let base = bases[reference] else { continue }
+      guard let base = operationalBases[reference] != nil
+        ? (accepted[reference] ?? bases[reference]) : bases[reference] else { continue }
       guard let server = accepted[reference], server.identity == base.identity else {
-        let baseFields = try Self.listFields(Self.listRecord(base))
+        let baseFields = try CloudFailedEnablePolicy.listBase(operationalBases[reference], fallback: base)
         let localFields = Self.listFields(local, updatedAt: baseFields.updatedAt)
         if !Self.sameListFields(baseFields, localFields) {
           recoveryInputs.append(try Self.modeRecovery(
@@ -259,7 +279,7 @@ extension CloudFullSyncPersistence {
         deletedLists.insert(local.id)
         continue
       }
-      let baseFields = try Self.listFields(Self.listRecord(base))
+      let baseFields = try CloudFailedEnablePolicy.listBase(operationalBases[reference], fallback: base)
       let serverFields = try Self.listFields(Self.listRecord(server))
       let result = try CloudThreeWayMerge.list(
         base: baseFields,
@@ -300,9 +320,10 @@ extension CloudFullSyncPersistence {
           payload: ICloudSyncRecoveryPayload(sourceID: local.id, deletedListID: deletedListID)
         ))
       }
-      guard let base = bases[reference] else { continue }
+      guard let base = operationalBases[reference] != nil
+        ? (accepted[reference] ?? bases[reference]) : bases[reference] else { continue }
       guard let server = accepted[reference], server.identity == base.identity else {
-        let baseFields = try Self.snipFields(Self.snipRecord(base))
+        let baseFields = try CloudFailedEnablePolicy.snipBase(operationalBases[reference], fallback: base)
         let localFields = Self.snipFields(local, accepted: try Self.snipRecord(base))
         if Self.sameSnipFields(baseFields, localFields), local.attachments.isEmpty {
           adjustedSnips.remove(at: index)
@@ -326,7 +347,7 @@ extension CloudFullSyncPersistence {
       }
       let baseRecord = try Self.snipRecord(base)
       let result = try CloudThreeWayMerge.snip(
-        base: try Self.snipFields(baseRecord),
+        base: try CloudFailedEnablePolicy.snipBase(operationalBases[reference], fallback: base),
         local: Self.snipFields(local, accepted: baseRecord),
         server: try Self.snipFields(Self.snipRecord(server))
       )

@@ -255,6 +255,11 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+  var failedEnableSemantics: (any FailedEnableSemantics)?
+  var failedEnablePublicationInFlight: UUID?
+  let failedEnableOwnerNonce = UUID()
+  var failedEnableUncertainSources: Set<UUID> = []
+  var failedEnableReopenManifest: Manifest?
 
   /// Reconciles of an account-isolation choice take turns, so a background status never runs a
   /// second Keep merge.
@@ -301,6 +306,7 @@ package actor SwiftDataSyncModePersistence {
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
         var loaded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
+        let original = loaded
         try Self.recover(
           &loaded,
           rootURL: rootURL,
@@ -308,6 +314,7 @@ package actor SwiftDataSyncModePersistence {
         )
         try Self.validate(loaded)
         manifest = loaded
+        failedEnableReopenManifest = original
         try Self.write(loaded, to: manifestURL, using: manifestWriter)
       } catch {
         throw SyncModePersistenceError.invalidManifest
@@ -367,6 +374,7 @@ package actor SwiftDataSyncModePersistence {
 
   /// The only library later app assembly should retain.
   package func libraryForTransition(storeID: UUID) throws -> SwiftDataSnipLibrary {
+    guard failedEnablePublicationInFlight == nil else { throw SyncModePersistenceError.transitionInProgress }
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
@@ -527,7 +535,27 @@ package actor SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func swapPointer() throws {
+  package func swapPointer() async throws {
+    guard let capture = try requireFailedEnableCapture(),
+      let transition = manifest.transition, let policy = failedEnableSemantics else {
+      try swapPointerAfterEvidenceCheck()
+      return
+    }
+    try await withFailedEnableRead(transition: transition) { source, candidate in
+      let evidence = try self.failedEnableFiles.read(transition.sourceStoreID)
+      guard try self.failedEnableContinuityMatches(evidence, source: source,
+        sourceID: transition.sourceStoreID) else { throw FailedEnableEvidenceError.reviewRequired }
+      try policy.validateExposure(capture: capture, candidate: candidate)
+      // This synchronous pointer commit stays inside both store locks. No actor suspension
+      // separates its final source/candidate checks from publication.
+      self.failedEnablePublicationInFlight = nil
+      defer { self.failedEnablePublicationInFlight = transition.id }
+      try self.swapPointerAfterEvidenceCheck()
+    }
+  }
+
+  private func swapPointerAfterEvidenceCheck() throws {
+    try requireFailedEnableSwapEvidence()
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,
@@ -582,7 +610,8 @@ package actor SwiftDataSyncModePersistence {
       manifest.accountIsolation?.replacementStoreID,
     ].compactMap { $0 })
     for value in manifest.stores
-      .filter({ [.retired, .deleting].contains($0.lifecycle) && !protected.contains($0.id) })
+      .filter({ [.retired, .deleting].contains($0.lifecycle) && !protected.contains($0.id)
+        && !failedEnableMustRetainStore($0) })
       .prefix(limit)
     {
       if value.lifecycle == .retired {
@@ -855,6 +884,7 @@ package actor SwiftDataSyncModePersistence {
   }
 
   func removeStoreFiles(_ store: SyncModeStore) throws {
+    guard !failedEnableMustRetainStore(store) else { throw FailedEnableEvidenceError.reviewRequired }
     if let cacheRoot = Self.cacheRootURL(base: attachmentCacheRootURL, storeID: store.id),
       FileManager.default.fileExists(atPath: cacheRoot.path)
     {
@@ -867,13 +897,29 @@ package actor SwiftDataSyncModePersistence {
   }
 
   func commit(_ next: Manifest) throws {
+    guard failedEnablePublicationInFlight == nil else { throw SyncModePersistenceError.transitionInProgress }
     try Self.validate(next)
+    beginFailedEnableManifestWrite(next)
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)
     } catch {
+      // A writer can report failure after rename. Follow the durable pointer before recovery
+      // considers restoring the old source; an error never licenses overwriting an adoption.
+      if let published = try? JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL)),
+        published == next, (try? Self.validate(published)) != nil
+      {
+        manifest = published
+        if (try? DurableFile.syncFile(manifestURL)) != nil,
+          (try? DurableFile.syncDirectory(rootURL)) != nil {
+          completeFailedEnableManifestWrite()
+        } else {
+          failedEnableUncertainSources.formUnion(failedEnableSourceIDs())
+        }
+      }
       throw SyncModePersistenceError.storageFailure
     }
     manifest = next
+    completeFailedEnableManifestWrite()
   }
 
   private static func newStore(

@@ -632,9 +632,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let marker = rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
     guard !FileManager.default.fileExists(atPath: marker.path) else { return value }
     let snapshot = try await sourceLibrary.transferSnapshot(revision: 0)
-    let active = try await value.snapshot().activeStore
-    let target = try await value.libraryForTransition(storeID: active.id)
-    _ = try await target.mergeTransferSnapshot(snapshot, transitionID: Self.importID)
+    _ = try await value.importInitialLocalSource(snapshot, transitionID: Self.importID)
     try DurableFile.write(Data("1".utf8), to: marker)
     return value
   }

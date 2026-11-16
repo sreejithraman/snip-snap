@@ -10,13 +10,17 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func recordFirstSendStarted() throws {
+    _ = try requireFailedEnableCapture()
     try crashHook(.afterFirstSendStarted)
     var next = manifest
     try next.updateTransition { try $0.startFirstSend() }
     try commit(next)
   }
 
-  package func recordSendAttempt(_ attempt: SyncModeSendAttempt) throws {
+  package func recordSendAttempt(_ attempt: SyncModeSendAttempt) async throws {
+    let transition = manifest.transition
+    try await armFailedEnableCapture()
+    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
     var next = manifest
     try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
     try crashHook(.beforeSendAttemptManifest)
@@ -45,7 +49,7 @@ extension SwiftDataSyncModePersistence {
       [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase)
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
+    try await recoverFailedEnableEvidence()
     try crashHook(.afterRetryBasePromotion)
     let settledState = try await settledSeedState(
       transition: transition,
@@ -63,60 +67,11 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  private func promoteAcceptedFullRetryBases(
-    transition: SyncModeTransition,
-    candidate: SwiftDataSnipLibrary
-  ) async throws {
-    guard transition.syncProtocol == .fullRecordV1,
-      let attempt = transition.sendAttempt,
-      let namespace = transition.namespace,
-      attempt.namespace == namespace
-    else { return }
-    let namespaceKey = namespace.namespaceKey
-    let stored = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let accepted = Dictionary(uniqueKeysWithValues:
-      (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
-    )
-    let source = try libraryForTransition(storeID: transition.sourceStoreID)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    var bases: [CloudDormantBase] = []
-    for operation in attempt.operations where operation.kind == .save {
-      guard let reference = operation.reference,
-        let entity = accepted[reference],
-        entity.identity == operation.recordIdentity
-      else { continue }
-      let payload = try encoder.encode(CloudAcceptedEntityInput(
-        reference: entity.reference,
-        identity: entity.identity,
-        schemaVersion: entity.schemaVersion,
-        acceptedData: entity.acceptedData,
-        presenceData: entity.presenceData,
-        shadowData: entity.shadowData,
-        systemFields: entity.systemFields,
-        dependencyListID: entity.dependencyListID
-      ))
-      bases.append(CloudDormantBase(
-        namespaceKey: namespaceKey.rawValue,
-        reference: entity.reference,
-        identity: entity.identity,
-        payload: payload
-      ))
-    }
-    let crashHook = self.crashHook
-    try await source.storeDormantCloudBases(
-      namespaceKey: namespaceKey,
-      bases: bases,
-      afterStagingFirst: {
-        try crashHook(.duringRetryBasePromotionStaging)
-      }
-    )
-  }
-
   package func prepareRetryFetch(settlement: SyncModeSeedSettlementProof) async throws {
     guard let transition = manifest.transition, transition.phase == .candidateReady else {
       return
     }
+    try await recoverFailedEnableEvidence()
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     if transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace {
       // A new merge may have a different plan. Only pending merge intents need
@@ -127,7 +82,6 @@ extension SwiftDataSyncModePersistence {
       )
     }
     guard transition.awaitsAcceptedServerCapture else { return }
-    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,

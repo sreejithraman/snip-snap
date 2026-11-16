@@ -451,7 +451,7 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  package func storeDormantCloudBases(
+  func storeDormantCloudBases(
     namespaceKey: CloudSyncNamespaceKey,
     bases: [CloudDormantBase],
     afterStagingFirst: @Sendable () throws -> Void = {}

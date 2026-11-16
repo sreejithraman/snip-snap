@@ -435,6 +435,9 @@ package actor ICloudSyncModeCoordinator {
     package func enableOrRetry() async throws -> ICloudSyncModeStatus {
         try begin(.enable)
         defer { end() }
+        await persistence.installFailedEnableSemantics(
+            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone)
+        )
         let initial = try await persistence.snapshot()
         if initial.activeStore.kind == .iCloudSync, initial.transition == nil {
             try await persistence.requireActiveNamespace(namespace.binding)
@@ -484,6 +487,10 @@ package actor ICloudSyncModeCoordinator {
                         syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
                     )
                 }
+                if error is FailedEnableEvidenceError {
+                    try await persistence.recordAttention(.enrollmentBlocked)
+                    return try await statusUnchecked()
+                }
                 try await persistence.recordAttention(.terminalFetchFailure)
                 if error is CloudSyncIssueError { throw error }
                 return try await statusUnchecked()
@@ -519,30 +526,30 @@ package actor ICloudSyncModeCoordinator {
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
                 )
-                switch try await bridge.prepareModeMerge(
-                    source: source,
-                    transitionID: transition.id,
-                    targetRevision: targetRevision
-                ) {
-                case .fullRecord(let plan):
-                    _ = try await persistence.mergeFullReenableSnapshot(
-                        source,
-                        using: token,
-                        plan: plan
-                    )
-                case .legacy(let accepted):
-                    // This merge copies all retained attachments, including remote metadata
-                    // whose bytes have not been downloaded on this device yet.
-                    try await requireMatchingAccount()
-                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
-                        storeID: transition.candidateStoreID
-                    )
-                    try await requireMatchingAccount()
-                    _ = try await persistence.mergeFinalSnapshot(
-                        source,
-                        using: token,
-                        acceptedTargetTextBySnipID: accepted
-                    )
+                if transition.syncProtocol == .fullRecordV1 {
+                    _ = try await persistence.prepareFailedEnableMerge(using: token)
+                } else {
+                    switch try await bridge.prepareModeMerge(
+                        source: source,
+                        transitionID: transition.id,
+                        targetRevision: targetRevision
+                    ) {
+                    case .fullRecord:
+                        throw FailedEnableEvidenceError.unsupported
+                    case .legacy(let accepted):
+                        // This merge copies all retained attachments, including remote metadata
+                        // whose bytes have not been downloaded on this device yet.
+                        try await requireMatchingAccount()
+                        _ = try await preserveIsolatedAttachmentsForLocalCopy(
+                            storeID: transition.candidateStoreID
+                        )
+                        try await requireMatchingAccount()
+                        _ = try await persistence.mergeFinalSnapshot(
+                            source,
+                            using: token,
+                            acceptedTargetTextBySnipID: accepted
+                        )
+                    }
                 }
                 transition = try await currentTransition()
             }
@@ -576,6 +583,10 @@ package actor ICloudSyncModeCoordinator {
             }
             let retryable = isRetryableConnectivity(error)
             await restoreSourceAfterPreSwapFailure(error, retryable: retryable)
+            if error is FailedEnableEvidenceError {
+                try await persistence.recordAttention(.enrollmentBlocked)
+                return try await statusUnchecked()
+            }
             if retryable {
                 return try await statusUnchecked(
                     syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
@@ -595,6 +606,9 @@ package actor ICloudSyncModeCoordinator {
     package func optOut(_ choice: ICloudSyncOptOutChoice) async throws -> ICloudSyncModeStatus {
         try begin(.optOut)
         defer { end() }
+        await persistence.installFailedEnableSemantics(
+            CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone)
+        )
         if choice == .cancel {
             currentOperation = nil
             return try await statusUnchecked()
@@ -677,6 +691,7 @@ package actor ICloudSyncModeCoordinator {
                     source = source.replacingOpaqueSyncStatePayload(payload)
                 }
                 _ = try await persistence.mergeFinalSnapshot(source, using: token)
+                try await persistence.recordCheckedFailedEnableTurnOff()
                 transition = try await currentTransition()
             }
             if transition.phase == .recordsMerged {
@@ -785,6 +800,7 @@ package actor ICloudSyncModeCoordinator {
                 )
                 try await persistence.recordSendAttempt(attempt)
             }
+            try await persistence.observeFailedEnableCommittedValues()
             let issue = await adapter.takeSyncIssue()
             let evidence = try await adapter.enrollmentEvidence()
             if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {

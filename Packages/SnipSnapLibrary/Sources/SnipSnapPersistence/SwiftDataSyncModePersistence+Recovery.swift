@@ -46,8 +46,11 @@ extension SwiftDataSyncModePersistence {
         storeURL: root.appendingPathComponent("snips.store", isDirectory: false)
       ).restore()
     }
+    let hasFailedEnableEvidence = FileManager.default.fileExists(atPath:
+      rootURL.appendingPathComponent("failed-enable-evidence", isDirectory: true).path)
     let removable = value.stores.filter {
-      $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting)
+      $0.id != value.activeStoreID && ($0.lifecycle == .creating || $0.lifecycle == .deleting
+        && $0.kind != .iCloudSync && $0.syncProtocol != .fullRecordV1 && !hasFailedEnableEvidence)
     }.prefix(2)
     for store in removable {
       guard let storeRoot = storeRoots[store.id] else {
