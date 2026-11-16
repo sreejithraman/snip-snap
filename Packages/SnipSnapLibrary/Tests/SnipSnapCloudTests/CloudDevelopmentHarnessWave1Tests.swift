@@ -8,6 +8,102 @@ import XCTest
 @_spi(Maintainer) @testable import SnipSnapCloud
 
 final class CloudDevelopmentHarnessWave1Tests: XCTestCase {
+  func testBaselineRejectsStaleManifestAccountBeforeStartingEitherEngine() async throws {
+    let f = try BaselineAdmissionFixture()
+    defer { f.remove() }
+    try f.account.validate() // Phase admission, before the intervening fake baseline.
+    f.account.changed.withLock { $0 = true }
+    let failure = await f.failure(drafts: [])
+    XCTAssertEqual(failure, "CloudKit: start: contract:accountChanged")
+    let writer = await f.writer.observation(), reader = await f.reader.observation()
+    XCTAssertFalse(writer.started || reader.started)
+    XCTAssertEqual(writer.writes, [])
+    let exists = await f.server.hasZone(f.zone)
+    XCTAssertFalse(exists)
+  }
+
+  func testBaselineRejectsAccountChangeDuringEitherStartBeforeZoneCreation() async throws {
+    for readerChanges in [false, true] {
+      let f = try BaselineAdmissionFixture(writerTrigger: readerChanges ? .none : .start,
+        readerTrigger: readerChanges ? .start : .none)
+      defer { f.remove() }
+      try f.account.validate()
+      let failure = await f.failure(drafts: [])
+      XCTAssertTrue(f.account.changed.withLock { $0 }, "The awaited start must actually change the account")
+      XCTAssertEqual(failure, "CloudKit: create zone: contract:accountChanged")
+      let writer = await f.writer.observation()
+      XCTAssertEqual(writer.writes, [])
+      let exists = await f.server.hasZone(f.zone)
+      XCTAssertFalse(exists)
+    }
+  }
+
+  func testBaselineRejectsAccountChangeAfterInitialFetchBeforeTextOrPayloadSave() async throws {
+    for payload in [false, true] {
+      let f = try BaselineAdmissionFixture(writerTrigger: .initialFetchConfirmed)
+      defer { f.remove() }
+      let draft = payload ? f.payload : f.text
+      let failure = await f.failure(drafts: [draft])
+      let writer = await f.writer.observation()
+      XCTAssertTrue(writer.initialFetchConfirmed)
+      XCTAssertTrue(f.account.changed.withLock { $0 })
+      XCTAssertEqual(failure, payload ? "CloudKit / AttachmentPayload: save record: contract:accountChanged"
+        : "CloudKit / Snip: save record: contract:accountChanged")
+      XCTAssertEqual(writer.writes, [.zone(f.zone)])
+      let remaining = await f.server.fullSnapshot(for: draft.id)
+      XCTAssertNil(remaining)
+    }
+  }
+
+  func testBaselineRejectsAccountChangeAfterContentReadBeforeTextOrPayloadDelete() async throws {
+    for payload in [false, true] {
+      let f = try BaselineAdmissionFixture(readerTrigger: .contentRead)
+      defer { f.remove() }
+      let draft = payload ? f.payload : f.text
+      let failure = await f.failure(drafts: [draft])
+      let writer = await f.writer.observation(), reader = await f.reader.observation()
+      XCTAssertTrue(f.account.changed.withLock { $0 })
+      XCTAssertEqual(reader.records.map(\.id), [draft.id])
+      if payload {
+        XCTAssertEqual(reader.assets, [Data([0, 1, 255, 128, 42])])
+      } else {
+        XCTAssertEqual(reader.records.first?.encryptedFields, ["text": .string("Keep the manifest account")])
+      }
+      XCTAssertEqual(failure, payload ? "CloudKit / AttachmentPayload: delete record: contract:accountChanged"
+        : "CloudKit / Snip: delete record: contract:accountChanged")
+      XCTAssertEqual(writer.writes, [.zone(f.zone), .save(draft.id)])
+      let remaining = await f.server.fullSnapshot(for: draft.id)
+      XCTAssertEqual(remaining?.id, draft.id, "Account mismatch must leave the original record intact")
+      if let remaining {
+        XCTAssertEqual(remaining.recordType, payload ? "AttachmentPayload" : "Snip")
+        XCTAssertEqual(remaining.schemaVersion, 1)
+        XCTAssertEqual(remaining.encryptedFields, payload ? [:] : ["text": .string("Keep the manifest account")])
+        XCTAssertEqual(remaining.assetFields, payload ? ["payload"] : [])
+      }
+    }
+  }
+
+  func testBaselineSameAccountStillTransfersLiteralTextPayloadBytesAndDeletions() async throws {
+    let f = try BaselineAdmissionFixture()
+    defer { f.remove() }
+    try await f.exercise(drafts: [f.text, f.payload])
+    let writer = await f.writer.observation(), reader = await f.reader.observation()
+    XCTAssertTrue(writer.started && reader.started && writer.initialFetchConfirmed)
+    XCTAssertFalse(f.account.changed.withLock { $0 })
+    XCTAssertEqual(writer.writes, [.zone(f.zone), .save(f.text.id), .delete(f.text.id),
+      .save(f.payload.id), .delete(f.payload.id)])
+    XCTAssertEqual(reader.records.map(\.id), [f.text.id, f.payload.id])
+    XCTAssertEqual(reader.records.map(\.recordType), ["Snip", "AttachmentPayload"])
+    XCTAssertEqual(reader.records.first?.encryptedFields, ["text": .string("Keep the manifest account")])
+    XCTAssertEqual(reader.records.first?.routingFields["snipID"], .string("00000000-0000-0000-0000-000000000061"))
+    XCTAssertEqual(reader.records.last?.assetFields, ["payload"])
+    XCTAssertEqual(reader.assets, [Data([0, 1, 255, 128, 42])])
+    for id in [f.text.id, f.payload.id] {
+      let remaining = await f.server.fullSnapshot(for: id)
+      XCTAssertNil(remaining)
+    }
+  }
+
   func testStrictZoneOracleRequiresPhysicalCreationAndConfirmation() async throws {
     let f = try Wave1PlannerFixture()
     defer { f.remove() }
@@ -459,6 +555,111 @@ actor StrictContractTransport: CloudRecordTransport {
   func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot? { try await base.fetchRecord(id, fields: fields) }
   func fetchAsset(_ id: CloudRecordID, field: String, destination: CloudAssetDestination) async throws -> CloudAssetReceipt? {
     try await base.fetchAsset(id, field: field, destination: destination)
+  }
+}
+
+private struct BaselineAdmissionFixture: Sendable {
+  let root: URL
+  let zone = CloudZoneID(name: "snipsnap-contract-account-admission", ownerName: "owner")
+  let account = Wave1Account()
+  let server = FakeCloudServer()
+  let writer: BaselineAdmissionTransport
+  let reader: BaselineAdmissionTransport
+  let text: CloudRecordDraft
+  let payload: CloudRecordDraft
+
+  init(writerTrigger: BaselineAdmissionTransport.Trigger = .none,
+    readerTrigger: BaselineAdmissionTransport.Trigger = .none) throws {
+    root = FileManager.default.temporaryDirectory.appendingPathComponent("baseline-admission-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("original.bin")
+    try Data([0, 1, 255, 128, 42]).write(to: source)
+    text = .text(id: .init(zone: zone, name: "00000000-0000-0000-0000-000000000062"),
+      snipID: UUID(uuidString: "00000000-0000-0000-0000-000000000061")!, text: "Keep the manifest account")
+    payload = .init(id: .init(zone: zone, name: "00000000-0000-0000-0000-000000000063"),
+      recordType: "AttachmentPayload", schemaVersion: 1, routingFields: ["schemaVersion": .int64(1)],
+      encryptedFields: [:], assetFields: ["payload": CloudAssetUpload(fileURL: source)])
+    writer = BaselineAdmissionTransport(server: server, zone: zone, account: account, trigger: writerTrigger)
+    reader = BaselineAdmissionTransport(server: server, zone: zone, account: account, trigger: readerTrigger)
+  }
+
+  func exercise(drafts: [CloudRecordDraft]) async throws {
+    try await CloudDevelopmentTransportContract.exercise(transport: writer, reader: reader,
+      name: "CloudKit", zone: zone, drafts: drafts, validateAccount: { try account.validate() })
+  }
+  func failure(drafts: [CloudRecordDraft]) async -> String? {
+    do { try await exercise(drafts: drafts); return nil }
+    catch { return CloudDevelopmentAtomicContract.safe(error) }
+  }
+  func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+// Observe real fake-server effects; inject account changes only after an awaited operation completes.
+private actor BaselineAdmissionTransport: CloudRecordTransport {
+  enum Trigger: Sendable { case none, start, initialFetchConfirmed, contentRead }
+  enum Write: Equatable, Sendable { case zone(CloudZoneID), save(CloudRecordID), delete(CloudRecordID) }
+  struct Observation: Sendable {
+    var started = false
+    var initialFetchConfirmed = false
+    var writes: [Write] = []
+    var records: [CloudRecordSnapshot] = []
+    var assets: [Data] = []
+  }
+  let base: FakeCloudRecordTransport
+  let account: Wave1Account
+  let trigger: Trigger
+  var observed = Observation()
+  var initialFetchID: UUID?
+
+  init(server: FakeCloudServer, zone: CloudZoneID, account: Wave1Account, trigger: Trigger) {
+    base = FakeCloudRecordTransport(server: server, automaticallyFetchedZones: [zone])
+    self.account = account; self.trigger = trigger
+  }
+  func observation() -> Observation { observed }
+  func start(state: CloudEngineStateEnvelope?) async throws {
+    try await base.start(state: state)
+    observed.started = true
+    if case .start = trigger { account.changed.withLock { $0 = true } }
+  }
+  func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+    observed.writes += batch.zonesToSave.map(Write.zone)
+    observed.writes += batch.operations.map { operation -> Write in
+      switch operation { case .save(let draft): .save(draft.id); case .delete(let id, _): .delete(id) }
+    }
+    return try await base.send(batch)
+  }
+  func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
+    let batch = try await base.fetch(scope: scope)
+    if batch.isInitialFetch { initialFetchID = batch.id }
+    for item in batch.items {
+      if case .record(let snapshot) = item {
+        observed.records.append(snapshot)
+        if case .contentRead = trigger, snapshot.assetFields.isEmpty { account.changed.withLock { $0 = true } }
+      }
+    }
+    return batch
+  }
+  func pendingEvent() async -> CloudRecordTransportEvent? {
+    let transport: any CloudRecordTransport = base
+    return await transport.pendingEvent()
+  }
+  func confirmApplied(_ id: UUID) async throws {
+    try await base.confirmApplied(id)
+    if id == initialFetchID {
+      observed.initialFetchConfirmed = true
+      if case .initialFetchConfirmed = trigger { account.changed.withLock { $0 = true } }
+    }
+  }
+  func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot? {
+    try await base.fetchRecord(id, fields: fields)
+  }
+  func fetchAsset(_ id: CloudRecordID, field: String, destination: CloudAssetDestination) async throws -> CloudAssetReceipt? {
+    let receipt = try await base.fetchAsset(id, field: field, destination: destination)
+    if let receipt {
+      observed.assets.append(try Data(contentsOf: receipt.fileURL))
+      if case .contentRead = trigger { account.changed.withLock { $0 = true } }
+    }
+    return receipt
   }
 }
 
