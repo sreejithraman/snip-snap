@@ -86,6 +86,56 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
+    // A committed restore leaves source content unchanged; Try Again must keep both edits.
+    func testFullRecordTryAgainAfterARestoreKeepsAServerChangeMadeWhileSyncWasOff() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root,
+            fullDisk: .swapOnly,
+            history: .turnedOffThenEditedOnBothSides
+        )
+
+        let restored = try await stranded.persistence.snapshot()
+        XCTAssertEqual(restored.activeStore.id, stranded.transition.sourceStoreID)
+        XCTAssertEqual(restored.activeStore.kind, .localOnly)
+        let source = try await stranded.persistence.activeLibrary()
+            .checkedSnapshot(sortedBy: .manual).snips
+        let snip = try XCTUnwrap(source.first(where: { $0.id == stranded.keptSnipID }))
+        XCTAssertEqual(snip.content, Self.sameServerTextEditedWhileOff)
+        XCTAssertFalse(snip.isDone)
+
+        let status = try await sameServerCoordinator(
+            on: stranded.persistence,
+            server: stranded.server
+        ).enableOrRetry()
+
+        XCTAssertEqual(
+            status.state,
+            .on,
+            "Try Again stopped with \(String(describing: status.attentionReason))."
+        )
+        let storage = try await stranded.persistence.snapshot()
+        XCTAssertNil(storage.transition)
+        XCTAssertEqual(storage.activeStore.kind, .iCloudSync)
+        XCTAssertEqual(
+            stranded.disk.transitionIDsAtSwap,
+            [stranded.transition.id, stranded.transition.id],
+            "Try Again must finish the restored transition."
+        )
+        try await assertOneCopyOfEachSnip(
+            in: stranded.persistence,
+            expected: stranded.originals,
+            transitionIDs: [stranded.transition.id],
+            server: stranded.server
+        )
+        try await assertKeptTheOtherDevicesChange(
+            to: stranded.keptSnipID,
+            in: stranded.persistence,
+            server: stranded.server
+        )
+    }
+
     /// Checks that `persistence`'s active library holds exactly `expected`, by ID and content,
     /// with no recovered copy that any of `transitionIDs` derives, and that `server` holds one
     /// snip record per snip, with the same texts.
@@ -355,8 +405,8 @@ extension ICloudSyncModeCoordinatorTests {
     }
 
     /// Adds the snips, applies `history`, and runs a full-record enable until its first send
-    /// reached `server`. Then it fails the pointer swap on a disk that fills as `fullDisk` says,
-    /// so the enable stays at `firstSendComplete` with the source frozen. The disk stays full.
+    /// reached `server`. Then it fails the pointer swap as `fullDisk` says. Only `.swapOnly`
+    /// lets the restore commit; a full disk leaves `firstSendComplete` with the source frozen.
     private func strandAnEnableThatReachedTheServer(
         root: URL,
         fullDisk: SameServerFullDisk.Extent,
@@ -403,7 +453,12 @@ extension ICloudSyncModeCoordinatorTests {
         } catch SameServerFullDisk.Failure.injected {}
         let stuck = try await persistence.snapshot()
         let transition = try XCTUnwrap(stuck.transition, file: file, line: line)
-        XCTAssertEqual(transition.phase, .firstSendComplete, file: file, line: line)
+        XCTAssertEqual(
+            transition.phase,
+            fullDisk == .swapOnly ? .candidateReady : .firstSendComplete,
+            file: file,
+            line: line
+        )
         let sent = await server.storedTextValues()
         XCTAssertEqual(
             sent,
@@ -574,6 +629,8 @@ private final class SameServerFullDisk: @unchecked Sendable {
     enum Failure: Error { case injected }
 
     enum Extent {
+        /// Only the swap fails, so the restore commits and returns to `candidateReady`.
+        case swapOnly
         /// Store saves still succeed, so a full-record restore keeps the sent records' accepted
         /// bases in the source, but can't commit (SM23-F3's strand).
         case manifestOnly
@@ -621,7 +678,7 @@ private final class SameServerFullDisk: @unchecked Sendable {
             return true
         }
         guard fills else { return }
-        writer.failWrites = true
+        if extent != .swapOnly { writer.failWrites = true }
         throw Failure.injected
     }
 
