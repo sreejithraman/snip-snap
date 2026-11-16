@@ -527,6 +527,12 @@ package actor ICloudSyncModeCoordinator {
                     transitionID: transition.id
                 )
                 if transition.syncProtocol == .fullRecordV1 {
+                    // Final transfer and evidence publication require verified candidate bytes.
+                    try await requireMatchingAccount()
+                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
+                        storeID: transition.candidateStoreID
+                    )
+                    try await requireMatchingAccount()
                     _ = try await persistence.prepareFailedEnableMerge(using: token)
                 } else {
                     switch try await bridge.prepareModeMerge(
