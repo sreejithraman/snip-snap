@@ -17,9 +17,9 @@ module IOSTestSelection
       ]
     },
     'filters' => {
-      description: 'Agent and completion filters, global search, and gathered selection.',
+      description: 'Origin and completion filters, global search, and gathered selection.',
       tests: %w[
-        testAgentSnipsOnlyCombinesWithCompletionAndSearch
+        testOriginFilterCombinesWithCompletionAndSearch
         testSearchDoneFilter
         testSearchFromClipboardFindsSnipsAcrossLists
         testSelectionSurvivesFilteringItsSourceRows

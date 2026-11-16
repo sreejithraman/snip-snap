@@ -38,6 +38,24 @@ extension SnipCompletionFilter {
     }
 }
 
+extension SnipOriginFilter {
+    var title: String {
+        switch self {
+        case .all: String(localized: "All")
+        case .agent: String(localized: "Agent only")
+        case .human: String(localized: "Human only")
+        }
+    }
+
+    var emptyStateTitle: String {
+        switch self {
+        case .all: String(localized: "Nothing captured yet")
+        case .agent: String(localized: "No agent snips")
+        case .human: String(localized: "No human snips")
+        }
+    }
+}
+
 extension SnipList {
     var displayName: String {
         guard id == Self.inboxID, name == "Inbox" else { return name }
