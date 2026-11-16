@@ -310,8 +310,7 @@ actor StrictContractTransport: CloudRecordTransport {
   func start(state: CloudEngineStateEnvelope?) async throws { try await base.start(state: state) }
   func reset() async { await base.reset() }
   func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
-    let adapter: any CloudRecordTransport = base
-    if await adapter.pendingEvent() != nil { return try await base.fetch(scope: scope) }
+    if !creations.isEmpty { return try await base.fetch(scope: scope) }
     let exists = await server.hasZone(data)
     if !confirmedZones.contains(data) || !exists { await base.failNextFetchedZone(data, failure: .zoneMissing) }
     let fetched = try await base.fetch(scope: scope)
