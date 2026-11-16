@@ -5,6 +5,11 @@ require 'json'
 require 'open3'
 
 module IOSTestSelection
+  PAGE_LAYOUT_TESTS = %w[
+    testPageLayoutStaysStableDuringSlowSwipes
+    testLongListTitleStaysStableDuringSlowSwipes
+  ].freeze
+
   GROUPS = {
     'smoke' => {
       description: 'Create/edit, copy, completion, list switching, and gathered selection.',
@@ -51,6 +56,24 @@ module IOSTestSelection
         testRegularSidebarNewListMeetsTouchTargetMinimum
         testRailShowsListNamesAcrossRelaunchUntilToggledBack
         testRailEdgeDragsResizeAndIgnoresVerticalDrags
+      ]
+    },
+    'paging-layout' => {
+      description: 'Native title, wrapping, and reserved toolbar space during slow canceled/completed swipes.',
+      tests: PAGE_LAYOUT_TESTS
+    },
+    'paging' => {
+      description: 'Layout during swipes, retained scroll and drafts, selector paging, and edge creation/cancellation.',
+      tests: PAGE_LAYOUT_TESTS + %w[
+        testPageSwipePreservesListPositionAndTitle
+        testPageSwipeMovesBetweenInboxAndClipboard
+        testLeadingClipboardPasteCapturesCopiedText
+        testClipboardAndSelectorPreserveNavigationAndDraft
+        testSelectorSwipeReturnsToCompactWidth
+        testTrailingPagePullCreatesListAfterLongPull
+        testSwipingBackFromNewListEditorCancelsTheList
+        testNewListCreationAndCancellationPreservePreviousListPosition
+        testPageSwipePreservesExpandedMultiListSelection
       ]
     },
     'undo' => {
