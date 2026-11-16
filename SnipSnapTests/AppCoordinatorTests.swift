@@ -2845,7 +2845,7 @@ private actor MountedComposerFeedbackScheduler: OptionalCloudSyncHandling {
     private var scheduled = 0
     private var explicit = 0
     private var status = 0
-    func scheduleSyncAfterLocalChange() {
+    func scheduleSyncAfterLocalChange() async {
         scheduled += 1
         if worker == nil {
             worker = Task { [pause, finished] in
