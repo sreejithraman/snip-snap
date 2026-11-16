@@ -39,12 +39,57 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsOneCopyOfEachSnip(.cancelSetupEditThenEnable)
     }
 
-    // The SM23-F4 Cancel-path residual: Cancel setup aborts with no kept bases to merge the edit
-    // against.
-    func testFullRecordEnableAfterCancelSetupWithoutKeptBasesKeepsTheEditAsARecoveredCopy()
+    // Qualified source evidence survives Cancel even when the restore could not save bases.
+    func testFullRecordEnableAfterCancelSetupWithoutKeptBasesKeepsTheEditOnItsOriginalID()
         async throws
     {
-        try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.cancelSetupEditThenEnable)
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let enabled = try await freshEnableOnTheSameServer(
+            after: .cancelSetupEditThenEnable,
+            fullDisk: .manifestAndStore,
+            root: root
+        )
+        try await assertEndedOnThroughAFreshTransition(enabled)
+        XCTAssertEqual(enabled.stranded.originals.count, 2)
+        let otherID = try XCTUnwrap(enabled.stranded.originals.keys.first {
+            $0 != enabled.editedSnipID
+        })
+        let expected = [
+            enabled.editedSnipID: Self.sameServerEditedText,
+            otherID: Self.sameServerTexts[1],
+        ]
+        try await assertOneCopyOfEachSnip(
+            in: enabled.persistence,
+            expected: expected,
+            transitionIDs: enabled.stranded.disk.transitionIDsAtSwap,
+            server: enabled.stranded.server
+        )
+        let active = try await enabled.persistence.activeLibrary()
+            .checkedSnapshot(sortedBy: .manual).snips
+        XCTAssertEqual(active.count, 2)
+        XCTAssertEqual(Set(active.map(\.id)), Set(expected.keys))
+        let zone = textZone(makeNamespace())
+        for (id, text) in expected {
+            let local = try XCTUnwrap(active.first { $0.id == id })
+            XCTAssertEqual(local.content, text)
+            XCTAssertFalse(local.isDone)
+            let stored = await enabled.stranded.server.fullSnapshot(for: .snip(id, in: zone))
+            let record = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored))
+            XCTAssertEqual(record.domainID, id)
+            XCTAssertEqual(record.text, .value(text))
+            XCTAssertEqual(record.isDone, .value(false))
+            for transitionID in enabled.stranded.disk.transitionIDsAtSwap {
+                let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
+                    transitionID: transitionID,
+                    sourceID: id
+                )
+                let recovered = await enabled.stranded.server.fullSnapshot(
+                    for: .snip(recoveredID, in: zone)
+                )
+                XCTAssertNil(recovered)
+            }
+        }
     }
 
     // (f)

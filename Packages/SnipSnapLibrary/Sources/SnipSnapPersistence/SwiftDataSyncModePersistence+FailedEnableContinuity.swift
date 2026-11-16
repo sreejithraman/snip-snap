@@ -186,15 +186,112 @@ extension SwiftDataSyncModePersistence {
 
   /// No evidence error is allowed to turn a valid mode owner into another writable collection.
   func failedEnableMustRetainStore(_ store: SyncModeStore) -> Bool {
-    // Legacy candidate preflight and obligation retirement are deliberately still conservative.
-    // In particular, a nil transition cannot prove sole candidate recovery bytes disposable.
-    if store.syncProtocol == .fullRecordV1 || store.kind == .iCloudSync { return true }
-    for sourceID in failedEnableSourceIDs() {
-      guard let bundle = try? failedEnableFiles.read(sourceID) else { return true }
+    do {
+      let bundles = try failedEnableSourceIDs().map { id in
+        guard let bundle = try failedEnableFiles.read(id) else { throw FailedEnableEvidenceError.unavailable }
+        return bundle
+      }
       let id = FailedEnableEncoding.uuid(store.id)
-      if bundle.sourceStoreID == id || bundle.transfers.contains(where: { $0.destinationStoreID == id })
-        || bundle.namespaces.flatMap(\.captures).contains(where: { $0.candidateStoreID == id }) { return true }
+      let referenced = bundles.filter {
+        $0.sourceStoreID == id
+          || $0.namespaces.flatMap(\.captures).contains(where: { $0.candidateStoreID == id })
+          || $0.transfers.contains(where: { $0.sourceStoreID == id || $0.destinationStoreID == id })
+      }
+      if referenced.isEmpty, failedEnableCreationWasAborted(store) { return false }
+      guard referenced.allSatisfy({ failedEnableEvidenceIsSelfContained($0) }) else { return true }
+      if referenced.contains(where: { $0.sourceStoreID == id }) {
+        guard let source = referenced.first(where: { $0.sourceStoreID == id }),
+          failedEnableSourceWasCopied(store, evidence: source) else { return true }
+      }
+      if failedEnableIsolationRemovalHasSettled(store) { return false }
+      if let source = referenced.first(where: { $0.sourceStoreID == id }),
+        failedEnableSourceWasCopied(store, evidence: source) { return false }
+      // A deleting candidate never became an account cache. Its kind or a nil transition
+      // cannot authorize disposal, even when some accepted values reached the server.
+      return store.syncProtocol == .fullRecordV1 || store.kind == .iCloudSync || !referenced.isEmpty
+    } catch {
+      return true
     }
-    return false
+  }
+
+  private func failedEnableCreationWasAborted(_ candidate: SyncModeStore) -> Bool {
+    // A creating candidate has not reached fetch, source capture, apply or send admission.
+    guard candidate.lifecycle == .creating, manifest.transition == nil,
+      manifest.accountIsolation == nil, manifest.activeStoreID != candidate.id else { return false }
+    var aborted = candidate
+    aborted.lifecycle = .deleting
+    return store(id: candidate.id) == aborted
+  }
+
+  private func failedEnableIsolationRemovalHasSettled(_ isolated: SyncModeStore) -> Bool {
+    // The account owner passes its pre-commit isolated value after endAccountIsolation.
+    // Other cleanup callers pass current retired/deleting values and cannot use this proof.
+    guard isolated.lifecycle == .isolated, isolated.kind == .iCloudSync, isolated.namespace != nil,
+      manifest.accountIsolation == nil,
+      manifest.transition == nil, manifest.activeStoreID != isolated.id,
+      let replacement = store(id: manifest.activeStoreID), replacement.kind == .localOnly,
+      replacement.lifecycle == .ready else { return false }
+    var ended = isolated
+    ended.lifecycle = .deleting
+    return store(id: isolated.id) == ended
+  }
+
+  private func failedEnableSourceWasCopied(_ source: SyncModeStore,
+    evidence: FailedEnableInstalledEvidence
+  ) -> Bool {
+    guard source.kind == .localOnly, source.namespace == nil,
+      manifest.transition == nil,
+      source.id != manifest.activeStoreID, [.retired, .deleting].contains(source.lifecycle),
+      !failedEnableUncertainSources.contains(source.id), evidence.continuity.state == .verified,
+      evidence.continuity.inFlight.value == nil,
+      evidence.continuity.activationDigest == failedEnableActivationDigest(manifest),
+      evidence.continuity.sourceRevision == String(source.revision) else { return false }
+    return evidence.namespaces.contains { group in
+      group.captures.contains { capture in
+        guard capture.sourceDigest == evidence.continuity.sourceDigest,
+          capture.freeze.sourceRevision == String(source.revision) else { return false }
+        return evidence.transfers.contains { transfer in
+          guard transfer.kind == .candidate, transfer.state == .checked,
+            transfer.sourceCaptureIDs.contains(capture.id), transfer.namespace == group.binding,
+            transfer.destinationStoreID == FailedEnableEncoding.uuid(manifest.activeStoreID),
+            let destination = store(id: manifest.activeStoreID), destination.kind == .iCloudSync,
+            destination.namespace.map(FailedEnableBinding.init) == group.binding else { return false }
+          return transfer.destinationStoreID == capture.candidateStoreID
+        }
+      }
+    }
+  }
+
+  private func failedEnableEvidenceIsSelfContained(_ evidence: FailedEnableInstalledEvidence) -> Bool {
+    guard let sourceID = try? FailedEnableEncoding.uuid(evidence.sourceStoreID),
+      !failedEnableUncertainSources.contains(sourceID), evidence.continuity.state == .verified,
+      evidence.continuity.inFlight.value == nil else { return false }
+    func embedded(_ image: FailedEnableImage) -> Bool {
+      switch image {
+      case .list: true
+      case .snip(let snip): snip.attachments.allSatisfy { $0.availability.kind == .embedded }
+      }
+    }
+    // The file decoder has already checked complete image fields and each embedded blob's
+    // hash/length. Keep every bundle; this proves only that deleting a root loses no F5 version.
+    return evidence.namespaces.allSatisfy { group in
+      group.reviews.isEmpty && group.alternatives.allSatisfy { alternative in
+        guard let image = alternative.image.value, embedded(image) else { return false }
+        return alternative.attachmentHashes.allSatisfy { evidence.blobs[$0] != nil }
+      } && group.captures.allSatisfy { capture in
+        capture.normalizer == 1 && capture.syncProtocol == .fullRecordV1
+          && capture.candidateDeletes.isEmpty && capture.records.allSatisfy { record in
+            guard record.sourceMembership == .present, let image = record.source.value, embedded(image),
+              record.preparation.normalizer == 1,
+              [.nonconflicting, .equalFetched].contains(record.preparation.classification),
+              let accepted = record.observedAccepted.value, !accepted.isDeferred,
+              !accepted.hasUnresolvedLegacyAbsence else { return false }
+            return record.preparation.value.value != nil
+          }
+      }
+    } && evidence.transfers.allSatisfy { transfer in
+      transfer.state == .checked && transfer.conflicts.isEmpty && transfer.recoveryDescriptors.isEmpty
+        && transfer.outputs.allSatisfy(embedded)
+    }
   }
 }
