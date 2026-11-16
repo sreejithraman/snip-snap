@@ -1,0 +1,11 @@
+# Snip Snap 0.6.1 Beta 276
+
+## Mac
+
+- Add human-only filtering alongside agent and all snips
+- Use Allo throughout the app interface
+
+## iOS
+
+- Add human-only filtering alongside agent and all snips
+- Use Allo throughout the app interface
