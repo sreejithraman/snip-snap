@@ -561,11 +561,15 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       sortedBy: .manual
     )
 
+    let editedFileName = "edited-first.txt"
+    try await renameAttachment(ofSnip: snipID, attachmentID: oldAttachmentID,
+      to: editedFileName, in: library)
+
     try await sync.sendPending()
 
     let recovered = try await snapshot(library, namespace)
     let replacement = try XCTUnwrap(recovered.publications.first(where: {
-      $0.metadata.fileName == target.metadata.fileName
+      $0.metadata.fileName == editedFileName
     }))
     XCTAssertNotEqual(replacement.metadata.attachmentID, oldAttachmentID)
     XCTAssertNotEqual(replacement.metadataIdentity, target.metadataIdentity)
@@ -598,6 +602,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       newMetadata?.encryptedFields["payloadRecordName"],
       .string(replacement.metadata.payloadIdentity.recordName)
     )
+    XCTAssertEqual(newMetadata?.encryptedFields["fileName"], .string(editedFileName))
     let newPayload = await server.fullSnapshot(
       for: CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
     )
@@ -4143,13 +4148,16 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     XCTAssertNil(deletedMetadata)
     XCTAssertNil(deletedPayload)
     try await keepAttachments([pair.second.id, pair.first.id], ofSnip: pair.snipID, in: pair.senderLibrary)
+    let editedFileName = "edited-second.txt"
+    try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+      to: editedFileName, in: pair.senderLibrary)
 
     try await pair.sender.sendPending()
     for _ in 0..<3 { try await pair.sender.sendPending() }
     try await pair.receiver.fetchRemote()
 
     let storage = try await snapshot(pair.senderLibrary, pair.namespace)
-    let replacement = try XCTUnwrap(storage.publications.first(where: { $0.metadata.fileName == "second.txt" }))
+    let replacement = try XCTUnwrap(storage.publications.first(where: { $0.metadata.fileName == editedFileName }))
     XCTAssertNotEqual(replacement.metadata.attachmentID, pair.second.id)
     XCTAssertNotEqual(replacement.metadata.payloadIdentity, oldPayload)
     let metadata = await pair.server.fullSnapshot(
@@ -4160,9 +4168,13 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     )
     XCTAssertEqual(metadata?.encryptedFields["payloadRecordName"], .string(replacement.metadata.payloadIdentity.recordName))
     XCTAssertNotNil(payload)
+    XCTAssertEqual(metadata?.encryptedFields["fileName"], .string(editedFileName))
     let local = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
     XCTAssertTrue(try XCTUnwrap(local.snips.first(where: { $0.id == pair.snipID }))
       .attachments.contains(where: { $0.id == replacement.metadata.attachmentID }))
+    XCTAssertEqual(local.snips.first(where: { $0.id == pair.snipID })?.attachments.first(where: {
+      $0.id == replacement.metadata.attachmentID
+    })?.fileName, editedFileName)
     do {
       let opened = try await pair.downloads.download(attachmentID: replacement.metadata.attachmentID)
       XCTAssertEqual(try Data(contentsOf: opened), pair.second.bytes)
@@ -4330,9 +4342,14 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       XCTAssertNotNil(deleterCleanup.shadowData)
       XCTAssertNil(deleterCleanup.lastFailure)
       try await keepAttachments([pair.second.id, pair.first.id], ofSnip: pair.snipID, in: pair.senderLibrary)
+      let editedFileName = "edited-second.txt"
+      try await renameAttachment(ofSnip: pair.snipID, attachmentID: pair.second.id,
+        to: editedFileName, in: pair.senderLibrary)
       try await pair.sender.sendPending()
       let remapped = try await snapshot(pair.senderLibrary, pair.namespace)
-      let replacement = try XCTUnwrap(remapped.publications.first(where: { $0.metadata.fileName == "second.txt" }))
+      let replacement = try XCTUnwrap(remapped.publications.first(where: { $0.metadata.fileName == editedFileName }))
+      XCTAssertNotEqual(replacement.metadata.attachmentID, pair.second.id)
+      XCTAssertNotEqual(replacement.metadata.payloadIdentity, oldPayload)
       for library in [pair.senderLibrary, pair.receiverLibrary] {
         let storage = try await snapshot(library, pair.namespace)
         XCTAssertNotNil(storage.cleanups.first(where: { $0.identity == oldPayload }))
@@ -4393,6 +4410,7 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
       XCTAssertNil(oldRecord)
       XCTAssertEqual(metadata?.encryptedFields["payloadRecordName"], .string(replacement.metadata.payloadIdentity.recordName))
       XCTAssertNotNil(payload)
+      XCTAssertEqual(metadata?.encryptedFields["fileName"], .string(editedFileName))
       try await pair.receiver.fetchRemote()
       do {
         let opened = try await pair.downloads.prepare(attachmentID: replacement.metadata.attachmentID, for: .open)
@@ -4630,10 +4648,9 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     )
   }
 
-  // SM32-F1-D1: client 1 removes an attachment, and its metadata delete and payload cleanup
-  // land. Client 2, which only downloaded it, reorders it before fetching that delete, so its
-  // metadata save comes back unknown. Client 2 has no bytes to republish, so the delete wins.
-  func testUnknownMetadataSaveOnADownloadOnlyDeviceAppliesTheRemoteDelete() async throws {
+  // SM32-F1-D1 / SM33-D8-2: a position-only save meets another device's accepted delete.
+  // Keep the original identity and cache without resending metadata until a fetch applies it.
+  func testUnknownPositionOnlySaveOnADownloadOnlyDeviceWaitsForFetchedDelete() async throws {
     let pair = try await makeDownloadedAttachmentPair()
     defer { try? FileManager.default.removeItem(at: pair.root) }
     let kept = pair.first
@@ -4663,7 +4680,36 @@ final class CloudAttachmentTransferTests: XCTestCase, AttachmentTransferTestSupp
     XCTAssertNil(deletedPayloadRecord, "Client 1's payload cleanup must run.")
 
     try await editDownloadedAttachments(pair, keeping: [deleted.id, kept.id])
+    let pending = try await pair.receiverStore.pendingChanges()
+    XCTAssertTrue(plansMetadataSave(for: deleted, in: pending))
+    let beforeSend = try await snapshot(pair.receiverLibrary, pair.namespace)
+    let pendingDeleted = try publication(of: deleted.id, in: beforeSend)
     try await pair.receiver.sendPending()
+
+    let held = try await snapshot(pair.receiverLibrary, pair.namespace)
+    XCTAssertEqual(try publication(of: deleted.id, in: held), pendingDeleted,
+      "A position-only save must keep its original identity and base until the delete is fetched.")
+    XCTAssertEqual(Set(held.publications.map(\.metadata.attachmentID)), [kept.id, deleted.id],
+      "Waiting for a fetch must not remap the deleted attachment.")
+    let heldLocal = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(heldLocal.snips.first(where: { $0.id == pair.snipID })?.attachments.map(\.id),
+      [deleted.id, kept.id])
+    XCTAssertTrue(held.cacheEntries.contains { $0.attachmentID == deleted.id },
+      "The download stays available until the fetched delete is applied.")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: deleted.cachedURL.path))
+    XCTAssertEqual(try Data(contentsOf: deleted.cachedURL), deleted.bytes)
+    let settledWhileHeld = try await pair.receiverStore.isSyncSettled()
+    XCTAssertFalse(settledWhileHeld)
+    let heldPlan = try await pair.receiverStore.pendingChanges()
+    XCTAssertFalse(heldPlan.operations.contains(where: { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.recordType == CloudAttachmentRecordCodec.metadataRecordType
+    }), "The held snip must not resend metadata before a fetch.")
+    try await pair.receiver.sendPending()
+    let stillHeld = try await snapshot(pair.receiverLibrary, pair.namespace)
+    XCTAssertEqual(try publication(of: deleted.id, in: stillHeld), pendingDeleted)
+
+    try await pair.receiver.fetchRemote()
 
     let local = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(local.snips.first(where: { $0.id == pair.snipID }))
