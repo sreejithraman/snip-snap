@@ -2040,13 +2040,18 @@ final class ClipboardHistoryTests: XCTestCase {
 final class SnipPinTests: StoreBackedTestCase {
     @MainActor
     func testPinningDoneSnipMakesItUndoneAndPersistsAcrossRelaunch() async throws {
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.pin-tests.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
         let url = try storeURL()
         let repository = try JSONSnipLibrary(fileURL: url)
         let added = try await repository.add(content: "Reusable", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
         let model = AppModel(library: repository)
         await model.reload()
-        await model.toggleDoneNow(id: snip.id)
+        await model.toggleDoneNow(id: snip.id, to: pasteboard)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Reusable")
         XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
 
         await model.togglePinned(id: snip.id)
@@ -2054,7 +2059,7 @@ final class SnipPinTests: StoreBackedTestCase {
         let pinned = try XCTUnwrap(model.snips.first)
         XCTAssertTrue(pinned.isPinned)
         XCTAssertFalse(pinned.isDone)
-        await model.toggleDoneNow(id: snip.id)
+        await model.toggleDoneNow(id: snip.id, to: pasteboard)
         XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
 
         let reopened = AppModel(library: try JSONSnipLibrary(fileURL: url))
@@ -2068,6 +2073,10 @@ final class SnipPinTests: StoreBackedTestCase {
 
     @MainActor
     func testBulkPinPreservesSelectionAndMakesDoneSnipsUndone() async throws {
+        let pasteboard = NSPasteboard(
+            name: .init("world.sree.snipsnap.pin-tests.\(UUID().uuidString)")
+        )
+        defer { pasteboard.releaseGlobally() }
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let firstResult = try await repository.add(content: "First", origin: .quickEntry)
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
@@ -2076,7 +2085,8 @@ final class SnipPinTests: StoreBackedTestCase {
         let model = AppModel(library: repository)
         await model.reload()
         model.selection = [first.id, second.id]
-        await model.toggleDoneNow(id: first.id)
+        await model.toggleDoneNow(id: first.id, to: pasteboard)
+        XCTAssertEqual(pasteboard.string(forType: .string), "First")
 
         await model.setPinned(ids: model.selection, pinned: true)
 
