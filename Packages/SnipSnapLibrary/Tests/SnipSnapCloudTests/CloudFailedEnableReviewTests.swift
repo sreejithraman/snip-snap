@@ -471,7 +471,7 @@ final class CloudFailedEnableReviewTests: XCTestCase {
         let completedGroup = try XCTUnwrap(completed.namespaces.first { $0.binding == FailedEnableBinding(f.namespace.binding) })
         let capture = try XCTUnwrap(completedGroup.captures.last { $0.candidateStoreID == FailedEnableEncoding.uuid(retry.candidateStoreID) })
         let originalObservation = try XCTUnwrap(capture.records.first { $0.reference == row.reference }?.unqualifiedObservation.value)
-        let post = try XCTUnwrap(after.0.1.storage.readyEntities.first { $0.reference == row.reference })
+        let post = try XCTUnwrap(after.0.1.storage.readyEntities.first { $0.reference == reference })
         let postTyped = try CloudFullSyncPersistence.snipRecord(post)
         let postSnip = try XCTUnwrap(after.0.1.snapshot.snips.first { $0.id == f.snip.id })
         let postDraft = try CloudFullRecordCodec.snipDraft(postSnip, accepted: postTyped)
