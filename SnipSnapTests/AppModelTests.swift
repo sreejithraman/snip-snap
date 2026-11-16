@@ -5267,3 +5267,307 @@ private actor PausingPasteboardExportPreparer {
         }
     }
 }
+
+
+// The package companion proves the real session/gate path; this fixture controls the app's scheduling boundary.
+extension AppModelTests {
+    @MainActor
+    func testCopyAndDoneFinishWhileEarlierScheduledBackgroundWorkIsHeld() async throws {
+        try await checkMacLocalFeedbackWhileSchedulingIsHeld(.copy)
+    }
+
+    @MainActor
+    func testToggleDoneFinishesWhileEarlierScheduledBackgroundWorkIsHeld() async throws {
+        try await checkMacLocalFeedbackWhileSchedulingIsHeld(.done)
+    }
+
+    @MainActor
+    func testComposerSaveFinalizesWhileEarlierScheduledBackgroundWorkIsHeld() async throws {
+        try await checkMacLocalFeedbackWhileSchedulingIsHeld(.send)
+    }
+
+    private enum MacLocalFeedbackAction: Equatable { case copy, done, send }
+
+    @MainActor
+    private func checkMacLocalFeedbackWhileSchedulingIsHeld(_ action: MacLocalFeedbackAction) async throws {
+        let fixture = try await MacLocalFeedbackFixture.make()
+        do {
+            try await exerciseMacLocalFeedback(action, fixture: fixture)
+            await fixture.cleanUp()
+        } catch {
+            await fixture.cleanUp()
+            throw error
+        }
+    }
+
+    @MainActor
+    private func exerciseMacLocalFeedback(
+        _ action: MacLocalFeedbackAction, fixture: MacLocalFeedbackFixture
+    ) async throws {
+        let model = fixture.model
+        let loading = fixture.start { await model.waitForInitialLoad(); return true }
+        guard await fixture.ready(loading.finished, "real Mac initial load") else { return }
+        let snip = try XCTUnwrap(model.snips.first)
+        XCTAssertEqual(snip.content, "Mac local feedback original")
+        await fixture.handler.scheduleSyncAfterLocalChange()
+        guard await fixture.ready(fixture.handler.pause.entered, "earlier scheduled worker") else { return }
+        fixture.pasteboard.clearContents()
+        XCTAssertTrue(fixture.pasteboard.setString("Keep clipboard until a local copy", forType: .string))
+        if action == .send {
+            model.saveComposerText("Mac draft saved while background work waits", for: SnipList.inboxID)
+            model.flushComposerDrafts()
+        }
+        let operation = fixture.start {
+            switch action {
+            case .copy: return await model.copySnipsAndMarkDoneNow([snip], to: fixture.pasteboard)
+            case .done:
+                await model.toggleDoneNow(id: snip.id, to: fixture.pasteboard)
+                return true // This API returns Void; durability is checked independently below.
+            case .send:
+                return await model.saveComposerDraft(
+                    content: "Mac draft saved while background work waits", listID: SnipList.inboxID
+                )
+            }
+        }
+        let completed = await operation.finished.wait(for: .seconds(2))
+        XCTAssertTrue(fixture.handler.pause.isHeld)
+        XCTAssertTrue(completed, "The actual local action must return before background work is released")
+        guard completed else { return }
+        XCTAssertEqual(operation.result, true)
+        let submitted = await fixture.handler.localSubmission.wait(for: .seconds(2))
+        XCTAssertTrue(submitted, "The actual action must submit scheduling, independently of worker completion")
+        XCTAssertTrue(fixture.handler.pause.isHeld)
+        let reader = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+        let durable = try await reader.checkedSnapshot(sortedBy: .manual)
+        switch action {
+        case .copy, .done:
+            XCTAssertEqual(fixture.pasteboard.string(forType: .string), "Mac local feedback original")
+            XCTAssertEqual(durable.snips.map(\.content), ["Mac local feedback original"])
+            XCTAssertEqual(durable.snips.first?.isDone, true)
+            XCTAssertEqual(model.snips.first?.isDone, true)
+            XCTAssertEqual(model.toast?.message, String(localized: "Snapped"))
+            let copied = String(localized: "Copied")
+            let done = String(localized: "Marked Done")
+            XCTAssertEqual(model.toast?.detail, String(localized: "\(copied) · \(done)"))
+            XCTAssertEqual(model.toast?.action, .undoDone)
+        case .send:
+            XCTAssertEqual(Set(durable.snips.map(\.content)),
+                           ["Mac local feedback original", "Mac draft saved while background work waits"])
+            XCTAssertEqual(model.snips.filter { $0.content == "Mac draft saved while background work waits" }.count, 1)
+            XCTAssertTrue(durable.snips.allSatisfy { !$0.isDone })
+            XCTAssertEqual(model.composerDraft(for: SnipList.inboxID), ComposerDraft())
+            XCTAssertEqual(fixture.pasteboard.string(forType: .string), "Keep clipboard until a local copy")
+        }
+        XCTAssertNil(model.presentedError)
+        let counts = await fixture.handler.counts()
+        XCTAssertEqual(counts.schedule, 2)
+        XCTAssertEqual(counts.explicit, 0)
+        XCTAssertEqual(counts.status, 0, "Mac local actions do not read attachment status")
+        XCTAssertTrue(fixture.handler.pause.isHeld, "All durable/feedback assertions precede release")
+        if action != .send, let toast = model.toast {
+            fixture.handler.pause.release()
+            let undo = fixture.start { await model.performToastActionNow(toast); return true }
+            guard await fixture.ready(undo.finished, "offered Mac Done undo") else { return }
+            let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+            let undone = try await reopened.checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(undone.snips.first?.isDone, false)
+            XCTAssertEqual(fixture.pasteboard.string(forType: .string), "Mac local feedback original")
+        }
+    }
+}
+
+private final class MacLocalFeedbackSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            return pending
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                let id = UUID()
+                return await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in
+                        let immediate: Bool? = self.lock.withLock {
+                            if self.fired { return true }
+                            if Task.isCancelled { return false }
+                            self.waiters[id] = continuation
+                            return nil
+                        }
+                        if let immediate { continuation.resume(returning: immediate) }
+                    }
+                } onCancel: {
+                    self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+                }
+            }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch {}
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class MacLocalFeedbackPause: @unchecked Sendable {
+    let entered = MacLocalFeedbackSignal()
+    private let lock = NSLock()
+    private var released = false
+    private var pending: CheckedContinuation<Void, Never>?
+    var isHeld: Bool { entered.isSet && lock.withLock { !released } }
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            let resume = lock.withLock {
+                if released { return true }
+                pending = continuation
+                return false
+            }
+            entered.fire()
+            if resume { continuation.resume() }
+        }
+    }
+    func release() {
+        let continuation = lock.withLock {
+            released = true
+            let continuation = pending
+            pending = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+}
+
+private actor MacLocalFeedbackScheduler: OptionalCloudSyncHandling {
+    nonisolated let pause = MacLocalFeedbackPause()
+    nonisolated let localSubmission = MacLocalFeedbackSignal()
+    nonisolated let finished = MacLocalFeedbackSignal()
+    private var worker: Task<Void, Never>?
+    private var scheduled = 0
+    private var explicit = 0
+    private var status = 0
+    func scheduleSyncAfterLocalChange() {
+        scheduled += 1
+        if worker == nil {
+            worker = Task { [pause, finished] in
+                await pause.suspend()
+                finished.fire()
+            }
+        }
+        if scheduled >= 2 { localSubmission.fire() }
+    }
+    func counts() -> (schedule: Int, explicit: Int, status: Int) { (scheduled, explicit, status) }
+    func finish(until deadline: ContinuousClock.Instant) async -> Bool {
+        guard let worker else { return true }
+        worker.cancel()
+        guard await finished.wait(for: deadline - ContinuousClock.now) else { return false }
+        await worker.value
+        return true
+    }
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { explicit += 1 }
+    func isCloudSyncActive() async throws -> Bool { status += 1; return true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { status += 1; return [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.transferUnsupported
+    }
+    func clearDownloadedFiles() async throws {}
+}
+
+@MainActor
+private final class MacLocalFeedbackWork {
+    let finished = MacLocalFeedbackSignal()
+    var result: Bool?
+    var task: Task<Void, Never>?
+    init(_ operation: @escaping @MainActor () async -> Bool) {
+        task = Task { [self] in
+            result = await operation()
+            finished.fire()
+        }
+    }
+}
+
+@MainActor
+private final class MacLocalFeedbackFixture {
+    let root: URL
+    let storeURL: URL
+    let suite: String
+    let defaults: UserDefaults
+    let pasteboard: NSPasteboard
+    let handler: MacLocalFeedbackScheduler
+    let model: AppModel
+    private var work: [MacLocalFeedbackWork] = []
+    private init(root: URL, library: SwiftDataSnipLibrary, defaults: UserDefaults, suite: String) {
+        self.root = root
+        storeURL = root.appendingPathComponent("snips.store")
+        self.defaults = defaults
+        self.suite = suite
+        pasteboard = NSPasteboard(name: .init("MacLocalFeedback.\(UUID())"))
+        handler = MacLocalFeedbackScheduler()
+        model = AppModel(library: library, defaults: defaults,
+            clipboardHistory: ClipboardHistory(pasteboard: pasteboard, defaults: defaults,
+                storeURL: root.appendingPathComponent("clipboard.json")), cloudSyncHandler: handler)
+    }
+    static func make() async throws -> MacLocalFeedbackFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacLocalFeedback-\(UUID())")
+        let suite = "MacLocalFeedback.\(UUID())"
+        do {
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.set(true, forKey: "clipboardHistoryPaused")
+            let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+            _ = try await library.perform(.add(content: "Mac local feedback original", origin: .quickEntry,
+                source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast),
+                sortedBy: .manual)
+            return MacLocalFeedbackFixture(root: root, library: library, defaults: defaults, suite: suite)
+        } catch {
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+            NSLog("MacLocalFeedback retained failed setup store root: %@", root.path)
+            throw error
+        }
+    }
+    func start(_ operation: @escaping @MainActor () async -> Bool) -> MacLocalFeedbackWork {
+        let operation = MacLocalFeedbackWork(operation)
+        work.append(operation)
+        return operation
+    }
+    func ready(_ signal: MacLocalFeedbackSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "Mac feedback setup/readiness failed: \(stage)")
+        return ready
+    }
+    func cleanUp() async {
+        let cleanup = Task { @MainActor in
+            handler.pause.release()
+            work.forEach { $0.task?.cancel() }
+            let deadline = ContinuousClock.now + .seconds(30)
+            var settled = true
+            for operation in work {
+                let joined = await operation.finished.wait(for: deadline - ContinuousClock.now)
+                XCTAssertTrue(joined, "Mac feedback cleanup could not join a caller")
+                if joined { await operation.task?.value } else { settled = false }
+            }
+            let joined = await handler.finish(until: deadline)
+            XCTAssertTrue(joined, "Mac feedback cleanup could not join the scheduled worker")
+            guard settled && joined else {
+                NSLog("MacLocalFeedback retained live ownership and store root: %@", root.path)
+                return
+            }
+            work.removeAll()
+            pasteboard.releaseGlobally()
+            defaults.removePersistentDomain(forName: suite)
+            NSLog("MacLocalFeedback retained store root: %@", root.path)
+        }
+        await cleanup.value
+    }
+}

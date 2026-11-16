@@ -2568,3 +2568,321 @@ final class SharedTransitionHostTests: XCTestCase {
         XCTAssertEqual(text.probe.activations, interruption.attempt)
     }
 }
+
+
+extension AppCoordinatorTests {
+    @MainActor
+    func testMountedComposerSendFinishesWhileEarlierScheduledBackgroundWorkIsHeld() async throws {
+        let fixture = try MountedComposerFeedbackFixture.make()
+        do {
+            try await exerciseMountedOfflineComposer(fixture)
+            await fixture.cleanUp()
+        } catch {
+            await fixture.cleanUp()
+            throw error
+        }
+    }
+
+    @MainActor
+    private func exerciseMountedOfflineComposer(_ fixture: MountedComposerFeedbackFixture) async throws {
+        let model = fixture.model
+        let loading = fixture.start { await model.waitForInitialLoad(); return true }
+        guard await fixture.ready(loading.finished, "mounted composer initial load") else { return }
+        model.saveComposerText("Mounted Send before background release", for: SnipList.inboxID)
+        model.flushComposerDrafts()
+        await fixture.handler.scheduleSyncAfterLocalChange()
+        guard await fixture.ready(fixture.handler.pause.entered, "mounted composer earlier worker") else { return }
+        let settings = ShortcutSettings(defaults: fixture.defaults)
+        let coordinator = AppCoordinator(model: model, shortcutSettings: settings, isAccessibilityTrusted: { true })
+        let content = ContentView(coordinator: coordinator, fileDropController: PanelFileDropController(),
+                                  dragSessionController: PanelDragSessionController())
+            .environmentObject(model).environmentObject(settings)
+        let panel = SnipSnapPanel.make(contentViewController: NSHostingController(rootView: content),
+                                       frameAutosaveName: nil)
+        fixture.panel = panel
+        coordinator.attachPanelWindow(panel)
+        let frames = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        fixture.frameContinuation = frames.continuation
+        let displayed = MountedComposerFeedbackSignal()
+        fixture.frameObservation = NotificationCenter.default.publisher(for: NSWindow.didUpdateNotification, object: panel)
+            .sink { _ in displayed.fire(); frames.continuation.yield(()) }
+        panel.makeKeyAndOrderFront(nil)
+        guard await fixture.ready(displayed, "actual mounted ContentView window update") else { return }
+        let accessibility = try MountedAccessibility(root: try XCTUnwrap(panel.contentView))
+        let send = try await accessibility.button(identifier: "composer-send", label: String(localized: "Send Snip"))
+        XCTAssertEqual(mountedComposerSendEnabled(send), true)
+        // Observe real render events. The existing AX lookup keeps its original two-second/20ms contract.
+        let completion = fixture.start {
+            for await _ in frames.stream {
+                guard !Task.isCancelled else { return false }
+                guard model.composerDraft(for: SnipList.inboxID) == ComposerDraft(),
+                      model.snips.contains(where: { $0.content == "Mounted Send before background release" }) else { continue }
+                do {
+                    let current = try await accessibility.button(identifier: "composer-send", label: String(localized: "Send Snip"))
+                    if self.mountedComposerSendEnabled(current) == false { return true }
+                } catch { XCTFail("Mounted composer completion control missing: \(error)"); return false }
+            }
+            return false
+        }
+        XCTAssertTrue(accessibility.press(send), "Invoke the real composer-send control")
+        let completed = await completion.finished.wait(for: .seconds(2))
+        XCTAssertTrue(fixture.handler.pause.isHeld)
+        XCTAssertTrue(completed, "Mounted Send must finalize and render disabled before background release")
+        guard completed else { return }
+        XCTAssertEqual(completion.result, true)
+        let submitted = await fixture.handler.localSubmission.wait(for: .seconds(2))
+        XCTAssertTrue(submitted, "The mounted Send must actually submit normal scheduling")
+        let reader = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+        let durable = try await reader.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(durable.snips.map(\.content), ["Mounted Send before background release"])
+        XCTAssertEqual(durable.snips.map(\.isDone), [false])
+        XCTAssertEqual(model.snips.map(\.content), ["Mounted Send before background release"])
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID), ComposerDraft())
+        let disabled = try await accessibility.button(identifier: "composer-send", label: String(localized: "Send Snip"))
+        XCTAssertEqual(mountedComposerSendEnabled(disabled), false)
+        // A fresh draft must re-enable the real control; an empty disabled control alone cannot rule out stuck saving.
+        let nextDraftReady = fixture.start {
+            for await _ in frames.stream {
+                guard !Task.isCancelled else { return false }
+                guard model.composerDraft(for: SnipList.inboxID).text == "Next mounted draft remains unsent" else { continue }
+                do {
+                    let current = try await accessibility.button(identifier: "composer-send", label: String(localized: "Send Snip"))
+                    if self.mountedComposerSendEnabled(current) == true { return true }
+                } catch { XCTFail("Mounted next-draft control missing: \(error)"); return false }
+            }
+            return false
+        }
+        model.saveComposerText("Next mounted draft remains unsent", for: SnipList.inboxID)
+        model.flushComposerDrafts()
+        let reload = fixture.start { await model.reload(); return true }
+        let reloaded = await reload.finished.wait(for: .seconds(2))
+        XCTAssertTrue(reloaded, "The local reload that publishes the next draft must not wait for background work")
+        let readyForAnotherSend = await nextDraftReady.finished.wait(for: .seconds(2))
+        XCTAssertTrue(readyForAnotherSend, "The actual composer must accept another Send before background release")
+        XCTAssertEqual(nextDraftReady.result, true)
+        XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "Next mounted draft remains unsent")
+        XCTAssertNil(model.presentedError)
+        let counts = await fixture.handler.counts()
+        XCTAssertEqual(counts.schedule, 2)
+        XCTAssertEqual(counts.explicit, 0)
+        XCTAssertEqual(counts.status, 0)
+        XCTAssertTrue(fixture.handler.pause.isHeld, "All rendered/model/durable assertions must precede release")
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @MainActor
+    private func mountedComposerSendEnabled(_ element: AXUIElement) -> Bool? {
+        var enabled: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &enabled) == .success else { return nil }
+        return enabled as? Bool
+    }
+}
+
+@MainActor
+private final class MountedComposerFeedbackFixture {
+    let root: URL
+    let storeURL: URL
+    let suite: String
+    let defaults: UserDefaults
+    let pasteboard: NSPasteboard
+    let handler: MountedComposerFeedbackScheduler
+    let model: AppModel
+    var panel: SnipSnapPanel?
+    var frameObservation: AnyCancellable?
+    var frameContinuation: AsyncStream<Void>.Continuation?
+    private var work: [MountedComposerFeedbackWork] = []
+    private init(root: URL, library: SwiftDataSnipLibrary, defaults: UserDefaults, suite: String) {
+        self.root = root
+        storeURL = root.appendingPathComponent("snips.store")
+        self.defaults = defaults
+        self.suite = suite
+        pasteboard = NSPasteboard(name: .init("MountedComposerFeedback.\(UUID())"))
+        handler = MountedComposerFeedbackScheduler()
+        model = AppModel(library: library, defaults: defaults,
+            clipboardHistory: ClipboardHistory(pasteboard: pasteboard, defaults: defaults,
+                storeURL: root.appendingPathComponent("clipboard.json")), cloudSyncHandler: handler)
+    }
+    static func make() throws -> MountedComposerFeedbackFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MountedComposerFeedback-\(UUID())")
+        let suite = "MountedComposerFeedback.\(UUID())"
+        do {
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.set(true, forKey: "clipboardHistoryPaused")
+            let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+            return MountedComposerFeedbackFixture(root: root, library: library, defaults: defaults, suite: suite)
+        } catch {
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+            NSLog("MountedComposerFeedback retained failed setup store root: %@", root.path)
+            throw error
+        }
+    }
+    func start(_ operation: @escaping @MainActor () async -> Bool) -> MountedComposerFeedbackWork {
+        let operation = MountedComposerFeedbackWork(operation)
+        work.append(operation)
+        return operation
+    }
+    func ready(_ signal: MountedComposerFeedbackSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "Mounted composer setup/readiness failed: \(stage)")
+        return ready
+    }
+    func cleanUp() async {
+        let cleanup = Task { @MainActor in
+            handler.pause.release()
+            frameContinuation?.finish()
+            frameObservation?.cancel()
+            work.forEach { $0.task?.cancel() }
+            let deadline = ContinuousClock.now + .seconds(30)
+            var settled = true
+            for operation in work {
+                let joined = await operation.finished.wait(for: deadline - ContinuousClock.now)
+                XCTAssertTrue(joined, "Mounted composer cleanup could not join an owned observer/caller")
+                if joined { await operation.task?.value } else { settled = false }
+            }
+            let draining = MountedComposerFeedbackWork { await self.model.reload(); return true }
+            work.append(draining)
+            let drained = await draining.finished.wait(for: deadline - ContinuousClock.now)
+            XCTAssertTrue(drained, "Mounted composer cleanup could not drain the model command")
+            if drained { await draining.task?.value } else { draining.task?.cancel() }
+            let joined = await handler.finish(until: deadline)
+            XCTAssertTrue(joined, "Mounted composer cleanup left the scheduled worker active")
+            guard settled && drained && joined else {
+                NSLog("MountedComposerFeedback retained live ownership and store root: %@", root.path)
+                return
+            }
+            panel?.orderOut(nil)
+            panel?.contentViewController = nil
+            panel = nil
+            work.removeAll()
+            frameObservation = nil
+            frameContinuation = nil
+            pasteboard.releaseGlobally()
+            defaults.removePersistentDomain(forName: suite)
+            NSLog("MountedComposerFeedback retained store root: %@", root.path)
+        }
+        await cleanup.value
+    }
+}
+
+
+private final class MountedComposerFeedbackSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            return pending
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                let id = UUID()
+                return await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in
+                        let immediate: Bool? = self.lock.withLock {
+                            if self.fired { return true }
+                            if Task.isCancelled { return false }
+                            self.waiters[id] = continuation
+                            return nil
+                        }
+                        if let immediate { continuation.resume(returning: immediate) }
+                    }
+                } onCancel: {
+                    self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+                }
+            }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch {}
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class MountedComposerFeedbackPause: @unchecked Sendable {
+    let entered = MountedComposerFeedbackSignal()
+    private let lock = NSLock()
+    private var released = false
+    private var pending: CheckedContinuation<Void, Never>?
+    var isHeld: Bool { entered.isSet && lock.withLock { !released } }
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            let resume = lock.withLock {
+                if released { return true }
+                pending = continuation
+                return false
+            }
+            entered.fire()
+            if resume { continuation.resume() }
+        }
+    }
+    func release() {
+        let continuation = lock.withLock {
+            released = true
+            let continuation = pending
+            pending = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+}
+
+private actor MountedComposerFeedbackScheduler: OptionalCloudSyncHandling {
+    nonisolated let pause = MountedComposerFeedbackPause()
+    nonisolated let localSubmission = MountedComposerFeedbackSignal()
+    nonisolated let finished = MountedComposerFeedbackSignal()
+    private var worker: Task<Void, Never>?
+    private var scheduled = 0
+    private var explicit = 0
+    private var status = 0
+    func scheduleSyncAfterLocalChange() {
+        scheduled += 1
+        if worker == nil {
+            worker = Task { [pause, finished] in
+                await pause.suspend()
+                finished.fire()
+            }
+        }
+        if scheduled >= 2 { localSubmission.fire() }
+    }
+    func counts() -> (schedule: Int, explicit: Int, status: Int) { (scheduled, explicit, status) }
+    func finish(until deadline: ContinuousClock.Instant) async -> Bool {
+        guard let worker else { return true }
+        worker.cancel()
+        guard await finished.wait(for: deadline - ContinuousClock.now) else { return false }
+        await worker.value
+        return true
+    }
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { explicit += 1 }
+    func isCloudSyncActive() async throws -> Bool { status += 1; return true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { status += 1; return [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.transferUnsupported
+    }
+    func clearDownloadedFiles() async throws {}
+}
+
+@MainActor
+private final class MountedComposerFeedbackWork {
+    let finished = MountedComposerFeedbackSignal()
+    var result: Bool?
+    var task: Task<Void, Never>?
+    init(_ operation: @escaping @MainActor () async -> Bool) {
+        task = Task { [self] in
+            result = await operation()
+            finished.fire()
+        }
+    }
+}

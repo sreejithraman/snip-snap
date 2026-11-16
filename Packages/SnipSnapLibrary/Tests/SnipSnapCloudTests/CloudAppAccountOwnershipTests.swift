@@ -343,9 +343,11 @@ private struct Fixture: Sendable {
 
   static func make(
     attachmentPause: OwnerPause? = nil,
-    makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil
+    makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil,
+    normalScheduling: OwnerNormalScheduleProbe? = nil
   ) async throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudAppOwner-\(UUID())")
+    if normalScheduling != nil { NSLog("MacScheduleOwner allocated retained store root: %@", root.path) }
     let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
     let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
     let server = FakeCloudServer()
@@ -365,16 +367,36 @@ private struct Fixture: Sendable {
     let lifecycle = SnipSnapICloudSyncLifecycle(rootURL: root, sourceLibrary: source,
       syncModeStore: SnipSyncModeStore(persistence), cloudScope: "private", accountLineage: "account-a",
       accountStateSource: account, ownerName: "owner", controlTransport: control,
-      makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
+      makeRecordTransport: { context -> any CloudRecordTransport in
+        let transport = FakeCloudRecordTransport(server: server, namespace: context.namespace)
+        if let normalScheduling {
+          return OwnerNormalScheduleTransport(base: transport, probe: normalScheduling)
+        }
+        return transport
+      },
       makeDescriptor: { descriptor })
     let gate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(synchronize: { try await lifecycle.synchronize() },
+      scheduleAutomaticSync: {
+        guard let normalScheduling else { return }
+        normalScheduling.workerEntered.fire()
+        defer { normalScheduling.workerFinished.fire() }
+        do { try await lifecycle.scheduleAutomaticSync() }
+        catch { normalScheduling.recordFailure(); throw error }
+      },
       enable: { try await lifecycle.enableICloudSync() },
       disable: { try await lifecycle.disableICloudSync($0) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() }, operationGate: gate)
+    let schedule: AppleAccountCacheCoordinatorHandler.ScheduleAction? = normalScheduling.map { probe in
+      return { @Sendable in
+        await session.scheduleAutomaticSync()
+        probe.submitted.fire()
+      }
+    }
     let handler = lifecycle.makeAccountCacheHandler(operationGate: gate,
       syncWhenPossible: { _ = try? await session.synchronize() },
+      scheduleSyncAfterLocalChange: schedule,
       makeAttachmentCoordinator: { library, namespace, descriptor in
         if let makeAttachmentCoordinator {
           return await makeAttachmentCoordinator(library, namespace, descriptor)
@@ -610,5 +632,220 @@ private actor CacheInstallingAttachment: CloudAttachmentTransferring {
   func transferStates() async throws -> [UUID: CloudAttachmentTransferState] {
     let snapshot = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     return Dictionary(uniqueKeysWithValues: snapshot.publications.map { ($0.metadata.attachmentID, $0.transferState) })
+  }
+}
+
+
+extension CloudAppAccountOwnershipTests {
+  @MainActor
+  func testNormalSchedulingReturnsBehindHeldHandlerControlFetchWhileManagedWritesCommit() async throws {
+    let scheduling = OwnerNormalScheduleProbe()
+    let fixture = try await Fixture.make(normalScheduling: scheduling)
+    defer { NSLog("MacScheduleOwner retained store root: %@", fixture.root.path) }
+    let managed = try await fixture.persistence.activeLibrary()
+    let before = try await fixture.persistence.snapshot()
+    let storeURL = await fixture.persistence.storeFileURL(before.activeStore)
+    let pause = OwnerControlTransport.FetchPause()
+    await fixture.control.pauseNextFetch(pause)
+    let readFinished = OwnerNormalScheduleSignal()
+    let read = Task {
+      defer { readFinished.fire() }
+      _ = try await fixture.handler.syncedAttachmentStates()
+    }
+    var work: [(Task<Void, any Error>, OwnerNormalScheduleSignal)] = [(read, readFinished)]
+
+    func exercise() async throws {
+      let ready = await XCTWaiter.fulfillment(of: [pause.entered], timeout: 30)
+      XCTAssertEqual(ready, .completed, "The real account handler must hold fetchControl and its shared app gate")
+      guard ready == .completed else { return }
+      XCTAssertTrue(pause.isHeld)
+      let localFinished = OwnerNormalScheduleSignal()
+      let local = Task {
+        defer { localFinished.fire() }
+        try await Self.add("Mac normal scheduling durable local write", to: managed)
+        await fixture.handler.scheduleSyncAfterLocalChange()
+      }
+      work.append((local, localFinished))
+      let completed = await localFinished.wait(for: .seconds(2))
+      XCTAssertTrue(pause.isHeld)
+      XCTAssertTrue(completed, "Managed local commit and real schedule submission must finish before control release")
+      guard completed else { return }
+      try await local.value
+      XCTAssertTrue(scheduling.submitted.isSet, "The injected production-equivalent action must enqueue on the real session")
+      let enteredTooSoon = await scheduling.workerEntered.wait(for: .milliseconds(100))
+      XCTAssertFalse(enteredTooSoon, "Normal session work must respect the handler's shared gate")
+      let reader = try SwiftDataSnipLibrary(storeURL: storeURL)
+      let durable = try await reader.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(durable.snips.map(\.content), ["Mac normal scheduling durable local write"])
+      XCTAssertEqual(durable.snips.map(\.isDone), [false])
+      let current = try await fixture.persistence.snapshot()
+      var expectedStore = before.activeStore
+      expectedStore.revision = current.activeStore.revision
+      XCTAssertEqual(current.activeStore, expectedStore)
+      XCTAssertGreaterThan(current.activeStore.revision, before.activeStore.revision)
+      XCTAssertNil(current.transition)
+      XCTAssertNil(current.accountIsolation)
+      let fetches = await fixture.control.fetchCount()
+      XCTAssertEqual(fetches, 1)
+      XCTAssertTrue(pause.isHeld, "Durability and enqueue assertions must precede any release")
+
+      pause.release()
+      let returned = await readFinished.wait(for: .seconds(30))
+      XCTAssertTrue(returned)
+      guard returned else { return }
+      try await read.value
+      let entered = await scheduling.workerEntered.wait(for: .seconds(30))
+      let finished = await scheduling.workerFinished.wait(for: .seconds(30))
+      XCTAssertTrue(entered, "The queued normal schedule action must actually run after gate release")
+      XCTAssertTrue(finished, "The actual lifecycle scheduler must finish")
+      XCTAssertFalse(scheduling.failed)
+      XCTAssertTrue(scheduling.transportScheduled.isSet, "The actual record coordinator must submit automatic work")
+      XCTAssertEqual(scheduling.explicitTransfers, 0, "The automatic provider capability must prevent explicit fetch/send fallback")
+      let finalFetches = await fixture.control.fetchCount()
+      XCTAssertEqual(finalFetches, 1, "Normal scheduling must not turn into an explicit control fetch")
+    }
+
+    func cleanUp() async {
+      let cleanup = Task { @MainActor in
+        pause.release()
+        work.forEach { $0.0.cancel() }
+        let deadline = ContinuousClock.now + .seconds(30)
+        var settled = true
+        for (task, finished) in work {
+          let joined = await finished.wait(for: deadline - ContinuousClock.now)
+          XCTAssertTrue(joined, "Normal scheduling proof cleanup could not join an owned caller")
+          if joined { _ = await task.result } else { settled = false }
+        }
+        if scheduling.submitted.isSet {
+          let joined = await scheduling.workerFinished.wait(for: deadline - ContinuousClock.now)
+          XCTAssertTrue(joined, "Normal scheduling proof cleanup left the session worker active")
+          settled = settled && joined
+          if joined {
+            let drained = OwnerNormalScheduleSignal()
+            let drain = Task {
+              defer { drained.fire() }
+              _ = try await fixture.session.activeLibrary()
+            }
+            work.append((drain, drained))
+            let released = await drained.wait(for: deadline - ContinuousClock.now)
+            XCTAssertTrue(released, "Normal scheduling proof cleanup could not reacquire the shared gate")
+            if released {
+              do { try await drain.value }
+              catch { XCTFail("Normal scheduling cleanup gate drain failed: \(error)"); settled = false }
+            } else { drain.cancel(); settled = false }
+          }
+        }
+        if !settled { NSLog("MacScheduleOwner retained active ownership and store root: %@", fixture.root.path) }
+      }
+      await cleanup.value
+    }
+
+    do {
+      try await exercise()
+      await cleanUp()
+    } catch {
+      await cleanUp()
+      throw error
+    }
+  }
+}
+
+private final class OwnerNormalScheduleProbe: @unchecked Sendable {
+  let submitted = OwnerNormalScheduleSignal()
+  let workerEntered = OwnerNormalScheduleSignal()
+  let workerFinished = OwnerNormalScheduleSignal()
+  let transportScheduled = OwnerNormalScheduleSignal()
+  private let lock = NSLock()
+  private var failure = false
+  private var transfers = 0
+  var failed: Bool { lock.withLock { failure } }
+  var explicitTransfers: Int { lock.withLock { transfers } }
+  func recordFailure() { lock.withLock { failure = true } }
+  func recordExplicitTransfer() { lock.withLock { transfers += 1 } }
+}
+
+// The controlled provider accepts scheduling, while every existing transport operation is forwarded.
+private actor OwnerNormalScheduleTransport: CloudRecordTransport, CloudAutomaticSyncScheduling {
+  let base: FakeCloudRecordTransport
+  let probe: OwnerNormalScheduleProbe
+  private var scheduled: [CloudOutboundBatch] = []
+  init(base: FakeCloudRecordTransport, probe: OwnerNormalScheduleProbe) { self.base = base; self.probe = probe }
+  func start(state: CloudEngineStateEnvelope?) async throws { try await base.start(state: state) }
+  func start(state: CloudEngineStateEnvelope?, initialOutbound: CloudOutboundBatch?) async throws {
+    try await base.start(state: state, initialOutbound: initialOutbound)
+  }
+  func start(state: CloudEngineStateEnvelope?, initialOutbound: CloudOutboundBatch?,
+             outboundAdmission: CloudRecordOutboundAdmission) async throws {
+    try await base.start(state: state, initialOutbound: initialOutbound, outboundAdmission: outboundAdmission)
+  }
+  func reset() async { await base.reset() }
+  func scheduleAutomaticSync(_ batch: CloudOutboundBatch) {
+    scheduled.append(batch)
+    probe.transportScheduled.fire()
+  }
+  func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
+    probe.recordExplicitTransfer()
+    return try await base.fetch(scope: scope)
+  }
+  func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+    probe.recordExplicitTransfer()
+    return try await base.send(batch)
+  }
+  func confirmApplied(_ batchID: UUID) async throws { try await base.confirmApplied(batchID) }
+  func confirmApplied(_ batchID: UUID, outboundAdmission: CloudRecordOutboundAdmission) async throws {
+    try await base.confirmApplied(batchID, outboundAdmission: outboundAdmission)
+  }
+  func pendingEvent() async -> CloudRecordTransportEvent? { await base.pendingEvent() }
+  func finishCurrentSyncCycle() async throws { try await base.finishCurrentSyncCycle() }
+  func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot? {
+    try await base.fetchRecord(id, fields: fields)
+  }
+  func fetchAsset(_ id: CloudRecordID, field: String, destination: CloudAssetDestination) async throws -> CloudAssetReceipt? {
+    try await base.fetchAsset(id, field: field, destination: destination)
+  }
+}
+
+// Timeout cancels only a waiter, never the held transport or session work.
+private final class OwnerNormalScheduleSignal: @unchecked Sendable {
+  private let lock = NSLock()
+  private var fired = false
+  private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+  var isSet: Bool { lock.withLock { fired } }
+  func fire() {
+    let pending = lock.withLock {
+      fired = true
+      let pending = Array(waiters.values)
+      waiters.removeAll()
+      return pending
+    }
+    pending.forEach { $0.resume(returning: true) }
+  }
+  func wait(for timeout: Duration) async -> Bool {
+    if isSet { return true }
+    return await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
+            let immediate: Bool? = self.lock.withLock {
+              if self.fired { return true }
+              if Task.isCancelled { return false }
+              self.waiters[id] = continuation
+              return nil
+            }
+            if let immediate { continuation.resume(returning: immediate) }
+          }
+        } onCancel: {
+          self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+        }
+      }
+      group.addTask {
+        do { try await Task.sleep(for: timeout) } catch {}
+        return false
+      }
+      let result = await group.next() ?? false
+      group.cancelAll()
+      return result
+    }
   }
 }
