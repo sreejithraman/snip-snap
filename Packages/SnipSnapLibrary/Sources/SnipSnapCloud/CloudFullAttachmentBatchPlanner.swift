@@ -10,6 +10,7 @@ struct CloudFullAttachmentBatchPlanner {
 
   private let dataZone: CloudZoneID
   private let payloadZone: CloudZoneID?
+  private let heldSnipIDs: Set<UUID>
   private let attachmentOperationIDs: Set<CloudRecordID>
   private let outboundOperations: [CloudRecordID: CloudOutboundOperation]
   private let sentItemResults: [CloudRecordID: CloudSendItemResult]
@@ -23,8 +24,10 @@ struct CloudFullAttachmentBatchPlanner {
     attachmentOperationIDs: Set<CloudRecordID>,
     outboundOperations: [CloudRecordID: CloudOutboundOperation],
     sentItemResults: [CloudRecordID: CloudSendItemResult],
-    storage: CloudAttachmentStorageSnapshot
+    storage: CloudAttachmentStorageSnapshot,
+    heldSnipIDs: Set<UUID> = []
   ) {
+    self.heldSnipIDs = heldSnipIDs
     self.dataZone = dataZone
     self.payloadZone = payloadZone
     self.attachmentOperationIDs = attachmentOperationIDs
@@ -157,6 +160,13 @@ struct CloudFullAttachmentBatchPlanner {
     let operation = outboundOperations[id]
     if let local = publicationByMetadataIdentity[identity] {
       if operation == nil {
+        // A held sibling may never receive its own unknownItem. Preserve its current genuine
+        // edit through the same remap; a move or unchanged companion still yields to deletion.
+        if heldSnipIDs.contains(local.metadata.snipID), local.isLocallyPresent,
+          local.localSourceURL != nil, !local.metadataAccepted, !onlyChangesPosition(local)
+        {
+          return .handled(metadataUnknown(local))
+        }
         return .handled(.remoteMetadataDeleted(metadataIdentity: identity))
       }
       if case .delete? = operation {
@@ -193,7 +203,7 @@ struct CloudFullAttachmentBatchPlanner {
     }
     if let local = publicationByMetadataIdentity[identity] {
       switch operation {
-      case .save:
+      case .save(let draft):
         if case .unknownItem? = sentItemResults[id] {
           if !local.isLocallyPresent {
             return .handled(.metadataDeleteAccepted(
@@ -206,9 +216,11 @@ struct CloudFullAttachmentBatchPlanner {
           if local.metadataAccepted || onlyChangesPosition(local) { return .handled(nil) }
           return .handled(metadataUnknown(local))
         }
-        guard local.isLocallyPresent, local.payloadAccepted, !local.metadataAccepted else {
-          return .handled(nil)
-        }
+        // Accepted companions now submit saves too. A real failure belongs to that save only
+        // while its content and acknowledged base still describe the current intent.
+        guard local.isLocallyPresent, local.payloadAccepted,
+          let current = try? CloudAttachmentRecordCodec.metadataDraft(local), draft == current
+        else { return .handled(nil) }
       case .delete:
         guard !local.isLocallyPresent else { return .handled(nil) }
       }

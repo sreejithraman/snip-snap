@@ -11,6 +11,7 @@ struct CloudFullBatchPlanner {
   private let stored: CloudFullStorageSnapshot
   let attachmentStorage: CloudAttachmentStorageSnapshot
   let recoveryEvents: [CloudFullRecoveryInput]
+  private let heldAttachmentSnipIDs: Set<UUID>
 
   init(
     namespaceKey: CloudSyncNamespaceKey,
@@ -20,8 +21,10 @@ struct CloudFullBatchPlanner {
     local: SnipLibrarySnapshot,
     stored: CloudFullStorageSnapshot,
     attachmentStorage: CloudAttachmentStorageSnapshot,
-    recoveryEvents: [CloudFullRecoveryInput]
+    recoveryEvents: [CloudFullRecoveryInput],
+    heldAttachmentSnipIDs: Set<UUID> = []
   ) {
+    self.heldAttachmentSnipIDs = heldAttachmentSnipIDs
     self.namespaceKey = namespaceKey
     self.dataZone = dataZone
     self.payloadZone = payloadZone
@@ -87,7 +90,8 @@ struct CloudFullBatchPlanner {
       attachmentOperationIDs: normalized.attachmentOperationIDs,
       outboundOperations: normalized.outboundOperations,
       sentItemResults: normalized.sentItemResults,
-      storage: attachmentStorage
+      storage: attachmentStorage,
+      heldSnipIDs: heldAttachmentSnipIDs
     )
     var recoveryInputs = normalized.recoveryInputs
     var recoveryReviews: [CloudRecoveryReviewInput] = []

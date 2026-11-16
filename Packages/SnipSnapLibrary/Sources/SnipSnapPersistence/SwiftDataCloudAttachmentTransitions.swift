@@ -7,7 +7,8 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
-    context: ModelContext
+    context: ModelContext,
+    heldSnipIDs: Set<UUID> = []
   ) throws -> CloudAttachmentRemoteChanges {
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
@@ -110,6 +111,32 @@ extension SwiftDataSnipLibrary {
       removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
       context.delete(row)
       byAttachment.removeValue(forKey: row.attachmentID)
+    }
+    // A staged held-delete plan must not remove a public-library edit made after planning.
+    // Validate under the commit lock; a mismatch uses the existing reconcile/replan path.
+    func requireCurrentHeldIntent(_ row: StoredCloudAttachmentPublication) throws {
+      guard heldSnipIDs.contains(row.snipID) else { return }
+      let reference = storedReferences[row.attachmentID]?.first { $0.snipID == row.snipID }
+      guard row.lifecycle.isLocallyPresent == (reference != nil) else {
+        throw CloudAttachmentStorageError.staleTransition
+      }
+      guard row.lifecycle.isLocallyPresent else { return }
+      guard let reference, reference.position == row.position,
+        let attachment = storedAttachments[row.attachmentID]?.first,
+        attachment.fileName == row.fileName, attachment.contentType == row.contentType
+      else { throw CloudAttachmentStorageError.staleTransition }
+      let localSource = attachment.relativePath.hasPrefix("CloudDownloads/") ? nil : attachment.relativePath
+      guard localSource == row.lifecycle.localSourceRelativePath else {
+        throw CloudAttachmentStorageError.staleTransition
+      }
+      if let localSource {
+        let url = try Self.validatedChild(relativePath: localSource, root: attachmentRootURL)
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        let digest = try AttachmentFileIO.digest(at: url)
+        guard values.isRegularFile == true, Int64(values.fileSize ?? -1) == row.byteCount,
+          digest == row.sha256
+        else { throw CloudAttachmentStorageError.staleTransition }
+      }
     }
     for transition in transitions {
       switch transition {
@@ -236,6 +263,7 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
+        try requireCurrentHeldIntent(row)
         let replacementLifecycle = try row.lifecycle.remappedReplacement(
           expectedRevision: expected,
           freshPayload: CloudTextStorageIdentity(
@@ -353,6 +381,7 @@ extension SwiftDataSnipLibrary {
       case .remoteMetadataDeleted(let metadataIdentity):
         guard let row = byMetadataIdentity[metadataIdentity]
         else { continue }
+        try requireCurrentHeldIntent(row)
         cleanupQueue.queue(row.lifecycle.payloadCleanup)
         for cleanup in row.lifecycle.payloadCleanupsAfterMetadataDeletion {
           cleanupQueue.queue(cleanup)

@@ -8,6 +8,7 @@ extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
     acknowledgedValues: CloudAttachmentAcknowledgedValues,
+    heldAttachmentSnipIDs: Set<UUID> = [],
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
@@ -454,7 +455,8 @@ extension SwiftDataSnipLibrary {
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
         acknowledgedValues: acknowledgedValues,
-        context: context
+        context: context,
+        heldSnipIDs: heldAttachmentSnipIDs
       )
       try lock.check()
       try materializeCloudAttachments(
