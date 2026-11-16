@@ -48,12 +48,9 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
     let observer = try f.observer()
     // A callback forwarded as the underlying engine is stale/foreign to the transport.
     await f.transport.handle(.accountChange, from: f.base)
-    let ignored = await f.transport.pendingEvent()
+    let ignored = await f.transport.contractHeadEvent()
     XCTAssertNil(ignored)
-    await observer.forward(.willFetchChanges)
-    await observer.forward(.didFetchRecordZoneChanges(zoneID: f.id.zoneID, error: nil))
-    await observer.forward(.didFetchChanges)
-    while let event = await f.transport.pendingEvent() { try await f.transport.confirmApplied(event.id) }
+    try await f.confirmInitialFetchEvents()
     let fetchOptions = await observer.fetchOptions()
     XCTAssertEqual(fetchOptions.scope, .zoneIDs([f.id.zoneID]))
     let draft = CloudRecordDraft.text(id: CloudKitRecordMapper.id(for: f.id), snipID: UUID(), text: "literal original")
@@ -69,7 +66,7 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
       failedRecordSaves: [], failedRecordDeletes: []))
     await observer.forward(.didSendChanges)
     var saved: [CloudRecordSnapshot] = []
-    while let event = await f.transport.pendingEvent() {
+    while let event = await f.transport.contractHeadEvent() {
       if case .batch(let pending) = event, case .sent(let sent) = pending.batch {
         saved += sent.items.compactMap { if case .saved(let value) = $0 { value } else { nil } }
       }
@@ -85,7 +82,7 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
       failedRecordSaves: [(recordID: f.id, error: CKError(.unknownItem))], failedRecordDeletes: []))
     await observer.forward(.didSendChanges)
     var unknown: [CloudRecordID] = []
-    while let event = await f.transport.pendingEvent() {
+    while let event = await f.transport.contractHeadEvent() {
       if case .batch(let pending) = event, case .sent(let sent) = pending.batch {
         unknown += sent.items.compactMap { if case .unknownItem(let id) = $0 { id } else { nil } }
       }
@@ -99,7 +96,7 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
     XCTAssertEqual(trace.last { $0.kind == "sent-event-before" }?.errors.values.first, CKError.Code.unknownItem.rawValue)
     await f.transport.reset()
     await observer.forward(.accountChange)
-    let afterReset = await f.transport.pendingEvent()
+    let afterReset = await f.transport.contractHeadEvent()
     XCTAssertNil(afterReset)
   }
 
@@ -124,10 +121,7 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: f.root) }
     try await f.transport.start(state: nil)
     let observer = try f.observer()
-    await observer.forward(.willFetchChanges)
-    await observer.forward(.didFetchRecordZoneChanges(zoneID: f.id.zoneID, error: nil))
-    await observer.forward(.didFetchChanges)
-    while let event = await f.transport.pendingEvent() { try await f.transport.confirmApplied(event.id) }
+    try await f.confirmInitialFetchEvents()
     let drafts = (0..<3).map { index in
       let uuid = CloudDevelopmentAtomicContract.snip(100 + index).uuidString.lowercased()
       return CloudRecordDraft(id: CloudRecordID(zone: CloudKitRecordMapper.id(for: f.id).zone, name: "a-\(uuid)"),
@@ -308,10 +302,7 @@ final class CloudDevelopmentAtomicContractTests: XCTestCase {
       }
       try await f.transport.start(state: nil)
       let observer = try f.observer()
-      await observer.forward(.willFetchChanges)
-      await observer.forward(.didFetchRecordZoneChanges(zoneID: f.id.zoneID, error: nil))
-      await observer.forward(.didFetchChanges)
-      while let event = await f.transport.pendingEvent() { try await f.transport.confirmApplied(event.id) }
+      try await f.confirmInitialFetchEvents()
       try await f.transport.scheduleAutomaticSync(plan)
       await observer.forward(.willSendChanges)
       let supplied = await observer.batch(scope: .all)
@@ -382,6 +373,30 @@ private final class ObserverFixture {
       })
   }
   func observer() throws -> CloudDevelopmentEngineObserver { try XCTUnwrap(cell.value.withLock { $0 }) }
+
+  func confirmInitialFetchEvents() async throws {
+    let observer = try observer()
+    await observer.forward(.willFetchChanges)
+    await observer.forward(.didFetchRecordZoneChanges(zoneID: id.zoneID, error: nil))
+    await observer.forward(.didFetchChanges)
+    let head = await transport.contractHeadEvent()
+    let event = try XCTUnwrap(head, "The scripted initial fetch must be queued before acknowledgement")
+    guard case .batch(let pending) = event, case .fetched(let batch) = pending.batch else {
+      XCTFail("Expected the initial fetched batch, not an empty queue or another checkpoint")
+      throw ProbeFailure.operation
+    }
+    XCTAssertTrue(batch.isInitialFetch)
+    XCTAssertTrue(batch.items.isEmpty)
+    XCTAssertEqual(batch.zoneEvents, [.fetched(CloudKitRecordMapper.id(for: id.zoneID))])
+    try await transport.confirmApplied(event.id)
+    let remaining = await transport.contractHeadEvent()
+    XCTAssertNil(remaining, "Acknowledge the initial fetched batch before beginning a send")
+  }
+}
+
+private extension CloudKitRecordTransport {
+  /// Resolve the actor implementation; an async concrete call can choose the protocol's nil default.
+  func contractHeadEvent() -> CloudRecordTransportEvent? { pendingEvent() }
 }
 
 private final class ObserverSlot: Sendable {
