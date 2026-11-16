@@ -158,6 +158,117 @@ final class CloudDevelopmentHarnessWave1Tests: XCTestCase {
     }
   }
 
+
+  func testCancellationHasFixedSafeAndOutwardCause() {
+    XCTAssertEqual(CloudDevelopmentAtomicContract.safe(CancellationError()), "cancelled")
+    let outward = CloudDevelopmentTransportContract.StepFailure(stage: "atomic-contract", error: CancellationError())
+    XCTAssertEqual(outward.localizedDescription, "atomic-contract: cancelled")
+    let unknown = NSError(domain: "PRIVATE_ACCOUNT", code: 7,
+      userInfo: [NSLocalizedDescriptionKey: "PRIVATE_TOKEN /private/body"])
+    XCTAssertEqual(CloudDevelopmentAtomicContract.safe(unknown), "redacted-error")
+    XCTAssertEqual(CloudDevelopmentTransportContract.StepFailure(stage: "atomic-contract", error: unknown).localizedDescription,
+      "atomic-contract: redacted-error")
+  }
+
+  func testBaselineWrappedCancellationSurvivesDurablePhaseAndHostRendering() async throws {
+    let root = scratch()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zone = CloudZoneID(name: "snipsnap-contract-cancelled-baseline", ownerName: "owner")
+    let evidence = try CloudDevelopmentContractEvidence(directory: root, zoneNames: [zone.name])
+    do {
+      try await cancelledBaseline(zone: zone)
+      XCTFail("The baseline must propagate its cancellation input")
+    } catch {
+      let safe = CloudDevelopmentAtomicContract.safe(error)
+      XCTAssertEqual(safe, "fake: start: cancelled")
+      XCTAssertEqual(error.localizedDescription, "fake: start: cancelled")
+      let phase = CloudDevelopmentTransportContract.StepFailure(stage: "atomic-contract", error: error)
+      let host = CloudDevelopmentTransportContract.StepFailure(stage: "Development contract", error: phase)
+      XCTAssertEqual(host.localizedDescription, "Development contract: atomic-contract: fake: start: cancelled")
+      var manifest = CloudDevelopmentContractManifest(
+        runID: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!,
+        sourceRevision: String(repeating: "a", count: 40), harnessRevision: String(repeating: "a", count: 40),
+        accountFingerprint: String(repeating: "b", count: 64), startedAt: Date(timeIntervalSince1970: 0),
+        workDeadline: Date(timeIntervalSince1970: 1800), cleanupDeadline: Date(timeIntervalSince1970: 2400), zones: [zone.name])
+      manifest.results["baseline"] = "failed-or-inconclusive: \(safe)"
+      try evidence.write(manifest, named: "manifest.json")
+      let saved = try object(root.appendingPathComponent("manifest.json"))
+      let results = try XCTUnwrap(saved["results"] as? [String: String])
+      XCTAssertEqual(results["baseline"], "failed-or-inconclusive: fake: start: cancelled")
+    }
+  }
+
+  func testCancellationAndIndependentCleanupFailureKeepBothCausesDurably() async throws {
+    let root = scratch()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zone = CloudZoneID(name: "snipsnap-contract-cancelled-with-cleanup", ownerName: "owner")
+    let evidence = try CloudDevelopmentContractEvidence(directory: root, zoneNames: [zone.name])
+    let retainedCleanup = Mutex<CloudDevelopmentCleanupFailure?>(nil)
+    do {
+      try await CloudDevelopmentTransportContract.runWithCleanup(operation: {
+        try await self.cancelledBaseline(zone: zone)
+      }, cleanup: {
+        do {
+          _ = try await CloudDevelopmentTransportContract.cleanupZones([zone], validateAccount: {},
+            delete: { _ in throw CKError(.permissionFailure) }, exists: { _ in true })
+        } catch let failure as CloudDevelopmentCleanupFailure {
+          retainedCleanup.withLock { $0 = failure }
+          throw failure
+        }
+      })
+      XCTFail("Cancellation and independent cleanup failure must both escape")
+    } catch {
+      let safe = CloudDevelopmentAtomicContract.safe(error)
+      XCTAssertTrue(safe.contains("operation: fake: start: cancelled"))
+      XCTAssertTrue(error.localizedDescription.contains("operation: fake: start: cancelled"))
+      XCTAssertTrue(safe.contains("cleanup: snipsnap-contract-cancelled-with-cleanup"))
+      XCTAssertTrue(safe.contains("zoneCleanupWasNotConfirmed"))
+      XCTAssertTrue(safe.contains("CKError(10)"))
+      try evidence.write(["failure": safe], named: "failure.json")
+      let failure = try object(root.appendingPathComponent("failure.json"))
+      XCTAssertTrue((failure["failure"] as? String)?.contains("operation: fake: start: cancelled") == true)
+      let cleanup = try XCTUnwrap(retainedCleanup.withLock { $0 })
+      try evidence.write(cleanup, named: "cleanup.json")
+      let saved = try object(root.appendingPathComponent("cleanup.json"))
+      let outcomes = try XCTUnwrap(saved["outcomes"] as? [[String: Any]])
+      XCTAssertEqual(outcomes.count, 1)
+      let outcome = try XCTUnwrap(outcomes.first)
+      XCTAssertEqual(outcome["zoneName"] as? String, "snipsnap-contract-cancelled-with-cleanup")
+      XCTAssertEqual(outcome["verifiedAbsent"] as? Bool, false)
+      let attempts = try XCTUnwrap(outcome["attempts"] as? [[String: Any]])
+      XCTAssertEqual(attempts.compactMap { $0["number"] as? Int }, [1, 1, 2, 2, 3, 3])
+      XCTAssertEqual(attempts.compactMap { $0["operation"] as? String }, ["delete", "read", "delete", "read", "delete", "read"])
+      XCTAssertEqual(attempts.compactMap { $0["result"] as? String }, ["CKError(10)", "present", "CKError(10)", "present", "CKError(10)", "present"])
+    }
+  }
+
+  func testRecoveredCleanupAttemptRetainsCancellationInDurableHistory() async throws {
+    let root = scratch()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let zone = CloudZoneID(name: "snipsnap-contract-cancelled-cleanup-attempt", ownerName: "owner")
+    let evidence = try CloudDevelopmentContractEvidence(directory: root, zoneNames: [zone.name])
+    let deletes = Mutex(0), reads = Mutex(0)
+    let outcomes = try await CloudDevelopmentTransportContract.cleanupZones([zone], validateAccount: {}, delete: { _ in
+      let number = deletes.withLock { $0 += 1; return $0 }
+      if number == 1 { throw CancellationError() }
+    }, exists: { _ in reads.withLock { $0 += 1; return $0 == 1 } })
+    try evidence.write(outcomes, named: "cleanup.json")
+    let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("cleanup.json"))) as? [[String: Any]])
+    XCTAssertEqual(saved.count, 1)
+    let outcome = try XCTUnwrap(saved.first)
+    XCTAssertEqual(outcome["zoneName"] as? String, "snipsnap-contract-cancelled-cleanup-attempt")
+    XCTAssertEqual(outcome["verifiedAbsent"] as? Bool, true)
+    let attempts = try XCTUnwrap(outcome["attempts"] as? [[String: Any]])
+    XCTAssertEqual(attempts.compactMap { $0["number"] as? Int }, [1, 1, 2, 2])
+    XCTAssertEqual(attempts.compactMap { $0["operation"] as? String }, ["delete", "read", "delete", "read"])
+    XCTAssertEqual(attempts.compactMap { $0["result"] as? String }, ["cancelled", "present", "ok", "absent"])
+  }
+
+  private func cancelledBaseline(zone: CloudZoneID) async throws {
+    try await CloudDevelopmentTransportContract.exercise(transport: BaselineFault(.cancellation),
+      reader: BaselineFault(.cancellation), name: "fake", zone: zone, drafts: [])
+  }
+
 #if os(macOS)
   func testPolicyChecksDoNotDependOnDirtyCallerCheckout() throws {
     let root = scratch()
@@ -352,10 +463,11 @@ actor StrictContractTransport: CloudRecordTransport {
 }
 
 private struct BaselineFault: CloudRecordTransport {
-  enum Mode: Sendable { case creation, cloud }
+  enum Mode: Sendable { case creation, cloud, cancellation }
   let mode: Mode
   init(_ mode: Mode) { self.mode = mode }
   func start(state: CloudEngineStateEnvelope?) async throws {
+    if case .cancellation = mode { throw CancellationError() }
     if case .cloud = mode {
       throw CKError(_nsError: NSError(domain: CKErrorDomain, code: CKError.Code.networkUnavailable.rawValue,
         userInfo: [NSLocalizedDescriptionKey: "PRIVATE_TOKEN /private/body", "account": "PRIVATE_ACCOUNT"]))
