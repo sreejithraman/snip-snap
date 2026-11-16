@@ -184,6 +184,8 @@ public enum SnipAttachmentEdit: Equatable, Sendable {
 
 public struct SnipLibraryExpectation: Sendable {
     public let expectedSnips: [Snip]
+    /// Guards identity, text, ordered attachments, pin and Done state while allowing metadata refreshes.
+    public let expectedCompletionSnips: [Snip]
     public let absentSnipIDs: Set<UUID>
     public let expectedLists: [SnipList]
     public let absentListIDs: Set<UUID>
@@ -192,6 +194,7 @@ public struct SnipLibraryExpectation: Sendable {
 
     public init(
         expectedSnips: [Snip] = [],
+        expectedCompletionSnips: [Snip] = [],
         absentSnipIDs: Set<UUID> = [],
         expectedLists: [SnipList] = [],
         absentListIDs: Set<UUID> = [],
@@ -199,6 +202,7 @@ public struct SnipLibraryExpectation: Sendable {
         expectedListMemberships: [UUID: Set<UUID>] = [:]
     ) {
         self.expectedSnips = expectedSnips
+        self.expectedCompletionSnips = expectedCompletionSnips
         self.absentSnipIDs = absentSnipIDs
         self.expectedLists = expectedLists
         self.absentListIDs = absentListIDs

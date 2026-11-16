@@ -718,7 +718,7 @@ final class IOSAppModel {
                 done: true,
                 feedbackInteraction: nil,
                 copyToast: copyToast,
-                expectation: SnipLibraryExpectation(expectedSnips: snips.filter { unfinishedIDs.contains($0.id) })
+                expectation: SnipLibraryExpectation(expectedCompletionSnips: snips.filter { unfinishedIDs.contains($0.id) })
             )
             return changed ? .markedDone : .failed
         }
