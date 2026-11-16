@@ -188,8 +188,26 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       candidate.storage.deferredEntities.isEmpty, candidate.storage.quarantines.isEmpty else {
       throw FailedEnableEvidenceError.reviewRequired
     }
+    let capturedReferences = Set(capture.records.map(\.reference))
     for entity in candidate.storage.readyEntities {
-      _ = try Self.fields(entity, namespace: namespace.binding)
+      if let repair = entity.graphRepair,
+        !capturedReferences.contains(FailedEnableReference(entity.reference)) {
+        let accepted = try Self.canonicalFields(entity, namespace: namespace.binding)
+        guard case .snip(let snip) = accepted,
+          !entity.isDeferred, entity.wasMaterializedBeforeDeferral,
+          entity.deferredLocalMutation == nil,
+          repair.snipID == entity.reference.domainID,
+          repair.missingListID != SnipList.inbox.id,
+          repair.replacementListID != repair.missingListID,
+          snip.placement.listID == FailedEnableEncoding.uuid(repair.missingListID),
+          !candidate.snapshot.lists.contains(where: { $0.id == repair.missingListID }),
+          candidate.snapshot.lists.contains(where: { $0.id == repair.replacementListID }),
+          candidate.snapshot.snips.first(where: { $0.id == repair.snipID })?.listID
+            == repair.replacementListID
+        else { throw FailedEnableEvidenceError.reviewRequired }
+      } else {
+        _ = try Self.fields(entity, namespace: namespace.binding)
+      }
     }
     for record in capture.records where record.sourceMembership == .present {
       guard let prepared = record.preparation.value.value,
@@ -319,10 +337,17 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
   }
 
   private static func fields(_ entity: CloudAcceptedEntity, namespace: ICloudSyncNamespaceBinding) throws -> FailedEnableFields {
+    guard entity.graphRepair == nil else { throw FailedEnableEvidenceError.unsupported }
+    return try canonicalFields(entity, namespace: namespace)
+  }
+
+  private static func canonicalFields(_ entity: CloudAcceptedEntity,
+    namespace: ICloudSyncNamespaceBinding
+  ) throws -> FailedEnableFields {
     guard namespace.zones.contains(ICloudSyncZoneBinding(name: entity.identity.zoneName,
       ownerName: entity.identity.ownerName)), entity.schemaVersion <= CloudFullRecordCodec.schemaVersion,
       entity.schemaVersion >= 1,
-      !entity.hasUnresolvedLegacyAbsence, entity.graphRepair == nil
+      !entity.hasUnresolvedLegacyAbsence
     else { throw FailedEnableEvidenceError.unsupported }
     switch entity.reference.kind {
     case .snip:
