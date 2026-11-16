@@ -120,6 +120,8 @@ struct PanelViewOptionsButton: View {
                     }
                     .pickerStyle(.inline)
                 }
+                Toggle("Agent snips only", isOn: agentSnipsOnlyBinding)
+                    .accessibilityIdentifier("filter-agent-snips-only")
                 Section("Sort") {
                     Picker("Sort", selection: sortModeBinding) {
                         Text("Newest first").tag(SnipSortMode.chronological)
@@ -150,6 +152,13 @@ struct PanelViewOptionsButton: View {
         Binding(
             get: { model.sortMode },
             set: { model.setSortMode($0) }
+        )
+    }
+
+    private var agentSnipsOnlyBinding: Binding<Bool> {
+        Binding(
+            get: { model.agentSnipsOnly },
+            set: { model.agentSnipsOnly = $0 }
         )
     }
 

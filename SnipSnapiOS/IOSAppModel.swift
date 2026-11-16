@@ -213,6 +213,14 @@ final class IOSAppModel {
     }
     var searchText = ""
     var completionFilter: SnipCompletionFilter = .all
+    private var storedAgentSnipsOnly = false
+    var agentSnipsOnly: Bool {
+        get { storedAgentSnipsOnly }
+        set {
+            guard snipEditorDraft == nil else { return }
+            storedAgentSnipsOnly = newValue
+        }
+    }
     var sortMode: SnipSortMode = .chronological
     private var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
@@ -493,6 +501,7 @@ final class IOSAppModel {
             snips: selected,
             query: query,
             completionFilter: completionFilter,
+            agentSnipsOnly: agentSnipsOnly,
             sourceLabel: { $0.displaySourceLabel }
         )
         return Snip.sorted(matches, by: sortMode)
@@ -501,6 +510,7 @@ final class IOSAppModel {
     var canReorderVisibleSnips: Bool {
         snipEditorDraft == nil
             && completionFilter == .all
+            && !agentSnipsOnly
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -548,6 +558,28 @@ final class IOSAppModel {
             await resolveRecoveryUnlocked(id, choice: choice)
         }
     }
+
+#if DEBUG
+    func seedAgentSnipsUITestFixtureIfRequested() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["SNIP_SNAP_UI_TESTING"] == "1",
+              environment["SNIP_SNAP_UI_TEST_AGENT_SNIPS"] == "1",
+              snips.isEmpty else { return }
+        for (content, origin) in [
+            ("Manual release note", SnipOrigin.quickEntry),
+            ("Agent release note", SnipOrigin.agent),
+            ("Agent archived note", SnipOrigin.agent)
+        ] {
+            _ = await performUserAction(.add(
+                content: content, origin: origin, source: nil, listID: SnipList.inboxID,
+                attachmentURLs: [], requestID: UUID(), now: Date()
+            ))
+        }
+        if let archived = snips.first(where: { $0.content == "Agent archived note" }) {
+            _ = await performUserAction(.setDone(ids: [archived.id], done: true))
+        }
+    }
+#endif
 
     @discardableResult
     func createSnip(

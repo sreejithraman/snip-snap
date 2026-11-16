@@ -16,6 +16,15 @@ module IOSTestSelection
         testSelectionPersistsAcrossLists
       ]
     },
+    'filters' => {
+      description: 'Agent and completion filters, global search, and gathered selection.',
+      tests: %w[
+        testAgentSnipsOnlyCombinesWithCompletionAndSearch
+        testSearchDoneFilter
+        testSearchFromClipboardFindsSnipsAcrossLists
+        testSelectionSurvivesFilteringItsSourceRows
+      ]
+    },
     'editing' => {
       description: 'Inline drafts, Markdown, search editing, composer destinations, and persistence.',
       tests: %w[

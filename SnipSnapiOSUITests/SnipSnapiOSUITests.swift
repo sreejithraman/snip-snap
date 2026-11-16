@@ -24,6 +24,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         withEncryptedReset: Bool = false,
         accountNotice: Bool = false,
         withCopyShareFixtures: Bool = false,
+        withAgentSnips: Bool = false,
         withHapticsTrace: Bool = false,
         withLongList: Bool = false,
         withGatheringFixtures: Bool = false,
@@ -34,6 +35,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
+        if withAgentSnips { app.launchEnvironment["SNIP_SNAP_UI_TEST_AGENT_SNIPS"] = "1" }
         if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
         if withLongList { app.launchEnvironment["SNIP_SNAP_UI_TEST_LONG_LIST"] = "1" }
         if withGatheringFixtures || withListHistoryFixtures {
@@ -4289,6 +4291,48 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.descendants(matching: .any)["list-selector"].exists)
         XCTAssertTrue(app.buttons["clipboard-tab"].isSelected)
+    }
+
+    func testAgentSnipsOnlyCombinesWithCompletionAndSearch() throws {
+        continueAfterFailure = false
+        let app = launchApp(withAgentSnips: true)
+        let manual = collectionRow(named: "Manual release note", in: app)
+        XCTAssertTrue(manual.waitForExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Agent release note", in: app).exists)
+        app.buttons["workflow-options"].tap()
+        let agentFilter = app.buttons["filter-agent-snips-only"]
+        XCTAssertTrue(agentFilter.waitForExistence(timeout: 3))
+        agentFilter.tap()
+        XCTAssertTrue(manual.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Agent release note", in: app).exists)
+        XCTAssertTrue(collectionRow(named: "Agent archived note", in: app).exists)
+        let filteredProof = XCTAttachment(screenshot: app.screenshot())
+        filteredProof.name = "Agent snips only"
+        filteredProof.lifetime = .keepAlways
+        add(filteredProof)
+
+        app.buttons["workflow-options"].tap()
+        XCTAssertFalse(app.buttons["reorder-snips"].isEnabled)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(collectionRow(named: "Agent release note", in: app).waitForNonExistence(timeout: 3))
+        XCTAssertTrue(collectionRow(named: "Agent archived note", in: app).exists)
+        app.buttons["workflow-options"].tap()
+        app.buttons["All"].tap()
+        let search = openSearch(in: app)
+        search.typeText("release")
+        let results = app.descendants(matching: .any)["global-search-results"]
+        let agentResult = results.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Agent release note")).firstMatch
+        let manualResult = results.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Manual release note")).firstMatch
+        XCTAssertTrue(agentResult.waitForExistence(timeout: 3))
+        XCTAssertFalse(manualResult.exists)
+        closeSearch(in: app)
+        app.buttons["workflow-options"].tap()
+        app.buttons["filter-agent-snips-only"].tap()
+        XCTAssertTrue(manual.waitForExistence(timeout: 3))
+        let restoredProof = XCTAttachment(screenshot: app.screenshot())
+        restoredProof.name = "All origins restored"
+        restoredProof.lifetime = .keepAlways
+        add(restoredProof)
     }
 
     func testSearchDoneFilter() throws {

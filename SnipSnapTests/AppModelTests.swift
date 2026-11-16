@@ -55,6 +55,59 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testAgentSnipsOnlyComposesWithCompletionListAndSearch() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let manual = Snip(content: "Review manual", origin: .quickEntry)
+        let agent = Snip(content: "Review agent", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
+        let done = Snip(content: "Review done", origin: .agent, isDone: true)
+        let elsewhere = Snip(content: "Review elsewhere", origin: .agent, listID: work.id)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [manual, agent, done, elsewhere], lists: [.inbox, work]),
+            defaults: defaults()
+        )
+        await model.waitForInitialLoad()
+        XCTAssertFalse(model.agentSnipsOnly)
+        let originalOrder = model.filteredSnips.map(\.id)
+        model.selection = [manual.id, agent.id]
+
+        model.agentSnipsOnly = true
+
+        XCTAssertEqual(Set(model.filteredSnips.map(\.id)), [agent.id, done.id])
+        XCTAssertEqual(model.selection, [agent.id])
+        model.completionFilter = .notDone
+        XCTAssertEqual(model.filteredSnips.map(\.id), [agent.id])
+        model.query = "Review"
+        // Mac search spans lists and includes Done snips regardless of the completion filter.
+        XCTAssertEqual(Set(model.filteredSnips.map(\.id)), [agent.id, done.id, elsewhere.id])
+        model.query = "elsewhere"
+        XCTAssertEqual(model.filteredSnips.map(\.id), [elsewhere.id])
+        model.exitSearch()
+        model.completionFilter = .all
+        model.agentSnipsOnly = false
+        XCTAssertEqual(model.filteredSnips.map(\.id), originalOrder)
+    }
+
+    @MainActor
+    func testAgentFilterCannotHideInlineEditorOrReorderFilteredSubset() async throws {
+        let manual = Snip(content: "Manual draft", origin: .quickEntry)
+        let agent = Snip(content: "Agent", origin: .agent)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [manual, agent]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let opened = await model.beginEditing(manual.id)
+        XCTAssertTrue(opened)
+        model.agentSnipsOnly = true
+        XCTAssertFalse(model.agentSnipsOnly)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == manual.id })
+        model.cancelEditing()
+        let before = model.snips
+        model.agentSnipsOnly = true
+        XCTAssertFalse(model.canReorder(ids: [agent.id]))
+        await model.moveSelectionNow(by: -1, ids: [agent.id])
+        XCTAssertEqual(model.snips, before)
+        XCTAssertEqual(model.sortMode, .chronological)
+    }
+
+    @MainActor
     func testInitialLoadRestoresSavedListAndSnips() async {
         let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let snip = Snip(content: "Saved before launch", origin: .quickEntry, listID: list.id)

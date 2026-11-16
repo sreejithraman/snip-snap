@@ -1,6 +1,8 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Agent snips only" : {},
+    "No agent snips" : {},
     "Loading snip" : {},
     "Retry Undo" : {},
     "Couldn’t clear downloaded files" : {},

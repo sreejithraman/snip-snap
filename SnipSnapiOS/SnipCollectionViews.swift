@@ -400,7 +400,11 @@ struct SnipCollectionView: View {
         }
     }
 
-    private var emptyTitle: String { model.completionFilter.emptyStateTitle }
+    private var emptyTitle: String {
+        model.agentSnipsOnly && model.completionFilter == .all
+            ? String(localized: "No agent snips")
+            : model.completionFilter.emptyStateTitle
+    }
 
     private var showsLibraryActions: Bool { !isReordering && !isSelecting }
 
@@ -431,7 +435,7 @@ struct SnipCollectionView: View {
     private var emptySystemImage: String { "text.page" }
 
     private var emptyDescription: String {
-        return model.completionFilter == .all
+        return model.completionFilter == .all && !model.agentSnipsOnly
             ? String(localized: "Type or paste text below.")
             : String(localized: "Change the filter to see other snips.")
     }
@@ -632,6 +636,7 @@ struct LibrarySearchView: View {
             lists: model.lists,
             clipboard: clipboard.entries,
             sortMode: model.sortMode,
+            agentSnipsOnly: model.agentSnipsOnly,
             sourceLabel: { $0.displaySourceLabel }
         )
         Group {
