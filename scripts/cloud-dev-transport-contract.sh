@@ -6,6 +6,7 @@ repo_dir="${script_dir:h}"
 preflight_tool="${SNIP_SNAP_SIGNED_LANE_PREFLIGHT:-$script_dir/signed-lane-preflight.sh}"
 xcodebuild_tool="${SNIP_SNAP_XCODEBUILD:-xcodebuild}"
 xcresulttool_tool="${SNIP_SNAP_XCRESULTTOOL:-}"
+session_started_at="$(/bin/date +%s)"
 
 if [[ "${SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT:-}" != 1 ]]; then
     print -u2 "Cloud Dev transport contract is maintainer-only. Set SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT=1 after configuring the signed Cloud Dev lane."
@@ -26,6 +27,11 @@ report_failure() {
 }
 [[ "$evidence_root" == /* ]] || {
     print -u2 "Cloud Dev transport contract requires an absolute SNIP_SNAP_CLOUD_DEV_TRANSPORT_CONTRACT_ARTIFACTS path."
+    exit 2
+}
+source_revision="$(git -C "$repo_dir" rev-parse HEAD)"
+[[ -z "$(git -C "$repo_dir" status --porcelain --untracked-files=normal)" ]] || {
+    print -u2 "Commit the harness before a live run so its evidence names exact source."
     exit 2
 }
 
@@ -52,6 +58,10 @@ local_store_path="$run_dir/local-store/snips.json"
 
 set +e
 SNIP_SNAP_STORE_PATH="$local_store_path" \
+TEST_RUNNER_SNIP_SNAP_CONTRACT_EVIDENCE_DIRECTORY="$run_dir/atomic-proof" \
+TEST_RUNNER_SNIP_SNAP_CONTRACT_SOURCE_REVISION="$source_revision" \
+TEST_RUNNER_SNIP_SNAP_CONTRACT_HARNESS_REVISION="$source_revision" \
+TEST_RUNNER_SNIP_SNAP_CONTRACT_STARTED_AT="$session_started_at" \
 TEST_RUNNER_SNIP_SNAP_DIAGNOSTICS_DIRECTORY="${local_store_path:h}/SnipSnapDiagnostics" \
 TEST_RUNNER_SNIP_SNAP_STORE_PATH="$local_store_path" "$xcodebuild_tool" \
     -project "$repo_dir/SnipSnap.xcodeproj" \
@@ -130,4 +140,13 @@ fi
     exit 1
 }
 
-print "Signed Cloud Dev fake-versus-real transport contract passed. Evidence: $run_dir"
+/usr/bin/ruby "$script_dir/cloud-dev-transport-contract-evidence.rb" "$run_dir/atomic-proof" "$source_revision" || {
+    report_failure "atomic evidence or exact-zone cleanup is incomplete"
+    exit 1
+}
+[[ "$(git -C "$repo_dir" rev-parse HEAD)" == "$source_revision" \
+    && -z "$(git -C "$repo_dir" status --porcelain --untracked-files=normal)" ]] || {
+    report_failure "source changed during the run; retain evidence without attributing a pass to that revision"
+    exit 1
+}
+print "Signed Cloud Dev baseline and finite atomic contract passed. Evidence: $run_dir"

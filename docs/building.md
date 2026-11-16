@@ -417,21 +417,37 @@ TestFlight or installed Production releases.
 ### Run the live CloudKit check
 
 Maintainers with valid Cloud Dev signing and container access can run the
-small fake-versus-real transport contract:
+fake-versus-real baseline and finite atomic-order contract:
 
 ```sh
 SNIP_SNAP_RUN_CLOUD_DEV_TRANSPORT_CONTRACT=1 \
   ./scripts/cloud-dev-transport-contract.sh
 ```
 
-The command runs the signed Development preflight first. It uses a unique
-temporary zone and two independent sync clients to check zone creation, the
+Commit the harness before running it so evidence names exact source. The command
+runs the signed Development preflight first and checks the running host's
+Development entitlement before Cloud writes. It uses unique synthetic zones
+and independent sync clients to check zone creation, the
 initial fetch, text and attachment delivery, exact attachment bytes, record
 deletion, and deletion delivery to the second client. Both the fake and real
 CloudKit transports run the same checks. The test verifies the account on
-account events and before cleanup, then deletes its temporary zone and checks
-that it is gone. Errors name the failed stage; cleanup errors retain the
-original failure too.
+account events and before cleanup, then attempts every declared temporary zone
+and checks that each is gone. Errors name the failed stage; cleanup errors retain
+the original failure too.
+
+The same single host test also checks failed atomic groups, stale unchanged
+companions, ordinary/group isolation, provider/event membership, atomic zone
+capability, and actual three/five-attachment planner batches. It records raw SDK
+throws and pending state. Three quiescent fetch samples measure whole-cycle
+delivery; passing them does not establish general CloudKit snapshot coherence.
+Batch/save counts are logical SDK costs, not HTTP requests or billing.
+
+The runner starts a 40-minute cooperative budget before preflight/build. Work
+stops admitting new phases after 30 minutes, reserving ten for cleanup. Cases
+have 90-second cooperative deadlines; planner setup plus measurement has a
+180-second outer deadline. SDK cancellation must cooperate. A killed or stuck
+process cannot guarantee cleanup: preserve its manifest, confirm the same account
+fingerprint, and remove only its exact synthetic zones after checking ownership.
 
 This tests real CloudKit requests from a Mac test host. It does not replace a
 Mac-to-iPhone app check for push delivery, background resume, or production
@@ -451,6 +467,11 @@ has stopped before removing that lock directory. The command keeps a new
 ignored evidence directory under
 `artifacts/cloud-dev-transport-contract` for every run. It contains the
 `.xcresult`, its JSON summary, the `xcodebuild` log, and a local-store directory.
+`atomic-proof/manifest.json` records source/harness revisions, a hashed account
+fingerprint and all six zones before the first write. `sdk-trace.json` records
+sanitized provider sets, terminal errors/tag hashes and pending state. Success
+requires every phase and verified absence of every manifest zone, in addition
+to the unchanged one-passing/non-skipped-host-test summary guard.
 The host uses a unique store path there; the file appears only if it writes
 local data. Set `SNIP_SNAP_CLOUD_DEV_TRANSPORT_CONTRACT_ARTIFACTS` to an absolute
 path to put that evidence elsewhere. Once preflight passes, the command prints

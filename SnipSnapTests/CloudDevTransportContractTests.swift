@@ -1,4 +1,5 @@
 import Foundation
+import Security
 @_spi(Maintainer) import SnipSnapCloud
 import SnipSnapCore
 import XCTest
@@ -33,8 +34,35 @@ final class CloudDevTransportContractTests: XCTestCase {
         forInfoDictionaryKey: "SnipSnapCloudKitContainerIdentifier"
       ) as? String
     )
+    // Inspect only the running host's entitlement values; never log signing/account data.
+    var code: SecCode?
+    guard SecCodeCopySelf([], &code) == errSecSuccess else {
+      return XCTFail("Could not identify the signed test host.")
+    }
+    var signing: CFDictionary?
+    let runningCode = try XCTUnwrap(code)
+    guard SecCodeCheckValidity(runningCode, [], nil) == errSecSuccess,
+      SecCodeCopySigningInformation(runningCode,
+        SecCSFlags(rawValue: kSecCSSigningInformation), &signing) == errSecSuccess else {
+      return XCTFail("The test host requires valid Development signing.")
+    }
+    let information = try XCTUnwrap(signing) as NSDictionary
+    let entitlements = try XCTUnwrap(information[kSecCodeInfoEntitlementsDict] as? NSDictionary)
+    guard entitlements["com.apple.developer.icloud-container-environment"] as? String == "Development",
+      (entitlements["com.apple.developer.icloud-container-identifiers"] as? [String])?.contains(identifier) == true
+    else { return XCTFail("The running host requires the signed Development container entitlement.") }
+    let environment = ProcessInfo.processInfo.environment
+    let evidencePath = try XCTUnwrap(environment["SNIP_SNAP_CONTRACT_EVIDENCE_DIRECTORY"])
+    let source = try XCTUnwrap(environment["SNIP_SNAP_CONTRACT_SOURCE_REVISION"])
+    let harness = try XCTUnwrap(environment["SNIP_SNAP_CONTRACT_HARNESS_REVISION"])
+    let started = try XCTUnwrap(environment["SNIP_SNAP_CONTRACT_STARTED_AT"].flatMap(TimeInterval.init))
+    guard evidencePath.hasPrefix("/"), evidencePath == URL(fileURLWithPath: isolatedStorePath)
+      .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("atomic-proof").path
+    else { return XCTFail("Contract evidence must share the isolated runner directory.") }
     do {
-      try await CloudDevelopmentTransportContract.run(containerIdentifier: identifier)
+      try await CloudDevelopmentTransportContract.run(containerIdentifier: identifier,
+        evidenceDirectory: URL(fileURLWithPath: evidencePath), sourceRevision: source,
+        harnessRevision: harness, sessionStartedAt: Date(timeIntervalSince1970: started))
     } catch {
       XCTFail(error.localizedDescription)
     }

@@ -4,85 +4,15 @@ import Foundation
 
 @_spi(Maintainer)
 public enum CloudDevelopmentTransportContract {
-  public static func run(containerIdentifier: String) async throws {
-    let zone = CloudZoneID(
-      name: "snipsnap-contract-\(UUID().uuidString.lowercased())",
-      ownerName: CKCurrentUserDefaultName
-    )
-    let namespace = CloudSyncNamespace(
-      cloudScope: "private",
-      accountLineage: "maintainer-contract",
-      generation: UUID(),
-      zones: [zone]
-    )
-    let recordID = CloudRecordID.random(in: zone)
-    let draft = CloudRecordDraft.text(
-      id: recordID,
-      snipID: UUID(),
-      text: "Snip Snap Cloud Dev transport contract"
-    )
-    let files = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: files) }
-    let source = files.appendingPathComponent("attachment.bin")
-    try Data((0..<8192).map { UInt8($0 % 251) }).write(to: source)
-    let attachment = CloudRecordDraft(
-      id: .random(in: zone), recordType: CloudAttachmentRecordCodec.payloadRecordType,
-      schemaVersion: CloudAttachmentRecordCodec.schemaVersion,
-      routingFields: ["schemaVersion": .int64(1)], encryptedFields: [:],
-      assetFields: [CloudAttachmentRecordCodec.assetField: CloudAssetUpload(fileURL: source)]
-    )
-    let drafts = [draft, attachment]
-    let fakeServer = FakeCloudServer()
-    let fake = FakeCloudRecordTransport(server: fakeServer, namespace: namespace)
-    let fakeReader = FakeCloudRecordTransport(server: fakeServer, namespace: namespace)
-    try await exercise(
-      transport: fake, reader: fakeReader,
-      name: "fake", zone: zone, drafts: drafts
-    )
-
-    let container = CKContainer(identifier: containerIdentifier)
-    let account = try await step("CloudKit: account") { try await container.userRecordID() }
-    let database = container.privateCloudDatabase
-    let real = CloudKitRecordTransport(
-      database: database,
-      namespace: namespace
-    )
-    let realReader = CloudKitRecordTransport(database: database, namespace: namespace)
-    let validateAccount: () async throws -> Void = {
-      guard try await container.userRecordID() == account else { throw ContractError.accountChanged }
+  public static func run(containerIdentifier: String, evidenceDirectory: URL,
+    sourceRevision: String, harnessRevision: String, sessionStartedAt: Date) async throws {
+    do {
+      try await CloudDevelopmentAtomicContract.run(containerIdentifier: containerIdentifier,
+        evidenceDirectory: evidenceDirectory, sourceRevision: sourceRevision,
+        harnessRevision: harnessRevision, sessionStartedAt: sessionStartedAt)
+    } catch {
+      throw StepFailure(stage: "Development contract", detail: CloudDevelopmentAtomicContract.safe(error))
     }
-    let zoneID = CKRecordZone.ID(
-      zoneName: zone.name,
-      ownerName: zone.ownerName
-    )
-    try await runWithCleanup(
-      operation: {
-        try await exercise(
-          transport: real, reader: realReader,
-          name: "CloudKit", zone: zone, drafts: drafts,
-          validateAccount: validateAccount
-        )
-      },
-      cleanup: {
-        await real.reset()
-        await realReader.reset()
-        try await step("CloudKit: cleanup \(zone.name)") {
-          try await validateAccount()
-          try await cleanupZone(
-            delete: { try await database.deleteRecordZone(withID: zoneID) },
-            zoneExists: {
-              do {
-                _ = try await database.recordZone(for: zoneID)
-                return true
-              } catch let error as CKError where error.code == .zoneNotFound {
-                return false
-              }
-            }
-          )
-        }
-      }
-    )
   }
 
   static func runWithCleanup(
