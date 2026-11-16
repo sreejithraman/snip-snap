@@ -18,6 +18,7 @@ extension SwiftDataSnipLibrary {
     payloadZoneName: String,
     payloadOwnerName: String,
     snipIDs: Set<UUID>? = nil,
+    attachmentIDs: Set<UUID>? = nil,
     digestFile: @Sendable (URL) throws -> Data = AttachmentFileIO.digest(at:)
   ) throws {
     let namespaceKey = namespaceKey.rawValue
@@ -55,6 +56,7 @@ extension SwiftDataSnipLibrary {
     var uploadFilesToRemove: [URL] = []
     do {
       for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        if let attachmentIDs, !attachmentIDs.contains(attachmentID) { continue }
         if !includes(value.0) {
           guard let priorSnipID = byAttachment[attachmentID]?.snipID,
             includes(priorSnipID)
@@ -195,6 +197,7 @@ extension SwiftDataSnipLibrary {
 
       for row in existing
       where includes(row.snipID) && local[row.attachmentID] == nil && row.lifecycle.isLocallyPresent {
+        if let attachmentIDs, !attachmentIDs.contains(row.attachmentID) { continue }
         try lock.check()
         changed = true
         let abandonedUpload: CloudAttachmentAbandonedUpload?
