@@ -229,7 +229,7 @@ extension SwiftDataSyncModePersistence {
     try cancelPendingICloudEnable()
   }
 
-  func prepareFailedEnableReviewContinuation() async throws {
+  package func prepareFailedEnableReviewContinuation() async throws {
     guard let transition = manifest.transition, transition.sourceStoreID == manifest.activeStoreID,
       transition.phase != .pointerSwapped, transition.syncProtocol == .fullRecordV1,
       let policy = failedEnableSemantics,

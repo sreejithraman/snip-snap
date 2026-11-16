@@ -176,7 +176,7 @@ package struct FailedEnableAttachment: Codable, Equatable, Sendable {
     availability = Availability(kind: .embedded, sha256: FailedEnableEncoding.digest(bytes),
       recordIdentity: .init(nil), size: "")
   }
-  var domain: SnipAttachment {
+  package var domain: SnipAttachment {
     get throws {
       guard let count = Int64(byteCount), count >= 0, String(count) == byteCount else {
         throw FailedEnableEvidenceError.unsupported
