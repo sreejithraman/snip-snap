@@ -86,14 +86,14 @@ struct CloudAttachmentRemoteChanges {
   var adoptions: [UUID: CloudAttachmentAdoption] = [:]
   /// Snips that lost an attachment to another device's delete.
   var removedSnipIDs: Set<UUID> = []
-  /// Snips whose every unacknowledged row that iCloud held came back as this device's own save.
+  /// Snips whose every published pending move with a readable shadow came back as an own save.
   var ownSaveSnipIDs: Set<UUID> = []
-  /// Snips where only some of those rows came back, as when a fetch fails for one record. The
+  /// Snips where only some of those moves came back, as when a fetch fails for one record. The
   /// local order stands for this commit (SM33 D7).
   var partlyReturnedSnipIDs: Set<UUID> = []
 
   /// The base for an adopted row's place in its snip's order. An own save counts only when the
-  /// snip's whole unacknowledged edit came back: a record that matches one row by chance must
+  /// snip's whole unacknowledged move came back: a record that matches one row by chance must
   /// not mix two devices' orders into one base (SM33 D7).
   func orderBase(
     of adoption: CloudAttachmentAdoption,
