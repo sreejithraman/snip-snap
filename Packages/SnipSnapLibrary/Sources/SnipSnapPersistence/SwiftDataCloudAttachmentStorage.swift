@@ -54,8 +54,12 @@ extension SwiftDataSnipLibrary {
     var createdUploadFiles: [URL] = []
     var uploadFilesToRemove: [URL] = []
     do {
-      for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString })
-      where includes(value.0) || byAttachment[attachmentID].map({ includes($0.snipID) }) == true {
+      for (attachmentID, value) in local.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        if !includes(value.0) {
+          guard let priorSnipID = byAttachment[attachmentID]?.snipID,
+            includes(priorSnipID)
+          else { continue }
+        }
         try lock.check()
         let localSourcePath = value.2.relativePath.hasPrefix("CloudDownloads/")
           ? nil : value.2.relativePath
