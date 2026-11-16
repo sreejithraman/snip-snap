@@ -174,7 +174,10 @@ private final class OfflineFixture {
     let writer: OfflinePasteboardWriter
     let coordinator: IOSCopyShareCoordinator
     let composer: CompactComposerStorage
-    let model: IOSAppModel
+    private var ownedModel: IOSAppModel?
+    private weak var modelLifetime: IOSAppModel?
+    private var libraryLifetimes: [FixtureWeakResource<SwiftDataSnipLibrary>] = []
+    var model: IOSAppModel { ownedModel! }
     let handler = OfflineAttachmentStateHandler()
     let pause = OfflinePause()
     private var work: [OfflineWork] = []
@@ -193,10 +196,12 @@ private final class OfflineFixture {
         coordinator = IOSCopyShareCoordinator(pasteboard: writer)
         composer = CompactComposerStorage(defaults: defaults)
         let assembly = SnipLibraryAssembly(library: library, activeCloudNamespace: nil)
-        model = IOSAppModel(library: assembly.library, userActions: assembly.userActions,
+        ownedModel = IOSAppModel(library: assembly.library, userActions: assembly.userActions,
                             userActionsFactory: assembly.userActionsFactory,
                             initialSnapshot: snapshot, cloudSyncHandler: handler,
                             haptics: IOSHapticFeedback(defaults: defaults, player: RecordingHapticPlayer()))
+        modelLifetime = ownedModel
+        libraryLifetimes.append(FixtureWeakResource(library))
     }
 
     static func make() async throws -> OfflineFixture {
@@ -216,13 +221,15 @@ private final class OfflineFixture {
         } catch {
             UIPasteboard.remove(withName: boardName)
             UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
-            try? FileManager.default.removeItem(at: root)
+            // Store container closure is not observable through the public library API.
+            NSLog("OfflineFixture retained failed setup store root: %@", root.path)
             throw error
         }
     }
 
     func reopenSnapshot() async throws -> SnipLibrarySnapshot {
         let reader = try SwiftDataSnipLibrary(storeURL: storeURL)
+        libraryLifetimes.append(FixtureWeakResource(reader))
         return try await reader.checkedSnapshot(sortedBy: .manual)
     }
 
@@ -251,10 +258,16 @@ private final class OfflineFixture {
         let cleanup = Task { @MainActor in
             work.forEach { $0.task?.cancel() }
             if await settle() {
+                work.removeAll()
+                ownedModel = nil
+                XCTAssertNil(modelLifetime, "Offline fixture still has a live model owner")
+                XCTAssertTrue(libraryLifetimes.allSatisfy { $0.value == nil },
+                              "Offline fixture still has a live store or reader")
                 composer.draftStore.flushText()
                 defaults.removePersistentDomain(forName: suite)
                 UIPasteboard.remove(withName: boardName)
-                try? FileManager.default.removeItem(at: root)
+                // SwiftData can defer container cleanup after library deallocation; retain this root.
+                NSLog("OfflineFixture retained store root: %@", root.path)
             }
         }
         await cleanup.value
@@ -514,18 +527,41 @@ private actor StatusGuardHandler: OptionalCloudSyncHandling {
 @MainActor
 private final class StatusGuardFixture {
     static let attachmentID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+    static let secondAttachmentID = UUID(uuidString: "10000000-0000-0000-0000-000000000002")!
     static let snipID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
-    struct Store {
-        let library: SwiftDataSnipLibrary
+    final class Store {
+        private var ownedLibrary: SwiftDataSnipLibrary?
+        private weak var lifetime: SwiftDataSnipLibrary?
         let url: URL
         let snapshot: SnipLibrarySnapshot
+        var library: SwiftDataSnipLibrary { ownedLibrary! }
+        var isReleased: Bool { lifetime == nil }
+
+        init(library: SwiftDataSnipLibrary, url: URL, snapshot: SnipLibrarySnapshot) {
+            ownedLibrary = library
+            lifetime = library
+            self.url = url
+            self.snapshot = snapshot
+        }
+
+        func releaseOwnership() { ownedLibrary = nil }
     }
     let root: URL
     let original: Store
     let originalPrepared: URL
     let replacementPrepared: URL
     let handler: StatusGuardHandler
-    var model: IOSAppModel?
+    private var ownedModel: IOSAppModel?
+    private var modelLifetimes: [FixtureWeakResource<IOSAppModel>] = []
+    private var readerLifetimes: [FixtureWeakResource<SwiftDataSnipLibrary>] = []
+    private var stores: [Store] = []
+    var model: IOSAppModel? {
+        get { ownedModel }
+        set {
+            ownedModel = newValue
+            if let newValue { modelLifetimes.append(FixtureWeakResource(newValue)) }
+        }
+    }
     private var gates: [StatusGuardGate] = []
     private var work: [OfflineWork] = []
 
@@ -537,8 +573,9 @@ private final class StatusGuardFixture {
         handler = StatusGuardHandler(id: Self.attachmentID, preparedURL: oldFile)
         model = IOSAppModel(library: original.library, initialSnapshot: original.snapshot,
                             cloudSyncHandler: handler)
+        stores.append(original)
     }
-    static func make() async throws -> StatusGuardFixture {
+    static func make(twoAttachments: Bool = false) async throws -> StatusGuardFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("StatusGuards-\(UUID())")
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -546,20 +583,30 @@ private final class StatusGuardFixture {
             let newFile = root.appendingPathComponent("verified-new.txt")
             try Data("old!".utf8).write(to: oldFile)
             try Data("new!".utf8).write(to: newFile)
-            let original = try await makeStore(root: root, name: "original", content: "Original source", bytes: "old!")
+            if twoAttachments { try Data("two!".utf8).write(to: root.appendingPathComponent("verified-second.txt")) }
+            let original = try await makeStore(root: root, name: "original", content: "Original source",
+                                               bytes: "old!", twoAttachments: twoAttachments)
             return StatusGuardFixture(root: root, original: original, oldFile: oldFile, newFile: newFile)
         } catch {
-            try? FileManager.default.removeItem(at: root)
+            // Keep failed setup storage rather than unlink a potentially live container.
+            NSLog("StatusGuardFixture retained failed setup store root: %@", root.path)
             throw error
         }
     }
-    private static func makeStore(root: URL, name: String, content: String, bytes: String) async throws -> Store {
+    private static func makeStore(root: URL, name: String, content: String, bytes: String,
+                                  twoAttachments: Bool = false) async throws -> Store {
         let url = root.appendingPathComponent(name).appendingPathComponent("snips.store")
         let library = try SwiftDataSnipLibrary(storeURL: url)
         let attachment = try testAttachment(id: attachmentID, fileName: "payload.txt", byteCount: 4)
-        let snip = Snip(id: snipID, content: content, origin: .quickEntry, attachments: [attachment])
+        var attachments = [attachment]
+        var data = [attachmentID: Data(bytes.utf8)]
+        if twoAttachments {
+            attachments.append(try testAttachment(id: secondAttachmentID, fileName: "second.txt", byteCount: 4))
+            data[secondAttachmentID] = Data("two!".utf8)
+        }
+        let snip = Snip(id: snipID, content: content, origin: .quickEntry, attachments: attachments)
         _ = try await library.mergeTransferSnapshot(SnipLibraryTransferSnapshot(
-            revision: 0, snips: [snip], lists: [.inbox], attachmentData: [attachmentID: Data(bytes.utf8)]
+            revision: 0, snips: [snip], lists: [.inbox], attachmentData: data
         ), transitionID: UUID(), expectedTargetDigest: nil)
         let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(snapshot.snips.map(\.id), [snipID], "Fixture import must retain the supplied ID")
@@ -569,10 +616,14 @@ private final class StatusGuardFixture {
         return Store(library: library, url: url, snapshot: snapshot)
     }
     func replacement() async throws -> Store {
-        try await Self.makeStore(root: root, name: "replacement", content: "Replacement source", bytes: "new!")
+        let store = try await Self.makeStore(root: root, name: "replacement", content: "Replacement source", bytes: "new!")
+        stores.append(store)
+        return store
     }
     func reopen(_ store: Store) async throws -> SnipLibrarySnapshot {
-        try await SwiftDataSnipLibrary(storeURL: store.url).checkedSnapshot(sortedBy: .manual)
+        let reader = try SwiftDataSnipLibrary(storeURL: store.url)
+        readerLifetimes.append(FixtureWeakResource(reader))
+        return try await reader.checkedSnapshot(sortedBy: .manual)
     }
     func gate() -> StatusGuardGate {
         let gate = StatusGuardGate()
@@ -608,16 +659,29 @@ private final class StatusGuardFixture {
             }
             if settled, let model {
                 let draining = OfflineWork { await model.load(); return true }
+                work.append(draining)
                 let done = await draining.finished.wait(for: deadline - ContinuousClock.now)
                 XCTAssertTrue(done, "Guard cleanup could not drain status work")
                 if done { await draining.task?.value }
                 else { draining.task?.cancel(); settled = false }
             }
-            model = nil
             let idle = await handler.idleSignal()
             let done = await idle.wait(for: deadline - ContinuousClock.now)
             XCTAssertTrue(done, "Guard cleanup left an external handler call suspended")
-            if settled && done { try? FileManager.default.removeItem(at: root) }
+            guard settled && done else {
+                NSLog("StatusGuardFixture retained live ownership and store root: %@", root.path)
+                return
+            }
+            work.removeAll()
+            model = nil
+            stores.forEach { $0.releaseOwnership() }
+            XCTAssertTrue(modelLifetimes.allSatisfy { $0.value == nil },
+                          "A model or IOSAppSession still owns fixture state")
+            XCTAssertTrue(stores.allSatisfy(\.isReleased),
+                          "A store, forwarding library or sync session is still live")
+            XCTAssertTrue(readerLifetimes.allSatisfy { $0.value == nil }, "A fixture reader is still live")
+            // SwiftData's deferred container cleanup has no public completion receipt.
+            NSLog("StatusGuardFixture retained store root: %@", root.path)
         }
         await cleanup.value
     }
@@ -1220,5 +1284,481 @@ extension IOSOfflineLocalFeedbackTests {
             XCTAssertEqual(calls.entries[.states], 2)
             XCTAssertEqual(calls.maximumActiveStatus, 1)
         }
+    }
+}
+
+@MainActor
+private final class FixtureWeakResource<Resource: AnyObject> {
+    weak var value: Resource?
+    init(_ value: Resource) { self.value = value }
+}
+
+@MainActor
+private final class CapturedCopyBoard: IOSPasteboardWriting {
+    let suite = "CapturedCopy.\(UUID())"
+    let name = UIPasteboard.Name("CapturedCopy.\(UUID())")
+    let board: UIPasteboard
+    let feedback: IOSHapticFeedback
+    private let defaults: UserDefaults
+    private let system: IOSSystemPasteboard
+    private(set) var writes = 0
+
+    init(root: URL) throws {
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        board = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        system = IOSSystemPasteboard(pasteboard: board, stagingRoot: root.appendingPathComponent("copy-staging"))
+        feedback = IOSHapticFeedback(defaults: defaults, player: RecordingHapticPlayer())
+        feedback.isActive = true
+    }
+
+    func write(_ items: [IOSCopyItem]) -> Bool {
+        guard system.write(items) else { return false }
+        writes += 1
+        return true
+    }
+
+    func close() {
+        UIPasteboard.remove(withName: name)
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
+private final class CopiedFileBytes: @unchecked Sendable {
+    let loaded = OfflineSignal()
+    private let lock = NSLock()
+    private var stored: Data?
+    var data: Data? { lock.withLock { stored } }
+
+    func read(_ url: URL?) {
+        let data = url.flatMap { try? Data(contentsOf: $0) }
+        lock.withLock { stored = data }
+        loaded.fire()
+    }
+}
+
+extension IOSOfflineLocalFeedbackTests {
+    func testCapturedCopyWritesOriginalBytesAfterDurableDeletionWithoutResurrection() async throws {
+        try await checkCapturedCopyAfterDeletion(attachmentsOnly: false)
+    }
+
+    func testCapturedAttachmentCopyPreservesNewerDeletionFeedbackAndWritesOnce() async throws {
+        try await checkCapturedCopyAfterDeletion(attachmentsOnly: true)
+    }
+
+    private func checkCapturedCopyAfterDeletion(attachmentsOnly: Bool) async throws {
+        try await withStatusGuard { fixture in
+            let board = try CapturedCopyBoard(root: fixture.root)
+            defer { board.close() }
+            let model = IOSAppModel(library: fixture.original.library, initialSnapshot: fixture.original.snapshot,
+                                    cloudSyncHandler: fixture.handler, haptics: board.feedback)
+            fixture.model = model
+            let id = StatusGuardFixture.attachmentID
+            await fixture.handler.set(mode: true, states: [id: .available])
+            let loading = fixture.start { await model.load(); return true }
+            guard await fixture.ready(loading.finished, "captured-copy initial attachment knowledge") else { return }
+            let snip = try XCTUnwrap(model.snips.first)
+            model.selectSnips([StatusGuardFixture.snipID])
+            XCTAssertEqual(board.feedback.event?.kind, .selection)
+            let prepare = fixture.gate()
+            let deletionStatus = fixture.gate()
+            await fixture.handler.enqueuePrepare(fixture.originalPrepared, gate: prepare)
+            let coordinator = IOSCopyShareCoordinator(pasteboard: board)
+            let copying = fixture.start {
+                if attachmentsOnly { return await coordinator.copyAttachments(snips: [snip], model: model) }
+                return await coordinator.copy(snips: [snip], model: model)
+            }
+            guard await fixture.ready(prepare.entered, "original captured copy prepare held") else { return }
+            await fixture.handler.set(mode: true, states: [:])
+            await fixture.handler.enqueueStates(.success([:]), gate: deletionStatus)
+            let deleting = fixture.start { await model.deleteSnip(id: StatusGuardFixture.snipID) }
+            guard await fixture.completed(deleting, "Deletion must commit while captured copy is pending"),
+                  await fixture.ready(deletionStatus.entered, "deletion status remains held") else { return }
+            XCTAssertEqual(deleting.result, true)
+            let deleted = try await fixture.reopen(fixture.original)
+            XCTAssertTrue(deleted.snips.isEmpty)
+            XCTAssertTrue(model.snips.isEmpty)
+            XCTAssertEqual(board.feedback.event?.kind, .deleted)
+            let deletionFeedback = board.feedback.event
+            let deletionToast = model.toast
+            XCTAssertEqual(deletionToast?.action, .undoDelete)
+            prepare.release()
+            guard await fixture.completed(copying, "An admitted same-source copy must finish its captured payload") else { return }
+            XCTAssertEqual(copying.result, true)
+            XCTAssertEqual(board.writes, 1, "Keep the existing haptic test's one-write oracle")
+            XCTAssertNil(coordinator.unavailableFilesNotice)
+            XCTAssertTrue(deletionStatus.isHeld)
+            XCTAssertTrue(model.snips.isEmpty)
+            XCTAssertNil(model.attachmentURL(for: id))
+            XCTAssertNil(model.usableAttachmentURL(for: id))
+            XCTAssertEqual(model.attachmentTransferState(for: id), .waiting,
+                           "A removed preparation must not restore its group's old available state")
+            XCTAssertEqual(board.feedback.event, deletionFeedback)
+            XCTAssertEqual(model.toast?.id, deletionToast?.id)
+            XCTAssertEqual(model.toast?.action, .undoDelete)
+            let afterCopy = try await fixture.reopen(fixture.original)
+            XCTAssertTrue(afterCopy.snips.isEmpty, "Copy must not restore content or Done rows")
+            if board.writes == 1 {
+                XCTAssertEqual(board.board.itemProviders.count, attachmentsOnly ? 1 : 2)
+                if !attachmentsOnly { XCTAssertEqual(board.board.string, "Original source") }
+                let provider = try XCTUnwrap(board.board.itemProviders.last)
+                let type = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
+                let bytes = CopiedFileBytes()
+                _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in bytes.read(url) }
+                guard await fixture.ready(bytes.loaded, "actual copied file representation loaded") else { return }
+                XCTAssertEqual(bytes.data, Data("old!".utf8))
+            }
+            deletionStatus.release()
+        }
+    }
+
+    func testDeletedCapturedCopyReturnsOnlyItsOriginalPreparedURLWithoutPublishingState() async throws {
+        try await checkRemovedPrepare(use: .copy, returnsCapturedBytes: true)
+    }
+
+    func testDeletedAttachmentCannotFinishPreviewOpenOrExport() async throws {
+        for use in [SyncedAttachmentUse.preview, .open, .export] {
+            try await checkRemovedPrepare(use: use, returnsCapturedBytes: false)
+        }
+    }
+
+    private func checkRemovedPrepare(use: SyncedAttachmentUse, returnsCapturedBytes: Bool) async throws {
+        try await withStatusGuard { fixture in
+            let model = try XCTUnwrap(fixture.model)
+            let id = StatusGuardFixture.attachmentID
+            await fixture.handler.set(mode: true, states: [id: .available])
+            let loading = fixture.start { await model.load(); return true }
+            guard await fixture.ready(loading.finished, "removed prepare initial knowledge") else { return }
+            let prepare = fixture.gate()
+            let deletionStatus = fixture.gate()
+            await fixture.handler.enqueuePrepare(fixture.originalPrepared, gate: prepare)
+            var prepared: URL?
+            let preparing = fixture.start {
+                prepared = await model.prepareAttachment(id, for: use)
+                return prepared != nil
+            }
+            guard await fixture.ready(prepare.entered, "known attachment admitted before deletion") else { return }
+            await fixture.handler.set(mode: true, states: [:])
+            await fixture.handler.enqueueStates(.success([:]), gate: deletionStatus)
+            let deleting = fixture.start { await model.deleteSnip(id: StatusGuardFixture.snipID) }
+            guard await fixture.completed(deleting, "Known attachment's snip deleted durably"),
+                  await fixture.ready(deletionStatus.entered, "removed prepare status held") else { return }
+            XCTAssertEqual(deleting.result, true)
+            prepare.release()
+            guard await fixture.completed(preparing, "Removed prepare returned without waiting for status") else { return }
+            XCTAssertEqual(prepared, returnsCapturedBytes ? fixture.originalPrepared : nil)
+            if returnsCapturedBytes {
+                let url = try XCTUnwrap(prepared)
+                XCTAssertEqual(try Data(contentsOf: url), Data("old!".utf8))
+            }
+            XCTAssertNil(model.attachmentURL(for: id))
+            XCTAssertNil(model.usableAttachmentURL(for: id))
+            XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+            XCTAssertTrue(model.snips.isEmpty)
+            let durable = try await fixture.reopen(fixture.original)
+            XCTAssertTrue(durable.snips.isEmpty)
+            let board = try CapturedCopyBoard(root: fixture.root)
+            defer { board.close() }
+            let coordinator = IOSCopyShareCoordinator(pasteboard: board)
+            let later = fixture.start {
+                await coordinator.copy(snips: fixture.original.snapshot.snips, model: model)
+            }
+            guard await fixture.completed(later, "A later copy cannot capture an already deleted snip") else { return }
+            XCTAssertEqual(later.result, false)
+            XCTAssertEqual(board.writes, 0)
+            XCTAssertNil(model.attachmentURL(for: id))
+            XCTAssertTrue(deletionStatus.isHeld)
+            deletionStatus.release()
+        }
+    }
+
+    func testCapturedCopyRejectsRemovalFromAnExistingSnip() async throws {
+        try await checkInvalidatedCapturedCopy(change: .removeAttachment)
+    }
+
+    func testCapturedCopyRejectsAReplacedSourceWithIdenticalAttachmentMetadata() async throws {
+        try await checkInvalidatedCapturedCopy(change: .replaceSource)
+    }
+
+    func testCapturedCopyRejectsFileRevisionInvalidatedByCacheClear() async throws {
+        try await checkInvalidatedCapturedCopy(change: .clearFiles)
+    }
+
+    private enum CapturedCopyChange { case removeAttachment, replaceSource, clearFiles }
+
+    private func checkInvalidatedCapturedCopy(change: CapturedCopyChange) async throws {
+        try await withStatusGuard { fixture in
+            let model = try XCTUnwrap(fixture.model)
+            let id = StatusGuardFixture.attachmentID
+            let loading = fixture.start { await model.load(); return true }
+            guard await fixture.ready(loading.finished, "captured-copy rejection initial knowledge") else { return }
+            let snip = try XCTUnwrap(model.snips.first)
+            let gate = fixture.gate()
+            await fixture.handler.enqueuePrepare(fixture.originalPrepared, gate: gate)
+            var prepared: URL?
+            let preparing = fixture.start {
+                prepared = await model.prepareAttachment(id, for: .copy)
+                return prepared != nil
+            }
+            guard await fixture.ready(gate.entered, "copy prepare admitted before invalidation") else { return }
+            var replacement: StatusGuardFixture.Store?
+            let changing = fixture.start {
+                switch change {
+                case .removeAttachment:
+                    await fixture.handler.set(mode: true, states: [:])
+                    return await model.editSnip(snip, content: "Edited without attachment", attachmentEdits: [])
+                case .replaceSource:
+                    let store: StatusGuardFixture.Store
+                    do { store = try await fixture.replacement() }
+                    catch { XCTFail("Replacement setup failed: \(error)"); return false }
+                    replacement = store
+                    await model.replaceLibrary(store.library, recoveryScope: nil)
+                    return true
+                case .clearFiles:
+                    await model.clearDownloadedFiles()
+                    return true
+                }
+            }
+            guard await fixture.completed(changing, "Invalidation must finish independently of old copy") else { return }
+            XCTAssertEqual(changing.result, true)
+            gate.release()
+            guard await fixture.completed(preparing, "Invalidated copy must return") else { return }
+            XCTAssertNil(prepared)
+            XCTAssertNil(model.attachmentURL(for: id))
+            XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+            XCTAssertNil(model.errorMessage)
+            let durable = try await fixture.reopen(replacement ?? fixture.original)
+            switch change {
+            case .removeAttachment:
+                XCTAssertEqual(durable.snips.map(\.content), ["Edited without attachment"])
+                XCTAssertEqual(durable.snips.first?.attachments.count, 0)
+            case .replaceSource: XCTAssertEqual(durable.snips.map(\.content), ["Replacement source"])
+            case .clearFiles: XCTAssertEqual(durable.snips.map(\.content), ["Original source"])
+            }
+            XCTAssertTrue(durable.snips.allSatisfy { !$0.isDone })
+        }
+    }
+}
+
+extension IOSOfflineLocalFeedbackTests {
+    func testMultiAttachmentCopyRevalidatesSourceAfterLaterPreparation() async throws {
+        try await checkLateCapturedCopyChange(.source)
+    }
+
+    func testMultiAttachmentCopyRevalidatesFilesAfterLaterPreparation() async throws {
+        try await checkLateCapturedCopyChange(.files)
+    }
+
+    func testMultiAttachmentCopyRevalidatesEarlierAttachmentIdentity() async throws {
+        try await checkLateCapturedCopyChange(.identity)
+    }
+
+    func testMultiAttachmentCopyCannotReviveChangedIdentityAfterDeletion() async throws {
+        try await checkLateCapturedCopyChange(.identityThenDeletion)
+    }
+
+    func testCancelledMultiAttachmentCopyNeverWritesCapturedBytes() async throws {
+        try await checkLateCapturedCopyChange(.cancel)
+    }
+
+    func testExportNeverUsesDeletedCapturedCopyBytes() async throws {
+        try await checkLateCapturedCopyChange(.exportDeletion)
+    }
+
+    func testMultiAttachmentCopyAllowsOrdinarySameSourceDeletionOnly() async throws {
+        try await checkLateCapturedCopyChange(.ordinaryDeletion)
+    }
+
+    private enum LateCopyChange: Equatable { case source, files, identity, identityThenDeletion, cancel, exportDeletion, ordinaryDeletion }
+
+    private func checkLateCapturedCopyChange(_ change: LateCopyChange) async throws {
+        let fixture = try await StatusGuardFixture.make(twoAttachments: true)
+        do {
+            try await exerciseLateCapturedCopyChange(change, fixture: fixture)
+            await fixture.cleanUp()
+        } catch {
+            await fixture.cleanUp()
+            throw error
+        }
+    }
+
+    private func exerciseLateCapturedCopyChange(_ change: LateCopyChange, fixture: StatusGuardFixture) async throws {
+        let board = try CapturedCopyBoard(root: fixture.root)
+        defer { board.close() }
+        board.board.string = "Keep this clipboard until a valid copy finishes"
+        let model = IOSAppModel(library: fixture.original.library, initialSnapshot: fixture.original.snapshot,
+                                cloudSyncHandler: fixture.handler, haptics: board.feedback)
+        fixture.model = model
+        let firstID = StatusGuardFixture.attachmentID
+        let secondID = StatusGuardFixture.secondAttachmentID
+        await fixture.handler.set(mode: true, states: [firstID: .waiting, secondID: .waiting])
+        let loading = fixture.start { await model.load(); return true }
+        guard await fixture.ready(loading.finished, "multi-copy initial attachment knowledge") else { return }
+        let snip = try XCTUnwrap(model.snips.first)
+        XCTAssertEqual(snip.attachments.map(\.id), [firstID, secondID])
+        let first = fixture.gate()
+        let second = fixture.gate()
+        let secondURL = fixture.root.appendingPathComponent("verified-second.txt")
+        await fixture.handler.enqueuePrepare(fixture.originalPrepared, gate: first)
+        await fixture.handler.enqueuePrepare(secondURL, gate: second)
+        let coordinator = IOSCopyShareCoordinator(pasteboard: board)
+        let copying = fixture.start {
+            if change == .exportDeletion {
+                await coordinator.share(snips: [snip], model: model)
+                return coordinator.shareRequest != nil
+            }
+            return await coordinator.copy(snips: [snip], model: model)
+        }
+        guard await fixture.ready(first.entered, "first captured prepare admitted") else { return }
+        first.release()
+        guard await fixture.ready(second.entered, "later prepare held after first URL was captured") else { return }
+        XCTAssertEqual(model.usableAttachmentURL(for: firstID), fixture.originalPrepared)
+        let clearedStatus = fixture.gate()
+        if change == .files {
+            await fixture.handler.enqueueStates(.success([firstID: .waiting, secondID: .waiting]), gate: clearedStatus)
+        }
+        var replacement: StatusGuardFixture.Store?
+        let changing = fixture.start {
+            switch change {
+            case .source:
+                do {
+                    let store = try await fixture.replacement()
+                    replacement = store
+                    await model.replaceLibrary(store.library, recoveryScope: nil)
+                    return true
+                } catch { XCTFail("Late replacement setup failed: \(error)"); return false }
+            case .files:
+                await model.clearDownloadedFiles()
+                return true
+            case .identity, .identityThenDeletion:
+                let changedFile = fixture.root.appendingPathComponent("changed.txt")
+                do { try Data("changed!".utf8).write(to: changedFile) }
+                catch { XCTFail("Changed attachment setup failed: \(error)"); return false }
+                let edited = await model.editSnip(snip, content: "Edited during captured copy", attachmentEdits: [
+                    .replacement(attachmentID: firstID, sourceURL: changedFile),
+                    .existing(attachmentID: secondID),
+                ])
+                guard edited else { return false }
+                if change == .identityThenDeletion {
+                    await fixture.handler.set(mode: true, states: [:])
+                    return await model.deleteSnip(id: StatusGuardFixture.snipID)
+                }
+                return true
+            case .cancel:
+                copying.task?.cancel()
+                return true
+            case .exportDeletion, .ordinaryDeletion:
+                await fixture.handler.set(mode: true, states: [:])
+                return await model.deleteSnip(id: StatusGuardFixture.snipID)
+            }
+        }
+        if change == .files {
+            guard await fixture.ready(clearedStatus.entered, "confirmed cache clear awaits status") else { return }
+            let clearedTooEarly = await changing.finished.wait(for: .milliseconds(100))
+            XCTAssertFalse(clearedTooEarly)
+        } else {
+            guard await fixture.completed(changing, "Late invalidation must finish while the second prepare is held") else { return }
+            XCTAssertEqual(changing.result, true)
+        }
+        XCTAssertTrue(second.isHeld)
+        second.release()
+        guard await fixture.completed(copying, "Captured operation returned after the later prepare") else { return }
+        if change == .files {
+            XCTAssertTrue(clearedStatus.isHeld)
+            clearedStatus.release()
+            guard await fixture.completed(changing, "Cache clear completed after its status release") else { return }
+            XCTAssertEqual(changing.result, true)
+        }
+        if change == .ordinaryDeletion {
+            XCTAssertEqual(copying.result, true)
+            XCTAssertEqual(board.writes, 1)
+            XCTAssertEqual(board.board.string, "Original source")
+            XCTAssertEqual(board.feedback.event?.kind, .deleted)
+            XCTAssertEqual(model.toast?.action, .undoDelete)
+            XCTAssertNil(model.attachmentURL(for: firstID))
+            XCTAssertNil(model.attachmentURL(for: secondID))
+            if board.writes == 1 {
+                XCTAssertEqual(board.board.itemProviders.count, 3)
+                for (provider, expected) in zip(board.board.itemProviders.dropFirst(), [Data("old!".utf8), Data("two!".utf8)]) {
+                    let type = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
+                    let bytes = CopiedFileBytes()
+                    _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in bytes.read(url) }
+                    guard await fixture.ready(bytes.loaded, "actual multi-copy file bytes loaded") else { return }
+                    XCTAssertEqual(bytes.data, expected)
+                }
+            }
+        } else {
+            XCTAssertEqual(copying.result, false)
+            XCTAssertEqual(board.writes, 0)
+            XCTAssertEqual(board.board.string, "Keep this clipboard until a valid copy finishes")
+            XCTAssertNil(coordinator.shareRequest)
+        }
+        let durable = try await fixture.reopen(replacement ?? fixture.original)
+        switch change {
+        case .identityThenDeletion, .exportDeletion, .ordinaryDeletion:
+            XCTAssertTrue(durable.snips.isEmpty)
+            XCTAssertTrue(model.snips.isEmpty)
+            XCTAssertNil(model.attachmentURL(for: firstID))
+            XCTAssertNil(model.attachmentURL(for: secondID))
+            XCTAssertEqual(model.attachmentTransferState(for: firstID), .waiting)
+            XCTAssertEqual(model.attachmentTransferState(for: secondID), .waiting)
+        case .identity:
+            XCTAssertEqual(durable.snips.map(\.content), ["Edited during captured copy"])
+            XCTAssertFalse(durable.snips.flatMap(\.attachments).contains { $0.id == firstID })
+            XCTAssertTrue(durable.snips.flatMap(\.attachments).contains { $0.id == secondID })
+            let changed = try XCTUnwrap(durable.snips.flatMap(\.attachments).first { $0.fileName == "changed.txt" })
+            let file = try XCTUnwrap(durable.attachmentURLs[changed.id])
+            XCTAssertEqual(try Data(contentsOf: file), Data("changed!".utf8))
+        case .source: XCTAssertEqual(durable.snips.map(\.content), ["Replacement source"])
+        case .files, .cancel: XCTAssertEqual(durable.snips.map(\.content), ["Original source"])
+        }
+        XCTAssertTrue(durable.snips.allSatisfy { !$0.isDone })
+        XCTAssertNil(model.errorMessage)
+    }
+}
+
+extension IOSOfflineLocalFeedbackTests {
+    func testDeletedCopyCannotAdmitALaterAttachmentAfterItsOwnerDisappears() async throws {
+        let fixture = try await StatusGuardFixture.make(twoAttachments: true)
+        do {
+            try await exerciseDeletionBeforeLaterAdmission(fixture)
+            await fixture.cleanUp()
+        } catch {
+            await fixture.cleanUp()
+            throw error
+        }
+    }
+
+    private func exerciseDeletionBeforeLaterAdmission(_ fixture: StatusGuardFixture) async throws {
+        let model = try XCTUnwrap(fixture.model)
+        let board = try CapturedCopyBoard(root: fixture.root)
+        defer { board.close() }
+        let firstID = StatusGuardFixture.attachmentID
+        let secondID = StatusGuardFixture.secondAttachmentID
+        await fixture.handler.set(mode: true, states: [firstID: .waiting, secondID: .waiting])
+        let loading = fixture.start { await model.load(); return true }
+        guard await fixture.ready(loading.finished, "late-admission initial attachment knowledge") else { return }
+        let snip = try XCTUnwrap(model.snips.first)
+        let first = fixture.gate()
+        let neverAdmitted = fixture.gate()
+        await fixture.handler.enqueuePrepare(fixture.originalPrepared, gate: first)
+        await fixture.handler.enqueuePrepare(fixture.root.appendingPathComponent("verified-second.txt"), gate: neverAdmitted)
+        let coordinator = IOSCopyShareCoordinator(pasteboard: board)
+        let copying = fixture.start { await coordinator.copy(snips: [snip], model: model) }
+        guard await fixture.ready(first.entered, "only first attachment was admitted") else { return }
+        await fixture.handler.set(mode: true, states: [:])
+        let deleting = fixture.start { await model.deleteSnip(id: StatusGuardFixture.snipID) }
+        guard await fixture.completed(deleting, "Owner deletion committed before second admission") else { return }
+        XCTAssertEqual(deleting.result, true)
+        first.release()
+        guard await fixture.completed(copying, "Copy must reject an attachment missing at admission") else { return }
+        XCTAssertEqual(copying.result, false)
+        XCTAssertEqual(board.writes, 0)
+        XCTAssertFalse(neverAdmitted.entered.isSet)
+        let calls = await fixture.handler.snapshotCounts()
+        XCTAssertEqual(calls.entries[.prepare], 1)
+        XCTAssertNil(model.attachmentURL(for: firstID))
+        XCTAssertNil(model.attachmentURL(for: secondID))
+        let durable = try await fixture.reopen(fixture.original)
+        XCTAssertTrue(durable.snips.isEmpty)
     }
 }

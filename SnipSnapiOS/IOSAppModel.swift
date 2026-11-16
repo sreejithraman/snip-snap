@@ -65,6 +65,7 @@ final class IOSAppModel {
     private var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
     @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
     private var attachmentFileRevision = UUID()
+    @ObservationIgnored private var attachmentCopyCaptures: [WeakAttachmentCopyCapture] = []
     private var isReplacingAttachmentSource = false
     @ObservationIgnored private var attachmentStateRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var attachmentStateRefreshPending = false
@@ -80,8 +81,36 @@ final class IOSAppModel {
         var identity: PreparedAttachmentIdentity?
     }
 
+    final class AttachmentCopyCapture {
+        fileprivate let sourceRevision: UUID
+        fileprivate let fileRevision: UUID
+        fileprivate let originals: [UUID: SnipAttachment]
+        fileprivate let owners: [UUID: Set<UUID>]
+        fileprivate var admitted: Set<UUID> = []
+        fileprivate var urls: [UUID: URL] = [:]
+        fileprivate var invalidated = false
+
+        fileprivate init(sourceRevision: UUID, fileRevision: UUID, snips: [Snip]) {
+            self.sourceRevision = sourceRevision
+            self.fileRevision = fileRevision
+            originals = Dictionary(snips.flatMap(\.attachments).map { ($0.id, $0) },
+                                   uniquingKeysWith: { first, _ in first })
+            var owners: [UUID: Set<UUID>] = [:]
+            for snip in snips {
+                for attachment in snip.attachments { owners[attachment.id, default: []].insert(snip.id) }
+            }
+            self.owners = owners
+        }
+    }
+
+    private final class WeakAttachmentCopyCapture {
+        weak var value: AttachmentCopyCapture?
+        init(_ value: AttachmentCopyCapture) { self.value = value }
+    }
+
     /// The preparations of one attachment that are running at the same time.
     private struct AttachmentPreparationGroup {
+        let id = UUID()
         var memberCount = 0
         var strongestOutcome = AttachmentPreparationOutcome.cancelled
         /// Shown again when every member is cancelled. Each refresh replaces it.
@@ -1080,6 +1109,76 @@ final class IOSAppModel {
         return url
     }
 
+    func beginAttachmentCopy(snips: [Snip]) -> AttachmentCopyCapture {
+        let capture = AttachmentCopyCapture(sourceRevision: libraryRevision,
+            fileRevision: attachmentFileRevision, snips: snips)
+        for requested in snips {
+            guard let owner = self.snips.first(where: { $0.id == requested.id }),
+                  requested.attachments.allSatisfy({ owner.attachments.contains($0) }) else {
+                capture.invalidated = true
+                break
+            }
+        }
+        updateAttachmentCopyValidity(capture, snips: self.snips)
+        attachmentCopyCaptures.removeAll { $0.value == nil }
+        attachmentCopyCaptures.append(WeakAttachmentCopyCapture(capture))
+        return capture
+    }
+
+    func prepareAttachmentCopy(
+        _ attachmentID: UUID, in capture: AttachmentCopyCapture,
+        onFailure: ((String) -> Void)?, onCancellation: (() -> Void)?
+    ) async {
+        updateAttachmentCopyValidity(capture, snips: snips)
+        guard !capture.invalidated, !Task.isCancelled,
+              let original = capture.originals[attachmentID],
+              snips.flatMap(\.attachments).contains(original) else {
+            onCancellation?()
+            return
+        }
+        capture.admitted.insert(attachmentID)
+        capture.urls[attachmentID] = await prepareAttachment(attachmentID, for: .copy,
+            onFailure: onFailure, onCancellation: onCancellation)
+    }
+
+    func validatedAttachmentCopyURLs(_ capture: AttachmentCopyCapture) -> [UUID: URL]? {
+        updateAttachmentCopyValidity(capture, snips: snips)
+        guard !capture.invalidated, !Task.isCancelled,
+              capture.admitted == Set(capture.originals.keys) else { return nil }
+        let live = Dictionary(snips.flatMap(\.attachments).map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        var urls: [UUID: URL] = [:]
+        for id in capture.originals.keys {
+            if live[id] != nil {
+                urls[id] = attachmentURL(for: id)
+            } else {
+                clearRemovedAttachmentState(id)
+                if capture.admitted.contains(id), let url = capture.urls[id], isAvailablePreparedAttachment(url) {
+                    urls[id] = url
+                }
+            }
+        }
+        return urls
+    }
+
+    private func updateAttachmentCopyValidity(_ capture: AttachmentCopyCapture, snips: [Snip]) {
+        guard !capture.invalidated else { return }
+        guard !isReplacingAttachmentSource, libraryRevision == capture.sourceRevision,
+              attachmentFileRevision == capture.fileRevision else {
+            capture.invalidated = true
+            return
+        }
+        let owners = Dictionary(snips.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let live = Dictionary(snips.flatMap(\.attachments).map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        for (id, original) in capture.originals {
+            if let current = live[id], current != original { capture.invalidated = true }
+            for ownerID in capture.owners[id, default: []] {
+                if let owner = owners[ownerID], !owner.attachments.contains(original) { capture.invalidated = true }
+            }
+        }
+    }
+
     func prepareAttachment(
         _ attachmentID: UUID,
         for use: SyncedAttachmentUse,
@@ -1093,6 +1192,9 @@ final class IOSAppModel {
             onCancellation?()
             return nil
         }
+        let identity = preparedAttachmentIdentity(for: attachmentID)
+        let owner = snips.first { $0.attachments.contains { $0.id == attachmentID } }
+        let ownerID = owner?.id
         if let preparedURL = preparedAttachments[attachmentID]?.url,
            isAvailablePreparedAttachment(preparedURL)
         {
@@ -1120,15 +1222,37 @@ final class IOSAppModel {
         group.memberCount += 1
         attachmentPreparations[attachmentID] = group
         attachmentTransferStates[attachmentID] = .syncing
-        let identity = preparedAttachmentIdentity(for: attachmentID)
+        let groupID = group.id
+        let sourceRevision = libraryRevision
         let fileRevision = attachmentFileRevision
+        let copyAdmission = use == .copy ? owner.map { owner in
+            var captured = owner
+            captured.attachments = owner.attachments.filter { $0.id == attachmentID }
+            return beginAttachmentCopy(snips: [captured])
+        } : nil
         do {
             let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
-            guard !isReplacingAttachmentSource, attachmentFileRevision == fileRevision else {
+            guard !isReplacingAttachmentSource, libraryRevision == sourceRevision,
+                  attachmentFileRevision == fileRevision else {
                 onCancellation?()
                 return nil
             }
             let currentIdentity = preparedAttachmentIdentity(for: attachmentID)
+            if copyAdmission?.invalidated == true {
+                if currentIdentity == nil { retireRemovedAttachmentPreparation(attachmentID, groupID: groupID) }
+                else { finishAttachmentPreparation(attachmentID, outcome: .cancelled) }
+                onCancellation?()
+                return nil
+            }
+            if identity != nil, currentIdentity == nil {
+                retireRemovedAttachmentPreparation(attachmentID, groupID: groupID)
+                guard use == .copy, copyAdmission != nil, let ownerID, !snips.contains(where: { $0.id == ownerID }),
+                      !Task.isCancelled, isAvailablePreparedAttachment(url) else {
+                    onCancellation?()
+                    return nil
+                }
+                return url
+            }
             if let identity, identity != currentIdentity {
                 finishAttachmentPreparation(attachmentID, outcome: .cancelled)
                 onCancellation?()
@@ -1142,7 +1266,13 @@ final class IOSAppModel {
             finishAttachmentPreparation(attachmentID, outcome: .succeeded)
             return url
         } catch {
-            guard !isReplacingAttachmentSource, attachmentFileRevision == fileRevision else {
+            guard !isReplacingAttachmentSource, libraryRevision == sourceRevision,
+                  attachmentFileRevision == fileRevision else {
+                onCancellation?()
+                return nil
+            }
+            if identity != nil, preparedAttachmentIdentity(for: attachmentID) == nil {
+                retireRemovedAttachmentPreparation(attachmentID, groupID: groupID)
                 onCancellation?()
                 return nil
             }
@@ -1197,6 +1327,19 @@ final class IOSAppModel {
         group.strongestOutcome = max(group.strongestOutcome, outcome)
         attachmentTransferStates[attachmentID] = group.shownState
         attachmentPreparations[attachmentID] = group.memberCount > 0 ? group : nil
+    }
+
+    private func retireRemovedAttachmentPreparation(_ attachmentID: UUID, groupID: UUID) {
+        guard var group = attachmentPreparations[attachmentID], group.id == groupID else { return }
+        group.memberCount -= 1
+        attachmentPreparations[attachmentID] = group.memberCount > 0 ? group : nil
+        clearRemovedAttachmentState(attachmentID)
+    }
+
+    private func clearRemovedAttachmentState(_ attachmentID: UUID) {
+        attachmentURLs[attachmentID] = nil
+        preparedAttachments[attachmentID] = nil
+        attachmentTransferStates[attachmentID] = nil
     }
 
     private struct PreparedAttachmentIdentity: Equatable {
@@ -1261,6 +1404,7 @@ final class IOSAppModel {
         do {
             try await cloudSyncHandler.clearDownloadedFiles()
             guard libraryRevision == revision, !isReplacingAttachmentSource else { return }
+            invalidatePreparedAttachments()
             let state = await session.state(sortedBy: .chronological)
             guard libraryRevision == revision, !isReplacingAttachmentSource else { return }
             apply(state)
@@ -1679,6 +1823,10 @@ final class IOSAppModel {
     }
 
     private func apply(_ snapshot: SnipLibrarySnapshot) {
+        attachmentCopyCaptures.removeAll { $0.value == nil }
+        for capture in attachmentCopyCaptures {
+            if let capture = capture.value { updateAttachmentCopyValidity(capture, snips: snapshot.snips) }
+        }
         snips = snapshot.snips
         lists = snapshot.lists
         attachmentURLs = snapshot.attachmentURLs
@@ -1751,6 +1899,7 @@ final class IOSAppModel {
 
     private func finishAttachmentStateRefresh() {
         attachmentStateRefreshTask = nil
+        guard !isReplacingAttachmentSource else { return }
         let waiters = Array(attachmentStateRefreshWaiters.values)
         attachmentStateRefreshWaiters.removeAll()
         for waiter in waiters { waiter.finish() }

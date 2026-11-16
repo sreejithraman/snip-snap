@@ -584,17 +584,25 @@ final class IOSCopyShareCoordinator {
     ) async -> (payload: IOSCopySharePayload?, failureCode: String?) {
         var firstFailureCode: String?
         var cancelled = false
-        for attachment in payloadBuilder.uniqueAttachments(in: snips) {
+        let attachments = payloadBuilder.uniqueAttachments(in: snips)
+        let capture = use == .copy && !attachments.isEmpty ? model.beginAttachmentCopy(snips: snips) : nil
+        for attachment in attachments {
             guard !Task.isCancelled else { return (nil, nil) }
-            _ = await model.prepareAttachment(
-                attachment.id,
-                for: use,
-                onFailure: { code in
-                    if firstFailureCode == nil { firstFailureCode = code }
-                },
-                onCancellation: { cancelled = true }
-            )
+            let onFailure: (String) -> Void = { code in
+                if firstFailureCode == nil { firstFailureCode = code }
+            }
+            if let capture {
+                await model.prepareAttachmentCopy(attachment.id, in: capture,
+                    onFailure: onFailure, onCancellation: { cancelled = true })
+            } else {
+                _ = await model.prepareAttachment(attachment.id, for: use,
+                    onFailure: onFailure, onCancellation: { cancelled = true })
+            }
             if cancelled || Task.isCancelled { return (nil, nil) }
+        }
+        if let capture {
+            guard let urls = model.validatedAttachmentCopyURLs(capture) else { return (nil, nil) }
+            return (payloadBuilder.payload(for: snips, attachmentURL: { urls[$0] }), firstFailureCode)
         }
         return (makePayload(snips: snips, model: model), firstFailureCode)
     }
