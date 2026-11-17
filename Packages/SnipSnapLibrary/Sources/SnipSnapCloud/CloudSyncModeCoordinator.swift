@@ -446,6 +446,7 @@ package actor ICloudSyncModeCoordinator {
         defer { end() }
         await persistence.installFailedEnableSemantics(
             CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone),
+            preservingInFlightMerge: true,
             accountCheck: { [accountStateSource, namespace] in
                 guard case .available(let lineage) = await accountStateSource.currentAccountState() else { return false }
                 return lineage == namespace.accountLineage
@@ -644,6 +645,7 @@ package actor ICloudSyncModeCoordinator {
         defer { end() }
         await persistence.installFailedEnableSemantics(
             CloudFailedEnablePolicy(namespace: namespace, dataZone: textZone),
+            preservingInFlightMerge: true,
             accountCheck: { [accountStateSource, namespace] in
                 guard case .available(let lineage) = await accountStateSource.currentAccountState() else { return false }
                 return lineage == namespace.accountLineage

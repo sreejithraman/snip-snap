@@ -704,6 +704,16 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             XCTAssertEqual(sourceBefore.snips, [f.snip])
             XCTAssertEqual(sourceBefore.lists, [SnipList.inbox])
             XCTAssertTrue(sourceBefore.attachmentData.isEmpty)
+            XCTAssertTrue(sourceBefore.additionalSeenRequestIDs.isEmpty)
+            XCTAssertTrue(sourceBefore.legacyManualPositions.isEmpty)
+            let sourceArchive = try await sourceRaw.archive()
+            XCTAssertEqual(sourceArchive.seenRequestIDs, Set([f.snip.requestID]))
+            let expectedSourceRead = SnipLibraryTransferSnapshot(revision: sourceStore.revision,
+                snips: [f.snip], lists: [SnipList.inbox], attachmentData: [:],
+                attachmentFileURLs: [:], attachmentFileDigests: [:], legacyManualPositions: [:],
+                opaqueSyncStateDigest: sourceBefore.opaqueSyncStateDigest,
+                opaqueSyncStatePayload: sourceBefore.opaqueSyncStatePayload,
+                additionalSeenRequestIDs: Set([f.snip.requestID]))
             let t0 = try XCTUnwrap(try files.read(sourceStore.id))
             let turnOff = try XCTUnwrap(t0.transfers.first { $0.kind == .turnOff })
             XCTAssertEqual(turnOff.state, .checked)
@@ -809,7 +819,8 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                         namespace: f.namespace.binding, locks: locks, reenableTransitionID: transition.id)
                     let old = try SwiftDataSnipLibrary.retainedFailedEnableRead(storeURL: retainedURL,
                         revision: retained.revision, namespace: f.namespace.binding, locks: locks)
-                    XCTAssertEqual(l.snapshot, sourceBefore)
+                    XCTAssertEqual(l.snapshot, expectedSourceRead)
+                    XCTAssertEqual(l.seenRequestIDs, Set([f.snip.requestID]))
                     XCTAssertEqual(old.snapshot.snips, [f.snip])
                     XCTAssertTrue(c.snapshot.snips.isEmpty)
                     XCTAssertEqual(c.snapshot.lists, [SnipList.inbox])
@@ -1003,7 +1014,21 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             let archive = try await activeRaw.archive()
             XCTAssertTrue(events.isEmpty)
             XCTAssertTrue(archive.seenRequestIDs.isSubset(of: Set([f.snip.requestID])))
-            let retainedSource = try await completing.libraryForTransition(storeID: sourceStore.id)
+            let retainedSourceStore = try XCTUnwrap(activated.stores.first { $0.id == sourceStore.id })
+            XCTAssertEqual(retainedSourceStore.lifecycle, .deleting)
+            let retainedSourceURL = await completing.storeFileURL(retainedSourceStore)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retainedSourceURL.path))
+            do {
+                let locks = try FailedEnableReadLocks(stores: [
+                    (sourceStore.id, retainedSourceURL.appendingPathExtension("lock"))
+                ])
+                defer { withExtendedLifetime(locks) {} }
+                let retainedRead = try SwiftDataSnipLibrary.retainedFailedEnableRead(storeURL: retainedSourceURL,
+                    revision: sourceStore.revision, namespace: f.namespace.binding, locks: locks)
+                XCTAssertEqual(retainedRead.snapshot, expectedSourceRead)
+                XCTAssertEqual(retainedRead.seenRequestIDs, Set([f.snip.requestID]))
+            }
+            let retainedSource = sourceRaw
             let retainedSourceSnapshot = try await retainedSource.transferSnapshot(revision: sourceStore.revision)
             let retainedDormant = try await retainedSource.dormantCloudBases()
             XCTAssertEqual(retainedSourceSnapshot, sourceBefore)
@@ -1085,6 +1110,13 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                     .save(try CloudFullRecordCodec.snipDraft(changed, accepted: accepted))
                 ]))
                 XCTAssertEqual(save.items.count, 1)
+                guard case .saved(let saved) = try XCTUnwrap(save.items.first) else {
+                    return XCTFail("The historical update must really reach the server")
+                }
+                XCTAssertEqual(saved.id, originalRecord)
+                XCTAssertEqual(saved.encryptedFields["text"], .string("review fixture"))
+                XCTAssertEqual(saved.encryptedFields["isDone"], .int64(1))
+                try await writer.confirmApplied(save.id)
                 let driver = CloudFullSyncCoordinator(store: CloudFullSyncPersistence(library: retainedLibrary,
                     namespace: f.namespace, dataZone: f.zone),
                     transport: FakeCloudRecordTransport(server: f.server, namespace: f.namespace))
@@ -1146,7 +1178,13 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                 let changed = CloudRecordDraft(id: inboxID, recordType: "List", schemaVersion: 3,
                     routingFields: [:], encryptedFields: ["retainedUnknown": .string("actual later retained value")],
                     base: prior.shadow)
-                _ = try await writer.send(CloudOutboundBatch(operations: [.save(changed)]))
+                let save = try await writer.send(CloudOutboundBatch(operations: [.save(changed)]))
+                guard case .saved(let saved) = try XCTUnwrap(save.items.first) else {
+                    return XCTFail("The retained metadata update must really reach the server")
+                }
+                XCTAssertEqual(saved.id, inboxID)
+                XCTAssertEqual(saved.encryptedFields["retainedUnknown"], .string("actual later retained value"))
+                try await writer.confirmApplied(save.id)
                 let driver = CloudFullSyncCoordinator(store: CloudFullSyncPersistence(library: retainedLibrary,
                     namespace: f.namespace, dataZone: f.zone),
                     transport: FakeCloudRecordTransport(server: f.server, namespace: f.namespace))
@@ -1169,19 +1207,22 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             XCTAssertEqual(identity, originalRecord)
             let absent = await f.server.fullSnapshot(for: originalRecord)
             XCTAssertNil(absent)
+            try await writer.confirmApplied(deletion.id)
 
             let owner = Mutex<SwiftDataSyncModePersistence?>(nil)
             let reached = Mutex(false)
             let faultAtReplay = Mutex(false)
             let observed = Mutex<[String: Data]>([:])
-            let enteredReservation = expectation(description: "The actual reservation is durable for \(fault)")
+            let enteredReservation: XCTestExpectation? = fault == "reservation"
+                ? expectation(description: "The actual reservation is durable for \(fault)") : nil
             let releaseReservation = AsyncStream<Void>.makeStream()
             let pauseReservation = Mutex(false)
             let p = try SwiftDataSyncModePersistence(rootURL: f.root, crashHook: { try crash.hit($0) },
                 writeHook: { point in
                     if point == .afterRevisionReserved,
                         pauseReservation.withLock({ if $0 { $0 = false; return true }; return false }) {
-                        enteredReservation.fulfill()
+                        let entered = try XCTUnwrap(enteredReservation)
+                        entered.fulfill()
                         for await _ in releaseReservation.stream { break }
                     }
                     guard point == .beforeFullReenablePlanApply else { return }
@@ -1357,7 +1398,8 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                             attachmentURLs: nil, expectedUpdatedAt: Date(timeIntervalSince1970: 10),
                             now: Date(timeIntervalSince1970: 50)), sortedBy: .manual)
                     }
-                    await fulfillment(of: [enteredReservation], timeout: 30)
+                    let entered = try XCTUnwrap(enteredReservation)
+                    await fulfillment(of: [entered], timeout: 30)
                     XCTAssertFalse(pauseReservation.withLock { $0 })
                     let reserved = await p.manifest
                     XCTAssertNotNil(reserved.writeReservation)
@@ -1476,9 +1518,15 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                     updatedAt: Date(timeIntervalSince1970: 60), content: "actual unrelated deferred row",
                     origin: .quickEntry, source: nil, listID: UUID(), isDone: false,
                     manualSortKey: SnipOrderKey(rawDigits: [64]), attachments: [])
-                _ = try await writer.send(CloudOutboundBatch(operations: [
+                let extraSave = try await writer.send(CloudOutboundBatch(operations: [
                     .save(try CloudFullRecordCodec.snipDraft(targetOnly, in: f.zone))
                 ]))
+                guard case .saved(let saved) = try XCTUnwrap(extraSave.items.first) else {
+                    return XCTFail("The additional accepted row must really reach the server")
+                }
+                XCTAssertEqual(saved.id, .snip(targetOnly.id, in: f.zone))
+                XCTAssertEqual(saved.encryptedFields["text"], .string("actual unrelated deferred row"))
+                try await writer.confirmApplied(extraSave.id)
                 let driver = CloudFullSyncCoordinator(store: raw,
                     transport: FakeCloudRecordTransport(server: f.server, namespace: f.namespace))
                 _ = try await driver.fetchRemote()

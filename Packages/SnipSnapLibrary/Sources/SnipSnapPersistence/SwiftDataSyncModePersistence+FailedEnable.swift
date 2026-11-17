@@ -87,6 +87,16 @@ extension SwiftDataSyncModePersistence {
   package func installFailedEnableSemantics(_ semantics: any FailedEnableSemantics,
     accountCheck: (@Sendable () async -> Bool)? = nil
   ) async {
+    await installFailedEnableSemantics(semantics, preservingInFlightMerge: false,
+      accountCheck: accountCheck)
+  }
+
+  package func installFailedEnableSemantics(_ semantics: any FailedEnableSemantics,
+    preservingInFlightMerge: Bool,
+    accountCheck: (@Sendable () async -> Bool)? = nil
+  ) async {
+    if preservingInFlightMerge, let inFlight = fullReenableMergeInFlight,
+      manifest.transition?.id == inFlight { return }
     failedEnableSemantics = semantics
     failedEnableAccountCheck = accountCheck
     failedEnableSemanticRegistration = UUID()
