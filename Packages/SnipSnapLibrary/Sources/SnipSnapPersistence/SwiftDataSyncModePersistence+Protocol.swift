@@ -9,23 +9,25 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func recordFirstSendStarted() throws {
-    _ = try requireFailedEnableCapture()
-    try crashHook(.afterFirstSendStarted)
-    var next = manifest
-    try next.updateTransition { try $0.startFirstSend() }
-    try commit(next)
+  package func recordFirstSendStarted() async throws {
+    try await withFailedEnableExposure(requiresAccepted: false) { _ in
+      try self.crashHook(.afterFirstSendStarted)
+      var next = self.manifest
+      try next.updateTransition { try $0.startFirstSend() }
+      try self.commit(next)
+    }
   }
 
   package func recordSendAttempt(_ attempt: SyncModeSendAttempt) async throws {
     let transition = manifest.transition
-    try await armFailedEnableCapture()
-    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
-    var next = manifest
-    try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
-    try crashHook(.beforeSendAttemptManifest)
-    try commit(next)
-    if transition?.syncProtocol == .fullRecordV1 { failedEnableSendInFlight = transition?.id }
+    try await withFailedEnableExposure(requiresAccepted: false, attempt: attempt, arm: true) { _ in
+      guard self.manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
+      var next = self.manifest
+      try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
+      try self.crashHook(.beforeSendAttemptManifest)
+      try self.commit(next)
+      if transition?.syncProtocol == .fullRecordV1 { self.failedEnableSendInFlight = transition?.id }
+    }
   }
 
   package func finishFailedEnableSend() {
@@ -76,15 +78,13 @@ extension SwiftDataSyncModePersistence {
     guard let transition = manifest.transition, transition.phase == .candidateReady else {
       return
     }
-    try await recoverFailedEnableEvidence()
+    let preparation = try await recoverFailedEnableEvidence()
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-    if transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace {
-      // A new merge may have a different plan. Only pending merge intents need
-      // the prior receipt for crash recovery; candidateReady has none.
-      try await candidate.retireCompletedCloudFullReenable(
-        namespaceKey: namespace.namespaceKey,
-        transitionID: transition.id
-      )
+    if let preparation {
+      // Past private output must be durably checked before retiring its actual receipt.
+      try await withFailedEnablePreparedReceipt(preparation) { candidate, root in
+        try await candidate.retireFailedEnablePrepared(preparation, evidenceRoot: root)
+      }
     }
     guard transition.awaitsAcceptedServerCapture else { return }
     let settledState = try await settledSeedState(

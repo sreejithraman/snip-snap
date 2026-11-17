@@ -37,6 +37,8 @@ private protocol ICloudSyncAdapter: Sendable {
     func prepareFailureRecovery(snipIDs: Set<UUID>) async throws
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialInventory: Bool,
+        beforeApply: @escaping @Sendable () async throws -> Void,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws
 }
@@ -110,8 +112,11 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
 
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialInventory: Bool,
+        beforeApply: @escaping @Sendable () async throws -> Void,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws {
+        _ = (forceInitialInventory, beforeApply)
         try await raw.prepareModeRetry(snipIDs: snipIDs)
         try await commitSettlement()
     }
@@ -234,12 +239,16 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
 
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialInventory: Bool,
+        beforeApply: @escaping @Sendable () async throws -> Void,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws {
         try await commitSettlement()
         // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
         _ = snipIDs
-        try await syncDriver.prepareManualRetry()
+        try await beforeApply()
+        try await syncDriver.prepareManualRetry(forceInitialInventory: forceInitialInventory,
+            beforeApply: beforeApply, beforeStateSave: beforeApply)
     }
 
     func prepareFailureRecovery(snipIDs: Set<UUID>) async throws {
@@ -465,6 +474,19 @@ package actor ICloudSyncModeCoordinator {
             namespace: namespace.binding
         )
         let bridge = try await adapter(storeID: transition.candidateStoreID)
+        let forceInitialInventory = try await persistence.failedEnableNeedsInitialInventory()
+        if forceInitialInventory {
+            if [.remoteFetched, .recordsMerged].contains(transition.phase) {
+                try await persistence.retryFailedEnableTurnOffFetch()
+                transition = try await currentTransition()
+            } else if [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase) {
+                let settlement = try await bridge.currentModeSeedSettlement(
+                    candidates: transition.seedSettlementCandidates, namespace: namespace.binding)
+                try await bridge.prepareFailureRecovery(snipIDs: transition.pendingSettlementSnipIDs)
+                try await persistence.retryFailedEnableTurnOffFetch(settlement: settlement)
+                transition = try await currentTransition()
+            }
+        }
 
         if transition.phase == .candidateReady {
             do {
@@ -474,7 +496,10 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
                 let candidateIDs = Set(candidates.map(\.snipID))
-                try await bridge.prepareModeRetry(snipIDs: candidateIDs) { [persistence] in
+                try await bridge.prepareModeRetry(snipIDs: candidateIDs,
+                    forceInitialInventory: forceInitialInventory,
+                    beforeApply: { try await self.requireMatchingAccount() }
+                ) { [persistence] in
                     try await persistence.prepareRetryFetch(settlement: settlement)
                 }
                 try await requireMatchingAccount()

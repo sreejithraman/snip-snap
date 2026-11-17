@@ -118,7 +118,8 @@ extension SwiftDataSyncModePersistence {
       plan.targetRevision == store(id: transition.candidateStoreID)?.revision,
       try plan.hasValidDigest()
     else { throw SyncModePersistenceError.invalidFreezeToken }
-    try requireFailedEnablePreparedPlan(plan, token: token)
+    let preparation = try requireFailedEnablePreparedPlan(plan, token: token)
+    let semanticRegistration = failedEnableSemanticRegistration
     guard fullReenableMergeInFlight != transition.id else {
       throw SyncModePersistenceError.transitionInProgress
     }
@@ -160,30 +161,58 @@ extension SwiftDataSyncModePersistence {
       try $0.recordMergeIntent(intent, using: token)
     }
     try commit(intended)
+    let applyPreimage = manifest
+    guard applyPreimage == intended, let applyingTransition = applyPreimage.transition,
+      applyingTransition.id == transition.id,
+      applyingTransition.sourceStoreID == transition.sourceStoreID,
+      applyingTransition.candidateStoreID == transition.candidateStoreID,
+      applyingTransition.freezeToken == token, applyingTransition.mergeIntent == intent
+    else { throw SyncModePersistenceError.invalidFreezeToken }
     try crashHook(.beforeCandidateMergeDurability)
     try await writeHook(.beforeFullReenablePlanApply)
+    do {
+      guard try await validateFailedEnableTurnOffApply(transition: applyingTransition,
+        preparation: preparation, digest: intent.planDigest, applied: false, expectedManifest: applyPreimage,
+        expectedRegistration: semanticRegistration) else {
+        if manifest.transition?.mergeIntent == intent {
+          try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+        }
+        throw FailedEnableEvidenceError.reviewRequired
+      }
+    } catch is FailedEnableEvidenceError {
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+      }
+      throw FailedEnableEvidenceError.reviewRequired
+    } catch {
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
+      }
+      throw error
+    }
     do {
       _ = try await libraryForTransition(storeID: transition.candidateStoreID)
         .applyCloudFullReenablePlan(plan, currentRevision: plan.targetRevision)
     } catch CloudFullStorageError.staleAcceptedEntity {
-      try resetFullReenableIntent(intent, reason: nil)
+      try resetFullReenableIntent(intent, reason: nil, preparation: preparation)
       throw CloudFullStorageError.staleAcceptedEntity
     } catch CloudFullStorageError.namespaceStateMismatch {
-      try resetFullReenableIntent(intent, reason: nil)
+      try resetFullReenableIntent(intent, reason: nil, preparation: preparation)
       throw CloudFullStorageError.namespaceStateMismatch
     } catch let error as SnipLibraryError {
       if case .transferConflict = error {
-        try resetFullReenableIntent(intent, reason: .transferConflict)
+        try resetFullReenableIntent(intent, reason: .transferConflict, preparation: preparation)
       } else {
-        try resetFullReenableIntent(intent, reason: .storageFailure)
+        try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
       }
       throw error
     } catch {
-      try resetFullReenableIntent(intent, reason: .storageFailure)
+      try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
       throw error
     }
     try crashHook(.afterCandidateMergeDurability)
-    try advanceFullReenableIntent(intent)
+    guard try await advanceFullReenableIntent(intent, preparation: preparation, expectedManifest: applyPreimage,
+        semanticRegistration: semanticRegistration) else { throw FailedEnableEvidenceError.reviewRequired }
     return plan.result
   }
 
@@ -197,30 +226,56 @@ extension SwiftDataSyncModePersistence {
     fullReenableMergeInFlight = transition.id
     defer { if fullReenableMergeInFlight == transition.id { fullReenableMergeInFlight = nil } }
     var intent = initialIntent
-    // A pre-upgrade intent cannot certify a missing historical source capture. Keep its
-    // candidate for review and release the source through the existing intent rollback.
-    guard let token = transition.freezeToken,
-      let evidence = try? failedEnableFiles.read(transition.sourceStoreID),
-      evidence.namespaces.flatMap(\.captures).contains(where: {
-        $0.transitionID == FailedEnableEncoding.uuid(transition.id)
-          && $0.freeze.id == FailedEnableEncoding.uuid(token.id)
-      })
-    else {
+    var applyPreimage = manifest
+    let semanticRegistration = failedEnableSemanticRegistration
+    // Missing correlation is not ordinary preparation. Roll back without discarding
+    // the actual staged plan or receipt that may be the only surviving replay evidence.
+    guard let token = transition.freezeToken else {
       try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
       return
     }
-    let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-    let proof = CloudFullReenableCommitProof(
-      namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),
-      transitionID: transition.id,
-      digest: intent.planDigest
-    )
+    let preparation: FailedEnablePreparedRead
     do {
-      if try await candidate.recognizesAppliedCloudFullReenable(proof) {
-        try advanceFullReenableIntent(intent)
+      guard let prepared = try failedEnablePreparedRead(transition: transition,
+        digest: intent.planDigest, token: token) else {
+        try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
+        return
+      }
+      preparation = prepared
+    } catch {
+      try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
+      return
+    }
+    guard failedEnableSemantics?.reviewNamespace == transition.namespace,
+      !preparation.requiresTurnOffAbsence || failedEnableAccountCheck != nil else {
+      try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+      return
+    }
+    let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+    do {
+      let alreadyApplied = try await withFailedEnablePreparedReceipt(preparation) { candidate, root in
+        try await candidate.recognizesFailedEnablePrepared(preparation,
+          digest: intent.planDigest, evidenceRoot: root)
+      }
+      if alreadyApplied {
+        _ = try await advanceFullReenableIntent(intent, preparation: preparation,
+          expectedManifest: applyPreimage, semanticRegistration: semanticRegistration)
         return
       }
     } catch {
+      if preparation.requiresTurnOffAbsence || error is FailedEnableEvidenceError
+        || manifest != applyPreimage || failedEnableSemanticRegistration != semanticRegistration
+        || (try? preparation.current(at: rootURL)) == nil {
+        if manifest.transition?.mergeIntent == intent {
+          let reason: ICloudSyncAttentionReason = error is FailedEnableEvidenceError
+            ? .enrollmentBlocked : .storageFailure
+          try resetFullReenableIntent(intent, reason: reason, preparation: preparation)
+        }
+        if error is FailedEnableEvidenceError, manifest.transition?.id == transition.id,
+          manifest.transition?.phase == .candidateReady { return }
+        throw error
+      }
+      // Keep the old ordinary receipt-error route only while its correlation still holds.
       try abortUnactivatedCandidate(reason: .storageFailure)
       throw SyncModePersistenceError.storageFailure
     }
@@ -252,9 +307,15 @@ extension SwiftDataSyncModePersistence {
             seededListIDs: intent.seededListIDs,
             fullReenablePlanID: intent.fullReenablePlanID
           )
+          guard manifest == applyPreimage,
+            failedEnableSemanticRegistration == semanticRegistration else {
+            throw FailedEnableEvidenceError.changed
+          }
+          _ = try preparation.current(at: rootURL)
           var next = manifest
           try next.updateTransition { try $0.replaceMergeIntent(intent, with: migrated) }
           try commit(next)
+          applyPreimage = next
           intent = migrated
         }
         guard plan.planDigest == intent.planDigest else {
@@ -267,20 +328,54 @@ extension SwiftDataSyncModePersistence {
         try plan.hasValidDigest()
       else { throw SyncModePersistenceError.invalidManifest }
     } catch {
-      try resetFullReenableIntent(intent, reason: .storageFailure)
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
+      }
       throw SyncModePersistenceError.storageFailure
     }
+    guard let applyingTransition = applyPreimage.transition,
+      applyingTransition.id == transition.id,
+      applyingTransition.sourceStoreID == transition.sourceStoreID,
+      applyingTransition.candidateStoreID == transition.candidateStoreID,
+      applyingTransition.freezeToken == token, applyingTransition.mergeIntent == intent
+    else { throw SyncModePersistenceError.invalidManifest }
     try await writeHook(.beforeFullReenablePlanApply)
+    do {
+      guard try await validateFailedEnableTurnOffApply(transition: applyingTransition,
+        preparation: preparation, digest: intent.planDigest, applied: false, expectedManifest: applyPreimage,
+        expectedRegistration: semanticRegistration) else {
+        if manifest.transition?.mergeIntent == intent {
+          try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+        }
+        guard manifest.transition?.id == transition.id,
+          manifest.transition?.phase == .candidateReady else {
+          throw FailedEnableEvidenceError.changed
+        }
+        return
+      }
+    } catch let error as FailedEnableEvidenceError {
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+      }
+      guard manifest.transition?.id == transition.id,
+        manifest.transition?.phase == .candidateReady else { throw error }
+      return
+    } catch {
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
+      }
+      throw error
+    }
     do {
       _ = try await candidate.applyCloudFullReenablePlan(
         plan,
         currentRevision: plan.targetRevision
       )
     } catch CloudFullStorageError.staleAcceptedEntity {
-      try resetFullReenableIntent(intent, reason: nil)
+      try resetFullReenableIntent(intent, reason: nil, preparation: preparation)
       throw CloudFullStorageError.staleAcceptedEntity
     } catch CloudFullStorageError.namespaceStateMismatch {
-      try resetFullReenableIntent(intent, reason: nil)
+      try resetFullReenableIntent(intent, reason: nil, preparation: preparation)
       throw CloudFullStorageError.namespaceStateMismatch
     } catch let error as SnipLibraryError {
       let reason: ICloudSyncAttentionReason = if case .transferConflict = error {
@@ -288,29 +383,90 @@ extension SwiftDataSyncModePersistence {
       } else {
         .storageFailure
       }
-      try resetFullReenableIntent(intent, reason: reason)
+      try resetFullReenableIntent(intent, reason: reason, preparation: preparation)
       throw error
     } catch {
-      try resetFullReenableIntent(intent, reason: .storageFailure)
+      try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
       throw error
     }
-    try advanceFullReenableIntent(intent)
+    do {
+      _ = try await advanceFullReenableIntent(intent, preparation: preparation, expectedManifest: applyPreimage,
+        semanticRegistration: semanticRegistration)
+    } catch let error as FailedEnableEvidenceError {
+      guard manifest.transition?.id == transition.id,
+        manifest.transition?.phase == .candidateReady else { throw error }
+      return
+    }
   }
 
-  private func advanceFullReenableIntent(_ intent: SyncModeMergeIntent) throws {
-    if let transition = manifest.transition {
+  private func advanceFullReenableIntent(_ intent: SyncModeMergeIntent,
+    preparation: FailedEnablePreparedRead, expectedManifest: Manifest,
+    semanticRegistration: UUID
+  ) async throws -> Bool {
+    guard let transition = expectedManifest.transition else { throw SyncModePersistenceError.transitionInProgress }
+    do {
+      guard manifest == expectedManifest,
+        failedEnableSemanticRegistration == semanticRegistration else {
+        if manifest.transition?.mergeIntent == intent {
+          try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+        }
+        return false
+      }
+      _ = try preparation.current(at: rootURL)
+      if preparation.requiresTurnOffAbsence {
+        try await recoverFailedEnableTurnOffApply(preparation: preparation)
+        let advanced = try await validateFailedEnableTurnOffApply(transition: transition,
+          preparation: preparation, digest: intent.planDigest, applied: true,
+          expectedManifest: expectedManifest, expectedRegistration: semanticRegistration) {
+          try self.finishFullReenableIntent(intent, preparation: preparation, markApplied: false)
+        }
+        if !advanced, manifest.transition?.mergeIntent == intent {
+          try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
+        }
+        return advanced
+      }
+      try finishFullReenableIntent(intent, preparation: preparation)
+      return true
+    } catch {
+      if manifest.transition?.mergeIntent == intent {
+        try resetFullReenableIntent(intent, reason: .storageFailure, preparation: preparation)
+      }
+      throw error
+    }
+  }
+
+  private func finishFullReenableIntent(_ intent: SyncModeMergeIntent,
+    preparation: FailedEnablePreparedRead, markApplied: Bool = true
+  ) throws {
+    _ = try preparation.current(at: rootURL)
+    if markApplied, let transition = manifest.transition {
       do {
-        try markFailedEnableApplied(transition: transition, planDigest: intent.planDigest)
+        try markFailedEnableApplied(transition: transition, planDigest: intent.planDigest,
+          preparation: preparation)
       } catch {
-        // The candidate receipt and published source capture survive. Evidence bookkeeping
-        // must withhold setup progress without adding a persistent source-content freeze.
-        try resetFullReenableIntent(intent, reason: .enrollmentBlocked)
+        try resetFullReenableIntent(intent, reason: .enrollmentBlocked, preparation: preparation)
         throw error
+      }
+    } else {
+      guard try preparation.current(at: rootURL).state == .checked else {
+        throw FailedEnableEvidenceError.changed
       }
     }
     var next = manifest
     try next.updateTransition { try $0.finishMerge(intent) }
     try commit(next)
+    do {
+      guard !failedEnableUncertainSources.contains(preparation.sourceStoreID) else {
+        throw FailedEnableEvidenceError.changed
+      }
+      guard try preparation.current(at: rootURL).state == .checked else {
+        throw FailedEnableEvidenceError.changed
+      }
+    } catch {
+      // The completed private apply is real; unavailable bookkeeping cannot discard its plan.
+      try unfreezeBeforePointerSwap(reason: .enrollmentBlocked)
+      throw error
+    }
     removeStagedFullReenablePlan(
       candidateStoreID: manifest.transition?.candidateStoreID,
       transitionID: intent.fullReenablePlanID
@@ -319,7 +475,8 @@ extension SwiftDataSyncModePersistence {
 
   private func resetFullReenableIntent(
     _ intent: SyncModeMergeIntent,
-    reason: ICloudSyncAttentionReason?
+    reason: ICloudSyncAttentionReason?,
+    preparation: FailedEnablePreparedRead? = nil
   ) throws {
     var next = manifest
     try next.updateTransition { try $0.abandonMerge(intent) }
@@ -328,10 +485,30 @@ extension SwiftDataSyncModePersistence {
     else { throw SyncModePersistenceError.transitionInProgress }
     next.attentionReason = reason
     try commit(next)
-    removeStagedFullReenablePlan(
-      candidateStoreID: transition.candidateStoreID,
-      transitionID: intent.fullReenablePlanID
-    )
+    // Nil means unavailable correlation, never proof of ordinary work. Failed cleanup
+    // checks retain the staged bytes; they must not replace the original admission error.
+    if let preparation, !preparation.requiresTurnOffAbsence,
+      !failedEnableUncertainSources.contains(preparation.sourceStoreID),
+      preparation.transitionID == transition.id,
+      preparation.sourceStoreID == transition.sourceStoreID,
+      preparation.candidateStoreID == transition.candidateStoreID,
+      preparation.transfer.planDigest == FailedEnableEncoding.hex(intent.planDigest),
+      (try? preparation.current(at: rootURL)) != nil {
+      removeStagedFullReenablePlan(candidateStoreID: transition.candidateStoreID,
+        transitionID: intent.fullReenablePlanID)
+    }
+  }
+
+  func hasStagedFullReenableEvidence(_ transition: SyncModeTransition) throws -> Bool {
+    let root = try fullReenablePlanRoot(candidateStoreID: transition.candidateStoreID,
+      transitionID: transition.id)
+    do {
+      _ = try FileManager.default.attributesOfItem(atPath: root.path)
+      return true
+    } catch let error as CocoaError
+      where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+      return false
+    }
   }
 
   private func fullReenablePlanRoot(

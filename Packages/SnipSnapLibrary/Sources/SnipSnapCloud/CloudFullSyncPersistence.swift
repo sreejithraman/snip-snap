@@ -177,12 +177,23 @@ package actor CloudFullSyncCoordinator {
     beforeApply: @escaping @Sendable () async throws -> Void = {},
     beforeStateSave: @escaping @Sendable () async throws -> Void = {}
   ) async throws {
+    try await prepareManualRetry(forceInitialInventory: false,
+      beforeApply: beforeApply, beforeStateSave: beforeStateSave)
+  }
+
+  package func prepareManualRetry(
+    forceInitialInventory: Bool,
+    beforeApply: @escaping @Sendable () async throws -> Void = {},
+    beforeStateSave: @escaping @Sendable () async throws -> Void = {}
+  ) async throws {
     try await operationGate.withLease {
-      try await self.prepareManualRetrySerially(beforeApply: beforeApply, beforeStateSave: beforeStateSave)
+      try await self.prepareManualRetrySerially(forceInitialInventory: forceInitialInventory,
+        beforeApply: beforeApply, beforeStateSave: beforeStateSave)
     }
   }
 
   private func prepareManualRetrySerially(
+    forceInitialInventory: Bool,
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeStateSave: @escaping @Sendable () async throws -> Void
   ) async throws {
@@ -191,8 +202,9 @@ package actor CloudFullSyncCoordinator {
     var state = RunState()
     try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeStateSave)
     try await beforeApply()
-    if try await store.prepareManualRetry() {
-      // A failed record may not change again. Drop its token so Try Again fetches it.
+    let retryRequired = try await store.prepareManualRetry()
+    if retryRequired || forceInitialInventory {
+      // Reset the stored state, actual transport and this session under the same gate.
       try await beforeStateSave()
       try await store.clearEngineState()
       await transport.reset()

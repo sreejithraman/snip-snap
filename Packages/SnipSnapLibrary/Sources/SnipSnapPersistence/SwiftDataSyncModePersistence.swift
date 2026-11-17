@@ -540,28 +540,14 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func swapPointer() async throws {
-    guard let capture = try requireFailedEnableCapture(),
-      let transition = manifest.transition, let policy = failedEnableSemantics else {
-      try swapPointerAfterEvidenceCheck()
-      return
-    }
-    try await withFailedEnableRead(transition: transition) { source, candidate in
-      let evidence = try self.failedEnableFiles.read(transition.sourceStoreID)
-      guard try self.failedEnableContinuityMatches(evidence, source: source,
-        sourceID: transition.sourceStoreID) else { throw FailedEnableEvidenceError.reviewRequired }
-      guard let evidence else { throw FailedEnableEvidenceError.reviewRequired }
-      try policy.validateExposure(capture: capture, candidate: candidate,
-        evidence: evidence, requiresAccepted: true)
-      // This synchronous pointer commit stays inside both store locks. No actor suspension
-      // separates its final source/candidate checks from publication.
-      self.failedEnablePublicationInFlight = nil
-      defer { self.failedEnablePublicationInFlight = transition.id }
-      try self.swapPointerAfterEvidenceCheck()
+    try await withFailedEnableExposure(requiresAccepted: true) { unchangedAbsences in
+      // The final synchronous pointer commit remains inside the owner-held store locks.
+      try self.swapPointerAfterEvidenceCheck(unchangedAbsences: unchangedAbsences)
     }
   }
 
-  private func swapPointerAfterEvidenceCheck() throws {
-    try requireFailedEnableSwapEvidence()
+  private func swapPointerAfterEvidenceCheck(unchangedAbsences: Set<FailedEnableReference> = []) throws {
+    try requireFailedEnableSwapEvidence(unchangedAbsences: unchangedAbsences)
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,

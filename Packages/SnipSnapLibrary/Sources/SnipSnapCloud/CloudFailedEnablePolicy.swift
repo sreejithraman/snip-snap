@@ -17,6 +17,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       input.candidate.storage.deferredEntities.isEmpty,
       input.candidate.storage.quarantines.isEmpty
     else { throw FailedEnableEvidenceError.reviewRequired }
+    let unchangedAbsences = try unchangedTurnOffAbsences(input.reviewRead)
     let source = input.source.snapshot
     let stored = input.candidate.storage
     let accepted = Dictionary(uniqueKeysWithValues: stored.readyEntities.map { ($0.reference, $0) })
@@ -54,7 +55,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
         guard capture.candidateDeletes.isEmpty else { throw FailedEnableEvidenceError.reviewRequired }
         for record in capture.records where seen.insert(record.reference).inserted {
           guard let image = record.source.value, record.sourceMembership == .present else { continue }
-          if reviewed.contains(record.reference) { continue }
+          if reviewed.contains(record.reference) || unchangedAbsences.contains(record.reference) { continue }
           if Self.definitelyUnsent(record, capture: capture, accepted: accepted[try record.reference.domain]) {
             continue
           }
@@ -188,6 +189,345 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     return FailedEnablePreparedMerge(plan: plan,
       records: records.sorted { $0.reference.sortKey < $1.reference.sortKey },
       predecessors: predecessors.sorted())
+  }
+
+
+
+  private static func sameTurnOffBodies(_ lhs: [FailedEnableImage], _ rhs: [FailedEnableImage]) -> Bool {
+    lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { sameTurnOffImage($0.0, $0.1) }
+  }
+
+  private static func sameTurnOffImage(_ lhs: FailedEnableImage, _ rhs: FailedEnableImage) -> Bool {
+    switch (lhs, rhs) {
+    case (.snip(let a), .snip(let b)):
+      // Existing synthesized updatedAt is metadata. Every raw image stays retained.
+      return a.kind == b.kind && a.id == b.id && a.requestID == b.requestID
+        && a.createdAt == b.createdAt && a.originRaw == b.originRaw
+        && a.text == b.text && a.source == b.source && a.isDone == b.isDone
+        && a.pinnedAt == b.pinnedAt && a.listID == b.listID
+        && a.orderKey == b.orderKey && a.attachments == b.attachments
+    case (.list(let a), .list(let b)): return a == b
+    default: return false
+    }
+  }
+
+  /// Acquisition only. This selects a possible T0 lineage; it cannot admit any effect.
+  func turnOffAbsenceCandidates(_ input: FailedEnableReviewRead) throws -> Set<FailedEnableReference> {
+    guard input.transition.targetKind == .iCloudSync,
+      input.transition.syncProtocol == .fullRecordV1,
+      input.transition.namespace == namespace.binding, let evidence = input.evidence,
+      evidence.sourceStoreID == FailedEnableEncoding.uuid(input.transition.sourceStoreID)
+    else { return [] }
+    let transfers = evidence.transfers.filter {
+      $0.kind == .turnOff && $0.state == .checked
+        && $0.destinationStoreID == evidence.sourceStoreID
+        && $0.namespace == FailedEnableBinding(namespace.binding)
+        && $0.dormantDigest == FailedEnableEncoding.digest(input.source.snapshot.opaqueSyncStatePayload)
+    }
+    guard transfers.count == 1, let turnOff = transfers.first,
+      try Self.sameTurnOffBodies(input.source.images(), turnOff.outputs),
+      input.source.snapshot.snips.allSatisfy({ $0.attachments.isEmpty })
+    else { return [] }
+    let bases = try CloudDormantAcceptedBaseBundle.decode(input.source.snapshot.opaqueSyncStatePayload).entries
+      .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
+    let accepted = input.candidate.storage.readyEntities + input.candidate.storage.deferredEntities
+    let group = evidence.namespaces.first { $0.binding == FailedEnableBinding(namespace.binding) }
+    return Set(try bases.compactMap { base in
+      let reference = FailedEnableReference(base.reference)
+      guard base.reference.kind == .snip,
+        group?.reviews.contains(where: { $0.reference == reference }) != true,
+        group?.alternatives.contains(where: { $0.reference == reference }) != true,
+        turnOff.outputs.contains(where: { $0.reference == reference }),
+        !accepted.contains(where: { $0.reference == base.reference || $0.identity == base.identity })
+      else { return nil }
+      // Leave genuinely unqualified histories to the existing review producer/choice route.
+      let captures = (group?.captures ?? []).sorted {
+        (UInt64($0.ordinal) ?? 0) > (UInt64($1.ordinal) ?? 0)
+      }
+      if let latest = captures.first(where: { $0.records.contains(where: { $0.reference == reference }) }),
+        let record = latest.records.first(where: { $0.reference == reference }) {
+        if let observation = record.observedAccepted.value {
+          guard try qualifies(record, observation: observation, candidate: nil) else { return nil }
+        } else {
+          guard record.preparation.classification == .deleteRecovery,
+            record.preparation.baseKind == .checkedTurnOff, record.offlineChanged.isEmpty,
+            record.preparation.value.value?.fields == .absent,
+            record.observedAccepted.value == nil, record.unqualifiedObservation.value == nil
+          else { return nil }
+        }
+      }
+      return reference
+    })
+  }
+
+  private func hasTurnOffInventory(_ input: FailedEnableReviewRead,
+    references: Set<FailedEnableReference>
+  ) throws -> Bool {
+    guard !references.isEmpty, input.candidate.storage.namespaceState.storageVersion == 1,
+      !input.candidate.hasPendingBatches,
+      input.candidate.storage.deferredEntities.isEmpty,
+      input.candidate.storage.quarantines.isEmpty,
+      let inventory = input.candidate.storage.namespaceState.initialFetchInventory,
+      inventory.canProveAbsence,
+      let data = input.candidate.engineState,
+      let engine = try? JSONDecoder().decode(CloudEngineStateEnvelope.self, from: data),
+      engine.namespace == namespace, !engine.requiresInitialFetch,
+      input.candidate.storage.namespaceState.phase == .active
+    else { return false }
+    for reference in references {
+      let typed = try reference.domain
+      let identity = Self.identity(typed, zone: dataZone)
+      guard typed.kind == .snip,
+        !input.candidate.snapshot.snips.contains(where: { $0.id == typed.domainID }),
+        !inventory.observed.contains(identity) else { return false }
+    }
+    for entity in input.candidate.storage.readyEntities {
+      _ = try Self.fields(entity, namespace: namespace.binding)
+      guard inventory.observed.contains(entity.identity) else { return false }
+    }
+    return true
+  }
+
+  func needsTurnOffInventory(_ input: FailedEnableReviewRead) throws -> Bool {
+    let references = try turnOffAbsenceCandidates(input)
+    guard !references.isEmpty else { return false }
+    // candidateReady will fetch again. An incremental result would end even a currently
+    // complete inventory, so that upcoming acquisition must itself start without a token.
+    if input.transition.phase == .candidateReady { return true }
+    return try !hasTurnOffInventory(input, references: references)
+  }
+
+  /// A narrow attachment-free, unchanged whole-body T0 case. No absent A is constructed.
+  func unchangedTurnOffAbsences(_ input: FailedEnableReviewRead) throws -> Set<FailedEnableReference> {
+    let references = try turnOffAbsenceCandidates(input)
+    guard !references.isEmpty else { return [] }
+    guard try hasTurnOffInventory(input, references: references),
+      let retained = input.retainedTurnOff,
+      let evidence = input.evidence,
+      retained.store.kind == .iCloudSync, retained.store.syncProtocol == .fullRecordV1,
+      retained.store.namespace == namespace.binding,
+      retained.store.id != input.transition.sourceStoreID,
+      retained.store.id != input.transition.candidateStoreID,
+      [.retired, .deleting, .recovery].contains(retained.store.lifecycle),
+      retained.source.snapshot.revision == retained.store.revision,
+      let turnOff = evidence.transfers.first(where: {
+        $0.kind == .turnOff && $0.state == .checked
+          && $0.sourceStoreID == FailedEnableEncoding.uuid(retained.store.id)
+          && $0.destinationStoreID == evidence.sourceStoreID
+          && $0.namespace == FailedEnableBinding(namespace.binding)
+      }),
+      try Self.sameTurnOffBodies(retained.source.images(), turnOff.outputs),
+      input.source.seenRequestIDs == retained.source.seenRequestIDs,
+      input.source.snapshot.legacyManualPositions == retained.source.snapshot.legacyManualPositions,
+      try checkedTurnOffPayload(source: retained.source) == input.source.snapshot.opaqueSyncStatePayload,
+      retained.source.storage.conflicts.isEmpty,
+      retained.source.storage.pendingDeletes.isEmpty,
+      retained.source.storage.deferredEntities.isEmpty,
+      retained.source.storage.quarantines.isEmpty, retained.source.recoveryDescriptors.isEmpty,
+      !retained.source.hasPendingBatches,
+      input.source.storage.conflicts.isEmpty, input.source.storage.pendingDeletes.isEmpty,
+      input.source.storage.deferredEntities.isEmpty, input.source.storage.quarantines.isEmpty,
+      input.source.recoveryDescriptors.isEmpty, input.source.snapshot.attachmentData.isEmpty,
+      input.candidate.storage.conflicts.isEmpty, input.candidate.storage.pendingDeletes.isEmpty,
+      input.candidate.recoveryDescriptors.isEmpty
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    if let attempt = input.transition.sendAttempt {
+      guard attempt.namespace == namespace.binding else { throw FailedEnableEvidenceError.reviewRequired }
+      for operation in attempt.operations {
+        for reference in references {
+          let typed = try reference.domain
+          guard operation.reference != typed,
+            operation.recordIdentity != Self.identity(typed, zone: dataZone) else {
+            throw FailedEnableEvidenceError.reviewRequired
+          }
+        }
+      }
+    }
+    let rootImages = try retained.source.images()
+    let candidateImages = try input.candidate.images()
+    let rootAccepted = retained.source.storage.readyEntities
+    let rootReferences = Set(rootImages.map(\.reference))
+    let binding = FailedEnableBinding(namespace.binding)
+    let rootID = FailedEnableEncoding.uuid(retained.store.id)
+    let sourceID = FailedEnableEncoding.uuid(input.transition.sourceStoreID)
+    // The old checked transfer did not certify old conflicts. Inspect its real root and
+    // every related source-keyed frame now; different earlier local versions are barriers.
+    for frame in retained.frames {
+      let affectedHistory = frame.namespaces.contains(where: { group in
+        group.binding == binding && (group.captures.flatMap(\.records).contains(where: {
+          rootReferences.contains($0.reference)
+        }) || group.alternatives.contains(where: { rootReferences.contains($0.reference) })
+          || group.reviews.contains(where: { rootReferences.contains($0.reference) }))
+      })
+      let related = affectedHistory || frame.sourceStoreID == sourceID || frame.sourceStoreID == rootID
+        || frame.namespaces.flatMap(\.captures).contains(where: { $0.candidateStoreID == rootID })
+        || frame.transfers.contains(where: { $0.sourceStoreID == rootID || $0.destinationStoreID == rootID })
+      guard related else { continue }
+      guard frame.continuity.state == .verified, frame.continuity.inFlight.value == nil else {
+        throw FailedEnableEvidenceError.reviewRequired
+      }
+      for group in frame.namespaces where group.binding == binding {
+        guard group.alternatives.isEmpty, group.reviews.isEmpty else {
+          throw FailedEnableEvidenceError.reviewRequired
+        }
+        for capture in group.captures {
+          guard capture.normalizer == 1, capture.syncProtocol == .fullRecordV1,
+            capture.candidateDeletes.isEmpty else { throw FailedEnableEvidenceError.reviewRequired }
+          for record in capture.records {
+            guard record.sourceMembership == .present,
+              let image = record.source.value,
+              rootImages.contains(where: { Self.sameTurnOffImage($0, image) }),
+              let q = record.preparation.value.value else { throw FailedEnableEvidenceError.reviewRequired }
+            if q.fields == .absent {
+              guard frame.sourceStoreID == sourceID, references.contains(record.reference),
+                record.preparation.classification == .deleteRecovery,
+                record.preparation.baseKind == .checkedTurnOff, record.offlineChanged.isEmpty,
+                q.presence.isEmpty, record.observedAccepted.value == nil,
+                record.unqualifiedObservation.value == nil,
+                record.preparation.conflictFields.isEmpty,
+                record.preparation.recoveryIdentities.isEmpty else { throw FailedEnableEvidenceError.reviewRequired }
+            } else {
+              guard let observation = record.observedAccepted.value,
+                try qualifies(record, observation: observation, candidate: nil)
+              else { throw FailedEnableEvidenceError.reviewRequired }
+              var covered = false
+              if let actual = rootAccepted.first(where: { FailedEnableReference($0.reference) == record.reference }) {
+                covered = try sameTurnOffHistoryObservation(observation, actual: actual,
+                  namespaceRevision: retained.source.storage.namespaceState.revision, storeID: retained.store.id)
+              }
+              if !covered, let actual = input.candidate.storage.readyEntities.first(where: {
+                FailedEnableReference($0.reference) == record.reference
+              }) {
+                covered = try sameTurnOffHistoryObservation(observation, actual: actual,
+                  namespaceRevision: input.candidate.storage.namespaceState.revision,
+                  storeID: input.transition.candidateStoreID)
+              }
+              guard covered else { throw FailedEnableEvidenceError.reviewRequired }
+            }
+          }
+        }
+      }
+      for transfer in frame.transfers where transfer.namespace == binding {
+        guard transfer.conflicts.isEmpty, transfer.recoveryDescriptors.isEmpty,
+          transfer.outputs.allSatisfy({ output in
+            rootImages.contains(where: { Self.sameTurnOffImage($0, output) })
+              || candidateImages.contains(where: { Self.sameTurnOffImage($0, output) })
+          }) else {
+          throw FailedEnableEvidenceError.reviewRequired
+        }
+      }
+    }
+    return references
+  }
+
+
+  private func sameTurnOffHistoryObservation(_ saved: FailedEnableObservation,
+    actual: CloudAcceptedEntity, namespaceRevision: UInt64, storeID: UUID
+  ) throws -> Bool {
+    let input = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: saved.entityBase64)
+    let savedEntity = CloudAcceptedEntity(reference: input.reference, identity: input.identity,
+      schemaVersion: input.schemaVersion, acceptedData: input.acceptedData,
+      presenceData: input.presenceData, shadowData: input.shadowData, systemFields: input.systemFields,
+      dependencyListID: input.dependencyListID, isDeferred: saved.isDeferred,
+      hasUnresolvedLegacyAbsence: saved.hasUnresolvedLegacyAbsence,
+      localRevision: try FailedEnableEncoding.revision(saved.localRevision))
+    let current = FailedEnableObservation(kind: .fullRecord,
+      candidateStoreID: FailedEnableEncoding.uuid(storeID), namespaceRevision: String(namespaceRevision),
+      localRevision: String(actual.localRevision), isDeferred: actual.isDeferred,
+      hasUnresolvedLegacyAbsence: actual.hasUnresolvedLegacyAbsence,
+      dependencyListID: .init(actual.dependencyListID.map(FailedEnableEncoding.uuid)),
+      entityBase64: try Self.existingEnvelope(actual))
+    // Reuse the established full typed-JSON comparison. Actual archives, unknown fields,
+    // presence and system/shadow bytes are read and retained, never rewritten.
+    let savedRevision = try Self.acceptedRevisionDigest(savedEntity,
+      namespaceRevision: FailedEnableEncoding.revision(saved.namespaceRevision))
+    let currentRevision = try Self.acceptedRevisionDigest(actual, namespaceRevision: namespaceRevision)
+    return try sameReviewServer(
+      FailedEnableServerExpectation.make(state: .value, observation: .init(saved),
+        acceptedRevisionDigest: .init(savedRevision)),
+      FailedEnableServerExpectation.make(state: .value, observation: .init(current),
+        acceptedRevisionDigest: .init(currentRevision)))
+  }
+
+  func validateTurnOffOutput(_ input: FailedEnableReviewRead, capture: FailedEnableCapture,
+    applied: Bool
+  ) throws -> Set<FailedEnableReference> {
+    let tagged = Set(capture.records.filter {
+      $0.preparation.classification == .deleteRecovery && $0.preparation.baseKind == .checkedTurnOff
+    }.map(\.reference))
+    if tagged.isEmpty { return [] }
+    let references = try unchangedTurnOffAbsences(input)
+    guard tagged.isSubset(of: references) else { throw FailedEnableEvidenceError.reviewRequired }
+    guard let evidence = input.evidence,
+      capture.transitionID == FailedEnableEncoding.uuid(input.transition.id),
+      capture.candidateStoreID == FailedEnableEncoding.uuid(input.transition.candidateStoreID),
+      capture.sourceDigest == (try input.source.sourceDigest(sourceID: input.transition.sourceStoreID)),
+      capture.freeze.sourceRevision == String(input.source.snapshot.revision),
+      capture.freeze.id == input.transition.freezeToken.map({ FailedEnableEncoding.uuid($0.id) }),
+      let transfer = evidence.transfers.last(where: {
+      $0.kind == .candidate && $0.sourceCaptureIDs == [capture.id]
+        && $0.sourceStoreID == evidence.sourceStoreID
+        && $0.destinationStoreID == FailedEnableEncoding.uuid(input.transition.candidateStoreID)
+        && $0.namespace == FailedEnableBinding(namespace.binding)
+    }), !applied || transfer.state == .checked else { throw FailedEnableEvidenceError.reviewRequired }
+    let sourceImages = try input.source.images()
+    let bases = try CloudDormantAcceptedBaseBundle.decode(input.source.snapshot.opaqueSyncStatePayload).entries
+      .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
+    for record in capture.records where tagged.contains(record.reference) {
+      guard let base = bases.first(where: { FailedEnableReference($0.reference) == record.reference }),
+        case .snip(let local)? = record.source.value,
+        base.identity == record.identity.domain,
+        record.preparation.baseDigest.value == FailedEnableEncoding.digest(base.payload),
+        record.preparation.normalizedLocal.immutableOverrides.value == FailedEnableImmutableOverrides(
+          requestID: local.requestID, createdAt: local.createdAt, originRaw: local.originRaw),
+        record.preparation.normalizedLocal.acceptedPresence == Dictionary(uniqueKeysWithValues:
+          Self.keys(.snip).map { ($0, FailedEnablePresence.value) }),
+        record.preparation.normalizedLocal.defaults.isEmpty,
+        record.sourceMembership == .present, record.originalAcceptedExists,
+        record.offlineChanged.isEmpty, record.preparation.normalizer == 1,
+        record.preparation.knownFields == Self.keys(.snip),
+        record.preparation.fetchedDigest.value == nil, record.preparation.reason.value == nil,
+        record.preparation.conflictFields.isEmpty, record.preparation.recoveryIdentities.isEmpty,
+        record.source.value == sourceImages.first(where: { $0.reference == record.reference }),
+        record.preparation.value.value?.fields == .absent,
+        record.preparation.value.value?.presence.isEmpty == true,
+        record.observedAccepted.value == nil, record.unqualifiedObservation.value == nil,
+        record.identity.domain == Self.identity(try record.reference.domain, zone: dataZone),
+        !transfer.outputs.contains(where: { $0.reference == record.reference })
+      else { throw FailedEnableEvidenceError.reviewRequired }
+    }
+    if applied {
+      guard try input.candidate.images() == transfer.outputs,
+        FailedEnableEncoding.digest(input.candidate.snapshot.opaqueSyncStatePayload) == transfer.dormantDigest
+      else { throw FailedEnableEvidenceError.reviewRequired }
+    }
+    return tagged
+  }
+
+  /// Truth about an already committed private apply only; never current absence authority.
+  func validatePastTurnOffApply(_ input: FailedEnableReviewRead, capture: FailedEnableCapture) throws {
+    guard let evidence = input.evidence,
+      capture.transitionID == FailedEnableEncoding.uuid(input.transition.id),
+      capture.candidateStoreID == FailedEnableEncoding.uuid(input.transition.candidateStoreID),
+      let transfer = evidence.transfers.last(where: {
+        $0.kind == .candidate && $0.sourceCaptureIDs == [capture.id]
+          && $0.sourceStoreID == evidence.sourceStoreID && $0.destinationStoreID == capture.candidateStoreID
+          && $0.namespace == FailedEnableBinding(namespace.binding)
+      }), let receipt = input.candidate.reenableReceiptDigest,
+      FailedEnableEncoding.hex(receipt) == transfer.planDigest,
+      try input.candidate.images() == transfer.outputs,
+      FailedEnableEncoding.digest(input.candidate.snapshot.opaqueSyncStatePayload) == transfer.dormantDigest,
+      transfer.conflicts.isEmpty, transfer.recoveryDescriptors.isEmpty,
+      input.candidate.storage.conflicts.isEmpty, input.candidate.recoveryDescriptors.isEmpty,
+      input.candidate.storage.deferredEntities.isEmpty, input.candidate.storage.quarantines.isEmpty,
+      capture.candidateDeletes.isEmpty else { throw FailedEnableEvidenceError.reviewRequired }
+    for record in capture.records {
+      guard let q = record.preparation.value.value else { throw FailedEnableEvidenceError.reviewRequired }
+      guard Self.same(q.fields, try Self.plannedValue(record.reference.domain,
+        in: input.candidate.snapshot, projection: q.fields)) else {
+        throw FailedEnableEvidenceError.reviewRequired
+      }
+    }
   }
 
   func checkedTurnOffPayload(source: FailedEnableStoreRead) throws -> Data? {

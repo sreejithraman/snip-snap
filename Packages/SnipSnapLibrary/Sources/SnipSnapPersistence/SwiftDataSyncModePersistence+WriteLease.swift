@@ -37,6 +37,11 @@ struct ActiveStoreWriteAdmission {
 
   fileprivate var phase = Phase.idle
 
+  var isIdle: Bool {
+    if case .idle = phase { return true }
+    return false
+  }
+
   init() {}
 }
 

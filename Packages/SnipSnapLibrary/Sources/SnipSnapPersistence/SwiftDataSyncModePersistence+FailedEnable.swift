@@ -1,6 +1,86 @@
 import Foundation
 import SnipSnapCore
 
+struct FailedEnablePreparedRead: Sendable {
+  let sourceStoreID: UUID
+  let candidateStoreID: UUID
+  let transitionID: UUID
+  let capture: FailedEnableCapture
+  let transfer: FailedEnableTransfer
+
+  fileprivate init(sourceStoreID: UUID, candidateStoreID: UUID, transitionID: UUID,
+    capture: FailedEnableCapture, transfer: FailedEnableTransfer
+  ) {
+    self.sourceStoreID = sourceStoreID
+    self.candidateStoreID = candidateStoreID
+    self.transitionID = transitionID
+    self.capture = capture
+    self.transfer = transfer
+  }
+
+  var requiresTurnOffAbsence: Bool {
+    capture.records.contains(where: {
+      $0.preparation.classification == .deleteRecovery && $0.preparation.baseKind == .checkedTurnOff
+        && $0.offlineChanged.isEmpty && $0.preparation.value.value?.fields == .absent
+        && $0.observedAccepted.value == nil && $0.unqualifiedObservation.value == nil
+    })
+  }
+
+  func current(in evidence: FailedEnableInstalledEvidence?) throws -> FailedEnableTransfer {
+    guard let evidence, evidence.continuity.state == .verified,
+      evidence.sourceStoreID == FailedEnableEncoding.uuid(sourceStoreID),
+      let group = evidence.namespaces.first(where: { $0.binding == transfer.namespace }),
+      let currentCapture = group.captures.last(where: {
+        $0.transitionID == FailedEnableEncoding.uuid(transitionID)
+          && $0.candidateStoreID == FailedEnableEncoding.uuid(candidateStoreID)
+      }), currentCapture.id == capture.id,
+      matchesCapture(currentCapture),
+      !capture.armed || currentCapture.armed,
+      let currentTransfer = evidence.transfers.last(where: {
+        $0.kind == .candidate && $0.sourceCaptureIDs == [capture.id]
+          && $0.destinationStoreID == FailedEnableEncoding.uuid(candidateStoreID)
+      }),
+      transfer.state != .checked || currentTransfer.state == .checked
+    else { throw FailedEnableEvidenceError.changed }
+    guard currentTransfer.kind == transfer.kind,
+      currentTransfer.sourceCaptureIDs == transfer.sourceCaptureIDs,
+      currentTransfer.sourceStoreID == transfer.sourceStoreID,
+      currentTransfer.destinationStoreID == transfer.destinationStoreID,
+      currentTransfer.namespace == transfer.namespace,
+      currentTransfer.planDigest == transfer.planDigest,
+      currentTransfer.dormantDigest == transfer.dormantDigest,
+      currentTransfer.outputs == transfer.outputs,
+      currentTransfer.conflicts == transfer.conflicts,
+      currentTransfer.recoveryDescriptors == transfer.recoveryDescriptors
+    else { throw FailedEnableEvidenceError.changed }
+    return currentTransfer
+  }
+
+  func current(at root: URL) throws -> FailedEnableTransfer {
+    do {
+      return try current(in: FailedEnableEvidenceFile(root: root).read(sourceStoreID))
+    } catch {
+      throw FailedEnableEvidenceError.changed
+    }
+  }
+
+  private func matchesCapture(_ current: FailedEnableCapture) -> Bool {
+    guard current.id == capture.id, current.ordinal == capture.ordinal,
+      current.transitionID == capture.transitionID, current.candidateStoreID == capture.candidateStoreID,
+      current.syncProtocol == capture.syncProtocol, current.freeze == capture.freeze,
+      current.seenRequestIDs == capture.seenRequestIDs, current.sourceDigest == capture.sourceDigest,
+      current.normalizer == capture.normalizer, current.preparationDigest == capture.preparationDigest,
+      current.predecessors == capture.predecessors, current.candidateDeletes == capture.candidateDeletes,
+      current.records.count == capture.records.count else { return false }
+    return zip(current.records, capture.records).allSatisfy { current, frozen in
+      current.reference == frozen.reference && current.identity == frozen.identity
+        && current.sourceMembership == frozen.sourceMembership && current.source == frozen.source
+        && current.originalAcceptedExists == frozen.originalAcceptedExists
+        && current.offlineChanged == frozen.offlineChanged && current.preparation == frozen.preparation
+    }
+  }
+}
+
 extension SwiftDataSyncModePersistence {
   var failedEnableFiles: FailedEnableEvidenceFile { FailedEnableEvidenceFile(root: rootURL) }
 
@@ -20,8 +100,8 @@ extension SwiftDataSyncModePersistence {
       transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace
     else { throw FailedEnableEvidenceError.reviewRequired }
     try requireNoUncapturedFailedEnableRoots(transition)
-    let prepared: FailedEnablePreparedMerge? = try await withFailedEnableRead(transition: transition) {
-      source, candidate in
+    let prepared: FailedEnablePreparedMerge? = try await withFailedEnableDispositionRead(transition: transition) {
+      source, candidate, retained in
       var prior = try self.failedEnableFiles.read(transition.sourceStoreID)
       let verified = try self.failedEnableContinuityMatches(prior, source: source,
         sourceID: transition.sourceStoreID)
@@ -43,8 +123,17 @@ extension SwiftDataSyncModePersistence {
           prior = try self.failedEnableFiles.read(transition.sourceStoreID)
         }
       }
+      func retainedWithCurrentFrame(_ current: FailedEnableInstalledEvidence?) -> FailedEnableRetainedTurnOffRead? {
+        guard let retained else { return nil }
+        var frames = retained.frames.filter {
+          $0.sourceStoreID != FailedEnableEncoding.uuid(transition.sourceStoreID)
+        }
+        if let current { frames.append(current) }
+        return FailedEnableRetainedTurnOffRead(store: retained.store, source: retained.source,
+          frames: frames.sorted { $0.sourceStoreID < $1.sourceStoreID })
+      }
       var input = FailedEnablePreparationRead(source: source, candidate: candidate,
-        transition: transition, token: token, evidence: prior, continuityVerified: verified)
+        transition: transition, token: token, evidence: prior, continuityVerified: verified, retainedTurnOff: retainedWithCurrentFrame(prior))
       let reviews = try policy.reviewDrafts(input.reviewRead)
       if !reviews.isEmpty {
         var applicable = true
@@ -64,7 +153,7 @@ extension SwiftDataSyncModePersistence {
         prior = try self.failedEnableFiles.read(transition.sourceStoreID)
         if blocked { return nil }
         input = FailedEnablePreparationRead(source: source, candidate: candidate,
-          transition: transition, token: token, evidence: prior, continuityVerified: verified)
+          transition: transition, token: token, evidence: prior, continuityVerified: verified, retainedTurnOff: retainedWithCurrentFrame(prior))
       }
       let prepared = try policy.prepare(input)
       let sourceDigest = try source.sourceDigest(sourceID: transition.sourceStoreID)
@@ -142,16 +231,31 @@ extension SwiftDataSyncModePersistence {
   }
 
   /// Both failed-send restore and retry-fetch call this before clearing upload evidence.
-  func recoverFailedEnableEvidence() async throws {
+  @discardableResult
+  func recoverFailedEnableEvidence() async throws -> FailedEnablePreparedRead? {
     guard let transition = manifest.transition, transition.targetKind == .iCloudSync,
-      transition.syncProtocol == .fullRecordV1
-    else { return }
-    if transition.phase == .candidateReady, !transition.awaitsAcceptedServerCapture,
-      try failedEnableFiles.read(transition.sourceStoreID)?.namespaces.flatMap(\.captures)
-        .contains(where: { $0.transitionID == FailedEnableEncoding.uuid(transition.id) }) != true {
-      return
+      transition.syncProtocol == .fullRecordV1, let namespace = transition.namespace
+    else { return nil }
+    let before = manifest
+    let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+    // A fresh candidate can still contain remote-only attachment metadata. Reading receipt
+    // metadata here must not bypass the existing preservation/download owner.
+    let receipts = try await candidate.failedEnableReenableReceipts(
+      namespaceKey: namespace.namespaceKey.rawValue, transitionID: transition.id)
+    guard manifest == before else { throw FailedEnableEvidenceError.changed }
+    guard let preparation = try failedEnablePreparedRead(transition: transition) else {
+      guard transition.phase == .candidateReady, !transition.awaitsAcceptedServerCapture,
+        receipts.modern == nil, receipts.ambiguous == nil,
+        try !hasStagedFullReenableEvidence(transition)
+      else { throw FailedEnableEvidenceError.changed }
+      // Acquisition only: this does not authorize apply, progress or receipt retirement.
+      return nil
     }
+    try await recoverFailedEnableTurnOffApply(preparation: preparation)
+    guard manifest == before else { throw FailedEnableEvidenceError.changed }
     try await observeFailedEnableCommittedValues()
+    _ = try preparation.current(at: rootURL)
+    return preparation
   }
 
   package func recordCheckedFailedEnableTurnOff() async throws {
@@ -240,7 +344,8 @@ extension SwiftDataSyncModePersistence {
         let reviewed = hasFailedEnableReviewDecision($0, capture: capture, bundle: bundle)
         return ([.nonconflicting, .equalFetched, .realConflict].contains($0.preparation.classification)
           && ($0.preparation.baseKind != .unverified || reviewed))
-          || ($0.preparation.classification == .deleteRecovery && reviewed)
+          || ($0.preparation.classification == .deleteRecovery && (reviewed
+            || $0.preparation.baseKind == .checkedTurnOff))
       }),
       capture.candidateDeletes.isEmpty,
       bundle.transfers.contains(where: {
@@ -271,32 +376,56 @@ extension SwiftDataSyncModePersistence {
     guard !unknown else { throw FailedEnableEvidenceError.reviewRequired }
   }
 
-  func armFailedEnableCapture() async throws {
+  /// All first-send/send/swap publication is synchronous inside this owner operation.
+  func withFailedEnableExposure<Value: Sendable>(
+    requiresAccepted: Bool, attempt: SyncModeSendAttempt? = nil, arm: Bool = false,
+    _ publish: (Set<FailedEnableReference>) throws -> Value
+  ) async throws -> Value {
     guard let capture = try requireFailedEnableCapture(),
-      let transition = manifest.transition, let policy = failedEnableSemantics else { return }
-    try await withFailedEnableRead(transition: transition) { source, candidate in
+      let transition = manifest.transition, let policy = failedEnableSemantics else {
+      return try publish([])
+    }
+    return try await withFailedEnableDispositionRead(transition: transition) { source, candidate, retained in
       let prior = try self.failedEnableFiles.read(transition.sourceStoreID)
-      guard try self.failedEnableContinuityMatches(prior, source: source, sourceID: transition.sourceStoreID) else {
-        throw FailedEnableEvidenceError.reviewRequired
-      }
-      guard let prior else { throw FailedEnableEvidenceError.reviewRequired }
+      guard let prior,
+        try self.failedEnableContinuityMatches(prior, source: source, sourceID: transition.sourceStoreID)
+      else { throw FailedEnableEvidenceError.reviewRequired }
+      let input = FailedEnableReviewRead(source: source, candidate: candidate,
+        transition: transition, evidence: prior, retainedTurnOff: retained)
+      let absent = try policy.validateTurnOffOutput(input, capture: capture, applied: true)
       try policy.validateExposure(capture: capture, candidate: candidate,
-        evidence: prior, requiresAccepted: false)
-      guard !capture.armed else { return }
-      try self.failedEnableFiles.update(transition.sourceStoreID) { current in
-        guard var current, current == prior else { throw FailedEnableEvidenceError.changed }
-        for group in current.namespaces.indices {
-          if let index = current.namespaces[group].captures.firstIndex(where: { $0.id == capture.id }) {
-            current.namespaces[group].captures[index].armed = true
-            return current
-          }
-        }
-        throw FailedEnableEvidenceError.changed
+        evidence: prior, requiresAccepted: requiresAccepted)
+      guard try self.requireFailedEnableCapture() == capture else { throw FailedEnableEvidenceError.changed }
+      if let attempt {
+        var preflight = self.manifest
+        try preflight.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
+        let excluded = capture.records.filter { absent.contains($0.reference) }
+        guard !attempt.operations.contains(where: { operation in
+          excluded.contains(where: { record in
+            operation.reference == (try? record.reference.domain)
+              || operation.recordIdentity == record.identity.domain
+          })
+        }) else { throw FailedEnableEvidenceError.reviewRequired }
       }
+      if arm && !capture.armed {
+        try self.failedEnableFiles.update(transition.sourceStoreID) { current in
+          guard var current, current == prior else { throw FailedEnableEvidenceError.changed }
+          for group in current.namespaces.indices {
+            if let index = current.namespaces[group].captures.firstIndex(where: { $0.id == capture.id }) {
+              current.namespaces[group].captures[index].armed = true
+              return current
+            }
+          }
+          throw FailedEnableEvidenceError.changed
+        }
+      }
+      self.failedEnablePublicationInFlight = nil
+      defer { self.failedEnablePublicationInFlight = transition.id }
+      return try publish(absent)
     }
   }
 
-  func requireFailedEnableSwapEvidence() throws {
+  func requireFailedEnableSwapEvidence(unchangedAbsences: Set<FailedEnableReference> = []) throws {
     guard let capture = try requireFailedEnableCapture() else { return }
     guard let transition = manifest.transition,
       let bundle = try failedEnableFiles.read(transition.sourceStoreID),
@@ -304,14 +433,21 @@ extension SwiftDataSyncModePersistence {
       ([.nonconflicting, .equalFetched].contains(record.preparation.classification)
         && record.observedAccepted.value != nil)
         || hasFailedEnableReviewDecision(record, capture: capture, bundle: bundle)
+        || unchangedAbsences.contains(record.reference)
     }) else { throw FailedEnableEvidenceError.reviewRequired }
   }
 
-  func markFailedEnableApplied(transition: SyncModeTransition, planDigest: Data) throws {
+  func markFailedEnableApplied(transition: SyncModeTransition, planDigest: Data,
+    preparation: FailedEnablePreparedRead, expected: FailedEnableInstalledEvidence? = nil
+  ) throws {
     try failedEnableFiles.update(transition.sourceStoreID) { current in
-      guard var current,
+      _ = try preparation.current(in: current)
+      guard var current, expected == nil || current == expected,
         let index = current.transfers.lastIndex(where: {
-          $0.kind == .candidate && $0.destinationStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+          $0.kind == .candidate && $0.sourceCaptureIDs == [preparation.capture.id]
+            && $0.sourceStoreID == FailedEnableEncoding.uuid(transition.sourceStoreID)
+            && $0.destinationStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+            && $0.namespace == preparation.transfer.namespace
             && $0.planDigest == FailedEnableEncoding.hex(planDigest)
         })
       else { throw FailedEnableEvidenceError.changed }
@@ -320,20 +456,311 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  func requireFailedEnablePreparedPlan(_ plan: CloudFullReenableApplyPlan, token: SyncModeFreezeToken) throws {
-    guard let transition = manifest.transition,
-      let bundle = try failedEnableFiles.read(transition.sourceStoreID),
-      let capture = bundle.namespaces.flatMap(\.captures).last(where: {
+  func failedEnablePreparedRead(transition: SyncModeTransition,
+    digest: Data? = nil, token: SyncModeFreezeToken? = nil
+  ) throws -> FailedEnablePreparedRead? {
+    guard transition.syncProtocol == .fullRecordV1,
+      !failedEnableUncertainSources.contains(transition.sourceStoreID),
+      let namespace = transition.namespace else {
+      throw FailedEnableEvidenceError.changed
+    }
+    guard let evidence = try failedEnableFiles.read(transition.sourceStoreID) else { return nil }
+    let captures = evidence.namespaces.first(where: {
+      $0.binding == FailedEnableBinding(namespace)
+    })?.captures.filter {
+      $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+        && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+    } ?? []
+    guard let capture = captures.last else {
+      guard !evidence.namespaces.flatMap(\.captures).contains(where: {
         $0.transitionID == FailedEnableEncoding.uuid(transition.id)
-          && $0.freeze.id == FailedEnableEncoding.uuid(token.id)
-          && $0.freeze.sourceRevision == String(token.revision)
-      }),
-      bundle.transfers.contains(where: {
-        $0.kind == .candidate && $0.sourceCaptureIDs == [capture.id]
+          && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+      }), !evidence.transfers.contains(where: {
+        $0.kind == .candidate
           && $0.destinationStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
-          && $0.planDigest == FailedEnableEncoding.hex(plan.planDigest)
-      })
+      }) else { throw FailedEnableEvidenceError.changed }
+      return nil
+    }
+    guard capture.syncProtocol == .fullRecordV1,
+      token == nil || (capture.freeze.id == token.map { FailedEnableEncoding.uuid($0.id) }
+        && capture.freeze.sourceRevision == token.map { String($0.revision) })
+    else { throw FailedEnableEvidenceError.changed }
+    guard let transfer = evidence.transfers.last(where: {
+      $0.kind == .candidate && $0.sourceCaptureIDs == [capture.id]
+        && $0.sourceStoreID == FailedEnableEncoding.uuid(transition.sourceStoreID)
+        && $0.destinationStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+        && $0.namespace == FailedEnableBinding(namespace)
+    }) else {
+      // Review publication can capture L before a plan exists. Only discovery may return
+      // nil; the caller must independently exclude an actual intent, staged plan and receipt.
+      guard digest == nil, token == nil, !evidence.transfers.contains(where: {
+        $0.kind == .candidate
+          && $0.destinationStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+      }) else { throw FailedEnableEvidenceError.changed }
+      return nil
+    }
+    guard digest == nil || transfer.planDigest == digest.map(FailedEnableEncoding.hex)
+    else { throw FailedEnableEvidenceError.changed }
+    let preparation = FailedEnablePreparedRead(sourceStoreID: transition.sourceStoreID,
+      candidateStoreID: transition.candidateStoreID, transitionID: transition.id,
+      capture: capture, transfer: transfer)
+    _ = try preparation.current(in: evidence)
+    return preparation
+  }
+
+  func requireFailedEnablePreparedPlan(_ plan: CloudFullReenableApplyPlan,
+    token: SyncModeFreezeToken
+  ) throws -> FailedEnablePreparedRead {
+    guard let transition = manifest.transition,
+      let preparation = try failedEnablePreparedRead(transition: transition,
+        digest: plan.planDigest, token: token)
     else { throw FailedEnableEvidenceError.reviewRequired }
+    return preparation
+  }
+
+
+  func failedEnableHasTurnOffOutput(_ transition: SyncModeTransition) throws -> Bool {
+    guard let capture = try failedEnableFiles.read(transition.sourceStoreID)?.namespaces.flatMap(\.captures)
+      .last(where: { $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+        && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID) })
+    else { return false }
+    return capture.records.contains(where: {
+      $0.preparation.classification == .deleteRecovery && $0.preparation.baseKind == .checkedTurnOff
+        && $0.offlineChanged.isEmpty && $0.preparation.value.value?.fields == .absent
+        && $0.observedAccepted.value == nil && $0.unqualifiedObservation.value == nil
+    })
+  }
+
+  /// Called only from the explicit setup driver; the hint acquires inventory, never eligibility.
+  package func failedEnableNeedsInitialInventory() async throws -> Bool {
+    guard let transition = manifest.transition, transition.targetKind == .iCloudSync,
+      transition.syncProtocol == .fullRecordV1, transition.phase != .pointerSwapped,
+      let policy = failedEnableSemantics else { return false }
+    return try await withFailedEnableRead(transition: transition) { source, candidate in
+      try policy.needsTurnOffInventory(FailedEnableReviewRead(source: source, candidate: candidate,
+        transition: transition, evidence: self.failedEnableFiles.read(transition.sourceStoreID)))
+    }
+  }
+
+  package func retryFailedEnableTurnOffFetch(settlement: SyncModeSeedSettlementProof? = nil) async throws {
+    let before = manifest
+    guard try await failedEnableNeedsInitialInventory(), manifest == before,
+      let transition = manifest.transition,
+      [.remoteFetched, .recordsMerged, .enrollmentApproved, .firstSendStarted, .firstSendComplete]
+        .contains(transition.phase)
+    else { return }
+    try await recoverFailedEnableEvidence()
+    guard manifest == before else { throw FailedEnableEvidenceError.changed }
+    if [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase) {
+      guard let settlement, settlement.namespace == transition.namespace else {
+        throw SyncModePersistenceError.namespaceMismatch
+      }
+      try await restartAfterFirstSendFailure(reason: before.attentionReason, settlement: settlement)
+    } else {
+      if transition.freezesSource { try unfreezeBeforePointerSwap(reason: before.attentionReason) }
+      try retryRemoteFetch()
+    }
+  }
+
+  /// Returns false only for this new disposition's unavailable proof. Old storage/CAS errors escape.
+  func validateFailedEnableTurnOffApply(transition: SyncModeTransition,
+    preparation: FailedEnablePreparedRead, digest: Data, applied: Bool, expectedManifest: Manifest,
+    expectedRegistration: UUID, publish: () throws -> Void = {}
+  ) async throws -> Bool {
+    guard manifest == expectedManifest, expectedManifest.transition == transition,
+      expectedManifest.activeStoreID == transition.sourceStoreID,
+      let intent = transition.mergeIntent, intent.fullReenablePlanID == transition.id,
+      intent.planDigest == digest, let token = transition.freezeToken,
+      token.sourceStoreID == transition.sourceStoreID, token.revision == intent.sourceRevision,
+      expectedManifest.stores.first(where: { $0.id == transition.sourceStoreID })?.revision == token.revision,
+      let policy = failedEnableSemantics,
+      failedEnableSemanticRegistration == expectedRegistration,
+      preparation.transitionID == transition.id,
+      preparation.sourceStoreID == transition.sourceStoreID,
+      preparation.candidateStoreID == transition.candidateStoreID,
+      preparation.transfer.planDigest == FailedEnableEncoding.hex(digest),
+      !failedEnableUncertainSources.contains(transition.sourceStoreID)
+    else { return false }
+    do {
+      _ = try preparation.current(at: rootURL)
+      if !preparation.requiresTurnOffAbsence {
+        try publish()
+        return true
+      }
+      return try await withFailedEnableDispositionRead(transition: transition) { source, candidate, retained in
+        guard self.manifest == expectedManifest,
+          self.failedEnableSemanticRegistration == expectedRegistration,
+          let evidence = try self.failedEnableFiles.read(transition.sourceStoreID),
+          try self.failedEnableContinuityMatches(evidence, source: source, sourceID: transition.sourceStoreID),
+          let capture = evidence.namespaces.flatMap(\.captures).last(where: {
+            $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+              && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+              && $0.freeze.id == FailedEnableEncoding.uuid(token.id)
+              && $0.freeze.sourceRevision == String(token.revision)
+          }),
+          evidence.transfers.contains(where: { $0.kind == .candidate
+            && $0.sourceCaptureIDs == [capture.id]
+            && $0.planDigest == FailedEnableEncoding.hex(digest) })
+        else { return false }
+        _ = try preparation.current(in: evidence)
+        let input = FailedEnableReviewRead(source: source, candidate: candidate,
+          transition: transition, evidence: evidence, retainedTurnOff: retained)
+        _ = try policy.validateTurnOffOutput(input, capture: capture, applied: applied)
+        self.failedEnablePublicationInFlight = nil
+        defer { self.failedEnablePublicationInFlight = transition.id }
+        try publish()
+        return true
+      }
+    } catch is FailedEnableEvidenceError {
+      return false
+    }
+  }
+
+  /// Before receipt retirement or intent rollback, retain truthful checked private output.
+  /// It deliberately does not call the account callback or certify current remote absence.
+  func recoverFailedEnableTurnOffApply(preparation: FailedEnablePreparedRead) async throws {
+    guard let transition = manifest.transition,
+      transition.id == preparation.transitionID, let policy = failedEnableSemantics else {
+      throw FailedEnableEvidenceError.changed
+    }
+    let current = try preparation.current(at: rootURL)
+    if current.state == .checked, !preparation.requiresTurnOffAbsence { return }
+    try await withFailedEnableRead(transition: transition) { source, candidate in
+      let evidence = try self.failedEnableFiles.read(transition.sourceStoreID)
+      _ = try preparation.current(in: evidence)
+      guard let receipt = candidate.reenableReceiptDigest else { return }
+      guard FailedEnableEncoding.hex(receipt) == preparation.transfer.planDigest else {
+        throw CloudFullStorageError.invalidBatchReplay
+      }
+      // This proves only the past private apply and exact outputs, never current absence.
+      try policy.validatePastTurnOffApply(FailedEnableReviewRead(source: source, candidate: candidate,
+        transition: transition, evidence: evidence), capture: preparation.capture)
+      if current.state == .prepared {
+        try self.markFailedEnableApplied(transition: transition, planDigest: receipt,
+          preparation: preparation, expected: evidence)
+      }
+    }
+  }
+
+  func withFailedEnablePreparedReceipt<Value: Sendable>(
+    _ preparation: FailedEnablePreparedRead,
+    _ operation: (SwiftDataSnipLibrary, URL) async throws -> Value
+  ) async throws -> Value {
+    let before = manifest
+    let registration = failedEnableSemanticRegistration
+    guard before.transition?.id == preparation.transitionID,
+      before.transition?.sourceStoreID == preparation.sourceStoreID,
+      before.transition?.candidateStoreID == preparation.candidateStoreID,
+      !failedEnableUncertainSources.contains(preparation.sourceStoreID),
+      writeAdmissionIsIdle(), failedEnablePublicationInFlight == nil else {
+      throw FailedEnableEvidenceError.changed
+    }
+    _ = try preparation.current(at: rootURL)
+    let candidate = try libraryForTransition(storeID: preparation.candidateStoreID)
+    failedEnablePublicationInFlight = preparation.transitionID
+    defer { failedEnablePublicationInFlight = nil }
+    let result = try await operation(candidate, rootURL)
+    guard manifest == before, failedEnableSemanticRegistration == registration else {
+      throw FailedEnableEvidenceError.changed
+    }
+    _ = try preparation.current(at: rootURL)
+    return result
+  }
+
+  /// Two-root discovery never returns a disposition. The destructive path is re-read under
+  /// all three UUID-ordered locks, with the exact manifest, registration, T0 and frames bound.
+  func withFailedEnableDispositionRead<Value: Sendable>(
+    transition: SyncModeTransition,
+    _ read: (FailedEnableStoreRead, FailedEnableStoreRead, FailedEnableRetainedTurnOffRead?) throws -> Value
+  ) async throws -> Value {
+    guard let policy = failedEnableSemantics else { throw FailedEnableEvidenceError.reviewRequired }
+    let registration = failedEnableSemanticRegistration
+    let preimage = manifest
+    let discovery: (needsRetainedRoot: Bool, value: Value?) =
+      try await withFailedEnableRead(transition: transition) { source, candidate in
+        guard self.manifest == preimage, self.failedEnableSemanticRegistration == registration else {
+          throw FailedEnableEvidenceError.changed
+        }
+        let frame = try self.failedEnableFiles.read(transition.sourceStoreID)
+        let input = FailedEnableReviewRead(source: source, candidate: candidate,
+          transition: transition, evidence: frame)
+        let candidates = try policy.turnOffAbsenceCandidates(input)
+        let tagged = try self.failedEnableHasTurnOffOutput(transition)
+        if !candidates.isEmpty || tagged { return (true, nil) }
+        return (false, .some(try read(source, candidate, nil)))
+      }
+    if !discovery.needsRetainedRoot {
+      guard let value = discovery.value else { throw FailedEnableEvidenceError.changed }
+      return value
+    }
+    guard manifest == preimage, failedEnableSemanticRegistration == registration else {
+      throw FailedEnableEvidenceError.changed
+    }
+    guard let accountCheck = failedEnableAccountCheck, await accountCheck(),
+      manifest == preimage, failedEnableSemanticRegistration == registration,
+      policy.reviewNamespace == transition.namespace,
+      let namespace = transition.namespace,
+      let sourceStore = store(id: transition.sourceStoreID),
+      let candidateStore = store(id: transition.candidateStoreID),
+      let frame = try failedEnableFiles.read(transition.sourceStoreID)
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    let turnOffs = frame.transfers.filter {
+      $0.kind == .turnOff && $0.state == .checked
+        && $0.destinationStoreID == FailedEnableEncoding.uuid(sourceStore.id)
+        && $0.namespace == FailedEnableBinding(namespace)
+        && $0.dormantDigest.count == 64
+    }
+    guard turnOffs.count == 1, let turnOff = turnOffs.first,
+      let root = store(id: try FailedEnableEncoding.uuid(turnOff.sourceStoreID)),
+      root.kind == .iCloudSync, root.syncProtocol == .fullRecordV1, root.namespace == namespace,
+      root.id != sourceStore.id, root.id != candidateStore.id,
+      [.retired, .deleting, .recovery].contains(root.lifecycle)
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    try requireNoUncapturedFailedEnableRoots(transition)
+    let source = try libraryForTransition(storeID: sourceStore.id)
+    let candidate = try libraryForTransition(storeID: candidateStore.id)
+    let urls = [(sourceStore.id, await source.lockURL),
+      (candidateStore.id, await candidate.lockURL),
+      (root.id, storeFileURL(root).appendingPathExtension("lock"))]
+    guard Set(urls.map { $0.1.standardizedFileURL.path }).count == 3,
+      manifest == preimage, failedEnableSemanticRegistration == registration,
+      failedEnablePublicationInFlight == nil, writeAdmissionIsIdle() else {
+      throw FailedEnableEvidenceError.changed
+    }
+    failedEnablePublicationInFlight = transition.id
+    defer { failedEnablePublicationInFlight = nil }
+    let locks = try FailedEnableReadLocks(stores: urls)
+    defer { withExtendedLifetime(locks) {} }
+    let frameIDs = failedEnableSourceIDs()
+    let frames = try frameIDs.compactMap { try failedEnableFiles.read($0) }
+    let local = try await source.failedEnableRead(revision: sourceStore.revision,
+      namespace: namespace, locks: locks)
+    guard manifest == preimage, failedEnableSemanticRegistration == registration else {
+      throw FailedEnableEvidenceError.changed
+    }
+    let remote = try await candidate.failedEnableRead(revision: candidateStore.revision,
+      namespace: namespace, locks: locks, reenableTransitionID: transition.id)
+    guard manifest == preimage, failedEnableSemanticRegistration == registration else {
+      throw FailedEnableEvidenceError.changed
+    }
+    let retained: FailedEnableStoreRead
+    do {
+      retained = try SwiftDataSnipLibrary.retainedFailedEnableRead(storeURL: storeFileURL(root),
+        revision: root.revision, namespace: namespace, locks: locks)
+    } catch {
+      throw FailedEnableEvidenceError.unavailable
+    }
+    guard await accountCheck(), manifest == preimage,
+      failedEnableSemanticRegistration == registration,
+      failedEnablePublicationInFlight == transition.id,
+      writeAdmission.isIdle, manifest.writeReservation == nil,
+      failedEnableSourceIDs() == frameIDs,
+      try frameIDs.compactMap({ try self.failedEnableFiles.read($0) }) == frames,
+      try self.failedEnableContinuityMatches(frame, source: local, sourceID: sourceStore.id),
+      try self.failedEnableFiles.read(sourceStore.id) == frame
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    for (_, url) in urls { try locks.require(url) }
+    return try read(local, remote, FailedEnableRetainedTurnOffRead(store: root, source: retained, frames: frames))
   }
 
   func withFailedEnableRead<Value: Sendable>(
@@ -347,16 +774,19 @@ extension SwiftDataSyncModePersistence {
       let candidateStore = store(id: transition.candidateStoreID),
       let namespace = transition.namespace ?? sourceStore.namespace
     else { throw FailedEnableEvidenceError.changed }
+    let preimage = manifest
     let source = try libraryForTransition(storeID: sourceStore.id)
     let candidate = try libraryForTransition(storeID: candidateStore.id)
     let urls = [(sourceStore.id, await source.lockURL), (candidateStore.id, await candidate.lockURL)]
-    let preimage = manifest
+    guard failedEnablePublicationInFlight == nil, writeAdmissionIsIdle(),
+      manifest == preimage else { throw FailedEnableEvidenceError.changed }
     failedEnablePublicationInFlight = transition.id
     defer { failedEnablePublicationInFlight = nil }
     let locks = try FailedEnableReadLocks(stores: urls)
     defer { withExtendedLifetime(locks) {} }
     let local = try await source.failedEnableRead(revision: sourceStore.revision, namespace: namespace, locks: locks)
-    let remote = try await candidate.failedEnableRead(revision: candidateStore.revision, namespace: namespace, locks: locks)
+    let remote = try await candidate.failedEnableRead(revision: candidateStore.revision,
+      namespace: namespace, locks: locks, reenableTransitionID: transition.id)
     guard manifest == preimage else { throw FailedEnableEvidenceError.changed }
     return try read(local, remote)
   }
