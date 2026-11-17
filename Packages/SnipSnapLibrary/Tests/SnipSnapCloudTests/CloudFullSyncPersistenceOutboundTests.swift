@@ -1149,9 +1149,39 @@ extension CloudFullSyncPersistenceTests {
     _ = try await fixture.coordinator.sendPendingUntilSettled()
     let alternate = Snip(id: UUID(uuidString: "22222222-AAAA-BBBB-CCCC-222222222222")!, content: "Recovered alternate", origin: .quickEntry)
     let recovered = RecoveredSnip(id: alternate.id, currentSnipID: current.id, recovered: alternate, conflictingFields: [.text])
-    try await fixture.library.testStoreCloudConflict(namespaceKey: fixture.namespace.namespaceKey,
-      key: "original-application-recovery", reference: .init(kind: .snip, domainID: current.id),
-      payload: Data("retained original conflict".utf8), recovery: .snip(recovered))
+    let namespaceKey = fixture.namespace.namespaceKey
+    let reference = CloudEntityReference(kind: .snip, domainID: current.id)
+    let stored = try await fixture.library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let accepted = try XCTUnwrap(stored.readyEntities.first { $0.reference == reference })
+    let engineState = try await fixture.library.cloudTextSyncSnapshot(namespaceKey: namespaceKey).engineState
+    let conflict = CloudConflictInput(key: "original-application-recovery", reference: reference,
+      format: .snipMergeV1, payload: Data("retained original conflict".utf8), recovery: .snip(recovered))
+    let batch = CloudFullBatchCommit(
+      namespaceKey: namespaceKey.rawValue,
+      batchID: UUID(),
+      expectedEngineState: engineState,
+      nextEngineState: engineState,
+      recoveryReviews: [CloudRecoveryReviewInput(conflictKey: conflict.key, recovery: .snip(recovered))],
+      items: [CloudFullBatchItem(
+        accepted: CloudAcceptedEntityInput(
+          reference: accepted.reference,
+          identity: accepted.identity,
+          schemaVersion: accepted.schemaVersion,
+          acceptedData: accepted.acceptedData,
+          presenceData: accepted.presenceData,
+          shadowData: accepted.shadowData,
+          systemFields: accepted.systemFields,
+          dependencyListID: accepted.dependencyListID
+        ),
+        expectedLocalRevision: accepted.localRevision,
+        expectedSystemFields: accepted.systemFields,
+        localMutation: .none,
+        conflict: conflict,
+        quarantine: nil
+      )]
+    )
+    try await fixture.library.stageCloudFullBatch(batch)
+    _ = try await fixture.library.commitCloudFullBatch(batch)
     let scope = SnipRecoveryScope(fixture.namespace.namespaceKey.rawValue)
     let session = SavedSnipsSession(library: fixture.managed, recoveryScope: scope)
     let applied = try await session.checkedRead(sortedBy: .manual)
