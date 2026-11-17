@@ -202,15 +202,33 @@ extension ICloudSyncModeCoordinatorTests {
     func testEnableTryAgainResumesAFullMergeIntentLeftByThrownAttempts() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
+        let initial = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let server = FakeCloudServer()
+        let texts = try await optOutAfterSyncing(initial, server: server)
+        XCTAssertEqual(texts, ["kept", "added while off"])
+        let initialStorage = try await initial.snapshot()
+        XCTAssertEqual(initialStorage.activeStore.kind, .localOnly)
+        XCTAssertNil(initialStorage.transition)
+        let sourceBefore = try await initial.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(sourceBefore.snips.count, 2)
+        XCTAssertEqual(sourceBefore.snips.map(\.content).sorted(), ["added while off", "kept"])
+        for snip in sourceBefore.snips {
+            XCTAssertEqual(snip.origin, .quickEntry)
+            XCTAssertFalse(snip.isDone)
+            XCTAssertNil(snip.source)
+            XCTAssertNil(snip.pinnedAt)
+            XCTAssertEqual(snip.listID, SnipList.inbox.id)
+            XCTAssertTrue(snip.attachments.isEmpty)
+        }
         let applies = PlanApplyFailures(failing: 2)
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
             defaultSyncProtocol: .fullRecordV1,
             writeHook: { try await applies.hit($0) }
         )
-        let server = FakeCloudServer()
-        let texts = try await optOutAfterSyncing(persistence, server: server)
         let coordinator = modeCoordinator(on: persistence, server: server)
+        let beforeAttempts = await applies.arrivals
+        XCTAssertEqual(beforeAttempts, 0)
 
         // 1. The enable's merge throws after its intent is durable, and the intent stays.
         do {
@@ -221,6 +239,50 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(afterMerge?.phase, .sourceFrozen)
         XCTAssertNotNil(afterMerge?.mergeIntent)
         XCTAssertEqual(afterMerge?.mergeIntent?.fullReenablePlanID, afterMerge?.id)
+        let intended = try XCTUnwrap(afterMerge)
+        let intent = try XCTUnwrap(intended.mergeIntent)
+        let token = try XCTUnwrap(intended.freezeToken)
+        let namespace = try XCTUnwrap(intended.namespace)
+        XCTAssertEqual(intended.sourceStoreID, initialStorage.activeStore.id)
+        XCTAssertEqual(intent.sourceRevision, initialStorage.activeStore.revision)
+        let manifest = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+            from: Data(contentsOf: root.appendingPathComponent("activation.json")))
+        let candidate = try XCTUnwrap(manifest.stores.first { $0.id == intended.candidateStoreID })
+        let planRoot = root.appendingPathComponent(candidate.relativeRoot, isDirectory: true)
+            .appendingPathComponent("full-reenable-v1", isDirectory: true)
+            .appendingPathComponent(intended.id.uuidString.lowercased(), isDirectory: true)
+        let planURL = planRoot.appendingPathComponent("plan.json")
+        let planBytes = try Data(contentsOf: planURL)
+        let staged = try JSONDecoder().decode(CloudFullReenableStagedPlan.self, from: planBytes)
+        let restored = try staged.restore(from: planRoot)
+        XCTAssertNil(restored.acceptedLegacyDigest)
+        XCTAssertTrue(try restored.plan.hasValidDigest())
+        XCTAssertEqual(restored.plan.transitionID, intended.id)
+        XCTAssertEqual(restored.plan.namespaceKey, namespace.namespaceKey.rawValue)
+        XCTAssertEqual(restored.plan.planDigest, intent.planDigest)
+        XCTAssertEqual(restored.plan.result.approvedSnipIDs, intent.approvedSnipIDs)
+        XCTAssertEqual(Set(restored.plan.snips.map(\.id)), Set(sourceBefore.snips.map(\.id)))
+        let files = FailedEnableEvidenceFile(root: root)
+        let evidence = try XCTUnwrap(try files.read(intended.sourceStoreID))
+        let group = try XCTUnwrap(evidence.namespaces.first { $0.binding == FailedEnableBinding(namespace) })
+        let captures = group.captures.filter {
+            $0.transitionID == FailedEnableEncoding.uuid(intended.id)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(intended.candidateStoreID)
+        }
+        XCTAssertEqual(captures.count, 1)
+        let capture = try XCTUnwrap(captures.first)
+        XCTAssertEqual(evidence.sourceStoreID, FailedEnableEncoding.uuid(intended.sourceStoreID))
+        XCTAssertEqual(capture.freeze.id, FailedEnableEncoding.uuid(token.id))
+        XCTAssertEqual(capture.freeze.sourceRevision, String(intent.sourceRevision))
+        XCTAssertEqual(capture.sourceDigest, evidence.continuity.sourceDigest)
+        XCTAssertFalse(capture.armed)
+        let transfer = try XCTUnwrap(evidence.transfers.first { $0.sourceCaptureIDs == [capture.id] })
+        XCTAssertEqual(transfer.kind, .candidate)
+        XCTAssertEqual(transfer.state, .prepared)
+        XCTAssertEqual(transfer.sourceStoreID, evidence.sourceStoreID)
+        XCTAssertEqual(transfer.destinationStoreID, capture.candidateStoreID)
+        XCTAssertEqual(transfer.namespace, group.binding)
+        XCTAssertEqual(transfer.planDigest, FailedEnableEncoding.hex(intent.planDigest))
 
         // 2. Pins the merge's clear. Try Again reconciles the intent and throws at the same
         // point. If the merge kept its mark, this would return Setting Up without reaching it.
@@ -232,11 +294,43 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(reached, 2)
         let afterReconcile = try await persistence.snapshot().transition
         XCTAssertEqual(afterReconcile, afterMerge)
+        let replayPlanBytes = try Data(contentsOf: planURL)
+        XCTAssertEqual(replayPlanBytes, planBytes)
+        let replayEvidence = try XCTUnwrap(try files.read(intended.sourceStoreID))
+        let replayGroup = try XCTUnwrap(replayEvidence.namespaces.first { $0.binding == group.binding })
+        let replayCaptures = replayGroup.captures.filter {
+            $0.transitionID == FailedEnableEncoding.uuid(intended.id)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(intended.candidateStoreID)
+        }
+        XCTAssertEqual(replayCaptures, captures)
+        XCTAssertTrue(replayEvidence.transfers.contains(transfer))
 
         // 3. Pins the reconcile's clear. If the failed reconcile kept its mark, this would
         // return Setting Up too.
         let finished = try await coordinator.enableOrRetry()
         XCTAssertEqual(finished.state, .on)
+        let completedArrivals = await applies.arrivals
+        XCTAssertEqual(completedArrivals, 3)
+        let completed = try await persistence.snapshot()
+        XCTAssertNil(completed.transition)
+        XCTAssertEqual(completed.activeStore.id, intended.candidateStoreID)
+        XCTAssertEqual(completed.activeStore.kind, .iCloudSync)
+        let final = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.count, 2)
+        XCTAssertEqual(Set(final.snips.map(\.id)), Set(sourceBefore.snips.map(\.id)))
+        XCTAssertEqual(final.snips.map(\.content).sorted(), ["added while off", "kept"])
+        for saved in sourceBefore.snips {
+            let actual = try XCTUnwrap(final.snips.first { $0.id == saved.id })
+            XCTAssertEqual(actual, saved)
+        }
+        let remoteTexts = await server.storedTextValues()
+        XCTAssertEqual(remoteTexts, ["added while off", "kept"])
+        let completedEvidence = try XCTUnwrap(try files.read(intended.sourceStoreID))
+        let completedTransfer = try XCTUnwrap(completedEvidence.transfers.first {
+            $0.sourceCaptureIDs == [capture.id] && $0.destinationStoreID == capture.candidateStoreID
+        })
+        XCTAssertEqual(completedTransfer.state, .checked)
+        XCTAssertEqual(completedTransfer.planDigest, transfer.planDigest)
         try await assertModeChangeFinished(persistence, on: .iCloudSync, holding: texts)
     }
 
