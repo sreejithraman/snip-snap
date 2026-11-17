@@ -402,7 +402,6 @@ struct CompactLibraryControls: View {
             }
         }
         .frame(height: composerHeight, alignment: .bottom)
-        .clipped()
     }
 
     private func composer(for list: SnipList, draft: ComposerDraft, isPreview: Bool) -> some View {
