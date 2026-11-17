@@ -312,6 +312,14 @@ extension SwiftDataSyncModePersistence {
   ) async throws -> Value {
     await finishRecoveryQuarantines()
     await reconcileFailedEnableOnOpen()
+    if case .idle = writeAdmission.phase,
+      failedEnablePublicationInFlight == nil, manifest.writeReservation == nil,
+      let transition = manifest.transition,
+      transition.sourceStoreID == manifest.activeStoreID, transition.freezesSource
+    {
+      try Task.checkCancellation()
+      throw blockedContentWrite(reason: .modeChange)
+    }
     await checkFailedEnableSourceBeforeWrite()
     let reservation = try await reserveMutation(
       storeID: manifest.activeStoreID, request: .libraryWrite)
@@ -353,6 +361,12 @@ extension SwiftDataSyncModePersistence {
     _ preview: SnipImportPreview
   ) async throws -> SnipImportResult {
     await reconcileFailedEnableOnOpen()
+    if case .idle = writeAdmission.phase,
+      failedEnablePublicationInFlight == nil, manifest.writeReservation == nil,
+      manifest.transition != nil
+    {
+      throw blockedContentWrite(reason: .modeChange)
+    }
     await checkFailedEnableSourceBeforeWrite()
     guard writeAdmissionIsIdle(), manifest.transition == nil
     else { throw blockedContentWrite(reason: currentWriteBlockReason) }
