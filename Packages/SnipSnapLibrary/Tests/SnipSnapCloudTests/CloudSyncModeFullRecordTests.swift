@@ -1746,188 +1746,394 @@ extension ICloudSyncModeCoordinatorTests {
     }
 
     func testFullReenableIntentReplaysWithoutReceiptAndAdvancesWithReceipt() async throws {
-        let cases: [(SyncModeCrashPoint, SnipListColorPreset?, Bool)] = [
-            (.beforeCandidateMergeDurability, nil, false),
-            (.beforeCandidateMergeDurability, .pink, false),
-            (.beforeCandidateMergeDurability, nil, true),
-            (.afterCandidateMergeDurability, nil, false),
+        let cases: [(point: SyncModeCrashPoint, rewrite: Bool)] = [
+            (.beforeCandidateMergeDurability, false),
+            (.afterCandidateMergeDurability, false),
+            (.beforeCandidateMergeDurability, true),
         ]
-        for (point, legacyTargetColor, includeLegacyListConflict) in cases {
+        for (point, rewrite) in cases {
+            let committedBeforeReopen = point == .afterCandidateMergeDurability
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
-            let initialPersistence = try SwiftDataSyncModePersistence(rootURL: root)
-            let initialLocal = try await initialPersistence.activeLibrary()
-            try await add("base", to: initialLocal)
-            var syncedColoredListID: UUID?
-            if let legacyTargetColor {
-                let creation = try await initialLocal.perform(
-                    .createList(
-                        name: "Synced color",
-                        systemImage: "paintpalette",
-                        color: legacyTargetColor
-                    ),
-                    sortedBy: .manual
-                )
-                guard case .listCreated(let list) = creation.outcome else {
-                    return XCTFail("Expected a synced colored list")
-                }
-                syncedColoredListID = list.id
-            }
-            let baseSnapshot = await initialLocal.snapshot(sortedBy: .manual)
-            let base = try XCTUnwrap(baseSnapshot.snips.first)
-            let namespace = makeNamespace()
-            let server = FakeCloudServer()
-            let first = ICloudSyncModeCoordinator(
-                persistence: initialPersistence,
-                namespace: namespace,
-                textZone: textZone(namespace),
-                makeTransport: {
-                    FakeCloudRecordTransport(server: server, namespace: namespace)
-                }
-            )
-            _ = try await first.enableOrRetry()
-            _ = try await first.optOut(.useCurrentCacheAfterStaleDataWarning)
-            let local = try await initialPersistence.activeLibrary()
-            let localSnapshot = await local.snapshot(sortedBy: .manual)
-            let current = try XCTUnwrap(localSnapshot.snips.first)
-            let listCreation = try await local.perform(
-                .createList(name: "Offline", systemImage: "folder", color: .red),
+            let initial = try SwiftDataSyncModePersistence(rootURL: root)
+            let initialLocal = try await initial.activeLibrary()
+            let requestID = UUID()
+            let originalDate = Date(timeIntervalSince1970: 10)
+            let editedDate = Date(timeIntervalSince1970: 50)
+            let addition = try await initialLocal.perform(
+                .add(content: "base", origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+                    attachmentURLs: [], requestID: requestID, now: originalDate),
                 sortedBy: .manual
             )
-            guard case .listCreated(let coloredList) = listCreation.outcome else {
-                return XCTFail("Expected a colored list")
+            guard case .add(.added(let snipID)) = addition.outcome else {
+                return XCTFail("Expected the original managed add")
             }
+            let pinkCreation = try await initialLocal.perform(
+                .createList(name: "Synced color", systemImage: "paintpalette", color: .pink),
+                sortedBy: .manual
+            )
+            guard case .listCreated(let pink) = pinkCreation.outcome else {
+                return XCTFail("Expected the synced pink list")
+            }
+            let initialContents = try await initialLocal.checkedSnapshot(sortedBy: .manual)
+            let base = try XCTUnwrap(initialContents.snips.first)
+            XCTAssertEqual(initialContents.snips.count, 1)
+            XCTAssertEqual(Set(initialContents.lists), [SnipList.inbox, pink])
+            XCTAssertEqual(base.id, snipID)
+            XCTAssertEqual(base.requestID, requestID)
+            XCTAssertEqual(base.content, "base")
+            XCTAssertEqual(base.createdAt, originalDate)
+            XCTAssertEqual(base.updatedAt, originalDate)
+            XCTAssertEqual(base.origin, .quickEntry)
+            XCTAssertNil(base.source)
+            XCTAssertFalse(base.isDone)
+            XCTAssertNil(base.pinnedAt)
+            XCTAssertEqual(base.listID, SnipList.inboxID)
+            XCTAssertTrue(base.attachments.isEmpty)
+            XCTAssertEqual(pink.desiredName, "Synced color")
+            XCTAssertEqual(pink.resolvedName, "Synced color")
+            XCTAssertEqual(pink.systemImage, "paintpalette")
+            XCTAssertEqual(pink.color, .pink)
+
+            let namespace = makeNamespace()
+            let zone = textZone(namespace)
+            let server = FakeCloudServer()
+            let first = ICloudSyncModeCoordinator(
+                persistence: initial, namespace: namespace, textZone: zone,
+                makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+            )
+            let firstOn = try await first.enableOrRetry()
+            XCTAssertEqual(firstOn.state, .on)
+            let checkedOff = try await first.optOut(.useCurrentCacheAfterStaleDataWarning)
+            XCTAssertEqual(checkedOff.state, .off)
+            let local = try await initial.activeLibrary()
+            let off = try await local.checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(off.snips, [base])
+            XCTAssertEqual(Set(off.lists), [SnipList.inbox, pink])
+            let redCreation = try await local.perform(
+                .createList(name: "Offline", systemImage: "folder", color: .red), sortedBy: .manual
+            )
+            guard case .listCreated(let red) = redCreation.outcome else {
+                return XCTFail("Expected the offline red list")
+            }
+            XCTAssertEqual(red.desiredName, "Offline")
+            XCTAssertEqual(red.resolvedName, "Offline")
+            XCTAssertEqual(red.systemImage, "folder")
+            XCTAssertEqual(red.color, .red)
             let attachmentURL = root.appendingPathComponent("large-offline.bin")
             let attachmentBytes = Data(repeating: 0xA7, count: 65_536)
             try attachmentBytes.write(to: attachmentURL)
             _ = try await local.perform(
-                .update(
-                    id: base.id,
-                    content: "changed while local",
-                    attachmentURLs: [attachmentURL],
-                    expectedUpdatedAt: current.updatedAt,
-                    now: Date(timeIntervalSince1970: 50)
-                ),
+                .update(id: snipID, content: "changed while local", attachmentURLs: [attachmentURL],
+                    expectedUpdatedAt: originalDate, now: editedDate),
                 sortedBy: .manual
             )
+            let sourceStore = try await initial.snapshot().activeStore
+            let source = try await initial.libraryForTransition(storeID: sourceStore.id)
+            let originalSource = try await source.transferSnapshot(revision: sourceStore.revision)
+            let originalDormant = try await source.dormantCloudBases()
+            let originalArchive = try await source.archive()
+            XCTAssertEqual(originalArchive.seenRequestIDs, [requestID])
+            let edited = try XCTUnwrap(originalSource.snips.first)
+            let attachment = try XCTUnwrap(edited.attachments.first)
+            XCTAssertEqual(edited.attachments.count, 1)
+            XCTAssertEqual(attachment.fileName, "large-offline.bin")
+            XCTAssertEqual(attachment.byteCount, Int64(attachmentBytes.count))
+            let expectedBytes = [attachment.id: attachmentBytes]
+            var expectedSource = base
+            expectedSource.content = "changed while local"
+            expectedSource.updatedAt = editedDate
+            expectedSource.attachments = [attachment]
+            XCTAssertEqual(originalSource.snips, [expectedSource])
+            XCTAssertEqual(originalSource.attachmentData, expectedBytes)
+            let expectedLists: Set<SnipList> = [SnipList.inbox, pink, red]
+            XCTAssertEqual(Set(originalSource.lists), expectedLists)
+            var expectedOutput = expectedSource
+            // Full re-enable synthesis uses the accepted server date, established by the first send.
+            expectedOutput.updatedAt = originalDate
+            let snipRecordID = CloudRecordID.snip(snipID, in: zone)
+            let firstRemote = await server.fullSnapshot(for: snipRecordID)
+            let firstRecord = try CloudFullRecordCodec.snip(from: try XCTUnwrap(firstRemote))
+            XCTAssertEqual(firstRecord.id, snipRecordID)
+            XCTAssertEqual(firstRecord.requestID, .value(requestID))
+            XCTAssertEqual(firstRecord.text, .value("base"))
+            XCTAssertEqual(firstRecord.updatedAt, .value(originalDate))
+            let baselineTypes = await server.storedRecordTypes(in: zone)
+            XCTAssertEqual(baselineTypes, ["List", "List", "Snip"])
+            let beforeSnipSaves = await server.acceptedOperationCount(for: snipRecordID)
+            let beforeDeletes = await server.acceptedDeletionCount()
 
             let crash = CrashInjector(point: point)
-            let crashingPersistence = try SwiftDataSyncModePersistence(
-                rootURL: root,
-                crashHook: crash.hit
-            )
+            let crashingOwner = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
             let crashing = ICloudSyncModeCoordinator(
-                persistence: crashingPersistence,
-                namespace: namespace,
-                textZone: textZone(namespace),
-                makeTransport: {
-                    FakeCloudRecordTransport(server: server, namespace: namespace)
-                }
+                persistence: crashingOwner, namespace: namespace, textZone: zone,
+                makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
             )
             do {
                 _ = try await crashing.enableOrRetry()
-                XCTFail("Expected the merge crash")
+                return XCTFail("Expected the injected merge crash at \(point)")
             } catch CrashInjector.Failure.injected {}
-            let crashed = try await crashingPersistence.snapshot()
-            let transition = try XCTUnwrap(crashed.transition)
-            XCTAssertEqual(transition.phase, .sourceFrozen)
+            let interrupted = try await crashingOwner.snapshot()
+            let transition = try XCTUnwrap(interrupted.transition)
             let intent = try XCTUnwrap(transition.mergeIntent)
+            let token = try XCTUnwrap(transition.freezeToken)
+            XCTAssertEqual(interrupted.activeStore, sourceStore)
+            XCTAssertEqual(transition.phase, .sourceFrozen)
+            XCTAssertEqual(transition.namespace, namespace.binding)
             XCTAssertEqual(intent.fullReenablePlanID, transition.id)
-            let manifestData = try Data(contentsOf: root.appendingPathComponent("activation.json"))
+            XCTAssertEqual(intent.sourceRevision, sourceStore.revision)
+            XCTAssertEqual(token.sourceStoreID, sourceStore.id)
+            XCTAssertEqual(token.revision, sourceStore.revision)
+            let manifestURL = root.appendingPathComponent("activation.json")
+            let manifestData = try Data(contentsOf: manifestURL)
+            let attachmentPrefix = attachmentBytes.prefix(64)
+            let encodedPrefix = Data(attachmentBytes.base64EncodedString().prefix(64).utf8)
             XCTAssertLessThan(manifestData.count, 20_000)
-            XCTAssertNil(manifestData.range(of: attachmentBytes.prefix(64)))
+            XCTAssertNil(manifestData.range(of: attachmentPrefix))
+            XCTAssertNil(manifestData.range(of: encodedPrefix))
             let stagedFiles = try FileManager.default.subpathsOfDirectory(atPath: root.path)
-              .filter { $0.contains("full-reenable-v1") }
-            XCTAssertTrue(stagedFiles.contains { $0.hasSuffix("plan.json") })
-            let candidate = try await crashingPersistence.libraryForTransition(
-                storeID: transition.candidateStoreID
-            )
-            if point == .beforeCandidateMergeDurability {
-                let planPath = try XCTUnwrap(stagedFiles.first { $0.hasSuffix("plan.json") })
-                let legacyDigest = try await rewriteStagedPlanAsLegacy(
-                    at: root.appendingPathComponent(planPath),
-                    target: candidate,
-                    includeListConflict: includeLegacyListConflict
-                )
-                try mutateManifest(at: root.appendingPathComponent("activation.json")) { manifest in
-                    var manifestTransition = try XCTUnwrap(manifest["transition"] as? [String: Any])
-                    var manifestIntent = try XCTUnwrap(
-                        manifestTransition["mergeIntent"] as? [String: Any]
-                    )
-                    manifestIntent["planDigest"] = legacyDigest.base64EncodedString()
-                    manifestTransition["mergeIntent"] = manifestIntent
-                    manifest["transition"] = manifestTransition
-                }
-            }
+                .filter { $0.contains("full-reenable-v1") }
+            let planPath = try XCTUnwrap(stagedFiles.first { $0.hasSuffix("plan.json") })
+            let planURL = root.appendingPathComponent(planPath)
+            let modernPlan = try Data(contentsOf: planURL)
+            let staged = try JSONDecoder().decode(CloudFullReenableStagedPlan.self, from: modernPlan)
+            let restored = try staged.restore(from: planURL.deletingLastPathComponent())
+            XCTAssertNil(restored.acceptedLegacyDigest)
+            XCTAssertEqual(restored.plan.planDigest, intent.planDigest)
+            XCTAssertEqual(restored.plan.snips, [expectedOutput])
+            XCTAssertEqual(Set(restored.plan.lists), expectedLists)
+            XCTAssertEqual(restored.plan.attachmentData, expectedBytes)
             let stagedAttachment = try XCTUnwrap(stagedFiles.first { $0.hasSuffix(".data") })
-            XCTAssertEqual(
-                try Data(contentsOf: root.appendingPathComponent(stagedAttachment)),
-                attachmentBytes
+            let stagedAttachmentURL = root.appendingPathComponent(stagedAttachment)
+            XCTAssertNil(modernPlan.range(of: attachmentPrefix))
+            XCTAssertNil(modernPlan.range(of: encodedPrefix))
+            XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), attachmentBytes)
+            let crashedManifest = await crashingOwner.manifest
+            let candidateStore = try XCTUnwrap(crashedManifest.stores.first {
+                $0.id == transition.candidateStoreID
+            })
+            let candidate = try await crashingOwner.libraryForTransition(storeID: candidateStore.id)
+            let targetBeforeReplay = try await candidate.transferSnapshot(revision: candidateStore.revision)
+            XCTAssertEqual(targetBeforeReplay.snips, [committedBeforeReopen ? expectedOutput : base])
+            XCTAssertEqual(targetBeforeReplay.attachmentData, committedBeforeReopen ? expectedBytes : [:])
+            XCTAssertEqual(Set(targetBeforeReplay.lists),
+                committedBeforeReopen ? expectedLists : Set([SnipList.inbox, pink]))
+            let receipts = try await candidate.failedEnableReenableReceipts(
+                namespaceKey: namespace.namespaceKey.rawValue, transitionID: transition.id
             )
-            let receipt = try await candidate.recognizesAppliedCloudFullReenable(
-                CloudFullReenableCommitProof(
-                    namespaceKey: namespace.namespaceKey,
-                    transitionID: transition.id,
-                    digest: intent.planDigest
-                )
-            )
-            XCTAssertEqual(receipt, point != .beforeCandidateMergeDurability)
+            XCTAssertEqual(receipts.modern, committedBeforeReopen ? intent.planDigest : nil)
+            XCTAssertNil(receipts.ambiguous)
+            let acceptedBeforeReplay = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            let sourceAtCrash = try await source.transferSnapshot(revision: sourceStore.revision)
+            let dormantAtCrash = try await source.dormantCloudBases()
+            XCTAssertEqual(sourceAtCrash, originalSource)
+            XCTAssertEqual(dormantAtCrash, originalDormant)
 
-            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
-            let resumed = ICloudSyncModeCoordinator(
-                persistence: reopened,
-                namespace: namespace,
-                textZone: textZone(namespace),
-                makeTransport: {
-                    FakeCloudRecordTransport(server: server, namespace: namespace)
+            let files = FailedEnableEvidenceFile(root: root)
+            let evidence = try XCTUnwrap(try files.read(sourceStore.id))
+            let group = try XCTUnwrap(evidence.namespaces.first { $0.binding == FailedEnableBinding(namespace.binding) })
+            let capture = try XCTUnwrap(group.captures.last {
+                $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+                    && $0.candidateStoreID == FailedEnableEncoding.uuid(candidateStore.id)
+            })
+            XCTAssertEqual(capture.freeze.id, FailedEnableEncoding.uuid(token.id))
+            XCTAssertEqual(capture.freeze.sourceRevision, String(token.revision))
+            XCTAssertFalse(capture.armed)
+            let reference = FailedEnableReference(CloudEntityReference(kind: .snip, domainID: snipID))
+            let capturedSnip = try XCTUnwrap(capture.records.first { $0.reference == reference })
+            let expectedL = try FailedEnableSnipImage(expectedSource, attachmentData: expectedBytes)
+            XCTAssertEqual(capturedSnip.source.value, .snip(expectedL))
+            let attachmentHash = FailedEnableEncoding.digest(attachmentBytes)
+            XCTAssertEqual(evidence.blobs[attachmentHash], attachmentBytes)
+            let transfer = try XCTUnwrap(evidence.transfers.last { $0.sourceCaptureIDs == [capture.id] })
+            XCTAssertEqual(transfer.state, .prepared)
+            XCTAssertEqual(transfer.planDigest, FailedEnableEncoding.hex(intent.planDigest))
+            let outputImage = try FailedEnableSnipImage(expectedOutput, attachmentData: expectedBytes)
+            XCTAssertTrue(transfer.outputs.contains(.snip(outputImage)))
+
+            let replayPlanDigest: Data
+            if rewrite {
+                let legacyDigest = try await rewriteStagedPlanAsLegacy(
+                    at: planURL, target: candidate, includeListConflict: true
+                )
+                XCTAssertNotEqual(legacyDigest, intent.planDigest)
+                try mutateManifest(at: manifestURL) { manifest in
+                    var storedTransition = try XCTUnwrap(manifest["transition"] as? [String: Any])
+                    var storedIntent = try XCTUnwrap(storedTransition["mergeIntent"] as? [String: Any])
+                    storedIntent["planDigest"] = legacyDigest.base64EncodedString()
+                    storedTransition["mergeIntent"] = storedIntent
+                    manifest["transition"] = storedTransition
                 }
+                replayPlanDigest = legacyDigest
+            } else {
+                replayPlanDigest = intent.planDigest
+            }
+            let planBeforeReplay = try Data(contentsOf: planURL)
+            XCTAssertEqual(planBeforeReplay == modernPlan, !rewrite)
+            let storedPlan = try XCTUnwrap(JSONSerialization.jsonObject(with: planBeforeReplay) as? [String: Any])
+            XCTAssertEqual(storedPlan["planDigest"] as? String, replayPlanDigest.base64EncodedString())
+
+            let replayApply = (rewrite || committedBeforeReopen)
+                ? nil : expectation(description: "No-receipt replay enters guarded private apply")
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root, writeHook: { boundary in
+                guard boundary == .beforeFullReenablePlanApply else { return }
+                guard let replayApply else {
+                    XCTFail("The mismatched or already committed plan must not enter private apply")
+                    throw CrashInjector.Failure.injected
+                }
+                replayApply.fulfill()
+            })
+            let reopenManifest = await reopened.manifest
+            XCTAssertEqual(reopenManifest.activeStoreID, sourceStore.id)
+            XCTAssertEqual(reopenManifest.transition?.id, transition.id)
+            XCTAssertEqual(reopenManifest.transition?.candidateStoreID, candidateStore.id)
+            XCTAssertEqual(reopenManifest.transition?.phase, .sourceFrozen)
+            XCTAssertEqual(reopenManifest.transition?.mergeIntent?.planDigest, replayPlanDigest)
+            let replayTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+            let resumed = ICloudSyncModeCoordinator(
+                persistence: reopened, namespace: namespace, textZone: zone,
+                makeTransport: { replayTransport }
             )
             let result = try await resumed.enableOrRetry()
-            XCTAssertEqual(result.state, includeLegacyListConflict ? .needsAttention : .on)
+            if let replayApply {
+                await fulfillment(of: [replayApply], timeout: 5)
+            }
+            let replayed = try await reopened.snapshot()
+            let retained = try XCTUnwrap(try files.read(sourceStore.id))
+            let retainedGroup = try XCTUnwrap(retained.namespaces.first { $0.binding == group.binding })
+            let retainedCapture = try XCTUnwrap(retainedGroup.captures.first { $0.id == capture.id })
+            let retainedTransfer = try XCTUnwrap(retained.transfers.last { $0.sourceCaptureIDs == [capture.id] })
+            let retainedSource = try await source.transferSnapshot(revision: sourceStore.revision)
+            let retainedDormant = try await source.dormantCloudBases()
+            let retainedArchive = try await source.archive()
+            XCTAssertEqual(retainedSource, originalSource)
+            XCTAssertEqual(retainedDormant, originalDormant)
+            XCTAssertEqual(retainedArchive.seenRequestIDs, [requestID])
+            XCTAssertEqual(retained.blobs[attachmentHash], attachmentBytes)
+
+            if rewrite {
+                XCTAssertEqual(result.state, .needsAttention)
+                XCTAssertEqual(replayed.attentionReason, .enrollmentBlocked)
+                XCTAssertEqual(replayed.activeStore, sourceStore)
+                let refused = try XCTUnwrap(replayed.transition)
+                XCTAssertEqual(refused.id, transition.id)
+                XCTAssertEqual(refused.candidateStoreID, candidateStore.id)
+                XCTAssertEqual(refused.phase, .candidateReady)
+                XCTAssertNil(refused.mergeIntent)
+                XCTAssertNil(refused.sendAttempt)
+                XCTAssertFalse(refused.freezesSource)
+                XCTAssertEqual(retained.namespaces, evidence.namespaces)
+                XCTAssertEqual(retained.transfers, evidence.transfers)
+                XCTAssertEqual(retained.blobs, evidence.blobs)
+                XCTAssertEqual(try Data(contentsOf: planURL), planBeforeReplay)
+                XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), attachmentBytes)
+                let untouched = try await reopened.libraryForTransition(storeID: candidateStore.id)
+                let untouchedTarget = try await untouched.transferSnapshot(revision: candidateStore.revision)
+                let untouchedAccepted = try await untouched.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+                let absentReceipt = try await untouched.failedEnableReenableReceipts(
+                    namespaceKey: namespace.namespaceKey.rawValue, transitionID: transition.id
+                )
+                XCTAssertEqual(untouchedTarget, targetBeforeReplay)
+                XCTAssertEqual(untouchedAccepted.readyEntities, acceptedBeforeReplay.readyEntities)
+                XCTAssertEqual(untouchedAccepted.deferredEntities, acceptedBeforeReplay.deferredEntities)
+                XCTAssertNil(absentReceipt.modern)
+                XCTAssertNil(absentReceipt.ambiguous)
+                let transportEvents = await replayTransport.events()
+                XCTAssertTrue(transportEvents.isEmpty)
+                let remoteAfterRefusal = await server.fullSnapshot(for: snipRecordID)
+                let typesAfterRefusal = await server.storedRecordTypes(in: zone)
+                let snipSavesAfterRefusal = await server.acceptedOperationCount(for: snipRecordID)
+                let deletesAfterRefusal = await server.acceptedDeletionCount()
+                XCTAssertEqual(remoteAfterRefusal, firstRemote)
+                XCTAssertEqual(typesAfterRefusal, baselineTypes)
+                XCTAssertEqual(snipSavesAfterRefusal, beforeSnipSaves)
+                XCTAssertEqual(deletesAfterRefusal, beforeDeletes)
+
+                let writable = try await reopened.activeLibrary()
+                let writableDate = Date(timeIntervalSince1970: 60)
+                _ = try await writable.perform(
+                    .update(id: snipID, content: "source remains writable", attachmentURLs: nil,
+                        expectedUpdatedAt: editedDate, now: writableDate), sortedBy: .manual
+                )
+                let afterWrite = try await writable.checkedSnapshot(sortedBy: .manual)
+                var expectedWrite = expectedSource
+                expectedWrite.content = "source remains writable"
+                expectedWrite.updatedAt = writableDate
+                XCTAssertEqual(afterWrite.snips, [expectedWrite])
+                XCTAssertEqual(Set(afterWrite.lists), expectedLists)
+                let sourceAttachment = try XCTUnwrap(afterWrite.attachmentURLs[attachment.id])
+                XCTAssertEqual(try Data(contentsOf: sourceAttachment), attachmentBytes)
+                let afterWriteState = try await reopened.snapshot()
+                XCTAssertEqual(afterWriteState.activeStore.id, sourceStore.id)
+                XCTAssertGreaterThan(afterWriteState.activeStore.revision, sourceStore.revision)
+                XCTAssertEqual(afterWriteState.transition?.phase, .candidateReady)
+                let afterWriteEvidence = try XCTUnwrap(try files.read(sourceStore.id))
+                XCTAssertEqual(afterWriteEvidence.namespaces, retained.namespaces)
+                XCTAssertEqual(afterWriteEvidence.transfers, retained.transfers)
+                XCTAssertEqual(afterWriteEvidence.blobs, retained.blobs)
+                XCTAssertEqual(try Data(contentsOf: planURL), planBeforeReplay)
+                XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), attachmentBytes)
+                continue
+            }
+
+            XCTAssertEqual(result.state, .on)
+            XCTAssertNil(replayed.transition)
+            XCTAssertEqual(replayed.activeStore.id, candidateStore.id)
+            XCTAssertEqual(replayed.activeStore.namespace, namespace.binding)
+            XCTAssertEqual(retainedCapture.records.map(\.source), capture.records.map(\.source))
+            XCTAssertEqual(retainedCapture.records.map(\.preparation), capture.records.map(\.preparation))
+            XCTAssertEqual(retainedTransfer.state, .checked)
+            XCTAssertEqual(retainedTransfer.planDigest, transfer.planDigest)
+            XCTAssertEqual(retainedTransfer.outputs, transfer.outputs)
+            XCTAssertTrue(retainedGroup.reviews.isEmpty)
+            XCTAssertTrue(retainedGroup.alternatives.isEmpty)
+            for (hash, bytes) in evidence.blobs {
+                XCTAssertEqual(retained.blobs[hash], bytes)
+            }
             let reopenedLibrary = try await reopened.activeLibrary()
-            let final = await reopenedLibrary.snapshot(sortedBy: .manual)
-            XCTAssertEqual(final.snips.first(where: { $0.id == base.id })?.content, "changed while local")
-            XCTAssertEqual(
-                final.lists.first(where: { $0.id == coloredList.id })?.color,
-                point == .beforeCandidateMergeDurability ? nil : .red
-            )
-            if let syncedColoredListID {
-                let syncedList = try XCTUnwrap(
-                    final.lists.first(where: { $0.id == syncedColoredListID })
-                )
-                XCTAssertNil(syncedList.color)
-            }
-            if includeLegacyListConflict {
-                let activeStorage = try await reopened.snapshot()
-                let rawLibrary = try await reopened.libraryForTransition(
-                    storeID: activeStorage.activeStore.id
-                )
-                let recovery = try await rawLibrary.recoverySnapshot(
-                    in: SnipRecoveryScope(namespace.namespaceKey.rawValue)
-                )
-                let recovered = try XCTUnwrap(
-                    recovery.pendingLists.first(where: { $0.id == legacyStagedListRecoveryID })
-                )
-                XCTAssertEqual(recovered.recovered.desiredName, "Recovered legacy list")
-                XCTAssertEqual(recovered.recovered.resolvedName, "Recovered legacy list")
-                XCTAssertEqual(recovered.recovered.systemImage, "paintpalette")
-                XCTAssertEqual(recovered.conflictingFields, [.color])
-                XCTAssertNil(recovered.recovered.color)
-                XCTAssertEqual(recovered.currentListID, recovered.recovered.id)
-                let currentList = try XCTUnwrap(
-                    final.lists.first(where: { $0.id == recovered.currentListID })
-                )
-                XCTAssertEqual(recovered.recovered.sortKey, currentList.sortKey)
-            }
-            let finalAttachment = try XCTUnwrap(final.snips.first?.attachments.first)
-            let finalURL = try XCTUnwrap(final.attachmentURLs[finalAttachment.id])
+            let final = try await reopenedLibrary.checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(final.snips, [expectedOutput])
+            XCTAssertEqual(Set(final.lists), expectedLists)
+            XCTAssertEqual(Set(final.attachmentURLs.keys), [attachment.id])
+            let finalURL = try XCTUnwrap(final.attachmentURLs[attachment.id])
             XCTAssertEqual(try Data(contentsOf: finalURL), attachmentBytes)
-            let finalStorage = try await reopened.snapshot()
-            XCTAssertNil(finalStorage.transition)
-            XCTAssertFalse(
-                try FileManager.default.subpathsOfDirectory(atPath: root.path)
-                  .contains { $0.contains("full-reenable-v1") && $0.hasSuffix("plan.json") }
-            )
+            let active = try await reopened.libraryForTransition(storeID: candidateStore.id)
+            let recovery = try await active.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
+            XCTAssertTrue(recovery.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: planURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: stagedAttachmentURL.path))
+            XCTAssertFalse(try FileManager.default.subpathsOfDirectory(atPath: root.path)
+                .contains { $0.contains("full-reenable-v1") && $0.hasSuffix("plan.json") })
+
+            let remoteValue = await server.fullSnapshot(for: snipRecordID)
+            let remote = try CloudFullRecordCodec.snip(from: try XCTUnwrap(remoteValue))
+            XCTAssertEqual(remote.id, snipRecordID)
+            XCTAssertEqual(remote.domainID, snipID)
+            XCTAssertEqual(remote.requestID, .value(requestID))
+            XCTAssertEqual(remote.createdAt, .value(originalDate))
+            XCTAssertEqual(remote.updatedAt, .value(originalDate))
+            XCTAssertEqual(remote.origin, .value(SnipOrigin.quickEntry.rawValue))
+            XCTAssertEqual(remote.text, .value("changed while local"))
+            XCTAssertEqual(remote.source, .value(nil))
+            XCTAssertEqual(remote.isDone, .value(false))
+            XCTAssertNil(remote.pinnedAt)
+            XCTAssertEqual(remote.placement, .value(CloudSnipPlacement(
+                listID: SnipList.inboxID, orderKey: base.manualSortKey)))
+            for list in [SnipList.inbox, pink, red] {
+                let id = CloudRecordID.list(list.id, in: zone)
+                let value = await server.fullSnapshot(for: id)
+                let record = try CloudFullRecordCodec.list(from: try XCTUnwrap(value))
+                XCTAssertEqual(record.id, id)
+                XCTAssertEqual(record.domainID, list.id)
+                XCTAssertEqual(record.desiredName, .value(list.desiredName))
+                XCTAssertEqual(record.systemImage, .value(list.systemImage))
+                XCTAssertEqual(record.color, .some(.value(list.color)))
+                XCTAssertEqual(record.orderKey, .value(list.sortKey))
+            }
+            let remoteTexts = await server.storedTextValues()
+            let remoteTypes = await server.storedRecordTypes(in: zone)
+            XCTAssertEqual(remoteTexts, ["changed while local"])
+            XCTAssertEqual(remoteTypes, ["List", "List", "List", "Snip"])
         }
     }
 
