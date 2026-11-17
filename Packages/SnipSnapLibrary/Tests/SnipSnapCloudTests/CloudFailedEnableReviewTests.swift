@@ -1179,7 +1179,8 @@ final class CloudFailedEnableReviewTests: XCTestCase {
             let pauseReservation = Mutex(false)
             let p = try SwiftDataSyncModePersistence(rootURL: f.root, crashHook: { try crash.hit($0) },
                 writeHook: { point in
-                    if point == .afterRevisionReserved, pauseReservation.withLock({ $0 }) {
+                    if point == .afterRevisionReserved,
+                        pauseReservation.withLock({ if $0 { $0 = false; return true }; return false }) {
                         enteredReservation.fulfill()
                         for await _ in releaseReservation.stream { break }
                     }
@@ -1357,6 +1358,7 @@ final class CloudFailedEnableReviewTests: XCTestCase {
                             now: Date(timeIntervalSince1970: 50)), sortedBy: .manual)
                     }
                     await fulfillment(of: [enteredReservation], timeout: 30)
+                    XCTAssertFalse(pauseReservation.withLock { $0 })
                     let reserved = await p.manifest
                     XCTAssertNotNil(reserved.writeReservation)
                     let denied = try await p.validateFailedEnableTurnOffApply(transition: transition,
