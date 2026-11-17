@@ -6,7 +6,7 @@ enum SnipCLIApplicationParser {
   static let usage = """
     settings show
     settings set KEY VALUE --if-revision TOKEN
-      KEY: appearance (system|light|dark), sort (chronological|manual),
+      KEY: appearance (system|light|dark), sort (chronological|oldest|manual),
       completion-filter (all|done|notDone), origin-filter (all|agent|human),
       agent-snips-only (on|off), clipboard-only-pinned (on|off),
       clipboard-newest-first (on|off), beta-updates (on|off)

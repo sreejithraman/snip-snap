@@ -40,6 +40,7 @@ struct ContentView: View {
 
     @State private var entryDrafts: [UUID: ComposerDraft] = [:]
     @State private var showingNewList = false
+    @State private var showingViewOptions = false
     @State private var newListMovingIDs: Set<UUID> = []
     @State private var showingFileImporter = false
     @State private var fileImportTarget: FileImportTarget?
@@ -135,6 +136,7 @@ struct ContentView: View {
                 model: model,
                 accessibilityPermissions: accessibilityPermissions,
                 focusedTarget: $focusedTarget,
+                showingViewOptions: $showingViewOptions,
                 closePanel: { coordinator.hidePanel() },
                 expandSearch: { expandSearch() },
                 collapseSearch: { collapseSearch() },
@@ -1039,6 +1041,10 @@ struct ContentView: View {
     }
 
     private func handleCancel() {
+        if showingViewOptions {
+            showingViewOptions = false
+            return
+        }
         if sendDestination?.sourceID != nil {
             sendDestination = nil
             focusedTarget = .inlineEntry

@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Done shown" : {},
+    "Unlimited" : {},
+    "Written by" : {},
     "Agent only" : {},
     "Human only" : {},
     "No human snips" : {},

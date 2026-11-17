@@ -347,7 +347,6 @@ struct SnipListSnapshot {
 
     private let selection: Set<UUID>
     private let selectedPayload: SnipDragPayload?
-    private let canReorderSelection: Bool
 
     init(
         visibleSnips: [Snip],
@@ -367,9 +366,6 @@ struct SnipListSnapshot {
         self.attachmentURL = attachmentURL
 
         let selected = allSnips.filter { selection.contains($0.id) }
-        canReorderSelection = !selected.isEmpty && selected.allSatisfy {
-            !$0.isPinned && $0.listID == selected.first?.listID
-        }
         let selectedSnips = Self.groups(
             for: selected,
             lists: lists
@@ -377,10 +373,6 @@ struct SnipListSnapshot {
         selectedPayload = selectedSnips.isEmpty
             ? nil
             : SnipDragPayload.make(snips: selectedSnips, attachmentURL: attachmentURL)
-    }
-
-    func canReorder(_ snip: Snip) -> Bool {
-        selection.contains(snip.id) ? canReorderSelection : !snip.isPinned
     }
 
     func dragPayload(for snip: Snip) -> SnipDragPayload {

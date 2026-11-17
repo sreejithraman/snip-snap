@@ -3,11 +3,10 @@ import SwiftUI
 
 struct WorkflowOptionsMenu: View {
     let model: IOSAppModel
-    var beginReordering: (() -> Void)? = nil
 
     var body: some View {
         Menu("View options", systemImage: "line.3.horizontal.decrease") {
-            Section("Show") {
+            Menu {
                 Picker("Show", selection: completionFilter) {
                     ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
                         Text(filter.title)
@@ -17,19 +16,44 @@ struct WorkflowOptionsMenu: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.inline)
+                if model.completionFilter == .all {
+                    Divider()
+                    Menu {
+                        Picker("Done shown", selection: doneLimit) {
+                            ForEach(SnipDoneLimit.allCases, id: \.self) { limit in
+                                Text(limit.title).tag(limit)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.inline)
+                    } label: {
+                        Text("Done shown")
+                        Text(model.doneLimit.title)
+                    }
+                    .disabled(model.snipEditorDraft != nil)
+                }
+            } label: {
+                Text("Show")
+                Text(model.completionFilter.title)
             }
-            Section("Origin") {
-                Picker("Origin", selection: originFilter) {
+            .accessibilityIdentifier("workflow-show")
+
+            Menu {
+                Picker("Written by", selection: originFilter) {
                     ForEach(SnipOriginFilter.allCases, id: \.self) { filter in
-                        Text(filter.title)
-                            .tag(filter)
+                        Text(filter.title).tag(filter)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.inline)
-                .disabled(model.snipEditorDraft != nil)
+            } label: {
+                Text("Written by")
+                Text(model.originFilter.title)
             }
-            Section("Sort") {
+            .disabled(model.snipEditorDraft != nil)
+            .accessibilityIdentifier("workflow-author")
+
+            Menu {
                 Picker("Sort", selection: sortMode) {
                     ForEach(SnipSortMode.allCases, id: \.self) { mode in
                         Text(mode.title)
@@ -39,15 +63,22 @@ struct WorkflowOptionsMenu: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.inline)
+            } label: {
+                Text("Sort")
+                Text(model.sortMode.title)
             }
-            if let beginReordering {
-                Divider()
-                Button("Reorder Snips", systemImage: "arrow.up.arrow.down", action: beginReordering)
-                    .disabled(!model.canReorderVisibleSnips || model.visibleSnips.count < 2)
-                    .accessibilityIdentifier("reorder-snips")
-            }
+            .accessibilityIdentifier("workflow-sort")
         }
+        .menuOrder(.fixed)
+        .menuActionDismissBehavior(.disabled)
         .accessibilityIdentifier("workflow-options")
+    }
+
+    private var doneLimit: Binding<SnipDoneLimit> {
+        Binding(
+            get: { model.doneLimit },
+            set: { model.setDoneLimit($0) }
+        )
     }
 
     private var completionFilter: Binding<SnipCompletionFilter> {
@@ -142,15 +173,6 @@ struct SelectionActionsMenu: View {
             }
             .disabled(!model.selectedSnips.contains { !$0.isPinned })
             .accessibilityIdentifier("mark-selection-not-done")
-        }
-    }
-}
-
-private extension SnipSortMode {
-    var title: String {
-        switch self {
-        case .chronological: String(localized: "Newest first")
-        case .manual: String(localized: "Manual")
         }
     }
 }

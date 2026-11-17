@@ -211,17 +211,34 @@ final class IOSAppModel {
             if isSearchPresented != oldValue { selectionRevision &+= 1 }
         }
     }
-    var searchText = ""
-    var completionFilter: SnipCompletionFilter = .all
+    var searchText = "" {
+        didSet { reconcileDoneLimitSelection() }
+    }
+    var completionFilter: SnipCompletionFilter = .all {
+        didSet { reconcileDoneLimitSelection() }
+    }
     private var storedOriginFilter: SnipOriginFilter = .all
     var originFilter: SnipOriginFilter {
         get { storedOriginFilter }
         set {
             guard snipEditorDraft == nil else { return }
             storedOriginFilter = newValue
+            reconcileDoneLimitSelection()
         }
     }
-    var sortMode: SnipSortMode = .chronological
+    private let displayDefaults: UserDefaults
+    private(set) var doneLimit: SnipDoneLimit
+
+    func setDoneLimit(_ limit: SnipDoneLimit) {
+        guard snipEditorDraft == nil else { return }
+        doneLimit = limit
+        limit.save(to: displayDefaults)
+        reconcileDoneLimitSelection()
+    }
+
+    var sortMode: SnipSortMode = .chronological {
+        didSet { reconcileDoneLimitSelection() }
+    }
     private var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var failure: AppFailure? { snackbarAndErrors.presentedFailure }
@@ -280,6 +297,7 @@ final class IOSAppModel {
 
     init(
         library: any SnipLibrary,
+        defaults: UserDefaults = .standard,
         userActions: (any SnipLibraryUserActions)? = nil,
         userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         recoveryScope: SnipRecoveryScope? = nil,
@@ -293,6 +311,8 @@ final class IOSAppModel {
         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
         publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
+        displayDefaults = defaults
+        doneLimit = SnipDoneLimit.load(from: defaults)
         session = SavedSnipsSession(
             library: library,
             userActions: userActions,
@@ -395,6 +415,7 @@ final class IOSAppModel {
         guard snipEditorDraft === draft else { return }
         draft.discard()
         snipEditorDraft = nil
+        reconcileDoneLimitSelection()
     }
 
     func cancelInlineSnipEdit() {
@@ -495,20 +516,46 @@ final class IOSAppModel {
         visibleSnips(in: listID, matching: searchText)
     }
 
-    func visibleSnips(in listID: UUID, matching query: String) -> [Snip] {
-        let selected = snips.filter { $0.listID == listID }
-        let matches = SnipFilter.apply(
-            snips: selected,
+    private func matchingSnips(in listID: UUID, query: String) -> [Snip] {
+        Snip.sorted(SnipFilter.apply(
+            snips: snips.filter { $0.listID == listID },
             query: query,
             completionFilter: completionFilter,
             originFilter: originFilter,
             sourceLabel: { $0.displaySourceLabel }
-        )
-        return Snip.sorted(matches, by: sortMode)
+        ), by: sortMode)
+    }
+
+    func visibleSnips(in listID: UUID, matching query: String) -> [Snip] {
+        let ordered = matchingSnips(in: listID, query: query)
+        let limited = doneLimit.apply(to: ordered, completionFilter: completionFilter, query: query)
+        guard let editingID = snipEditorDraft?.original.id,
+              ordered.contains(where: { $0.id == editingID }),
+              !limited.contains(where: { $0.id == editingID }) else { return limited }
+        let visibleIDs = Set(limited.map(\.id)).union([editingID])
+        return ordered.filter { visibleIDs.contains($0.id) }
+    }
+
+    private func reconcileDoneLimitSelection() {
+        guard !selectedSnipIDs.isEmpty || selectedSnipID != nil else { return }
+        var retainedIDs = Set(snips.map(\.id))
+        if completionFilter == .all, doneLimit != .unlimited, searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            for list in lists {
+                let matchingIDs = Set(matchingSnips(in: list.id, query: searchText).map(\.id))
+                let visibleIDs = Set(visibleSnips(in: list.id).map(\.id))
+                // Gathering survives other filters; only the Done cap removes matching snips.
+                retainedIDs.subtract(matchingIDs.subtracting(visibleIDs))
+            }
+        }
+        replaceGatheredSnips(with: selectedSnipIDs.intersection(retainedIDs))
+        if let selectedSnipID, !retainedIDs.contains(selectedSnipID) {
+            self.selectedSnipID = nil
+        }
     }
 
     var canReorderVisibleSnips: Bool {
         snipEditorDraft == nil
+            && visibleSnips.count == snips.filter { $0.listID == lastSelectedListID }.count
             && completionFilter == .all
             && originFilter == .all
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1649,7 +1696,7 @@ final class IOSAppModel {
         if let snipEditorDraft, !snips.contains(where: { $0.id == snipEditorDraft.original.id }) {
             finishInlineSnipEdit(snipEditorDraft)
         }
-        replaceGatheredSnips(with: selectedSnipIDs.intersection(snips.map(\.id)))
+        reconcileDoneLimitSelection()
         // The share picker reads this catalog from outside the app process.
         publishShareDestinations?(lists)
     }

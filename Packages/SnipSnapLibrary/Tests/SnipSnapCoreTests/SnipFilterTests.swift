@@ -2,6 +2,65 @@ import XCTest
 @testable import SnipSnapCore
 
 final class SnipFilterTests: XCTestCase {
+    func testOldestFirstKeepsPinsNewestFirstAndUsesDeterministicTies() throws {
+        let older = Snip(id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+                         createdAt: Date(timeIntervalSince1970: 10), content: "Older", origin: .quickEntry)
+        let tie = Snip(id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
+                       createdAt: older.createdAt, content: "Tie", origin: .quickEntry)
+        let newer = Snip(createdAt: Date(timeIntervalSince1970: 20), content: "Newer", origin: .quickEntry)
+        let olderDone = Snip(createdAt: older.createdAt, content: "Older Done", origin: .quickEntry, isDone: true)
+        let newerDone = Snip(createdAt: newer.createdAt, content: "Newer Done", origin: .quickEntry, isDone: true)
+        let olderPin = Snip(createdAt: older.createdAt, content: "Older pin", origin: .quickEntry,
+                            pinnedAt: Date(timeIntervalSince1970: 100))
+        let newerPin = Snip(createdAt: newer.createdAt, content: "Newer pin", origin: .quickEntry,
+                            pinnedAt: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(Snip.sorted([newerDone, newer, tie, olderPin, olderDone, older, newerPin], by: .oldestFirst),
+                       [newerPin, olderPin, older, tie, newer, olderDone, newerDone])
+        for mode in SnipSortMode.allCases {
+            let sorted = Snip.sorted([newerDone, newer, tie, olderPin, olderDone, older, newerPin], by: mode)
+            XCTAssertEqual(Array(sorted.prefix(2)), [newerPin, olderPin])
+            XCTAssertEqual(Set(sorted[2..<5].map(\.id)), [older.id, tie.id, newer.id])
+            XCTAssertEqual(Set(sorted[5...].map(\.id)), [olderDone.id, newerDone.id])
+        }
+        XCTAssertEqual(SnipSortMode.chronological.rawValue, "chronological")
+        let encoded = try JSONEncoder().encode(SnipSortMode.oldestFirst)
+        XCTAssertEqual(try JSONDecoder().decode(SnipSortMode.self, from: encoded), .oldestFirst)
+    }
+
+    func testDoneLimitKeepsNotDoneAndPinnedSnipsInTheirSortedPositions() {
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date(timeIntervalSince1970: 1))
+        let pending = Snip(content: "Not Done", origin: .quickEntry)
+        let done = (1...12).map { Snip(content: "Done \($0)", origin: .agent, isDone: true) }
+        let ordered = [pinned, done[0], pending] + Array(done.dropFirst())
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: ordered), [pinned, done[0], pending] + Array(done[1..<10]))
+    }
+
+    func testDoneLimitCanBeUnlimitedAndSearchFindsEveryMatchingSnip() {
+        let done = (1...12).map { Snip(content: "Matching \($0)", origin: .agent, isDone: true) }
+        XCTAssertEqual(SnipDoneLimit.unlimited.apply(to: done), done)
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: done, query: " Matching "), done)
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: done, query: " \n "), Array(done.prefix(10)))
+    }
+
+    func testDoneLimitOnlyAppliesToAllStatus() {
+        let done = (1...12).map { Snip(content: "Done \($0)", origin: .agent, isDone: true) }
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: done, completionFilter: .all), Array(done.prefix(10)))
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: done, completionFilter: .done), done)
+        XCTAssertEqual(SnipDoneLimit.ten.apply(to: done, completionFilter: .notDone), done)
+    }
+
+    func testDoneLimitDefaultsToTenAndPersistsIncludingUnlimited() throws {
+        let suite = "SnipDoneLimitTests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(SnipDoneLimit.load(from: defaults), .ten)
+        for choice in SnipDoneLimit.allCases {
+            choice.save(to: defaults)
+            let reopened = try XCTUnwrap(UserDefaults(suiteName: suite))
+            XCTAssertEqual(SnipDoneLimit.load(from: reopened), choice)
+        }
+    }
+
     func testHumanFilterIncludesEveryNonAgentOriginRegardlessOfContext() {
         let selection = Snip(content: "Selection", origin: .selection)
         let quickEntry = Snip(content: "Typed", origin: .quickEntry)
