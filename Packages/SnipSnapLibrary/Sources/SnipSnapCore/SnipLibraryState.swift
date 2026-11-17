@@ -424,6 +424,14 @@ package struct SnipLibraryState {
     let snipsByID = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
     let listsByID = Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0) })
     guard expectation.expectedSnips.allSatisfy({ snipsByID[$0.id] == $0 }),
+      expectation.expectedCompletionSnips.allSatisfy({ expected in
+        guard let current = snipsByID[expected.id] else { return false }
+        return current.requestID == expected.requestID
+          && current.content == expected.content
+          && current.attachments == expected.attachments
+          && current.pinnedAt == expected.pinnedAt
+          && current.isDone == expected.isDone
+      }),
       expectation.absentSnipIDs.allSatisfy({ snipsByID[$0] == nil }),
       expectation.expectedLists.allSatisfy({ listsByID[$0.id] == $0 }),
       expectation.absentListIDs.allSatisfy({ listsByID[$0] == nil }),

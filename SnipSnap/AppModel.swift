@@ -1461,7 +1461,7 @@ final class AppModel: ObservableObject {
         do {
             let change = try await session.setDone(
                 ids: eligibleIDs, done: done,
-                expectation: .init(expectedSnips: snips.filter { eligibleIDs.contains($0.id) }),
+                expectation: .init(expectedCompletionSnips: snips.filter { eligibleIDs.contains($0.id) }),
                 sortedBy: sortMode
             )
             guard change.didChange else {

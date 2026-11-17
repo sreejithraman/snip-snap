@@ -191,7 +191,7 @@ public actor SavedSnipsSession {
         }
         let changedIDs = Set(changing.map(\.id))
         let guardedChange = SnipLibraryCommand.guarded(
-            expectation: SnipLibraryExpectation(expectedSnips: changing),
+            expectation: SnipLibraryExpectation(expectedCompletionSnips: changing),
             command: .setDone(ids: changedIDs, done: done)
         )
         let command = expectation.map {
