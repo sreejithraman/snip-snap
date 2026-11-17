@@ -2054,7 +2054,54 @@ extension ICloudSyncModeCoordinatorTests {
     func testFullReenableRemoteDeleteRecoversEditedSnipAndAttachmentInInbox() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let manifestURL = root.appendingPathComponent("activation.json")
+        let stagedPlans = AsyncStream.makeStream(of: (SyncModeTransition, CloudFullReenableApplyPlan).self)
+        let transports = AsyncStream.makeStream(of: Optional<FakeCloudRecordTransport>.self)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: { point in
+                switch point {
+                case .afterCandidateMergeDurability, .afterEnrollmentApproval, .afterFirstSendStarted,
+                    .beforeSendAttemptManifest, .afterFirstSendComplete, .beforePointerSwap, .afterPointerSwap:
+                    do {
+                        let current = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+                            from: Data(contentsOf: manifestURL))
+                        print("[F5 edited-delete] hook=\(point) active=\(current.activeStoreID) "
+                            + "transition=\(String(describing: current.transition?.id)) "
+                            + "phase=\(String(describing: current.transition?.phase))")
+                    } catch {
+                        print("[F5 edited-delete] hook=\(point) activation unavailable: \(error)")
+                    }
+                default: break
+                }
+            },
+            writeHook: { point in
+                guard point == .beforeFullReenablePlanApply else { return }
+                do {
+                    let current = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+                        from: Data(contentsOf: manifestURL))
+                    let transition = try XCTUnwrap(current.transition)
+                    let intent = try XCTUnwrap(transition.mergeIntent)
+                    let candidate = try XCTUnwrap(current.stores.first { $0.id == transition.candidateStoreID })
+                    let planRoot = root.appendingPathComponent(candidate.relativeRoot)
+                        .appendingPathComponent("full-reenable-v1")
+                        .appendingPathComponent(transition.id.uuidString.lowercased())
+                    let staged = try JSONDecoder().decode(CloudFullReenableStagedPlan.self,
+                        from: Data(contentsOf: planRoot.appendingPathComponent("plan.json")))
+                    let restored = try staged.restore(from: planRoot)
+                    XCTAssertNil(restored.acceptedLegacyDigest)
+                    XCTAssertEqual(restored.plan.transitionID, transition.id)
+                    XCTAssertEqual(restored.plan.planDigest, intent.planDigest)
+                    XCTAssertEqual(intent.fullReenablePlanID, transition.id)
+                    XCTAssertEqual(transition.phase, .sourceFrozen)
+                    XCTAssertEqual(current.activeStoreID, transition.sourceStoreID)
+                    XCTAssertNil(transition.sendAttempt)
+                    stagedPlans.continuation.yield((transition, restored.plan))
+                } catch {
+                    XCTFail("Actual pre-apply plan unavailable: \(error)")
+                }
+            }
+        )
         let source = try await persistence.activeLibrary()
         try await add("base", to: source)
         let sourceSnapshot = await source.snapshot(sortedBy: .manual)
@@ -2066,13 +2113,31 @@ extension ICloudSyncModeCoordinatorTests {
             persistence: persistence,
             namespace: namespace,
             textZone: zone,
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+            makeTransport: {
+                let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+                transports.continuation.yield(transport)
+                return transport
+            }
         )
-        _ = try await coordinator.enableOrRetry()
-        _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        let initial = try await coordinator.enableOrRetry()
+        XCTAssertEqual(initial.state, .on)
+        let cloudManifest = await persistence.manifest
+        let off = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(off.state, .off)
+        let offManifest = await persistence.manifest
+        let binding = FailedEnableBinding(namespace.binding)
+        let evidenceFiles = FailedEnableEvidenceFile(root: root)
+        let sourceID = offManifest.activeStoreID
+        XCTAssertNotEqual(sourceID, cloudManifest.activeStoreID)
+        XCTAssertNil(offManifest.transition)
         let local = try await persistence.activeLibrary()
         let localSnapshot = await local.snapshot(sortedBy: .manual)
         let localBase = try XCTUnwrap(localSnapshot.snips.first)
+        XCTAssertEqual(localSnapshot.snips, [base])
+        XCTAssertEqual(localSnapshot.lists, [SnipList.inbox])
+        XCTAssertEqual(base.content, "base")
+        XCTAssertEqual(base.listID, SnipList.inbox.id)
+        XCTAssertTrue(base.attachments.isEmpty)
         let attachmentURL = root.appendingPathComponent("offline.txt")
         let bytes = Data("kept attachment".utf8)
         try bytes.write(to: attachmentURL)
@@ -2089,12 +2154,282 @@ extension ICloudSyncModeCoordinatorTests {
         let recordID = CloudRecordID.snip(base.id, in: zone)
         let storedValue = await server.fullSnapshot(for: recordID)
         let stored = try XCTUnwrap(storedValue)
+        let editedManifest = await persistence.manifest
+        XCTAssertEqual(editedManifest.activeStoreID, sourceID)
+        XCTAssertNil(editedManifest.transition)
+        let editedRevision = editedManifest.stores.first { $0.id == sourceID }?.revision
+        XCTAssertNotNil(editedRevision)
+        let reference = CloudEntityReference(kind: .snip, domainID: base.id)
+        let namespaceKey = namespace.namespaceKey.rawValue
+        let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
+        var edited = base
+        edited.content = "offline edit"
+        edited.updatedAt = Date(timeIntervalSince1970: 20)
+        var attachmentBytes: [UUID: Data] = [:]
+        var dormantPayload: Data?
+        var turnOff: FailedEnableTransfer?
+        do {
+            let store = try XCTUnwrap(offManifest.stores.first { $0.id == sourceID })
+            XCTAssertEqual(store.kind, .localOnly)
+            let url = root.appendingPathComponent(store.relativeRoot).appendingPathComponent("snips.store")
+            let lockURL = url.appendingPathExtension("lock")
+            _ = try XCTUnwrap(FileManager.default.fileExists(atPath: url.path)
+                && FileManager.default.fileExists(atPath: lockURL.path) ? url : nil,
+                "Checked turn-off source or its lock file unavailable")
+            let lock = try SnipStoreFileLock(url: lockURL)
+            defer { withExtendedLifetime(lock) {} }
+            let config = ModelConfiguration("SnipSnapLocal", schema: schema, url: url,
+                allowsSave: false, cloudKitDatabase: .none)
+            let context = SwiftDataSnipLibrary.makeContext(
+                container: try ModelContainer(for: schema, configurations: [config]))
+            let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+            let saved = try XCTUnwrap(state.snips.first { $0.id == base.id })
+            let imported = try XCTUnwrap(saved.attachments.first)
+            XCTAssertEqual(imported.fileName, "offline.txt")
+            XCTAssertEqual(imported.byteCount, Int64(bytes.count))
+            edited.attachments = [imported]
+            attachmentBytes = [imported.id: bytes]
+            XCTAssertEqual(state.snips, [edited])
+            let file = try CloudAttachmentCacheFiles.validatedChild(relativePath: imported.relativePath,
+                root: SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: url))
+            XCTAssertEqual(try Data(contentsOf: file), bytes)
+            let payload = try SwiftDataSnipLibrary.transferMetadata(context: context).opaqueSyncStatePayload
+            dormantPayload = payload
+            let anchor = try XCTUnwrap(CloudDormantAcceptedBaseBundle.decode(payload).entries.first {
+                $0.namespaceKey == namespaceKey && $0.reference == reference
+            })
+            let accepted = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: anchor.payload)
+            XCTAssertEqual(accepted.reference, reference)
+            XCTAssertEqual(accepted.identity, anchor.identity)
+            XCTAssertEqual(accepted.identity.recordName, recordID.name)
+            XCTAssertEqual(accepted.identity.zoneName, zone.name)
+            XCTAssertEqual(accepted.identity.ownerName, zone.ownerName)
+            XCTAssertEqual(accepted.shadowData, stored.shadow.data)
+            XCTAssertEqual(accepted.systemFields, stored.shadow.systemFields)
+            XCTAssertEqual(accepted.dependencyListID, SnipList.inbox.id)
+            let serverBase = try CloudFullRecordCodec.snip(from: stored)
+            XCTAssertEqual(serverBase.text, .value("base"))
+            XCTAssertEqual(serverBase.requestID, .value(base.requestID))
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: accepted.acceptedData), serverBase)
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: accepted.presenceData), serverBase)
+            let frame = try evidenceFiles.read(sourceID)
+            let checked = try XCTUnwrap(frame?.transfers.first { $0.kind == .turnOff && $0.namespace == binding })
+            turnOff = checked
+            XCTAssertEqual(checked.state, .checked)
+            XCTAssertEqual(checked.sourceStoreID, FailedEnableEncoding.uuid(cloudManifest.activeStoreID))
+            XCTAssertEqual(checked.destinationStoreID, FailedEnableEncoding.uuid(sourceID))
+            XCTAssertEqual(checked.dormantDigest, FailedEnableEncoding.digest(payload))
+            let beforeEdit: [FailedEnableImage] = [
+                .snip(try FailedEnableSnipImage(base, attachmentData: [:])), .list(FailedEnableListImage(.inbox)),
+            ]
+            XCTAssertEqual(checked.outputs, beforeEdit.sorted { $0.reference.sortKey < $1.reference.sortKey })
+            XCTAssertFalse(context.hasChanges)
+            try lock.check()
+        } catch {
+            XCTFail("Checked turn-off or edited source unavailable: \(error)")
+        }
         let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
-        _ = try await writer.send(CloudOutboundBatch(operations: [
+        let deleteCount = await server.acceptedDeletionCount()
+        let deletion = try await writer.send(CloudOutboundBatch(operations: [
             .delete(recordID, base: stored.shadow)
         ]))
+        XCTAssertEqual(deletion.items.count, 1)
+        if case .deleted(let id)? = deletion.items.first {
+            XCTAssertEqual(id, recordID)
+        } else {
+            XCTFail("Expected the genuine scoped delete of the original record")
+        }
+        let deletedOriginal = await server.fullSnapshot(for: recordID)
+        let deletesAfter = await server.acceptedDeletionCount()
+        let originalOperationCount = await server.acceptedOperationCount(for: recordID)
+        XCTAssertNil(deletedOriginal)
+        XCTAssertEqual(deletesAfter, deleteCount + 1)
 
+        transports.continuation.yield(nil)
         let result = try await coordinator.enableOrRetry()
+        transports.continuation.finish()
+        stagedPlans.continuation.finish()
+        let current = await persistence.manifest
+        let transition = current.transition
+        var observingRetry = false
+        var events: [FakeCloudTransportEvent] = []
+        for await item in transports.stream {
+            if let transport = item {
+                if observingRetry { events += await transport.events() }
+            } else {
+                observingRetry = true
+            }
+        }
+        let sent = events.compactMap { event -> [CloudRecordID]? in
+            if case .sent(let ids) = event { return ids }
+            return nil
+        }
+        print("[F5 edited-delete] result=\(result.state) source=\(sourceID) active=\(current.activeStoreID) "
+            + "phase=\(String(describing: transition?.phase)) attention=\(String(describing: current.attentionReason)) "
+            + "intent=\(String(describing: transition?.mergeIntent?.id)) attempt=\(transition?.sendAttempt != nil) "
+            + "roots=\(current.stores.map { "\($0.id):\($0.lifecycle)" }) "
+            + "fetch=\(events.contains(.fetched)) sendBatches=\(sent.map { $0.map(\.name) })")
+        let originalAfterRetry = await server.fullSnapshot(for: recordID)
+        let operationsAfterRetry = await server.acceptedOperationCount(for: recordID)
+        XCTAssertNil(originalAfterRetry, "Retry must not recreate the deleted original")
+        XCTAssertEqual(operationsAfterRetry, originalOperationCount)
+        XCTAssertFalse(sent.joined().contains(recordID))
+        var stage: (SyncModeTransition, CloudFullReenableApplyPlan)?
+        for await item in stagedPlans.stream where item.0.sourceStoreID == sourceID {
+            XCTAssertNil(stage)
+            stage = item
+        }
+        print("[F5 edited-delete] staged=\(stage != nil) "
+            + (sent.isEmpty ? "no outbound send" : "actual outbound IDs recorded above"))
+        do {
+            let evidence = try XCTUnwrap(evidenceFiles.read(sourceID), "Retained source evidence unavailable")
+            if let turnOff {
+                XCTAssertTrue(evidence.transfers.contains(turnOff))
+            }
+            if let (attempt, plan) = stage {
+                let freeze = try XCTUnwrap(attempt.freezeToken)
+                let capture = try XCTUnwrap(evidence.namespaces.first { $0.binding == binding }?.captures.last {
+                    $0.transitionID == FailedEnableEncoding.uuid(attempt.id)
+                        && $0.candidateStoreID == FailedEnableEncoding.uuid(attempt.candidateStoreID)
+                })
+                XCTAssertEqual(evidence.sourceStoreID, FailedEnableEncoding.uuid(sourceID))
+                XCTAssertEqual(attempt.namespace, namespace.binding)
+                XCTAssertEqual(plan.namespaceKey, namespaceKey)
+                XCTAssertEqual(freeze.sourceStoreID, sourceID)
+                XCTAssertEqual(freeze.revision, editedRevision)
+                XCTAssertEqual(capture.freeze.id, FailedEnableEncoding.uuid(freeze.id))
+                XCTAssertEqual(capture.freeze.sourceRevision, String(freeze.revision))
+                let member = try XCTUnwrap(capture.records.first { $0.reference == FailedEnableReference(reference) })
+                XCTAssertEqual(member.source.value, .snip(try FailedEnableSnipImage(edited, attachmentData: attachmentBytes)))
+                XCTAssertTrue(member.originalAcceptedExists)
+                XCTAssertEqual(member.preparation.baseKind, .checkedTurnOff)
+                XCTAssertEqual(member.preparation.classification, .deleteRecovery)
+                XCTAssertEqual(member.preparation.value.value?.fields, .absent)
+                XCTAssertEqual(member.preparation.value.value?.presence, [:])
+                XCTAssertNil(member.preparation.fetchedDigest.value)
+                XCTAssertNil(member.observedAccepted.value)
+                XCTAssertEqual(evidence.blobs[FailedEnableEncoding.digest(bytes)], bytes)
+                let derivedID = SnipLibraryTransferPlanner.derivedUUID(transitionID: attempt.id, sourceID: base.id)
+                let request = SnipLibraryTransferPlanner.derivedUUID(transitionID: derivedID, sourceID: base.requestID)
+                XCTAssertNotEqual(derivedID, base.id)
+                XCTAssertNotEqual(request, base.requestID)
+                let recoveredValue = Snip(id: derivedID, requestID: request, createdAt: base.createdAt,
+                    updatedAt: edited.updatedAt, content: "offline edit", origin: base.origin, source: base.source,
+                    listID: SnipList.inbox.id, isDone: base.isDone, pinnedAt: base.pinnedAt,
+                    manualSortKey: base.manualSortKey, attachments: edited.attachments)
+                XCTAssertEqual(plan.snips, [recoveredValue])
+                XCTAssertEqual(plan.attachmentData, attachmentBytes)
+                XCTAssertEqual(plan.result.recoveredSourceSnipIDs, [base.id])
+                XCTAssertFalse(plan.acceptedCAS.contains { $0.accepted.reference == reference })
+                let link = try XCTUnwrap(plan.recoveryInputs.first { $0.kind == .modeRecoveredSnip })
+                let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: link.resultData) as? [String: Any])
+                XCTAssertEqual(payload["sourceID"] as? String, base.id.uuidString)
+                XCTAssertEqual(payload["recoveredID"] as? String, derivedID.uuidString)
+                let transfer = try XCTUnwrap(evidence.transfers.last {
+                    $0.kind == .candidate && $0.namespace == binding && $0.sourceCaptureIDs == [capture.id]
+                })
+                XCTAssertEqual(transfer.sourceStoreID, FailedEnableEncoding.uuid(sourceID))
+                XCTAssertEqual(transfer.destinationStoreID, FailedEnableEncoding.uuid(attempt.candidateStoreID))
+                XCTAssertEqual(transfer.planDigest, FailedEnableEncoding.hex(plan.planDigest))
+                XCTAssertTrue(transfer.outputs.contains(.snip(
+                    try FailedEnableSnipImage(recoveredValue, attachmentData: attachmentBytes))))
+                XCTAssertEqual(transfer.recoveryDescriptors, [try FailedEnableEncoding.json(link)])
+                let recoveredRecordID = CloudRecordID.snip(derivedID, in: zone)
+                let serverRecovery = await server.fullSnapshot(for: recoveredRecordID)
+                if let serverRecovery {
+                    XCTAssertTrue(sent.joined().contains(recoveredRecordID))
+                    XCTAssertTrue(capture.armed)
+                    XCTAssertEqual(transfer.state, .checked)
+                    let accepted = try CloudFullRecordCodec.snip(from: serverRecovery)
+                    XCTAssertEqual(accepted.requestID, .value(request))
+                    XCTAssertEqual(accepted.text, .value("offline edit"))
+                    XCTAssertEqual(accepted.placement, .value(CloudSnipPlacement(
+                        listID: SnipList.inbox.id, orderKey: base.manualSortKey)))
+                } else if sent.isEmpty {
+                    print("[F5 edited-delete] recovery absent on server; no outbound set to attribute withholding to")
+                } else {
+                    print("[F5 edited-delete] outbound attempted, recovered server value absent")
+                }
+                let candidate = try XCTUnwrap(current.stores.first { $0.id == attempt.candidateStoreID },
+                    "No manifest-bound candidate to read after the attempt")
+                let url = root.appendingPathComponent(candidate.relativeRoot).appendingPathComponent("snips.store")
+                let lockURL = url.appendingPathExtension("lock")
+                _ = try XCTUnwrap(FileManager.default.fileExists(atPath: url.path)
+                    && FileManager.default.fileExists(atPath: lockURL.path) ? url : nil,
+                    "Manifest-bound candidate or its lock file unavailable")
+                let lock = try SnipStoreFileLock(url: lockURL)
+                defer { withExtendedLifetime(lock) {} }
+                let config = ModelConfiguration("SnipSnapLocal", schema: schema, url: url,
+                    allowsSave: false, cloudKitDatabase: .none)
+                let context = SwiftDataSnipLibrary.makeContext(
+                    container: try ModelContainer(for: schema, configurations: [config]))
+                let receipt = try SwiftDataCloudFullOperationReceipts.digest(
+                    for: .reenableTransition(attempt.id), namespaceKey: namespaceKey, context: context)
+                let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+                XCTAssertFalse(state.snips.contains { $0.id == base.id }, "Candidate must not recreate the original")
+                let committed = state.snips.first { $0.id == derivedID }
+                let key = "full-recovery-\(link.batchID.uuidString.lowercased())"
+                let row = try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()).first {
+                    $0.namespaceKey == namespaceKey && $0.eventKey == key
+                }
+                print("[F5 edited-delete] candidate=\(candidate.id) transfer=\(transfer.state) armed=\(capture.armed) "
+                    + "receipt=\(receipt != nil) copiedRow=\(committed?.id.uuidString ?? "nil") "
+                    + "modeRow=\(row != nil) published=\(current.activeStoreID == candidate.id)")
+                if let receipt { XCTAssertEqual(receipt, plan.planDigest) }
+                if let row {
+                    let wire = try XCTUnwrap(CloudWirePayloadEnvelope.decode(row.payload))
+                    XCTAssertEqual(wire.format, .fullRecordV1)
+                    XCTAssertEqual(try JSONDecoder().decode(CloudFullRecoveryInput.self, from: wire.payload), link)
+                }
+                if receipt != nil || transfer.state == .checked || committed != nil || row != nil {
+                    XCTAssertEqual(state.snips, [recoveredValue])
+                    XCTAssertNotNil(row)
+                    let owned = try XCTUnwrap(committed?.attachments.first)
+                    let file = try CloudAttachmentCacheFiles.validatedChild(relativePath: owned.relativePath,
+                        root: SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: url))
+                    XCTAssertEqual(try Data(contentsOf: file), bytes)
+                }
+                if current.activeStoreID == candidate.id {
+                    XCTAssertNil(transition)
+                    XCTAssertNotNil(serverRecovery)
+                }
+                XCTAssertFalse(context.hasChanges)
+                try lock.check()
+            } else {
+                print("[F5 edited-delete] pre-apply plan unavailable; no staged/candidate outcome inferred")
+            }
+        } catch {
+            XCTFail("Edited-delete stage or candidate inspection unavailable: \(error)")
+        }
+        if current.activeStoreID == sourceID {
+            do {
+                let store = try XCTUnwrap(current.stores.first { $0.id == sourceID })
+                XCTAssertEqual(store.revision, editedRevision)
+                let url = root.appendingPathComponent(store.relativeRoot).appendingPathComponent("snips.store")
+                let lockURL = url.appendingPathExtension("lock")
+                _ = try XCTUnwrap(FileManager.default.fileExists(atPath: url.path)
+                    && FileManager.default.fileExists(atPath: lockURL.path) ? url : nil,
+                    "Still-active source or its lock file unavailable")
+                let lock = try SnipStoreFileLock(url: lockURL)
+                defer { withExtendedLifetime(lock) {} }
+                let config = ModelConfiguration("SnipSnapLocal", schema: schema, url: url,
+                    allowsSave: false, cloudKitDatabase: .none)
+                let context = SwiftDataSnipLibrary.makeContext(
+                    container: try ModelContainer(for: schema, configurations: [config]))
+                let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+                XCTAssertEqual(state.snips, [edited])
+                let owned = try XCTUnwrap(state.snips.first?.attachments.first)
+                let file = try CloudAttachmentCacheFiles.validatedChild(relativePath: owned.relativePath,
+                    root: SwiftDataSnipLibrary.attachmentRootURL(forStoreURL: url))
+                XCTAssertEqual(try Data(contentsOf: file), bytes)
+                XCTAssertEqual(try SwiftDataSnipLibrary.transferMetadata(context: context).opaqueSyncStatePayload,
+                    try XCTUnwrap(dormantPayload))
+                XCTAssertFalse(context.hasChanges)
+                try lock.check()
+            } catch {
+                XCTFail("Refused retry's active source unavailable: \(error)")
+            }
+        }
         XCTAssertEqual(result.state, .needsAttention)
         let active = try await persistence.activeLibrary()
         let final = await active.snapshot(sortedBy: .manual)
