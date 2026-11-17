@@ -176,9 +176,15 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testRetryDuringASettingsRetryReportsTheCurrentStatus() async throws {
+    func testRetryDuringASettingsRetryReportsBusyWithoutAnAdditionalRetry() async throws {
         let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
-        await model.waitForInitialLoad()
+        let work = ApplicationCLINoRunOwnership()
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "initial model load") else {
+            await work.cleanUp()
+            return
+        }
         let retries = ApplicationCLIRetryCounter()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         // Like the Mac app's retry action, this retry runs only if no explicit sync is running.
@@ -186,24 +192,92 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
             await settings.performExplicitSync { retries.record() }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
-        let gate = ApplicationCLITransitionGate()
-        let settingsRetry = Task { await settings.performExplicitSync { await gate.suspend() } }
-        await gate.waitUntilEntered()
-
-        let receipt: SnipCLIReceipt
-        do {
-            receipt = try await handle(.retrySync, using: handler, model: model)
-        } catch {
-            gate.resume()
-            await settingsRetry.value
-            throw error
+        work.retain(handler)
+        let gate = work.gate()
+        let settingsRetry = work.start { await settings.performExplicitSync { await gate.suspend() } }
+        guard await work.ready(gate.entered, "admitted Settings retry") else {
+            await work.cleanUp()
+            return
         }
-
+        let cliRetry = work.start {
+            do {
+                let receipt = try await self.handle(.retrySync, using: handler, model: model)
+                XCTFail("A declined CLI retry must throw busy, not return a \(receipt.status) receipt.")
+            } catch {
+                XCTAssertEqual(error.localizedDescription, "iCloud sync is busy or unavailable. Check sync status.")
+            }
+        }
+        let completed = await cliRetry.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "The declined CLI retry must finish while Settings still owns admission")
         XCTAssertEqual(retries.count, 0)
-        XCTAssertEqual(receipt.status, .success)
-        XCTAssertEqual(receipt.message, settings.detail)
-        gate.resume()
-        await settingsRetry.value
+        XCTAssertTrue(gate.isHeld)
+        XCTAssertFalse(settingsRetry.finished.isSet, "CLI completion must not finish the admitted Settings retry")
+        gate.release()
+        let settingsFinished = await settingsRetry.finished.wait(for: .seconds(30))
+        XCTAssertTrue(settingsFinished, "The admitted Settings retry must finish after its own gate is released")
+        await work.cleanUp()
+        XCTAssertEqual(retries.count, 0, "Cleanup must not reveal an additional deferred CLI retry")
+    }
+
+    @MainActor
+    func testRetryReportsBusyWhenAnotherRetryWinsAdmissionAfterDispatch() async throws {
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        let work = ApplicationCLINoRunOwnership()
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "post-dispatch model load") else {
+            await work.cleanUp()
+            return
+        }
+        let retries = ApplicationCLIRetryCounter()
+        let winners = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+        let callback = work.gate()
+        let winner = work.gate()
+        let cloud = ApplicationCLICloudEffects {
+            await callback.suspend()
+            await settings.performExplicitSync { retries.record() }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+        work.retain(handler)
+        let request = SnipCLIRequest(action: .extended(.application(.retrySync)), scopeToken: model.cliScopeToken)
+        let cliRetry = work.start {
+            do {
+                let receipt = try await handler.handle(request, action: .retrySync)
+                XCTFail("Losing admission after dispatch must throw busy, not return a \(receipt.status) receipt.")
+            } catch {
+                XCTAssertEqual(error.localizedDescription, "iCloud sync is busy or unavailable. Check sync status.")
+            }
+        }
+        guard await work.ready(callback.entered, "actual CLI retry callback before Core admission") else {
+            await work.cleanUp()
+            return
+        }
+        let settingsRetry = work.start {
+            await settings.performExplicitSync {
+                winners.record()
+                await winner.suspend()
+            }
+        }
+        guard await work.ready(winner.entered, "Settings wins real admission after CLI dispatch") else {
+            await work.cleanUp()
+            return
+        }
+        XCTAssertTrue(callback.isHeld)
+        XCTAssertTrue(winner.isHeld)
+        XCTAssertEqual(winners.count, 1)
+        callback.release()
+        let completed = await cliRetry.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "CLI must report busy without awaiting the admitted Settings retry")
+        XCTAssertEqual(retries.count, 0)
+        XCTAssertEqual(winners.count, 1)
+        XCTAssertTrue(winner.isHeld)
+        XCTAssertFalse(settingsRetry.finished.isSet, "The winning retry must remain pending until its own release")
+        winner.release()
+        let settingsFinished = await settingsRetry.finished.wait(for: .seconds(30))
+        XCTAssertTrue(settingsFinished, "The winning retry must finish after test-owned release")
+        await work.cleanUp()
+        XCTAssertEqual(retries.count, 0, "No CLI retry body may run after the winning retry finishes")
     }
 
     @MainActor
@@ -393,4 +467,148 @@ private final class ApplicationCLICloudEffects: OptionalCloudSyncHandling {
         throw SnipLibraryError.attachmentCopyFailed
     }
     func clearDownloadedFiles() async throws {}
+}
+
+// A timeout ends observation only; it never releases either retry's behavior gate.
+private final class ApplicationCLINoRunSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            return pending
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+
+    private func observe() async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate: Bool? = lock.withLock {
+                    if fired { return true }
+                    if Task.isCancelled { return false }
+                    waiters[id] = continuation
+                    return nil
+                }
+                if let immediate { continuation.resume(returning: immediate) }
+            }
+        } onCancel: {
+            self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+        }
+    }
+
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.observe() }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch {}
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class ApplicationCLINoRunGate: @unchecked Sendable {
+    let entered = ApplicationCLINoRunSignal()
+    private let lock = NSLock()
+    private var released = false
+    private var pending: CheckedContinuation<Void, Never>?
+    var isHeld: Bool { entered.isSet && lock.withLock { !released } }
+
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            let resume = lock.withLock {
+                if released { return true }
+                pending = continuation
+                return false
+            }
+            entered.fire()
+            if resume { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let continuation = lock.withLock {
+            released = true
+            let continuation = pending
+            pending = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+}
+
+@MainActor
+private final class ApplicationCLINoRunTask {
+    let finished: ApplicationCLINoRunSignal
+    let task: Task<Void, Never>
+
+    init(_ operation: @escaping @MainActor () async -> Void) {
+        let completion = ApplicationCLINoRunSignal()
+        finished = completion
+        task = Task {
+            await operation()
+            completion.fire()
+        }
+    }
+}
+
+@MainActor
+private final class ApplicationCLINoRunOwnership {
+    private var gates: [ApplicationCLINoRunGate] = []
+    private var tasks: [ApplicationCLINoRunTask] = []
+    private var resources: [AnyObject] = []
+    private var retainedAfterFailedJoin: ApplicationCLINoRunOwnership?
+
+    func retain(_ resource: AnyObject) { resources.append(resource) }
+
+    func gate() -> ApplicationCLINoRunGate {
+        let gate = ApplicationCLINoRunGate()
+        gates.append(gate)
+        return gate
+    }
+
+    func start(_ operation: @escaping @MainActor () async -> Void) -> ApplicationCLINoRunTask {
+        let task = ApplicationCLINoRunTask(operation)
+        tasks.append(task)
+        return task
+    }
+
+    func ready(_ signal: ApplicationCLINoRunSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "No-run setup/readiness failed: \(stage)")
+        return ready
+    }
+
+    func cleanUp() async {
+        let cleanup = Task { @MainActor [self] in
+            gates.forEach { $0.release() }
+            tasks.forEach { $0.task.cancel() }
+            let deadline = ContinuousClock.now + .seconds(30)
+            var settled = true
+            for operation in tasks {
+                let joined = await operation.finished.wait(for: deadline - ContinuousClock.now)
+                XCTAssertTrue(joined, "No-run cleanup could not join an owned caller")
+                if joined { await operation.task.value } else { settled = false }
+            }
+            guard settled else {
+                retainedAfterFailedJoin = self
+                return
+            }
+            tasks.removeAll()
+            gates.removeAll()
+            resources.removeAll()
+        }
+        await cleanup.value
+    }
 }
