@@ -332,23 +332,24 @@ final class SnipSnapiOSUITests: XCTestCase {
         try requireCompactSelector(in: app)
         createList("Snip Snap", in: app)
         createSnip("Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
-        let probe = app.otherElements["page-layout-Snip Snap"]
-        XCTAssertTrue(probe.waitForExistence(timeout: 5))
-        for index in 1...12 {
+        createList("Later", in: app)
+        let maximumFixtureSnips = 12
+        for addedSnips in 0...maximumFixtureSnips {
+            // Measure saved pages after relaunch; content height can change after fixture entry.
+            app.terminate()
+            app.launch()
+            waitForAppStartup(in: app)
+            revealCompactList(named: "Snip Snap", in: app, scrollLimit: 6)
+            tapVisibleSelectorTab(compactListTab(named: "Snip Snap", in: app), in: app)
+            XCTAssertTrue(app.navigationBars["Snip Snap"].waitForExistence(timeout: 3))
+            let probe = app.otherElements["page-layout-Snip Snap"]
+            XCTAssertTrue(probe.waitForExistence(timeout: 5))
             let sample = try XCTUnwrap(pageLayoutSamples(from: probe).last)
             let contentHeight = try XCTUnwrap(sample["contentHeight"])
             let viewportHeight = try XCTUnwrap(sample["viewportHeight"])
-            if contentHeight > viewportHeight { break }
-            createSnip("Fixture \(index): Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
+            if contentHeight > viewportHeight || addedSnips == maximumFixtureSnips { break }
+            createSnip("Fixture \(addedSnips + 1): Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
         }
-        createList("Later", in: app)
-        // Start with saved pages, rather than the new-list editor's exit animation.
-        app.terminate()
-        app.launch()
-        waitForAppStartup(in: app)
-        revealCompactList(named: "Snip Snap", in: app, scrollLimit: 6)
-        tapVisibleSelectorTab(compactListTab(named: "Snip Snap", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Snip Snap"].waitForExistence(timeout: 3))
         try assertStablePageLayout(in: app, source: "Snip Snap", neighbor: "Later", direction: -1, expectsScrollable: true)
     }
 
