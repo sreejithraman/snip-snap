@@ -104,6 +104,344 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.relaunchEditThenTryAgain)
     }
 
+    func testFrozenImportRefusalPreservesPendingManifestContinuity() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let disk = SameServerFullDisk(root: root, extent: .manifestOnly)
+        let probe = StoreOpenDiagnosticProbe()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            defaultSyncProtocol: .fullRecordV1,
+            crashHook: disk.hit,
+            manifestWriter: disk.writer.write,
+            afterMutationBeforeSave: disk.checkStoreSave,
+            diagnostics: probe.recorder
+        )
+        let managed = try await persistence.activeLibrary()
+        for text in Self.sameServerTexts { try await add(text, to: managed) }
+        let initial = await persistence.manifest
+        let sourceID = initial.activeStoreID
+        let initialSource = try XCTUnwrap(initial.stores.first { $0.id == sourceID })
+        let source = try await persistence.libraryForTransition(storeID: sourceID)
+        let expectedSource = try await source.transferSnapshot(revision: initialSource.revision)
+        let expectedRequests = try await source.archive().seenRequestIDs
+        XCTAssertEqual(expectedSource.snips.map(\.content).sorted(), ["also kept", "kept"])
+        XCTAssertEqual(expectedSource.snips.count, 2)
+        XCTAssertEqual(expectedRequests, Set(expectedSource.snips.map(\.requestID)))
+        let imported = Snip(
+            content: "not imported while setup is frozen", origin: .quickEntry,
+            manualSortKey: try SnipOrderKey.rebalanced(count: 1)[0]
+        )
+        let preview = try await managed.previewImport(
+            SnipLibraryTransferSnapshot(
+                revision: 0, snips: [imported], lists: [.inbox], attachmentData: [:]
+            ),
+            transitionID: UUID()
+        )
+        XCTAssertEqual(preview.addedSnipCount, 1)
+        XCTAssertEqual(preview.source.snips, [imported])
+        XCTAssertNil(initial.transition)
+        let server = FakeCloudServer()
+        disk.armAtPointerSwap()
+        do {
+            _ = try await sameServerCoordinator(on: persistence, server: server).enableOrRetry()
+            XCTFail("Expected the real pointer failure and failed rollback")
+        } catch SameServerFullDisk.Failure.injected {}
+        disk.free()
+
+        let manifestBefore = await persistence.manifest
+        let transition = try XCTUnwrap(manifestBefore.transition)
+        let freeze = try XCTUnwrap(transition.freezeToken)
+        let sourceBefore = try XCTUnwrap(manifestBefore.stores.first { $0.id == sourceID })
+        let frozenSource = try await source.transferSnapshot(revision: sourceBefore.revision)
+        XCTAssertEqual(frozenSource, expectedSource)
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let recordIDs = [CloudRecordID.list(SnipList.inbox.id, in: zone)]
+            + expectedSource.snips.map { CloudRecordID.snip($0.id, in: zone) }
+        var serverBefore: [CloudRecordID: CloudRecordSnapshot] = [:]
+        var acceptedBefore: [CloudRecordID: Int] = [:]
+        for id in recordIDs {
+            let stored = await server.fullSnapshot(for: id)
+            serverBefore[id] = try XCTUnwrap(stored)
+            acceptedBefore[id] = await server.acceptedOperationCount(for: id)
+        }
+        let sentTexts = await server.storedTextValues()
+        XCTAssertEqual(sentTexts, ["also kept", "kept"])
+        let activationURL = root.appendingPathComponent("activation.json")
+        let activationBytesBefore = try Data(contentsOf: activationURL)
+        let activationBefore = try JSONDecoder().decode(
+            SwiftDataSyncModePersistence.Manifest.self, from: activationBytesBefore
+        )
+        let evidenceFiles = FailedEnableEvidenceFile(root: root)
+        let evidenceBefore = try XCTUnwrap(evidenceFiles.read(sourceID))
+        let ticket = try XCTUnwrap(evidenceBefore.continuity.inFlight.value)
+        let postimage = try XCTUnwrap(ticket.manifestPostimageDigest.value)
+        let uncertainBefore = await persistence.failedEnableUncertainSources
+        let owner = await persistence.failedEnableOwnerNonce
+        let queuedBefore = await persistence.queuedWriterCount
+        let activationDigest = await persistence.failedEnableActivationDigest(activationBefore)
+        let group = try XCTUnwrap(evidenceBefore.namespaces.first {
+            $0.binding == FailedEnableBinding(namespace.binding)
+        })
+        let capture = try XCTUnwrap(group.captures.last {
+            $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+        })
+        let factsBefore = "[SM23-F5-REFUSAL] import before sequence=\(evidenceBefore.sequence) "
+            + "continuity=\(evidenceBefore.continuity) uncertain=\(uncertainBefore)"
+        XCTAssertEqual(activationBefore, manifestBefore, factsBefore)
+        XCTAssertEqual(manifestBefore.activeStoreID, sourceID, factsBefore)
+        XCTAssertEqual(transition.sourceStoreID, sourceID, factsBefore)
+        XCTAssertEqual(transition.syncProtocol, .fullRecordV1, factsBefore)
+        XCTAssertEqual(transition.phase, .firstSendComplete, factsBefore)
+        XCTAssertTrue(transition.freezesSource, factsBefore)
+        XCTAssertNil(manifestBefore.writeReservation, factsBefore)
+        XCTAssertEqual(queuedBefore, 0, factsBefore)
+        XCTAssertFalse(uncertainBefore.contains(sourceID), factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.state, .verified, factsBefore)
+        XCTAssertEqual(ticket.kind, .manifest, factsBefore)
+        XCTAssertEqual(ticket.ownerNonce, FailedEnableEncoding.uuid(owner), factsBefore)
+        XCTAssertEqual(ticket.previousActivationDigest, activationDigest, factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.activationDigest, activationDigest, factsBefore)
+        XCTAssertNotEqual(postimage, activationDigest, factsBefore)
+        XCTAssertNil(ticket.reservedRevision.value, factsBefore)
+        XCTAssertEqual(ticket.previousSourceRevision, String(sourceBefore.revision), factsBefore)
+        XCTAssertEqual(ticket.previousSourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.sourceRevision, String(sourceBefore.revision), factsBefore)
+        XCTAssertEqual(freeze.sourceStoreID, sourceID, factsBefore)
+        XCTAssertEqual(capture.freeze.id, FailedEnableEncoding.uuid(freeze.id), factsBefore)
+        XCTAssertEqual(capture.freeze.sourceRevision, String(freeze.revision), factsBefore)
+        XCTAssertEqual(freeze.revision, sourceBefore.revision, factsBefore)
+        XCTAssertEqual(capture.sourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore)
+        XCTAssertTrue(capture.armed, factsBefore)
+        XCTAssertEqual(capture.records.count, 3, factsBefore)
+        XCTAssertTrue(evidenceBefore.transfers.contains {
+            $0.kind == .candidate && $0.state == .checked
+                && $0.sourceCaptureIDs == [capture.id]
+                && $0.destinationStoreID == capture.candidateStoreID
+                && $0.sourceStoreID == FailedEnableEncoding.uuid(sourceID)
+                && $0.namespace == group.binding
+        }, factsBefore)
+        for record in capture.records {
+            XCTAssertNotNil(record.preparation.value.value, factsBefore)
+            XCTAssertNotNil(record.observedAccepted.value, factsBefore)
+            XCTAssertEqual(record.observedAccepted.value?.candidateStoreID, capture.candidateStoreID, factsBefore)
+            switch try XCTUnwrap(record.source.value) {
+            case .snip(let image):
+                let snip = try image.domain
+                XCTAssertEqual(snip, expectedSource.snips.first { $0.id == snip.id }, factsBefore)
+            case .list(let image):
+                let list = try image.domain
+                XCTAssertEqual(list, expectedSource.lists.first { $0.id == list.id }, factsBefore)
+            }
+        }
+        let stableBefore = await persistence.manifest
+        XCTAssertEqual(stableBefore, manifestBefore, factsBefore)
+        print(factsBefore)
+        do {
+            _ = try await managed.applyImport(preview)
+            XCTFail("A frozen setup must refuse the managed import")
+        } catch SnipLibraryError.modeTransitionInProgress {}
+        let manifestAfter = await persistence.manifest
+        let uncertainAfter = await persistence.failedEnableUncertainSources
+        let queuedAfter = await persistence.queuedWriterCount
+        let evidenceAfter = try XCTUnwrap(evidenceFiles.read(sourceID))
+        let factsAfter = factsBefore + " after sequence=\(evidenceAfter.sequence) "
+            + "continuity=\(evidenceAfter.continuity) uncertain=\(uncertainAfter)"
+        XCTAssertEqual(manifestAfter, manifestBefore, factsAfter)
+        XCTAssertNil(manifestAfter.writeReservation, factsAfter)
+        XCTAssertEqual(queuedAfter, 0, factsAfter)
+        XCTAssertEqual(uncertainAfter, uncertainBefore, factsAfter)
+        XCTAssertEqual(evidenceAfter.continuity, evidenceBefore.continuity, factsAfter)
+        XCTAssertEqual(evidenceAfter.namespaces, evidenceBefore.namespaces, factsAfter)
+        XCTAssertEqual(evidenceAfter.transfers, evidenceBefore.transfers, factsAfter)
+        XCTAssertEqual(evidenceAfter.blobs, evidenceBefore.blobs, factsAfter)
+        let activationAfter = try JSONDecoder().decode(
+            SwiftDataSyncModePersistence.Manifest.self, from: Data(contentsOf: activationURL)
+        )
+        let stableAfter = await persistence.manifest
+        XCTAssertEqual(activationAfter, manifestAfter, factsAfter)
+        XCTAssertEqual(stableAfter, manifestAfter, factsAfter)
+        print(factsAfter)
+
+        let afterSource = try await source.transferSnapshot(revision: sourceBefore.revision)
+        let afterRequests = try await source.archive().seenRequestIDs
+        XCTAssertEqual(afterSource, expectedSource)
+        XCTAssertEqual(afterRequests, expectedRequests)
+        XCTAssertFalse(afterRequests.contains(imported.requestID))
+        XCTAssertEqual(afterSource.opaqueSyncStatePayload, expectedSource.opaqueSyncStatePayload)
+        XCTAssertFalse(afterSource.snips.contains { $0.id == imported.id || $0.content == imported.content })
+        let importedRecord = await server.fullSnapshot(for: .snip(imported.id, in: zone))
+        let importedSaves = await server.acceptedOperationCount(for: .snip(imported.id, in: zone))
+        XCTAssertNil(importedRecord)
+        XCTAssertEqual(importedSaves, 0)
+        let finalTexts = await server.storedTextValues()
+        XCTAssertEqual(finalTexts, ["also kept", "kept"])
+        for id in recordIDs {
+            let stored = await server.fullSnapshot(for: id)
+            let accepted = await server.acceptedOperationCount(for: id)
+            XCTAssertEqual(stored, serverBefore[id])
+            XCTAssertEqual(accepted, acceptedBefore[id])
+        }
+    }
+
+    func testCancelledFrozenEditPreservesPendingManifestContinuity() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root, fullDisk: .manifestOnly
+        )
+        stranded.disk.free()
+        let persistence = stranded.persistence
+        let managed = try await persistence.activeLibrary()
+        let manifestBefore = await persistence.manifest
+        let sourceID = manifestBefore.activeStoreID
+        let sourceStore = try XCTUnwrap(manifestBefore.stores.first { $0.id == sourceID })
+        let source = try await persistence.libraryForTransition(storeID: sourceID)
+        let expectedSource = try await source.transferSnapshot(revision: sourceStore.revision)
+        let expectedRequests = try await source.archive().seenRequestIDs
+        XCTAssertEqual(expectedSource.snips.map(\.content).sorted(), ["also kept", "kept"])
+        XCTAssertEqual(expectedSource.snips.count, 2)
+        XCTAssertEqual(expectedRequests, Set(expectedSource.snips.map(\.requestID)))
+        let original = try XCTUnwrap(expectedSource.snips.first { $0.id == stranded.keptSnipID })
+        let cancelledText = "cancelled frozen edit must not be saved"
+        let command = SnipLibraryCommand.update(
+            id: original.id, content: cancelledText, attachmentURLs: nil,
+            expectedUpdatedAt: original.updatedAt, now: original.updatedAt.addingTimeInterval(10)
+        )
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let recordIDs = [CloudRecordID.list(SnipList.inbox.id, in: zone)]
+            + expectedSource.snips.map { CloudRecordID.snip($0.id, in: zone) }
+        var serverBefore: [CloudRecordID: CloudRecordSnapshot] = [:]
+        var acceptedBefore: [CloudRecordID: Int] = [:]
+        for id in recordIDs {
+            let stored = await stranded.server.fullSnapshot(for: id)
+            serverBefore[id] = try XCTUnwrap(stored)
+            acceptedBefore[id] = await stranded.server.acceptedOperationCount(for: id)
+        }
+        let activationURL = root.appendingPathComponent("activation.json")
+        let activationBefore = try JSONDecoder().decode(
+            SwiftDataSyncModePersistence.Manifest.self, from: Data(contentsOf: activationURL)
+        )
+        let evidenceFiles = FailedEnableEvidenceFile(root: root)
+        let evidenceBefore = try XCTUnwrap(evidenceFiles.read(sourceID))
+        let ticket = try XCTUnwrap(evidenceBefore.continuity.inFlight.value)
+        let postimage = try XCTUnwrap(ticket.manifestPostimageDigest.value)
+        let uncertainBefore = await persistence.failedEnableUncertainSources
+        let owner = await persistence.failedEnableOwnerNonce
+        let queuedBefore = await persistence.queuedWriterCount
+        let activationDigest = await persistence.failedEnableActivationDigest(activationBefore)
+        let transition = try XCTUnwrap(manifestBefore.transition)
+        let freeze = try XCTUnwrap(transition.freezeToken)
+        let group = try XCTUnwrap(evidenceBefore.namespaces.first {
+            $0.binding == FailedEnableBinding(namespace.binding)
+        })
+        let capture = try XCTUnwrap(group.captures.last {
+            $0.transitionID == FailedEnableEncoding.uuid(transition.id)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(transition.candidateStoreID)
+        })
+        let modeFailuresBefore = stranded.probe.count(.writeAdmission(.failed, reason: .modeChange))
+        let factsBefore = "[SM23-F5-REFUSAL] cancel before sequence=\(evidenceBefore.sequence) "
+            + "continuity=\(evidenceBefore.continuity) uncertain=\(uncertainBefore)"
+        XCTAssertEqual(activationBefore, manifestBefore, factsBefore)
+        XCTAssertEqual(transition, stranded.transition, factsBefore)
+        XCTAssertEqual(transition.sourceStoreID, sourceID, factsBefore)
+        XCTAssertEqual(transition.syncProtocol, .fullRecordV1, factsBefore)
+        XCTAssertEqual(transition.phase, .firstSendComplete, factsBefore)
+        XCTAssertTrue(transition.freezesSource, factsBefore)
+        XCTAssertNil(manifestBefore.writeReservation, factsBefore)
+        XCTAssertEqual(queuedBefore, 0, factsBefore)
+        XCTAssertFalse(uncertainBefore.contains(sourceID), factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.state, .verified, factsBefore)
+        XCTAssertEqual(ticket.kind, .manifest, factsBefore)
+        XCTAssertEqual(ticket.ownerNonce, FailedEnableEncoding.uuid(owner), factsBefore)
+        XCTAssertEqual(ticket.previousActivationDigest, activationDigest, factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.activationDigest, activationDigest, factsBefore)
+        XCTAssertNotEqual(postimage, activationDigest, factsBefore)
+        XCTAssertNil(ticket.reservedRevision.value, factsBefore)
+        XCTAssertEqual(ticket.previousSourceRevision, String(sourceStore.revision), factsBefore)
+        XCTAssertEqual(ticket.previousSourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore)
+        XCTAssertEqual(evidenceBefore.continuity.sourceRevision, String(sourceStore.revision), factsBefore)
+        XCTAssertEqual(freeze.sourceStoreID, sourceID, factsBefore)
+        XCTAssertEqual(capture.freeze.id, FailedEnableEncoding.uuid(freeze.id), factsBefore)
+        XCTAssertEqual(capture.freeze.sourceRevision, String(freeze.revision), factsBefore)
+        XCTAssertEqual(freeze.revision, sourceStore.revision, factsBefore)
+        XCTAssertEqual(capture.sourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore)
+        XCTAssertTrue(capture.armed, factsBefore)
+        XCTAssertEqual(capture.records.count, 3, factsBefore)
+        XCTAssertTrue(evidenceBefore.transfers.contains {
+            $0.kind == .candidate && $0.state == .checked
+                && $0.sourceCaptureIDs == [capture.id]
+                && $0.destinationStoreID == capture.candidateStoreID
+                && $0.sourceStoreID == FailedEnableEncoding.uuid(sourceID)
+                && $0.namespace == group.binding
+        }, factsBefore)
+        for record in capture.records {
+            XCTAssertNotNil(record.preparation.value.value, factsBefore)
+            XCTAssertNotNil(record.observedAccepted.value, factsBefore)
+            XCTAssertEqual(record.observedAccepted.value?.candidateStoreID, capture.candidateStoreID, factsBefore)
+            switch try XCTUnwrap(record.source.value) {
+            case .snip(let image):
+                let snip = try image.domain
+                XCTAssertEqual(snip, expectedSource.snips.first { $0.id == snip.id }, factsBefore)
+            case .list(let image):
+                let list = try image.domain
+                XCTAssertEqual(list, expectedSource.lists.first { $0.id == list.id }, factsBefore)
+            }
+        }
+        let stableBefore = await persistence.manifest
+        XCTAssertEqual(stableBefore, manifestBefore, factsBefore)
+        print(factsBefore)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await managed.perform(command, sortedBy: .manual)
+        }
+        do {
+            _ = try await cancelled.value
+            XCTFail("A self-cancelled frozen edit must throw CancellationError")
+        } catch is CancellationError {}
+        let manifestAfter = await persistence.manifest
+        let uncertainAfter = await persistence.failedEnableUncertainSources
+        let queuedAfter = await persistence.queuedWriterCount
+        let evidenceAfter = try XCTUnwrap(evidenceFiles.read(sourceID))
+        let modeFailuresAfter = stranded.probe.count(.writeAdmission(.failed, reason: .modeChange))
+        let factsAfter = factsBefore + " after sequence=\(evidenceAfter.sequence) "
+            + "continuity=\(evidenceAfter.continuity) uncertain=\(uncertainAfter)"
+        XCTAssertEqual(manifestAfter, manifestBefore, factsAfter)
+        XCTAssertNil(manifestAfter.writeReservation, factsAfter)
+        XCTAssertEqual(queuedAfter, 0, factsAfter)
+        XCTAssertEqual(modeFailuresAfter - modeFailuresBefore, 0, factsAfter)
+        XCTAssertEqual(uncertainAfter, uncertainBefore, factsAfter)
+        XCTAssertEqual(evidenceAfter.continuity, evidenceBefore.continuity, factsAfter)
+        XCTAssertEqual(evidenceAfter.namespaces, evidenceBefore.namespaces, factsAfter)
+        XCTAssertEqual(evidenceAfter.transfers, evidenceBefore.transfers, factsAfter)
+        XCTAssertEqual(evidenceAfter.blobs, evidenceBefore.blobs, factsAfter)
+        let activationAfter = try JSONDecoder().decode(
+            SwiftDataSyncModePersistence.Manifest.self, from: Data(contentsOf: activationURL)
+        )
+        let stableAfter = await persistence.manifest
+        XCTAssertEqual(activationAfter, manifestAfter, factsAfter)
+        XCTAssertEqual(stableAfter, manifestAfter, factsAfter)
+        print(factsAfter)
+
+        let afterSource = try await source.transferSnapshot(revision: sourceStore.revision)
+        let afterRequests = try await source.archive().seenRequestIDs
+        XCTAssertEqual(afterSource, expectedSource)
+        XCTAssertEqual(afterRequests, expectedRequests)
+        XCTAssertEqual(afterSource.opaqueSyncStatePayload, expectedSource.opaqueSyncStatePayload)
+        XCTAssertFalse(afterSource.snips.contains { $0.content == cancelledText })
+        let finalTexts = await stranded.server.storedTextValues()
+        XCTAssertEqual(finalTexts, ["also kept", "kept"])
+        for id in recordIDs {
+            let stored = await stranded.server.fullSnapshot(for: id)
+            let accepted = await stranded.server.acceptedOperationCount(for: id)
+            XCTAssertEqual(stored, serverBefore[id])
+            XCTAssertEqual(accepted, acceptedBefore[id])
+        }
+    }
+
     // Cancel setup only aborts, so the bases a turn-off kept stay the common ancestor, and the
     // next merge keeps both devices' changes. Writing the aborted re-enable's sent records over
     // them would silently revert the other device's change (SM23-F4 review, F1).
