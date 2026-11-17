@@ -758,6 +758,31 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       sourceLibrary: source
     )
     let model = services.syncedContentSettings
+    let session = SavedSnipsSession(library: source)
+    model.setCheckedEnableCompletionAction { [weak model] target, start in
+      guard let model else { throw SnipLibraryReadPublicationError.revoked }
+      let application = try await session.prepareLibraryApplication(
+        target.library, recoveryScope: target.recoveryScope, replacing: true, sortedBy: .manual)
+      XCTAssertEqual(application.read.source, target.source)
+      guard application.read.source == target.source,
+        let publication = application.read.publication,
+        let enabled = model.prepareEnabledCurrentState(read: application.read, for: start)
+      else { throw SnipLibraryReadPublicationError.revoked }
+      do {
+        let closing = try publication.beginApplication()
+        defer { closing.finish() }
+        try application.install(within: closing)
+        guard model.installPreparedCurrentState(enabled, within: closing) else {
+          throw SnipLibraryReadPublicationError.revoked
+        }
+      }
+      model.notifyInstalledCurrentState(enabled)
+      await application.finishRetiredActions()
+      model.endSyncAction(start)
+
+      let installed = try await session.checkedRead(sortedBy: .manual)
+      XCTAssertEqual(installed.source, target.source)
+    }
 
     await model.enableICloudSync()
 

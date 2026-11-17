@@ -225,6 +225,8 @@ public final class SnipCLIAppLifecycle {
     id: UUID, task: Task<ReadinessCompletion, Never>, target: SnipLibraryApplicationTarget? = nil
   ) async throws -> String {
     try Task.checkCancellation()
+    // Termination can drain the waiters while this caller suspends the active scope.
+    guard !isTerminated else { throw CancellationError() }
     guard case .running(id, _, _) = readinessCheck else { return try await task.value.scope(for: target) }
     let waiterID = UUID()
     let (stream, continuation) = AsyncThrowingStream<String, any Error>.makeStream()

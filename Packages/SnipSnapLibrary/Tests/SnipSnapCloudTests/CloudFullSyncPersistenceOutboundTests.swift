@@ -991,7 +991,7 @@ extension CloudFullSyncPersistenceTests {
       origin: .quickEntry, source: nil, listID: SnipList.inboxID, attachmentURLs: [],
       requestID: UUID(), now: .distantPast), sortedBy: .manual)
     let snipID = try XCTUnwrap(added.snapshot.snips.first?.id)
-    try await fixture.store.approveEnrollment(references: [CloudEntityReference(kind: .snip, domainID: snipID)])
+    try await fixture.store.approveModeMerge(snipIDs: [snipID])
 
     let current = try await fixture.coordinator.checkedCurrentCheckpoint()
 
@@ -1004,12 +1004,17 @@ extension CloudFullSyncPersistenceTests {
   }
 
   func testCurrentCheckpointIncludesCleanupFailureWhenAttachmentStatesAreEmpty() async throws {
-    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
+    let base = makeNamespace()
+    let dataZone = try XCTUnwrap(base.zones.first)
+    let payloadZone = CloudZoneID(name: "payload", ownerName: dataZone.ownerName)
+    let namespace = CloudSyncNamespace(cloudScope: base.cloudScope, accountLineage: base.accountLineage,
+      generation: base.generation, zones: [dataZone, payloadZone])
+    let fixture = try await CurrentCheckpointFixture.make(namespace: namespace, dataZone: dataZone, payloadZone: payloadZone)
     let attachmentID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     let metadataIdentity = CloudTextStorageIdentity(zoneName: fixture.zone.name,
       ownerName: fixture.zone.ownerName, recordName: "a-11111111-1111-1111-1111-111111111111")
-    let payloadIdentity = CloudTextStorageIdentity(zoneName: fixture.zone.name,
-      ownerName: fixture.zone.ownerName, recordName: "p-original-cleanup")
+    let payloadIdentity = CloudTextStorageIdentity(zoneName: payloadZone.name,
+      ownerName: payloadZone.ownerName, recordName: "p-original-cleanup")
     try await fixture.library.commitCloudAttachmentTransitions(namespaceKey: fixture.namespace.namespaceKey,
       transitions: [.remoteMetadataAccepted(metadata: CloudAttachmentMetadataValue(
         attachmentID: attachmentID, snipID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
@@ -1020,11 +1025,13 @@ extension CloudFullSyncPersistenceTests {
     let pending = try await fixture.store.pendingChanges()
     let cleanupID = CloudAttachmentRecordCodec.recordID(payloadIdentity)
     XCTAssertTrue(pending.operations.contains { $0.id == cleanupID })
-    let failed = CloudSentBatch(id: UUID(), items: [.failed(cleanupID, .quotaExceeded)], engineState: nil)
-    try await fixture.store.stage(.sent(failed), outbound: pending)
+    let cleanup = try XCTUnwrap(pending.operations.first { $0.id == cleanupID })
+    let engineState = try await fixture.store.loadEngineState()
+    let failed = CloudSentBatch(id: UUID(), items: [.failed(cleanup.id, .quotaExceeded)], engineState: engineState)
+    try await fixture.store.stage(.sent(failed), outbound: CloudOutboundBatch(operations: [cleanup]))
     try await fixture.store.applyStaged(failed.id)
     let transfer = CloudAttachmentTransferCoordinator(library: fixture.library, namespace: fixture.namespace,
-      payloadZone: fixture.zone, transport: fixture.transport, maximumCacheBytes: 0)
+      payloadZone: payloadZone, transport: fixture.transport, maximumCacheBytes: 0)
     let states = try await transfer.transferStates()
     XCTAssertTrue(states.isEmpty)
     let stored = try await fixture.library.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
@@ -1076,16 +1083,20 @@ private struct CurrentCheckpointFixture {
   let transport: FakeCloudRecordTransport
   let coordinator: CloudFullSyncCoordinator
 
-  static func make(namespace: CloudSyncNamespace, finishInitialFetch: Bool = true) async throws -> Self {
+  static func make(
+    namespace: CloudSyncNamespace, finishInitialFetch: Bool = true,
+    dataZone: CloudZoneID? = nil, payloadZone: CloudZoneID? = nil
+  ) async throws -> Self {
     let root = currentCheckpointRoot()
-    let zone = try XCTUnwrap(namespace.zones.first)
+    let zone = try XCTUnwrap(dataZone ?? namespace.zones.first)
     let persistence = try SwiftDataSyncModePersistence(rootURL: root)
     try await persistence.activateEmptyCollection(namespace: namespace.binding)
     let active = try await persistence.snapshot().activeStore
     let managed = try await persistence.activeLibrary()
     let library = try await persistence.libraryForTransition(storeID: active.id)
     let lease = try await persistence.activeCloudMutationLease(storeID: active.id)
-    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone, mutationLease: lease)
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone,
+      payloadZone: payloadZone, mutationLease: lease)
     try await store.approveEnrollment(references: [CloudEntityReference(kind: .list, domainID: SnipList.inboxID)])
     let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
@@ -1107,7 +1118,7 @@ extension CloudFullSyncPersistenceTests {
     let added = try await fixture.managed.perform(.add(content: "Same content and file URL", origin: .quickEntry,
       source: nil, listID: SnipList.inboxID, attachmentURLs: [sourceFile], requestID: UUID(), now: .distantPast), sortedBy: .manual)
     let id = try XCTUnwrap(added.snapshot.snips.first?.id)
-    try await fixture.store.approveEnrollment(references: [.init(kind: .snip, domainID: id)])
+    try await fixture.store.approveModeMerge(snipIDs: [id])
     _ = try await fixture.coordinator.sendPendingUntilSettled()
     let scope = SnipRecoveryScope(fixture.namespace.namespaceKey.rawValue)
     let session = SavedSnipsSession(library: fixture.managed, recoveryScope: scope)
@@ -1145,7 +1156,7 @@ extension CloudFullSyncPersistenceTests {
     let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
     let current = Snip(id: UUID(uuidString: "11111111-AAAA-BBBB-CCCC-111111111111")!, content: "Current durable value", origin: .quickEntry)
     _ = try await fixture.managed.perform(.restore(snips: [current]), sortedBy: .manual)
-    try await fixture.store.approveEnrollment(references: [.init(kind: .snip, domainID: current.id)])
+    try await fixture.store.approveModeMerge(snipIDs: [current.id])
     _ = try await fixture.coordinator.sendPendingUntilSettled()
     let alternate = Snip(id: UUID(uuidString: "22222222-AAAA-BBBB-CCCC-222222222222")!, content: "Recovered alternate", origin: .quickEntry)
     let recovered = RecoveredSnip(id: alternate.id, currentSnipID: current.id, recovered: alternate, conflictingFields: [.text])
