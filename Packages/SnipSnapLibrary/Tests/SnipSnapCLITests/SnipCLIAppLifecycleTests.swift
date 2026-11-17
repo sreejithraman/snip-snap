@@ -383,8 +383,12 @@ extension SnipCLIAppLifecycleTests {
       var startupError: (any Error)?
       let startup = work.start {
         do {
-          try await lifecycle.start(reconcile: { await gate.pause(); return "must-not-publish" },
-                                    scheduleSync: { scheduled = true })
+          try await lifecycle.start(reconcile: {
+            // The reconciliation effect stays held even when its waiting worker is cancelled.
+            let effect = Task { await gate.pause() }
+            await effect.value
+            return "must-not-publish"
+          }, scheduleSync: { scheduled = true })
         } catch { startupError = error }
       }
       guard await work.ready(gate.entered, "held required reconciliation") else { return }

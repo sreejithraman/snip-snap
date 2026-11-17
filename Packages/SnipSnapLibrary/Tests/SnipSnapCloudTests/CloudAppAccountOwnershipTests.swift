@@ -973,12 +973,24 @@ extension CloudAppAccountOwnershipTests {
     let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
     let prepared = try XCTUnwrap(settings.prepareCurrentState(current, for: start))
     let changes = Mutex(0)
+    let stopInProgress = Mutex(false)
     withObservationTracking {
       _ = settings.state
       _ = settings.detail
       _ = settings.canSyncNow
     } onChange: {
-      changes.withLock { $0 += 1 }
+      let entered = stopInProgress.withLock { active in
+        guard !active else { return false }
+        active = true
+        return true
+      }
+      guard entered else { return }
+      defer { stopInProgress.withLock { $0 = false } }
+      let shouldStop = changes.withLock { count in
+        count += 1
+        return count == 1
+      }
+      guard shouldStop else { return }
       MainActor.assumeIsolated { settings.recordSyncStopped(.iCloudAccountChanged) }
     }
 
@@ -1432,22 +1444,37 @@ extension CloudAppAccountOwnershipTests {
 extension CloudAppAccountOwnershipTests {
   @MainActor
   func testEnableTargetDoesNotTurnActualModeAttentionIntoSuccess() async throws {
-    let fixture = try await CheckedOwnerReadFixture.make()
-    let original = try await fixture.persistence.snapshot().activeStore
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("EnableTargetAttention-\(UUID())")
+    NSLog("EnableTargetAttention retained store root: %@", root.path)
+    let source = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("source/snips.store"))
+    let syncRoot = root.appendingPathComponent("mode")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot)
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let server = FakeCloudServer()
+    let lifecycle = SnipSnapICloudSyncLifecycle(rootURL: syncRoot, sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence), cloudScope: "private", accountLineage: "account-a",
+      accountStateSource: OwnerAccountSource(), ownerName: "owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
+      makeDescriptor: { descriptor })
+    let bootstrap = try await lifecycle.enableICloudSync()
+    XCTAssertEqual(bootstrap, .enabled)
+
+    let original = try await persistence.snapshot().activeStore
     let originalNamespace = try XCTUnwrap(original.namespace)
-    let initial = try await fixture.lifecycle.enableICloudSyncWithTarget()
+    let initial = try await lifecycle.enableICloudSyncWithTarget()
     XCTAssertEqual(initial.outcome, .enabled)
     XCTAssertEqual(initial.target?.application.source.storeID, original.id)
     XCTAssertEqual(initial.target?.namespace, originalNamespace)
-    try await fixture.persistence.recordAttention(.terminalFetchFailure)
+    try await persistence.recordAttention(.terminalFetchFailure)
 
     do {
-      _ = try await fixture.lifecycle.enableICloudSyncWithTarget()
+      _ = try await lifecycle.enableICloudSyncWithTarget()
       XCTFail("An actual original target cannot suppress a live needs-attention result")
     } catch CloudCollectionError.syncNeedsAttention {}
 
-    XCTAssertTrue(PendingICloudSyncEnable.needsAttention(at: fixture.root))
-    let after = try await fixture.persistence.snapshot()
+    XCTAssertTrue(PendingICloudSyncEnable.needsAttention(at: syncRoot))
+    let after = try await persistence.snapshot()
     XCTAssertEqual(after.activeStore.id, original.id)
     XCTAssertEqual(after.activeStore.namespace, originalNamespace)
     XCTAssertEqual(after.attentionReason, .terminalFetchFailure)
