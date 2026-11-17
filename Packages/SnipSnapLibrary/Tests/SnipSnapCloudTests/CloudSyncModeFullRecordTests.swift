@@ -2025,8 +2025,14 @@ extension ICloudSyncModeCoordinatorTests {
             }
 
             let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+            let retry = ICloudSyncModeCoordinator(
+                persistence: reopened,
+                namespace: namespace,
+                textZone: zone,
+                makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+            )
             do {
-                try await reopened.reconcileFullReenableIntent()
+                _ = try await retry.enableOrRetry()
                 XCTFail("Expected staged re-enable recovery failure")
             } catch {
                 if failure == "stale-cas" {
