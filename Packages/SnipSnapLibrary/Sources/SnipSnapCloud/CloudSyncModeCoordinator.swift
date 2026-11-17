@@ -433,12 +433,19 @@ package actor ICloudSyncModeCoordinator {
 
     @discardableResult
     package func enableOrRetry() async throws -> ICloudSyncModeStatus {
+        try await enableOrRetry(returningTarget: ()).status
+    }
+
+    package func enableOrRetry(returningTarget: Void) async throws -> (
+        status: ICloudSyncModeStatus, target: (storeID: UUID, namespace: ICloudSyncNamespaceBinding)?
+    ) {
         try begin(.enable)
         defer { end() }
         let initial = try await persistence.snapshot()
         if initial.activeStore.kind == .iCloudSync, initial.transition == nil {
             try await persistence.requireActiveNamespace(namespace.binding)
-            return try await statusUnchecked()
+            let target = initial.activeStore.namespace.map { (storeID: initial.activeStore.id, namespace: $0) }
+            return (try await statusUnchecked(), target)
         }
         if initial.transition == nil, payloadZone != nil {
             let localLibrary = try await persistence.activeLibrary()
@@ -456,6 +463,10 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
+        let originalTransitionID = transition.id
+        let originalTarget = transition.namespace.map {
+            (storeID: transition.candidateStoreID, namespace: $0)
+        }
         let bridge = try await adapter(storeID: transition.candidateStoreID)
 
         if transition.phase == .candidateReady {
@@ -475,35 +486,35 @@ package actor ICloudSyncModeCoordinator {
                 }
             } catch {
                 if error is ICloudAccountGateError {
-                    return try await statusUnchecked(
+                    return (try await statusUnchecked(
                         accountState: await accountStateSource.currentAccountState()
-                    )
+                    ), nil)
                 }
                 if isRetryableConnectivity(error) {
-                    return try await statusUnchecked(
+                    return (try await statusUnchecked(
                         syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
-                    )
+                    ), nil)
                 }
                 try await persistence.recordAttention(.terminalFetchFailure)
                 if error is CloudSyncIssueError { throw error }
-                return try await statusUnchecked()
+                return (try await statusUnchecked(), nil)
             }
             let fetchIssue = await bridge.takeSyncIssue()
             let evidence = try await bridge.enrollmentEvidence()
             if !evidence.retryableEventKeys.isEmpty {
                 try await bridge.clearRetryableEvents(evidence.retryableEventKeys)
-                return try await statusUnchecked(
+                return (try await statusUnchecked(
                     syncIssue: fetchIssue ?? .someChangesPending
-                )
+                ), nil)
             }
             if let fetchIssue {
-                return try await statusUnchecked(syncIssue: fetchIssue)
+                return (try await statusUnchecked(syncIssue: fetchIssue), nil)
             }
             if evidence.needsAttention {
                 try await persistence.recordAttention(.enrollmentBlocked)
-                return try await statusUnchecked()
+                return (try await statusUnchecked(), nil)
             }
-            guard evidence.phase != .notEnrolled else { return try await statusUnchecked() }
+            guard evidence.phase != .notEnrolled else { return (try await statusUnchecked(), nil) }
             try await persistence.recordPreparationComplete()
             transition = try await currentTransition()
         }
@@ -512,7 +523,7 @@ package actor ICloudSyncModeCoordinator {
             if transition.phase == .remoteFetched {
                 guard try await bridge.canPrepareModeMerge() else {
                     try await persistence.retryRemoteFetch()
-                    return try await statusUnchecked()
+                    return (try await statusUnchecked(), nil)
                 }
                 let token = try await persistence.freezeSource()
                 let source = try await persistence.finalSnapshot(using: token)
@@ -577,18 +588,20 @@ package actor ICloudSyncModeCoordinator {
             let retryable = isRetryableConnectivity(error)
             await restoreSourceAfterPreSwapFailure(error, retryable: retryable)
             if retryable {
-                return try await statusUnchecked(
+                return (try await statusUnchecked(
                     syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
-                )
+                ), nil)
             }
             throw error
         }
 
         if transition.phase == .pointerSwapped {
+            let target = transition.id == originalTransitionID ? originalTarget : nil
             try await persistence.finishTransition()
             try? await persistence.cleanupRetiredStores()
+            return (try await statusUnchecked(), target)
         }
-        return try await statusUnchecked()
+        return (try await statusUnchecked(), nil)
     }
 
     @discardableResult

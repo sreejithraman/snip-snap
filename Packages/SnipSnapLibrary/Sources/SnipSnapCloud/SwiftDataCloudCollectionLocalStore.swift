@@ -133,19 +133,24 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
   }
 
   package func state() async throws -> CloudCollectionLocalState {
+    try await stateWithTarget().state
+  }
+
+  package func stateWithTarget() async throws -> CloudCollectionStateRead {
     let unfinishedReset = bookkeeping.history.encryptedDataReset
-    if unfinishedReset != nil {
-      try await markPurged()
-    }
+    var resetTarget: SnipSnapCloudApplicationTarget?
+    if unfinishedReset != nil { resetTarget = try await markPurgedWithTarget() }
     let snapshot = try await persistence.snapshot()
     let namespace = snapshot.activeStore.namespace.map(Self.namespace)
-    return CloudCollectionLocalState(
+    let state = CloudCollectionLocalState(
       hasSyncedBefore: bookkeeping.history.hasSynced || namespace != nil,
       activeNamespace: namespace,
       cleanupZones: bookkeeping.cleanupZones,
       deletionState: bookkeeping.deletion,
       encryptedDataReset: unfinishedReset
     )
+    return CloudCollectionStateRead(state: state, target: resetTarget
+      ?? SnipSnapCloudApplicationTarget(persistence: persistence, store: snapshot.activeStore))
   }
 
   package func stageCleanup(_ zones: Set<CloudZoneID>) throws {
@@ -159,24 +164,38 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
   }
 
   package func adopt(_ namespace: CloudSyncNamespace) async throws {
+    _ = try await adoptWithTarget(namespace)
+  }
+
+  package func adoptWithTarget(_ namespace: CloudSyncNamespace) async throws -> SnipSnapCloudApplicationTarget? {
     try update { $0.recordAdoption() }
-    try await persistence.activateEmptyCollection(namespace: namespace.binding)
+    let selected = try await persistence.activateEmptyCollection(namespace: namespace.binding, returningTarget: ())
+    return SnipSnapCloudApplicationTarget(persistence: persistence, store: selected)
   }
 
   package func markPurged() async throws {
+    _ = try await markPurgedWithTarget()
+  }
+
+  package func markPurgedWithTarget() async throws -> SnipSnapCloudApplicationTarget? {
     if let recoveryStoreID = bookkeeping.history.encryptedDataReset?.recoveryStoreID {
       try await persistence.discardInactiveCloudCollection(storeID: recoveryStoreID)
     }
-    try await persistence.discardActiveCloudCollection()
+    let selected = try await persistence.discardActiveCloudCollection(returningTarget: ())
     try update { $0.recordPurge() }
+    return selected.map { SnipSnapCloudApplicationTarget(persistence: persistence, store: $0) }
   }
 
   package func markPurged(ifMatching context: CloudRecordWorkContext) async throws -> UUID? {
-    guard let replacementID = try await persistence.discardActiveCloudCollection(
-      storeID: context.storeID, namespace: context.binding
+    try await markPurgedWithTarget(ifMatching: context)?.application.source.storeID
+  }
+
+  package func markPurgedWithTarget(ifMatching context: CloudRecordWorkContext) async throws -> SnipSnapCloudApplicationTarget? {
+    guard let selected = try await persistence.discardActiveCloudCollection(
+      storeID: context.storeID, namespace: context.binding, returningTarget: ()
     ) else { return nil }
     try update { $0.recordPurge(of: context.collection.namespace) }
-    return replacementID
+    return SnipSnapCloudApplicationTarget(persistence: persistence, store: selected)
   }
 
   package func markDeletionPending() throws {

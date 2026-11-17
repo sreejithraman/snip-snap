@@ -68,6 +68,63 @@ final class ComposerDraftStore {
         attachmentsByList = attachmentsByScope.removeValue(forKey: newScope) ?? [:]
     }
 
+    struct PreparedScope {
+        fileprivate let previousScope: String
+        fileprivate let previousText: [String: String]
+        fileprivate let previousAttachments: [UUID: [URL]]
+        fileprivate let previousScopes: [String: [UUID: [URL]]]
+        fileprivate let scope: String
+        fileprivate let key: String
+        fileprivate let text: [String: String]
+        fileprivate let attachments: [UUID: [URL]]
+    }
+
+    struct RetiredScopeWrite {
+        fileprivate let key: String
+        fileprivate let text: [String: String]
+        fileprivate let pending: Task<Void, Never>?
+    }
+
+    func prepareScope(_ newScope: String) -> PreparedScope {
+        let key = Self.scopedTextKey(baseTextDefaultsKey, scope: newScope)
+        return PreparedScope(previousScope: scope, previousText: textByList,
+            previousAttachments: attachmentsByList, previousScopes: attachmentsByScope,
+            scope: newScope, key: key,
+            text: newScope == scope ? textByList : defaults.dictionary(forKey: key) as? [String: String] ?? [:],
+            attachments: newScope == scope ? attachmentsByList : attachmentsByScope[newScope] ?? [:])
+    }
+
+    func validatePreparedScope(_ prepared: PreparedScope) throws {
+        guard scope == prepared.previousScope, textByList == prepared.previousText,
+              attachmentsByList == prepared.previousAttachments,
+              attachmentsByScope == prepared.previousScopes else { throw SnipLibraryError.importChanged }
+    }
+
+    func installPreparedScope(_ prepared: PreparedScope) throws -> RetiredScopeWrite? {
+        try validatePreparedScope(prepared)
+        return installValidatedScope(prepared)
+    }
+
+    /// MainActor state must not change between validation and this callback-free assignment.
+    func installValidatedScope(_ prepared: PreparedScope) -> RetiredScopeWrite? {
+        guard prepared.scope != scope else { return nil }
+        let write = RetiredScopeWrite(key: textDefaultsKey, text: textByList, pending: textWriteTask)
+        textWriteTask = nil
+        attachmentsByScope[scope] = attachmentsByList
+        scope = prepared.scope
+        textDefaultsKey = prepared.key
+        textByList = prepared.text
+        attachmentsByList = prepared.attachments
+        attachmentsByScope.removeValue(forKey: scope)
+        return write
+    }
+
+    func finishScopeWrite(_ write: RetiredScopeWrite?) {
+        guard let write else { return }
+        write.pending?.cancel()
+        defaults.set(write.text, forKey: write.key)
+    }
+
     deinit {
         textWriteTask?.cancel()
         if let temporaryRootDirectory {

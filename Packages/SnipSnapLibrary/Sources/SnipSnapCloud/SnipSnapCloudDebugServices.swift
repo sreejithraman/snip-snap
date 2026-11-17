@@ -49,26 +49,40 @@ actor SimulatedCloudCollectionReset {
   }
 
   func synchronize() async throws -> SnipSnapCloudSyncResult {
+    try await synchronizeWithTarget().result
+  }
+
+  func synchronizeWithTarget() async throws -> SnipSnapCloudSyncDelivery {
     let coordinator = try await prepare()
-    if keepsRemovalPending {
-      await transport.failNextZoneDelete()
+    if keepsRemovalPending { await transport.failNextZoneDelete() }
+    let delivery = try await coordinator.synchronizeWithTarget()
+    if delivery.status == .purged {
+      let purged = try await local?.markPurgedWithTarget()
+      return SnipSnapCloudSyncDelivery(result: .iCloudDataReset, target: purged ?? delivery.target)
     }
-    let status = try await coordinator.synchronize()
-    if status == .purged {
-      try await local?.markPurged()
-      return .iCloudDataReset
-    }
-    return syncResult(for: status)
+    return SnipSnapCloudSyncDelivery(result: syncResult(for: delivery.status), target: delivery.target)
   }
 
   func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
-    keepsRemovalPending = false
-    return try await synchronize()
+    try await retrySynchronizationWithTarget().result
   }
 
-  func enableSync() async throws {
+  func retrySynchronizationWithTarget() async throws -> SnipSnapCloudSyncDelivery {
+    keepsRemovalPending = false
+    return try await synchronizeWithTarget()
+  }
+
+  func enableSync() async throws { _ = try await enableSyncWithTarget() }
+
+  func enableSyncWithTarget() async throws -> SnipSnapCloudEnableDelivery {
     let coordinator = try await prepare()
-    _ = try await coordinator.enableSync()
+    let delivery = try await coordinator.enableSyncWithTarget()
+    return SnipSnapCloudEnableDelivery(outcome: .enabled, target: delivery.target)
+  }
+
+  func currentApplicationTarget() async throws -> SnipSnapCloudApplicationTarget {
+    let snapshot = try await persistence.snapshot()
+    return SnipSnapCloudApplicationTarget(persistence: persistence, store: snapshot.activeStore)
   }
 
   func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {

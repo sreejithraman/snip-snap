@@ -17,6 +17,7 @@ public final class ShareListCatalogPublisher {
   private let beforePublish: (@Sendable () async -> Void)?
   private var latest: Task<Void, Never>?
   private var published: [SnipList]?
+  private var imports: ShareImportStore?
 
   public init(
     write: @escaping @Sendable ([SnipList]) async throws -> Void,
@@ -38,6 +39,7 @@ public final class ShareListCatalogPublisher {
       diagnostics: diagnostics,
       beforePublish: beforePublish
     )
+    self.imports = imports
   }
 
   public func enqueue(_ lists: [SnipList], force: Bool = false) {
@@ -55,6 +57,56 @@ public final class ShareListCatalogPublisher {
         diagnostics.record(
           .failure(operation: "share.catalog_publish", error: error, visibility: .background)
         )
+      }
+    }
+  }
+
+  public func enqueue(_ lists: [SnipList], publication: SnipLibraryReadPublication) {
+    let previous = latest
+    latest = Task {
+      _ = await previous?.value
+      await beforePublish?()
+      do {
+        guard let imports else { throw SnipLibraryError.transferUnsupported }
+        try await imports.publishAvailableLists(lists, publication: publication)
+        let closing = try publication.beginApplication()
+        published = lists
+        closing.finish()
+      } catch {
+        published = nil
+        if error is SnipLibraryReadPublicationError || isDiagnosticCancellation(error) { return }
+        diagnostics.record(
+          .failure(operation: "share.catalog_publish", error: error, visibility: .background)
+        )
+      }
+    }
+  }
+
+  public func enqueue(
+    _ lists: [SnipList], from session: SavedSnipsSession, target: SnipLibraryApplicationTarget
+  ) {
+    let previous = latest
+    latest = Task {
+      _ = await previous?.value
+      await beforePublish?()
+      do {
+        let read = try await session.checkedRead(sortedBy: .manual)
+        let byID: (SnipList, SnipList) -> Bool = { $0.id.uuidString < $1.id.uuidString }
+        guard read.source == target.source,
+          let binding = read.target?.library as? any SnipLibraryApplicationBinding,
+          binding.sharesApplicationBinding(with: target.library),
+          read.snapshot.lists.sorted(by: byID) == lists.sorted(by: byID),
+          let publication = read.publication, let imports else {
+          throw SnipLibraryReadPublicationError.revoked
+        }
+        try await imports.publishAvailableLists(lists, publication: publication)
+        let closing = try publication.beginApplication()
+        published = lists
+        closing.finish()
+      } catch {
+        published = nil
+        if error is SnipLibraryReadPublicationError || isDiagnosticCancellation(error) { return }
+        diagnostics.record(.failure(operation: "share.catalog_publish", error: error, visibility: .background))
       }
     }
   }

@@ -43,12 +43,12 @@ public struct SavedSnipsDoneChange: Sendable {
 }
 
 public actor SavedSnipsSession {
-    private struct PendingDoneUndo {
+    fileprivate struct PendingDoneUndo {
         let token: UUID
         let snips: [Snip]
     }
 
-    private enum ImportPreviewPhase {
+    fileprivate enum ImportPreviewPhase {
         case none
         case previewing(UUID)
         case pending(SavedSnipsImportPreview)
@@ -59,13 +59,44 @@ public actor SavedSnipsSession {
         case held(waiters: [CheckedContinuation<Void, Never>])
     }
 
-    private var library: any SnipLibrary
-    private var userActions: any SnipLibraryUserActions
+    fileprivate final class Binding: @unchecked Sendable {
+        let library: any SnipLibrary
+        let userActions: any SnipLibraryUserActions
+        let recoveryScope: SnipRecoveryScope?
+        var importPreview: ImportPreviewPhase = .none
+        var pendingDeletionToken: UUID?
+        var pendingDoneUndo: PendingDoneUndo?
+
+        init(library: any SnipLibrary, userActions: any SnipLibraryUserActions, recoveryScope: SnipRecoveryScope?) {
+            self.library = library
+            self.userActions = userActions
+            self.recoveryScope = recoveryScope
+        }
+    }
+
+    fileprivate final class BindingOwner: @unchecked Sendable {
+        let lock = NSLock()
+        var current: Binding
+        init(_ current: Binding) { self.current = current }
+    }
+
+    private let binding: BindingOwner
+    private var library: any SnipLibrary { binding.lock.withLock { binding.current.library } }
+    private var userActions: any SnipLibraryUserActions { binding.lock.withLock { binding.current.userActions } }
+    private var recoveryScope: SnipRecoveryScope? { binding.lock.withLock { binding.current.recoveryScope } }
+    private var importPreview: ImportPreviewPhase {
+        get { binding.lock.withLock { binding.current.importPreview } }
+        set { binding.lock.withLock { binding.current.importPreview = newValue } }
+    }
+    private var pendingDeletionToken: UUID? {
+        get { binding.lock.withLock { binding.current.pendingDeletionToken } }
+        set { binding.lock.withLock { binding.current.pendingDeletionToken = newValue } }
+    }
+    private var pendingDoneUndo: PendingDoneUndo? {
+        get { binding.lock.withLock { binding.current.pendingDoneUndo } }
+        set { binding.lock.withLock { binding.current.pendingDoneUndo = newValue } }
+    }
     private let userActionsFactory: SnipLibraryUserActionsFactory
-    private var recoveryScope: SnipRecoveryScope?
-    private var importPreview: ImportPreviewPhase = .none
-    private var pendingDeletionToken: UUID?
-    private var pendingDoneUndo: PendingDoneUndo?
     private var exclusiveAccess: ExclusiveAccess = .available
 
     public init(
@@ -74,10 +105,46 @@ public actor SavedSnipsSession {
         userActionsFactory: @escaping SnipLibraryUserActionsFactory = { DirectSnipLibraryUserActions(library: $0) },
         recoveryScope: SnipRecoveryScope? = nil
     ) {
-        self.library = library
+        binding = BindingOwner(Binding(library: library,
+            userActions: userActions ?? userActionsFactory(library), recoveryScope: recoveryScope))
         self.userActionsFactory = userActionsFactory
-        self.userActions = userActions ?? userActionsFactory(library)
-        self.recoveryScope = recoveryScope
+    }
+
+    /// The real command owner and its checked presentation, prepared without changing either live root.
+    public final class PreparedApplication: @unchecked Sendable {
+        public let read: SnipLibraryReadObservation
+        public let recovery: SnipRecoverySnapshot
+        public let replaced: Bool
+        private let owner: BindingOwner
+        private let previous: Binding
+        private let replacement: Binding
+        private let sortMode: SnipSortMode
+        private let deletionToken: UUID?
+
+        fileprivate init(read: SnipLibraryReadObservation, recovery: SnipRecoverySnapshot,
+                         owner: BindingOwner, previous: Binding, replacement: Binding,
+                         replaced: Bool, sortMode: SnipSortMode, deletionToken: UUID?) {
+            self.read = read; self.recovery = recovery; self.owner = owner
+            self.previous = previous; self.replacement = replacement; self.replaced = replaced
+            self.sortMode = sortMode; self.deletionToken = deletionToken
+        }
+
+        /// Invoke in the same synchronous closing operation as the model's authoritative install.
+        public func install(within closing: SnipLibraryReadPublication.Application? = nil) throws {
+            if let source = read.source {
+                guard let publication = read.publication, let closing, closing.owns(publication),
+                    read.target?.source == source else { throw SnipLibraryReadPublicationError.revoked }
+            }
+            try owner.lock.withLock {
+                guard owner.current === previous else { throw SnipLibraryReadPublicationError.revoked }
+                owner.current = replacement
+            }
+        }
+
+        public func finishRetiredActions() async {
+            guard replaced, let deletionToken else { return }
+            await previous.userActions.discardDeletion(token: deletionToken, sortedBy: sortMode)
+        }
     }
 
     public func withExclusiveAccess<Result: Sendable>(
@@ -106,13 +173,66 @@ public actor SavedSnipsSession {
         recoveryScope: SnipRecoveryScope?,
         sortedBy sortMode: SnipSortMode
     ) async -> SavedSnipsSessionState {
-        await discardPendingDeletion(sortedBy: sortMode)
-        pendingDoneUndo = nil
-        self.library = library
-        userActions = userActionsFactory(library)
-        self.recoveryScope = recoveryScope
-        importPreview = .none
+        await bindLibrary(library, recoveryScope: recoveryScope, sortedBy: sortMode)
         return await state(sortedBy: sortMode)
+    }
+
+    public func replaceLibraryChecked(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?, sortedBy sortMode: SnipSortMode
+    ) async throws -> (read: SnipLibraryReadObservation, recovery: SnipRecoverySnapshot) {
+        let prepared = try await prepareLibraryApplication(library, recoveryScope: recoveryScope,
+            replacing: true, sortedBy: sortMode)
+        if prepared.read.source != nil, prepared.read.publication == nil {
+            throw SnipLibraryReadPublicationError.revoked
+        }
+        let closing = try prepared.read.publication?.beginApplication()
+        do { try prepared.install(within: closing) } catch { closing?.finish(); throw error }
+        closing?.finish()
+        await prepared.finishRetiredActions()
+        return (prepared.read, prepared.recovery)
+    }
+
+    public func prepareLibraryApplication(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?,
+        replacing: Bool, sortedBy sortMode: SnipSortMode
+    ) async throws -> PreparedApplication {
+        let previous = binding.lock.withLock { binding.current }
+        let read = try await checkedRead(from: library, sortedBy: sortMode)
+        let recovery = try await checkedRecovery(from: library, scope: recoveryScope)
+        try Task.checkCancellation()
+        let replacement = replacing
+            ? Binding(library: read.target?.library ?? library, userActions: userActionsFactory(read.target?.library ?? library), recoveryScope: recoveryScope)
+            : previous
+        let token = binding.lock.withLock { previous.pendingDeletionToken }
+        return PreparedApplication(read: read, recovery: recovery, owner: binding, previous: previous,
+            replacement: replacement, replaced: replacing, sortMode: sortMode, deletionToken: token)
+    }
+
+    public func prepareLibraryReconciliation(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?,
+        replacing source: SnipLibraryReadSource?, sortedBy sortMode: SnipSortMode
+    ) async throws -> PreparedApplication {
+        let previous = binding.lock.withLock { binding.current }
+        let read = try await checkedRead(from: library, sortedBy: sortMode)
+        let recovery = try await checkedRecovery(from: library, scope: recoveryScope)
+        try Task.checkCancellation()
+        let sameBinding = (read.target?.library as? any SnipLibraryApplicationBinding)?
+            .sharesApplicationBinding(with: previous.library) == true
+        let replaced = read.source == nil || read.source != source || previous.recoveryScope != recoveryScope || !sameBinding
+        let replacement = replaced
+            ? Binding(library: read.target?.library ?? library, userActions: userActionsFactory(read.target?.library ?? library), recoveryScope: recoveryScope)
+            : previous
+        let token = binding.lock.withLock { previous.pendingDeletionToken }
+        return PreparedApplication(read: read, recovery: recovery, owner: binding, previous: previous,
+            replacement: replacement, replaced: replaced, sortMode: sortMode, deletionToken: token)
+    }
+
+    private func bindLibrary(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?, sortedBy sortMode: SnipSortMode
+    ) async {
+        await discardPendingDeletion(sortedBy: sortMode)
+        let replacement = Binding(library: library, userActions: userActionsFactory(library), recoveryScope: recoveryScope)
+        binding.lock.withLock { binding.current = replacement }
     }
 
     public func archive() async throws -> SnipLibraryArchive {
@@ -124,7 +244,13 @@ public actor SavedSnipsSession {
     }
 
     public func checkedRead(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryReadObservation {
-        let selectedLibrary = library
+        try await checkedRead(from: library, sortedBy: sortMode)
+    }
+
+    private func checkedRead(
+        from selectedLibrary: any SnipLibrary,
+        sortedBy sortMode: SnipSortMode
+    ) async throws -> SnipLibraryReadObservation {
         if let observed = selectedLibrary as? any SnipLibraryReadObserving {
             return try await observed.checkedRead(sortedBy: sortMode)
         }
@@ -305,8 +431,15 @@ public actor SavedSnipsSession {
     }
 
     public func checkedRecovery() async throws -> SnipRecoverySnapshot {
-        guard let recoveryScope else { return .empty }
-        return try await library.recoverySnapshot(in: recoveryScope)
+        try await checkedRecovery(from: library, scope: recoveryScope)
+    }
+
+    private func checkedRecovery(
+        from selectedLibrary: any SnipLibrary,
+        scope: SnipRecoveryScope?
+    ) async throws -> SnipRecoverySnapshot {
+        guard let scope else { return .empty }
+        return try await selectedLibrary.recoverySnapshot(in: scope)
     }
 
     public func resolveRecovery(

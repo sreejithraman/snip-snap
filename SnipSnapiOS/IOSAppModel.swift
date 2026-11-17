@@ -50,31 +50,120 @@ final class InlineListDraft {
 @Observable
 final class IOSAppModel {
     private let session: SavedSnipsSession
-    private(set) var libraryRevision = UUID()
+    @ObservationIgnored private var application = ApplicationState()
+    private struct ApplicationState {
+        var libraryRevision: UUID = UUID()
+        var snips: [Snip] = []
+        var lists: [SnipList] = [.inbox]
+        var attachmentURLs: [UUID: URL] = [:]
+        var recoverySnapshot: SnipRecoverySnapshot = .empty
+        var preparedAttachments: [UUID: PreparedAttachmentRecord] = [:]
+        var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
+        var attachmentFileRevision: UUID = UUID()
+        var cloudAttachmentKnowledge: CloudAttachmentKnowledge = .unknown(lastKnown: nil, refresh: nil)
+        var selectedPage: LibraryPage = .list(SnipList.inboxID)
+        var selectionRevision: UInt64 = 0
+        var lastSelectedListID: UUID = SnipList.inboxID
+        var editingListID: UUID? = nil
+        var pendingNewList: PendingNewList? = nil
+        var listDrafts: [UUID: InlineListDraft] = [:]
+        var snipEditorDraft: SnipEditorDraft? = nil
+        var selectedSnipID: UUID? = nil
+        var gathering: GatheringSession? = nil
+        var snackbarAndErrors: SnackbarAndErrorPresentation = SnackbarAndErrorPresentation()
+        var source: SnipLibraryReadSource?
+        var target: SnipLibraryApplicationTarget?
+        var files: Result<[UUID: SnipLibraryFileObservation], any Error>?
+        var publication: SnipLibraryReadPublication?
+    }
+    private(set) var libraryRevision: UUID {
+        get { access(keyPath: \.libraryRevision); return application.libraryRevision }
+        set { withMutation(keyPath: \.libraryRevision) { application.libraryRevision = newValue } }
+    }
     var isManagingLists = false
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private let diagnostics: AppDiagnosticRecorder
     private let publishShareDestinations: (([SnipList]) -> Void)?
+    @ObservationIgnored private var checkedCatalogPublisher: ShareListCatalogPublisher?
 
-    private(set) var snips: [Snip]
-    private(set) var lists: [SnipList]
-    private(set) var attachmentURLs: [UUID: URL]
-    private(set) var recoverySnapshot: SnipRecoverySnapshot = .empty
-    private var preparedAttachments: [UUID: PreparedAttachmentRecord] = [:]
-    private var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
+    private(set) var snips: [Snip] {
+        get { access(keyPath: \.snips); return application.snips }
+        set { withMutation(keyPath: \.snips) { application.snips = newValue } }
+    }
+    private(set) var lists: [SnipList] {
+        get { access(keyPath: \.lists); return application.lists }
+        set { withMutation(keyPath: \.lists) { application.lists = newValue } }
+    }
+    private(set) var attachmentURLs: [UUID: URL] {
+        get { access(keyPath: \.attachmentURLs); return application.attachmentURLs }
+        set { withMutation(keyPath: \.attachmentURLs) { application.attachmentURLs = newValue } }
+    }
+    private(set) var recoverySnapshot: SnipRecoverySnapshot {
+        get { access(keyPath: \.recoverySnapshot); return application.recoverySnapshot }
+        set { withMutation(keyPath: \.recoverySnapshot) { application.recoverySnapshot = newValue } }
+    }
+    private var preparedAttachments: [UUID: PreparedAttachmentRecord] {
+        get { access(keyPath: \.preparedAttachments); return application.preparedAttachments }
+        set { withMutation(keyPath: \.preparedAttachments) { application.preparedAttachments = newValue } }
+    }
+    private var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] {
+        get { access(keyPath: \.attachmentTransferStates); return application.attachmentTransferStates }
+        set { withMutation(keyPath: \.attachmentTransferStates) { application.attachmentTransferStates = newValue } }
+    }
     @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
-    private var attachmentFileRevision = UUID()
+    private var attachmentFileRevision: UUID {
+        get { access(keyPath: \.attachmentFileRevision); return application.attachmentFileRevision }
+        set { withMutation(keyPath: \.attachmentFileRevision) { application.attachmentFileRevision = newValue } }
+    }
     @ObservationIgnored private var attachmentCopyCaptures: [WeakAttachmentCopyCapture] = []
     private var isReplacingAttachmentSource = false
     @ObservationIgnored private var attachmentStateRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var attachmentStateRefreshPending = false
     @ObservationIgnored private var attachmentStateRefreshWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
-    private var cloudAttachmentKnowledge: CloudAttachmentKnowledge
+    struct CheckedApplication: Sendable {
+        let read: SnipLibraryReadObservation
+        let attachments: SyncedAttachmentReadObservation?
+    }
+    private enum CheckedApplicationRequest: Sendable {
+        case load
+        case replace(any SnipLibrary, SnipRecoveryScope?)
+        case target(SnipLibraryApplicationTarget)
+
+        var target: SnipLibraryApplicationTarget? {
+            if case .target(let target) = self { return target }
+            return nil
+        }
+    }
+    @MainActor
+    final class SyncApplicationCompletion {
+        weak var settings: SyncedContentSettingsModel?
+        weak var clipboard: IOSClipboardModel?
+        let start: SyncedContentSyncStart
+        let stoppedIssue: SyncedContentSyncIssue?
+        let enabling: Bool
+        let removalCompleted: Bool?
+        init(settings: SyncedContentSettingsModel, clipboard: IOSClipboardModel, start: SyncedContentSyncStart,
+             stoppedIssue: SyncedContentSyncIssue? = nil, enabling: Bool = false, removalCompleted: Bool? = nil) {
+            self.settings = settings; self.clipboard = clipboard; self.start = start
+            self.stoppedIssue = stoppedIssue; self.enabling = enabling; self.removalCompleted = removalCompleted
+        }
+    }
+    @ObservationIgnored private var activeApplicationTarget: SnipLibraryApplicationTarget?
+    @ObservationIgnored private var applicationCompletions: [ObjectIdentifier: SyncApplicationCompletion] = [:]
+    @ObservationIgnored private var checkedApplicationTargets: [UUID: SnipLibraryApplicationTarget] = [:]
+    @ObservationIgnored private var pendingCheckedApplication: CheckedApplicationRequest?
+    @ObservationIgnored private var checkedApplicationWaiters: [UUID: AsyncThrowingStream<CheckedApplication, any Error>.Continuation] = [:]
+    @ObservationIgnored private var checkedApplicationResult: Result<CheckedApplication, any Error>?
+    private var cloudAttachmentKnowledge: CloudAttachmentKnowledge {
+        get { access(keyPath: \.cloudAttachmentKnowledge); return application.cloudAttachmentKnowledge }
+        set { withMutation(keyPath: \.cloudAttachmentKnowledge) { application.cloudAttachmentKnowledge = newValue } }
+    }
     private struct AttachmentStateRefresh {
         let id: UUID
         let libraryRevision: UUID
         let lastKnownSource: AttachmentFileSource?
+        var checkedApplication: CheckedApplicationRequest?
     }
     private struct PreparedAttachmentRecord {
         var url: URL
@@ -179,11 +268,23 @@ final class IOSAppModel {
         guard case .awaitingConfirmation(let preview) = backupImport else { return nil }
         return preview.value
     }
-    private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
-    private var selectionRevision: UInt64 = 0
-    private(set) var lastSelectedListID: UUID
+    private(set) var selectedPage: LibraryPage {
+        get { access(keyPath: \.selectedPage); return application.selectedPage }
+        set { withMutation(keyPath: \.selectedPage) { application.selectedPage = newValue } }
+    }
+    private var selectionRevision: UInt64 {
+        get { access(keyPath: \.selectionRevision); return application.selectionRevision }
+        set { withMutation(keyPath: \.selectionRevision) { application.selectionRevision = newValue } }
+    }
+    private(set) var lastSelectedListID: UUID {
+        get { access(keyPath: \.lastSelectedListID); return application.lastSelectedListID }
+        set { withMutation(keyPath: \.lastSelectedListID) { application.lastSelectedListID = newValue } }
+    }
     var pages: [LibraryPage] { [.clipboard] + lists.map { .list($0.id) } }
-    private(set) var editingListID: UUID?
+    private(set) var editingListID: UUID? {
+        get { access(keyPath: \.editingListID); return application.editingListID }
+        set { withMutation(keyPath: \.editingListID) { application.editingListID = newValue } }
+    }
     private struct NewListOrigin {
         let page: LibraryPage
         let lastSelectedListID: UUID
@@ -192,15 +293,24 @@ final class IOSAppModel {
         let id: UUID
         let origin: NewListOrigin
     }
-    private var pendingNewList: PendingNewList?
+    private var pendingNewList: PendingNewList? {
+        get { access(keyPath: \.pendingNewList); return application.pendingNewList }
+        set { withMutation(keyPath: \.pendingNewList) { application.pendingNewList = newValue } }
+    }
     var newListID: UUID? { pendingNewList?.id }
     var newListOriginPage: LibraryPage? { pendingNewList?.origin.page }
     var newListCancellationPage: LibraryPage {
         let origin = newListOriginPage ?? .list(SnipList.inboxID)
         return pages.contains(origin) ? origin : .list(SnipList.inboxID)
     }
-    private var listDrafts: [UUID: InlineListDraft] = [:]
-    private(set) var snipEditorDraft: SnipEditorDraft?
+    private var listDrafts: [UUID: InlineListDraft] {
+        get { access(keyPath: \.listDrafts); return application.listDrafts }
+        set { withMutation(keyPath: \.listDrafts) { application.listDrafts = newValue } }
+    }
+    private(set) var snipEditorDraft: SnipEditorDraft? {
+        get { access(keyPath: \.snipEditorDraft); return application.snipEditorDraft }
+        set { withMutation(keyPath: \.snipEditorDraft) { application.snipEditorDraft = newValue } }
+    }
     // Creation may still refresh after the editor is visible or has finished.
     private(set) var isCreatingList = false
     private struct QueuedNewListRequest {
@@ -216,22 +326,38 @@ final class IOSAppModel {
         if case .cancelling = newListCancellation { return true }
         return false
     }
-    var selectedSnipID: UUID?
+    var selectedSnipID: UUID? {
+        get { access(keyPath: \.selectedSnipID); return application.selectedSnipID }
+        set { withMutation(keyPath: \.selectedSnipID) { application.selectedSnipID = newValue } }
+    }
     /// A gathering session runs from Select or the first gathered snip until it ends.
     /// A class, so readers of one field don't refresh when another changes.
     @MainActor @Observable fileprivate final class GatheringSession {
-        let id = UUID()
+        let id: UUID
         private(set) var snipIDs: Set<UUID> = []
         /// Newest first. Snips gathered together keep their list order.
         private(set) var order: [UUID] = []
         var isExpanded = false
+
+        init(id: UUID = UUID()) { self.id = id }
+
+        func retaining(_ live: Set<UUID>) -> GatheringSession {
+            let copy = GatheringSession(id: id)
+            copy.snipIDs = snipIDs.intersection(live)
+            copy.order = order.filter(live.contains)
+            copy.isExpanded = isExpanded
+            return copy
+        }
 
         func replaceSnips(with ids: Set<UUID>, orderingNew: (Set<UUID>) -> [UUID]) {
             order = orderingNew(ids.subtracting(snipIDs)) + order.filter(ids.contains)
             snipIDs = ids
         }
     }
-    private var gathering: GatheringSession?
+    private var gathering: GatheringSession? {
+        get { access(keyPath: \.gathering); return application.gathering }
+        set { withMutation(keyPath: \.gathering) { application.gathering = newValue } }
+    }
     var isSelectingSnips: Bool { gathering != nil }
     var selectedSnipIDs: Set<UUID> { gathering?.snipIDs ?? [] }
     var isSelectionExpanded: Bool { gathering?.isExpanded ?? false }
@@ -261,7 +387,10 @@ final class IOSAppModel {
         }
     }
     var sortMode: SnipSortMode = .chronological
-    private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    private var snackbarAndErrors: SnackbarAndErrorPresentation {
+        get { access(keyPath: \.snackbarAndErrors); return application.snackbarAndErrors }
+        set { withMutation(keyPath: \.snackbarAndErrors) { application.snackbarAndErrors = newValue } }
+    }
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var failure: AppFailure? { snackbarAndErrors.presentedFailure }
     var latestFailure: AppFailure? { snackbarAndErrors.latestFailure }
@@ -332,9 +461,10 @@ final class IOSAppModel {
         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
         publishShareDestinations: (([SnipList]) -> Void)? = nil
     ) {
+        let initialTarget = SnipLibraryApplicationTarget.initial(for: library)
         session = SavedSnipsSession(
-            library: library,
-            userActions: userActions,
+            library: initialTarget?.library ?? library,
+            userActions: initialTarget == nil ? userActions : nil,
             userActionsFactory: userActionsFactory,
             recoveryScope: recoveryScope
         )
@@ -342,13 +472,15 @@ final class IOSAppModel {
         self.haptics = haptics
         self.diagnostics = diagnostics
         self.publishShareDestinations = publishShareDestinations
-        cloudAttachmentKnowledge = cloudSyncHandler == nil
+        application.source = initialTarget?.source
+        application.target = initialTarget
+        application.cloudAttachmentKnowledge = cloudSyncHandler == nil
             ? .known(.libraryFiles)
             : .unknown(lastKnown: nil, refresh: nil)
-        snips = initialSnapshot.snips
-        lists = initialSnapshot.lists
-        attachmentURLs = initialSnapshot.attachmentURLs
-        lastSelectedListID = SnipList.inboxID
+        application.snips = initialSnapshot.snips
+        application.lists = initialSnapshot.lists
+        application.attachmentURLs = initialSnapshot.attachmentURLs
+        application.lastSelectedListID = SnipList.inboxID
         if let startupError {
             presentError(
                 startupError,
@@ -569,6 +701,244 @@ final class IOSAppModel {
     func load() async {
         await withSerializedMutation { await loadUnlocked() }
         await waitForAttachmentStateRefresh()
+    }
+
+    func setCheckedCatalogPublisher(_ publisher: ShareListCatalogPublisher?) {
+        checkedCatalogPublisher = publisher
+    }
+
+    func publishCurrentCatalog(force: Bool = false) {
+        if let target = application.target, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(application.lists, from: session, target: target)
+        } else if application.source == nil {
+            if let checkedCatalogPublisher { checkedCatalogPublisher.enqueue(application.lists, force: force) }
+            else { publishShareDestinations?(application.lists) }
+        }
+    }
+
+    @discardableResult
+    func installCurrentSyncStatus(
+        _ observation: SyncedContentCurrentSyncObservation,
+        settings: SyncedContentSettingsModel, start: SyncedContentSyncStart
+    ) throws -> Bool {
+        guard observation.source == application.source, observation.matchesApplicationTarget(application.target),
+              let publication = observation.publication,
+              let prepared = settings.prepareCurrentState(observation, for: start) else { return false }
+        let snapshot = SnipLibrarySnapshot(snips: application.snips, lists: application.lists,
+            attachmentURLs: application.attachmentURLs)
+        let matches = observation.matchesApplication(snapshot, after: application.publication, target: application.target, recovery: application.recoverySnapshot, files: application.files,
+            attachmentStates: application.attachmentTransferStates)
+        let closing = try publication.beginApplication()
+        guard !observation.settled || matches else { closing.finish(); return false }
+        let installed = settings.installPreparedCurrentState(prepared, within: closing)
+        if installed && matches { application.publication = publication }
+        closing.finish()
+        if installed { settings.notifyInstalledCurrentState(prepared) }
+        if installed && matches, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(snapshot.lists, publication: publication)
+        }
+        return installed
+    }
+
+    var appliedSource: SnipLibraryReadSource? { application.source }
+
+    func applyChecked(
+        _ target: SnipLibraryApplicationTarget, completion: SyncApplicationCompletion? = nil
+    ) async throws -> CheckedApplication {
+        try await requestCheckedApplication(.target(target), completion: completion)
+    }
+
+    func loadChecked() async throws -> CheckedApplication {
+        try await requestCheckedApplication(.load)
+    }
+
+    func replaceLibraryChecked(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?
+    ) async throws -> CheckedApplication {
+        haptics.invalidatePendingFeedback()
+        return try await requestCheckedApplication(.replace(library, recoveryScope))
+    }
+
+    private func requestCheckedApplication(
+        _ request: CheckedApplicationRequest, completion: SyncApplicationCompletion? = nil
+    ) async throws -> CheckedApplication {
+        try Task.checkCancellation()
+        let id = UUID()
+        let (stream, continuation) = AsyncThrowingStream<CheckedApplication, any Error>.makeStream()
+        checkedApplicationWaiters[id] = continuation
+        if let target = request.target { checkedApplicationTargets[id] = target }
+        defer {
+            checkedApplicationTargets.removeValue(forKey: id)
+            checkedApplicationWaiters.removeValue(forKey: id)?.finish()
+            discardUnownedApplicationCompletions()
+        }
+        if let target = request.target, let completion, applicationCompletions[ObjectIdentifier(target)] == nil {
+            applicationCompletions[ObjectIdentifier(target)] = completion
+        }
+        let joinsTarget: Bool
+        switch request {
+        case .target(let target):
+            joinsTarget = pendingCheckedApplication?.target === target
+                || (activeApplicationTarget === target && pendingCheckedApplication == nil)
+        case .load:
+            joinsTarget = pendingCheckedApplication?.target != nil
+                || (activeApplicationTarget != nil && pendingCheckedApplication == nil)
+        case .replace:
+            joinsTarget = false
+        }
+        if !joinsTarget {
+            switch (pendingCheckedApplication, request) {
+            case (.some(.replace(_, _)), .load):
+                // An ordinary load follows the already requested replacement.
+                break
+            default:
+                if let superseded = pendingCheckedApplication?.target, superseded !== activeApplicationTarget {
+                    finishTargetWaiters(superseded, with: .failure(SnipLibraryReadPublicationError.revoked))
+                    applicationCompletions.removeValue(forKey: ObjectIdentifier(superseded))
+                }
+                pendingCheckedApplication = request
+            }
+            discardUnownedApplicationCompletions()
+            checkedApplicationResult = nil
+            attachmentStateRefreshPending = true
+            cloudAttachmentKnowledge = .unknown(
+                lastKnown: cloudAttachmentKnowledge.lastKnownSource, refresh: nil)
+            startAttachmentStateWorker()
+        }
+        var iterator = stream.makeAsyncIterator()
+        let value = try await iterator.next()
+        try Task.checkCancellation()
+        guard let value else { throw CancellationError() }
+        return value
+    }
+
+    private func discardUnownedApplicationCompletions() {
+        var owned = Set(checkedApplicationTargets.values.map(ObjectIdentifier.init))
+        if let activeApplicationTarget { owned.insert(ObjectIdentifier(activeApplicationTarget)) }
+        if let target = pendingCheckedApplication?.target { owned.insert(ObjectIdentifier(target)) }
+        applicationCompletions = applicationCompletions.filter { owned.contains($0.key) }
+    }
+
+    private func performCheckedApplication(
+        _ request: CheckedApplicationRequest, refreshID: UUID
+    ) async -> Result<SnipLibraryReadObservation, any Error> {
+        do {
+            let read = try await withSerializedMutation {
+                let checked: (read: SnipLibraryReadObservation, recovery: SnipRecoverySnapshot)
+                var replacement: SavedSnipsSession.PreparedApplication?
+                let replacing: Bool
+                switch request {
+                case .load:
+                    replacing = false
+                    let value = try await session.checkedRead(sortedBy: sortMode)
+                    checked = (value, try await session.checkedRecovery())
+                case .target(let target):
+                    isReplacingAttachmentSource = true
+                    defer { isReplacingAttachmentSource = false }
+                    let prepared = try await session.prepareLibraryReconciliation(target.library,
+                        recoveryScope: target.recoveryScope, replacing: application.source, sortedBy: sortMode)
+                    guard prepared.read.source == target.source else { throw SnipLibraryReadPublicationError.revoked }
+                    replacing = prepared.replaced
+                    replacement = prepared
+                    checked = (prepared.read, prepared.recovery)
+                case .replace(let library, let scope):
+                    replacing = true
+                    isReplacingAttachmentSource = true
+                    defer { isReplacingAttachmentSource = false }
+                    let prepared = try await session.prepareLibraryApplication(library, recoveryScope: scope, replacing: true, sortedBy: sortMode)
+                    replacement = prepared
+                    checked = (prepared.read, prepared.recovery)
+                }
+                try Task.checkCancellation()
+                guard cloudAttachmentKnowledge.refresh == refreshID else { throw CancellationError() }
+                try installCheckedApplication(checked.read, recovery: checked.recovery, replacing: replacing, sessionApplication: replacement)
+                await replacement?.finishRetiredActions()
+                return checked.read
+            }
+            return .success(read)
+        } catch { return .failure(error) }
+    }
+
+    private func installCheckedApplication(
+        _ read: SnipLibraryReadObservation, recovery: SnipRecoverySnapshot, replacing: Bool,
+        sessionApplication: SavedSnipsSession.PreparedApplication? = nil
+    ) throws {
+        if read.source != nil, read.publication == nil { throw SnipLibraryReadPublicationError.revoked }
+        let previous = application
+        let snapshot = read.snapshot
+        var prepared = application
+        prepared.snips = snapshot.snips
+        prepared.lists = snapshot.lists
+        prepared.attachmentURLs = snapshot.attachmentURLs
+        prepared.recoverySnapshot = recovery
+        prepared.source = read.source
+        prepared.target = read.target
+        prepared.publication = read.publication
+        prepared.files = read.files
+        let changedExistingFiles: Bool
+        if case .success(let before) = application.files, case .success(let after) = read.files {
+            changedExistingFiles = before.contains { id, file in
+                file.kind != nil && after[id].map { $0 != file } == true
+            }
+        } else { changedExistingFiles = false }
+        prepared.preparedAttachments = replacing || changedExistingFiles ? [:] : retainedPreparedAttachments(in: snapshot)
+        if changedExistingFiles { prepared.attachmentFileRevision = UUID() }
+        if replacing {
+            prepared.libraryRevision = UUID()
+            prepared.attachmentFileRevision = UUID()
+            prepared.selectedSnipID = nil
+            prepared.snipEditorDraft = nil
+            prepared.attachmentTransferStates = [:]
+            prepared.snackbarAndErrors.endUndoWindow()
+        }
+        let liveLists = Set(snapshot.lists.map(\.id))
+        let liveSnips = Set(snapshot.snips.map(\.id))
+        if let selected = prepared.selectedSnipID, !liveSnips.contains(selected) { prepared.selectedSnipID = nil }
+        if let draft = prepared.snipEditorDraft, !liveSnips.contains(draft.original.id) { prepared.snipEditorDraft = nil }
+        if let id = prepared.editingListID, !liveLists.contains(id) { prepared.editingListID = nil; prepared.listDrafts[id] = nil }
+        if let pending = prepared.pendingNewList, !liveLists.contains(pending.id) {
+            prepared.listDrafts[pending.id] = nil
+            prepared.pendingNewList = nil
+        }
+        if !liveLists.contains(prepared.lastSelectedListID) {
+            prepared.lastSelectedListID = SnipList.inboxID
+            if case .list = prepared.selectedPage, prepared.selectedPage != .list(SnipList.inboxID) {
+                prepared.selectedPage = .list(SnipList.inboxID)
+                prepared.selectionRevision &+= 1
+            }
+        }
+        if let gathered = prepared.gathering, !gathered.snipIDs.isSubset(of: liveSnips) {
+            prepared.gathering = gathered.retaining(liveSnips)
+        }
+        let closing = try read.publication?.beginApplication()
+        do { try sessionApplication?.install(within: closing) } catch { closing?.finish(); throw error }
+        application = prepared
+        closing?.finish()
+        if let draft = previous.snipEditorDraft, draft !== prepared.snipEditorDraft { draft.discard() }
+        if replacing || changedExistingFiles { attachmentPreparations.removeAll() }
+        for capture in attachmentCopyCaptures {
+            if let capture = capture.value { updateAttachmentCopyValidity(capture, snips: snapshot.snips) }
+        }
+        notifyCheckedApplication()
+        if let publication = read.publication, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(snapshot.lists, publication: publication)
+        } else if read.source == nil {
+            publishShareDestinations?(snapshot.lists)
+        }
+        withExtendedLifetime(previous) {}
+    }
+
+    private func notifyCheckedApplication() {
+        withMutation(keyPath: \.snips) {}; withMutation(keyPath: \.lists) {}
+        withMutation(keyPath: \.attachmentURLs) {}; withMutation(keyPath: \.recoverySnapshot) {}
+        withMutation(keyPath: \.libraryRevision) {}; withMutation(keyPath: \.attachmentFileRevision) {}
+        withMutation(keyPath: \.selectedSnipID) {}; withMutation(keyPath: \.snipEditorDraft) {}
+        withMutation(keyPath: \.lastSelectedListID) {}; withMutation(keyPath: \.selectedPage) {}
+        withMutation(keyPath: \.selectionRevision) {}; withMutation(keyPath: \.editingListID) {}
+        withMutation(keyPath: \.listDrafts) {}; withMutation(keyPath: \.pendingNewList) {}
+        withMutation(keyPath: \.gathering) {}; withMutation(keyPath: \.preparedAttachments) {}
+        withMutation(keyPath: \.attachmentTransferStates) {}; withMutation(keyPath: \.cloudAttachmentKnowledge) {}
+        withMutation(keyPath: \.snackbarAndErrors) {}
     }
 
     func replaceLibrary(
@@ -1357,11 +1727,15 @@ final class IOSAppModel {
     }
 
     private func retainPreparedAttachments(in snapshot: SnipLibrarySnapshot) {
+        preparedAttachments = retainedPreparedAttachments(in: snapshot)
+    }
+
+    private func retainedPreparedAttachments(in snapshot: SnipLibrarySnapshot) -> [UUID: PreparedAttachmentRecord] {
         let attachments = Dictionary(
             snapshot.snips.flatMap(\.attachments).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        preparedAttachments = preparedAttachments.filter { id, prepared in
+        return preparedAttachments.filter { id, prepared in
             guard let attachment = attachments[id],
                   let identity = prepared.identity,
                   attachment.fileName == identity.fileName,
@@ -1848,7 +2222,7 @@ final class IOSAppModel {
         }
         replaceGatheredSnips(with: selectedSnipIDs.intersection(snips.map(\.id)))
         // The share picker reads this catalog from outside the app process.
-        publishShareDestinations?(lists)
+        publishCurrentCatalog()
         requestAttachmentTransferStateRefresh()
     }
 
@@ -1863,20 +2237,57 @@ final class IOSAppModel {
         let lastKnown = cloudAttachmentKnowledge.lastKnownSource
         cloudAttachmentKnowledge = .unknown(lastKnown: lastKnown, refresh: nil)
         attachmentStateRefreshPending = true
+        if !checkedApplicationWaiters.isEmpty, pendingCheckedApplication == nil {
+            pendingCheckedApplication = activeApplicationTarget.map(CheckedApplicationRequest.target) ?? .load
+        }
+        startAttachmentStateWorker()
+    }
+
+    private func startAttachmentStateWorker() {
         guard !isReplacingAttachmentSource, attachmentStateRefreshTask == nil else { return }
-        // One read and one coalesced follow-up; a noncooperative read cannot accumulate tasks.
-        attachmentStateRefreshTask = Task { [weak self, cloudSyncHandler] in
-            while let refresh = self?.beginAttachmentStateRefresh() {
+        let handler = cloudSyncHandler
+        // One application/status owner and one coalesced follow-up, including required callers.
+        attachmentStateRefreshTask = Task { [weak self, handler] in
+            while var refresh = self?.beginAttachmentStateRefresh() {
+                if let request = refresh.checkedApplication {
+                    guard let result = await self?.performCheckedApplication(request, refreshID: refresh.id) else { break }
+                    switch result {
+                    case .failure(let error):
+                        self?.failCheckedApplication(error, for: refresh)
+                        await self?.finishCheckedPass(refresh)
+                        continue
+                    case .success(let read):
+                        guard let updated = self?.checkedRefreshAfterApplication(refresh, read: read) else {
+                            await self?.finishCheckedPass(refresh)
+                            continue
+                        }
+                        refresh = updated
+                        guard let handler else {
+                            self?.completeHandlerFreeApplication(read, for: refresh)
+                            await self?.finishCheckedPass(refresh)
+                            continue
+                        }
+                        do {
+                            let observed = try await handler.checkedAttachmentStates()
+                            self?.receiveCheckedAttachmentStates(observed, read: read, for: refresh)
+                        } catch {
+                            self?.failCheckedApplication(error, for: refresh)
+                        }
+                        await self?.finishCheckedPass(refresh)
+                        continue
+                    }
+                }
+                guard let handler else { continue }
                 let isActive: Bool
                 do {
-                    isActive = try await cloudSyncHandler.isCloudSyncActive()
+                    isActive = try await handler.isCloudSyncActive()
                 } catch {
                     self?.failAttachmentStateRefresh(refresh, readingMode: true)
                     continue
                 }
                 guard self?.receiveCloudSyncMode(isActive, for: refresh) == true else { continue }
                 do {
-                    let states = try await cloudSyncHandler.syncedAttachmentStates()
+                    let states = try await handler.syncedAttachmentStates()
                     self?.receiveAttachmentTransferStates(states, for: refresh)
                 } catch {
                     self?.failAttachmentStateRefresh(refresh, readingMode: false)
@@ -1897,19 +2308,171 @@ final class IOSAppModel {
         _ = await iterator.next()
     }
 
+    private func checkedRefreshAfterApplication(
+        _ refresh: AttachmentStateRefresh, read: SnipLibraryReadObservation
+    ) -> AttachmentStateRefresh? {
+        guard cloudAttachmentKnowledge.refresh == refresh.id else { return nil }
+        return AttachmentStateRefresh(id: refresh.id, libraryRevision: libraryRevision,
+            lastKnownSource: refresh.lastKnownSource, checkedApplication: refresh.checkedApplication)
+    }
+
+    private func failCheckedApplication(_ error: any Error, for refresh: AttachmentStateRefresh) {
+        guard isCurrentAttachmentStateRefresh(refresh) else { return }
+        checkedApplicationResult = .failure(error)
+        failAttachmentStateRefresh(refresh, readingMode: true)
+    }
+
+    private func completeHandlerFreeApplication(_ read: SnipLibraryReadObservation, for refresh: AttachmentStateRefresh) {
+        guard isCurrentAttachmentStateRefresh(refresh) else { return }
+        guard read.source?.storageMode != .iCloudSync else {
+            failCheckedApplication(SnipLibraryError.transferUnsupported, for: refresh)
+            return
+        }
+        cloudAttachmentKnowledge = .known(.libraryFiles)
+        replaceAttachmentTransferStates(with: Dictionary(uniqueKeysWithValues: attachmentURLs.keys.map { ($0, .available) }))
+        checkedApplicationResult = .success(CheckedApplication(read: read, attachments: nil))
+    }
+
+    private func receiveCheckedAttachmentStates(
+        _ observation: SyncedAttachmentReadObservation, read: SnipLibraryReadObservation,
+        for refresh: AttachmentStateRefresh
+    ) {
+        guard isCurrentAttachmentStateRefresh(refresh) else { return }
+        do {
+            guard observation.source == application.source,
+                  observation.continuesApplication(read.publication),
+                  observation.matchesApplicationTarget(application.target),
+                  let publication = observation.publication else { throw SnipLibraryReadPublicationError.revoked }
+            let previous = application
+            var prepared = application
+            prepared.publication = publication
+            prepared.attachmentTransferStates = observation.states
+            prepared.cloudAttachmentKnowledge = observation.source.storageMode == .localOnly
+                ? .known(.libraryFiles) : .known(.iCloudSync(statesAreCurrent: true))
+            if observation.source.storageMode == .localOnly {
+                prepared.preparedAttachments = [:]
+                prepared.attachmentFileRevision = UUID()
+            } else {
+                prepared.preparedAttachments = prepared.preparedAttachments.filter { id, _ in
+                    guard let state = observation.states[id] else { return false }
+                    return state != .failed
+                }
+            }
+            let closing = try publication.beginApplication()
+            application = prepared
+            closing.finish()
+            for id in attachmentPreparations.keys { attachmentPreparations[id]?.reportedState = observation.states[id] }
+            withMutation(keyPath: \.attachmentTransferStates) {}
+            withMutation(keyPath: \.cloudAttachmentKnowledge) {}
+            withMutation(keyPath: \.preparedAttachments) {}
+            withMutation(keyPath: \.attachmentFileRevision) {}
+            withExtendedLifetime(previous) {}
+            checkedCatalogPublisher?.enqueue(prepared.lists, publication: publication)
+            checkedApplicationResult = .success(CheckedApplication(read: read, attachments: observation))
+        } catch {
+            failCheckedApplication(error, for: refresh)
+        }
+    }
+
+    private func finishCheckedPass(_ refresh: AttachmentStateRefresh) async {
+        guard let target = refresh.checkedApplication?.target else { return }
+        guard let result = checkedApplicationResult else {
+            if pendingCheckedApplication?.target !== target {
+                finishTargetWaiters(target, with: .failure(SnipLibraryReadPublicationError.revoked))
+                applicationCompletions.removeValue(forKey: ObjectIdentifier(target))
+                activeApplicationTarget = nil
+            }
+            return
+        }
+        var completed = result
+        if case .success(let applied) = result,
+           let context = applicationCompletions[ObjectIdentifier(target)] {
+            do { try await completeSyncApplication(applied, target: target, context: context) }
+            catch { completed = .failure(error) }
+        }
+        applicationCompletions.removeValue(forKey: ObjectIdentifier(target))
+        activeApplicationTarget = nil
+        finishTargetWaiters(target, with: completed)
+        checkedApplicationResult = completed
+    }
+
+    private func finishTargetWaiters(
+        _ target: SnipLibraryApplicationTarget, with result: Result<CheckedApplication, any Error>
+    ) {
+        let matching = checkedApplicationTargets.filter { $0.value === target }
+        for id in matching.keys {
+            checkedApplicationTargets.removeValue(forKey: id)
+            guard let continuation = checkedApplicationWaiters.removeValue(forKey: id) else { continue }
+            switch result {
+            case .success(let value): continuation.yield(value); continuation.finish()
+            case .failure(let error): continuation.finish(throwing: error)
+            }
+        }
+    }
+
+    private func completeSyncApplication(
+        _ applied: CheckedApplication, target: SnipLibraryApplicationTarget, context: SyncApplicationCompletion
+    ) async throws {
+        guard let settings = context.settings else { throw CancellationError() }
+        let prepared: SyncedContentSettingsModel.PreparedCurrentState?
+        if let issue = context.stoppedIssue {
+            prepared = settings.prepareStoppedCurrentState(issue, read: applied.read,
+                attachments: applied.attachments, for: context.start)
+        } else if let completed = context.removalCompleted {
+            prepared = settings.prepareRemovalCurrentState(completed: completed, read: applied.read,
+                attachments: applied.attachments, for: context.start)
+        } else if context.enabling {
+            prepared = settings.prepareEnabledCurrentState(read: applied.read, attachments: applied.attachments, for: context.start)
+        } else { return }
+        guard let prepared else { throw SnipLibraryReadPublicationError.revoked }
+        guard application.source == target.source,
+              let publication = applied.attachments?.publication ?? applied.read.publication else {
+            throw SnipLibraryReadPublicationError.revoked
+        }
+        let closing = try publication.beginApplication()
+        let installed = settings.installPreparedCurrentState(prepared, within: closing)
+        closing.finish()
+        guard installed else { throw SnipLibraryReadPublicationError.revoked }
+        settings.notifyInstalledCurrentState(prepared)
+        if context.stoppedIssue != nil {
+            guard let clipboard = context.clipboard else { throw CancellationError() }
+            clipboard.stop()
+            await clipboard.resetAccountBinding()
+        }
+    }
+
     private func finishAttachmentStateRefresh() {
         attachmentStateRefreshTask = nil
+        activeApplicationTarget = nil
+        applicationCompletions.removeAll()
         guard !isReplacingAttachmentSource else { return }
         let waiters = Array(attachmentStateRefreshWaiters.values)
         attachmentStateRefreshWaiters.removeAll()
         for waiter in waiters { waiter.finish() }
+        for target in Array(checkedApplicationTargets.values) {
+            finishTargetWaiters(target, with: .failure(SnipLibraryReadPublicationError.revoked))
+        }
+        let checked = Array(checkedApplicationWaiters.values)
+        checkedApplicationWaiters.removeAll()
+        checkedApplicationTargets.removeAll()
+        let result = checkedApplicationResult ?? .failure(CancellationError())
+        checkedApplicationResult = nil
+        for waiter in checked {
+            switch result {
+            case .success(let value): waiter.yield(value); waiter.finish()
+            case .failure(let error): waiter.finish(throwing: error)
+            }
+        }
     }
 
     private func beginAttachmentStateRefresh() -> AttachmentStateRefresh? {
         guard !isReplacingAttachmentSource, attachmentStateRefreshPending, !Task.isCancelled else { return nil }
         attachmentStateRefreshPending = false
         let refresh = AttachmentStateRefresh(id: UUID(), libraryRevision: libraryRevision,
-            lastKnownSource: cloudAttachmentKnowledge.lastKnownSource)
+            lastKnownSource: cloudAttachmentKnowledge.lastKnownSource, checkedApplication: pendingCheckedApplication)
+        pendingCheckedApplication = nil
+        activeApplicationTarget = refresh.checkedApplication?.target
+        if refresh.checkedApplication != nil { checkedApplicationResult = nil }
         cloudAttachmentKnowledge = .unknown(lastKnown: refresh.lastKnownSource, refresh: refresh.id)
         return refresh
     }
@@ -1986,9 +2549,9 @@ final class IOSAppModel {
     }
 
     private func withSerializedMutation<Result: Sendable>(
-        _ operation: @MainActor @Sendable () async -> Result
-    ) async -> Result {
-        await session.withExclusiveAccess { _ in await operation() }
+        _ operation: @MainActor @Sendable () async throws -> Result
+    ) async rethrows -> Result {
+        try await session.withExclusiveAccess { _ in try await operation() }
     }
 
     private func scheduleCloudSync() {
@@ -1999,6 +2562,7 @@ final class IOSAppModel {
     deinit {
         attachmentStateRefreshTask?.cancel()
         for waiter in attachmentStateRefreshWaiters.values { waiter.finish() }
+        for waiter in checkedApplicationWaiters.values { waiter.finish(throwing: CancellationError()) }
     }
 
 }

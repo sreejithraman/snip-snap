@@ -38,6 +38,11 @@ package struct CloudFullSyncOutcome: Sendable {
   package let settled: Bool
 }
 
+package protocol CloudFullCurrentSyncReading: CloudFullSyncStore {
+  func checkedCurrentStatus(requiresInitialFetch: Bool, runIssue: SyncedContentSyncIssue?,
+    hasQueuedEvent: Bool) async throws -> SyncedContentCurrentSyncObservation
+}
+
 /// Owns commit order, checkpoint durability, and the outcome of each request.
 package actor CloudFullSyncCoordinator {
   private struct RunState {
@@ -103,6 +108,8 @@ package actor CloudFullSyncCoordinator {
   private let diagnostics: AppDiagnosticRecorder
   private let operationGate = AsyncOperationGate()
   private var session = EngineSession.stopped(requiresInitialFetch: true)
+  private var lastCompletedRun: Result<RunState, any Error>?
+  private var checkpointPublication: SnipLibraryReadPublication?
 
   package init(
     store: any CloudFullSyncStore,
@@ -173,6 +180,31 @@ package actor CloudFullSyncCoordinator {
       schedulingRequest: false)
   }
 
+  package func checkedCurrentCheckpoint() async throws -> SyncedContentCurrentSyncObservation {
+    try await operationGate.withLease { try await self.checkedCurrentCheckpointSerially() }
+  }
+
+  private func checkedCurrentCheckpointSerially() async throws -> SyncedContentCurrentSyncObservation {
+    try Task.checkCancellation()
+    guard let completed = lastCompletedRun,
+      let reader = store as? any CloudFullCurrentSyncReading else { throw SnipLibraryError.transferUnsupported }
+    let runIssue: SyncedContentSyncIssue?
+    switch completed {
+    case .success(let actualRun): runIssue = actualRun.issue
+    case .failure(let error):
+      if isDiagnosticCancellation(error) { throw error }
+      runIssue = SnipSnapCloudSyncIssueMapper.issue(for: error)
+    }
+    let queued = await transport.pendingEvent() != nil
+    let observation = try await reader.checkedCurrentStatus(requiresInitialFetch: session.requiresInitialFetch,
+      runIssue: runIssue, hasQueuedEvent: queued)
+    checkpointPublication = observation.publication
+    if await transport.pendingEvent() != nil, !queued {
+      observation.publication?.revoke()
+    }
+    return observation
+  }
+
   package func prepareManualRetry(
     beforeApply: @escaping @Sendable () async throws -> Void = {},
     beforeStateSave: @escaping @Sendable () async throws -> Void = {}
@@ -206,7 +238,13 @@ package actor CloudFullSyncCoordinator {
     schedulingRequest: Bool
   ) async throws -> CloudFullSyncOutcome {
     try await operationGate.withLease {
-      try await self.automaticWorkSerially(beforeApply: beforeApply, beforeStateSave: beforeStateSave, schedulingRequest: schedulingRequest)
+      await self.retireCurrentCheckpoint()
+      do {
+        return try await self.automaticWorkSerially(beforeApply: beforeApply, beforeStateSave: beforeStateSave, schedulingRequest: schedulingRequest)
+      } catch {
+        await self.recordCurrentRunFailure(error)
+        throw error
+      }
     }
   }
 
@@ -242,9 +280,25 @@ package actor CloudFullSyncCoordinator {
     beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
   ) async throws -> CloudFullSyncOutcome {
     try await operationGate.withLease {
-      try await self.runSerially(fetch: fetch, send: send, drainOutbound: drainOutbound,
-        inspectSettlement: inspectSettlement, beforeApply: beforeApply, beforeSend: beforeSend)
+      await self.retireCurrentCheckpoint()
+      do {
+        return try await self.runSerially(fetch: fetch, send: send, drainOutbound: drainOutbound,
+          inspectSettlement: inspectSettlement, beforeApply: beforeApply, beforeSend: beforeSend)
+      } catch {
+        await self.recordCurrentRunFailure(error)
+        throw error
+      }
     }
+  }
+
+  package func recordCurrentRunFailure(_ error: any Error) {
+    retireCurrentCheckpoint()
+    lastCompletedRun = .failure(error)
+  }
+
+  private func retireCurrentCheckpoint() {
+    checkpointPublication?.revoke()
+    checkpointPublication = nil
   }
 
   private func runSerially(
@@ -473,6 +527,15 @@ package actor CloudFullSyncCoordinator {
     } else {
       CloudFullSyncStatus.pending
     }
+    lastCompletedRun = .success(state)
+    return projectOutcome(for: state, currentStatus: currentStatus, includeStoredStatus: includeStoredStatus)
+  }
+
+  private func projectOutcome(
+    for state: RunState,
+    currentStatus: CloudFullSyncStatus,
+    includeStoredStatus: Bool
+  ) -> CloudFullSyncOutcome {
     let requiresInitialFetch = session.requiresInitialFetch
     let stored: CloudFullSyncStatus
     if includeStoredStatus {
@@ -537,7 +600,7 @@ package actor CloudFullSyncCoordinator {
 
 }
 
-package actor CloudFullSyncPersistence: CloudFullSyncStore {
+package actor CloudFullSyncPersistence: CloudFullSyncStore, CloudFullCurrentSyncReading {
   package typealias ApplyHook = @Sendable () async throws -> Void
 
   struct RawStagedBatch: Codable, Equatable, Sendable {
@@ -563,6 +626,11 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
+
+  final class CurrentStatusReadCapture: @unchecked Sendable {
+    var snapshot: SnipLibrarySnapshot?
+    var attachmentStates: [UUID: SyncedAttachmentTransferState]?
+  }
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -591,6 +659,28 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
 }
 
 extension CloudFullSyncPersistence {
+  package func checkedCurrentStatus(
+    requiresInitialFetch: Bool, runIssue: SyncedContentSyncIssue?, hasQueuedEvent: Bool
+  ) async throws -> SyncedContentCurrentSyncObservation {
+    guard let mutationLease else { throw SnipLibraryError.transferUnsupported }
+    return try await mutationLease.runCurrentStatusRead { reservation in
+      let capture = CurrentStatusReadCapture()
+      let status = try await self.currentStatusWithinMutation(capturing: capture)
+      let issue: SyncedContentSyncIssue?
+      let settled: Bool
+      switch status {
+      case .purged: throw CloudRecordWorkError.replaced
+      case .issue(let current): issue = current; settled = false
+      case .pending: issue = runIssue; settled = false
+      case .settled: issue = runIssue; settled = !requiresInitialFetch && !hasQueuedEvent && runIssue == nil
+      }
+      let recovery = try await self.library.recoverySnapshot(in: SnipRecoveryScope(self.namespaceKey.rawValue))
+      return try await mutationLease.captureCurrentStatus(issue: issue, settled: settled,
+        namespaceKey: self.namespaceKey.rawValue, snapshot: capture.snapshot, recovery: recovery,
+        files: capture.snapshot.map { SnipLibraryFileObservations.read($0) }, states: capture.attachmentStates, reservation: reservation)
+    }
+  }
+
   func mutate<Value: Sendable>(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
     if let mutationLease { return try await mutationLease.run(operation) }
     return try await operation()

@@ -1,5 +1,7 @@
 import Foundation
 import CryptoKit
+import Observation
+import Synchronization
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
@@ -847,5 +849,607 @@ private final class OwnerNormalScheduleSignal: @unchecked Sendable {
       group.cancelAll()
       return result
     }
+  }
+}
+
+
+extension CloudAppAccountOwnershipTests {
+  func testCheckedAttachmentReadPairsRealPublicationStatesWithItsManagedSource() async throws {
+    let server = FakeCloudServer()
+    let fixture = try await Fixture.make(makeAttachmentCoordinator: { library, namespace, descriptor in
+      CloudAttachmentTransferCoordinator(library: library, namespace: namespace,
+        payloadZone: descriptor.payloadZone,
+        transport: FakeCloudRecordTransport(server: server, namespace: namespace), maximumCacheBytes: 0)
+    }, normalScheduling: OwnerNormalScheduleProbe())
+    let storage = try await fixture.persistence.snapshot()
+    let binding = try XCTUnwrap(storage.activeStore.namespace)
+    let sourceFile = fixture.root.appendingPathComponent("waiting.txt")
+    try Data("literal pending attachment".utf8).write(to: sourceFile)
+    let managed = try await fixture.persistence.activeLibrary()
+    let added = try await managed.perform(.add(content: "Pending attachment", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [sourceFile], requestID: UUID(), now: .distantPast),
+      sortedBy: .manual)
+    let attachmentID = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+    let raw = try await fixture.persistence.libraryForTransition(storeID: storage.activeStore.id)
+    try await raw.reconcileCloudAttachments(namespaceKey: binding.namespaceKey,
+      metadataZoneName: fixture.descriptor.metadataZone.name, metadataOwnerName: "owner",
+      payloadZoneName: fixture.descriptor.payloadZone.name, payloadOwnerName: "owner")
+
+    let content = try await SavedSnipsSession(library: managed).checkedRead(sortedBy: .manual)
+    let observed = try await fixture.handler.checkedAttachmentStates()
+
+    XCTAssertTrue(observed.continuesApplication(content.publication))
+    XCTAssertTrue(observed.matchesApplicationTarget(content.target))
+    XCTAssertEqual(observed.source.storeID, storage.activeStore.id)
+    XCTAssertEqual(observed.source.storageMode, .iCloudSync)
+    XCTAssertEqual(observed.source.namespaceKey, fixture.namespace.namespaceKey.rawValue)
+    XCTAssertEqual(observed.states, [attachmentID: .waiting])
+    let publications = try await raw.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+    let publication = try XCTUnwrap(publications.publications.first)
+    try await raw.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey,
+      transitions: [.operationFailed(attachmentID: attachmentID,
+        expectedRevision: publication.revision, failure: .quotaExceeded)])
+    let failed = try await fixture.handler.checkedAttachmentStates()
+    XCTAssertEqual(failed.source, observed.source)
+    XCTAssertEqual(failed.states, [attachmentID: .failed], "A failed VALUE still completes the checked read")
+    try await raw.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey,
+      transitions: [.remoteMetadataAccepted(metadata: publication.metadata,
+        metadataIdentity: publication.metadataIdentity, shadowData: Data(), systemFields: Data())])
+    let available = try await fixture.handler.checkedAttachmentStates()
+    XCTAssertEqual(available.source, observed.source)
+    XCTAssertEqual(available.states, [attachmentID: .available])
+    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+    let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["Pending attachment"])
+    XCTAssertEqual(durable.snips.first?.attachments.first?.id, attachmentID)
+  }
+
+  func testCheckedLocalAttachmentReadUsesTheActualLocalSourceWithoutCloudLookup() async throws {
+    let fixture = try await Fixture.make(normalScheduling: OwnerNormalScheduleProbe())
+    try await fixture.persistence.activateEmptyCollection(namespace: nil)
+    let managed = try await fixture.persistence.activeLibrary()
+    try await Self.add("Local checked content", to: managed)
+    let local = try await fixture.persistence.snapshot().activeStore
+    let accountCalls = await fixture.account.lookupCount()
+    let controlCalls = await fixture.control.fetchCount()
+
+    let observed = try await fixture.handler.checkedAttachmentStates()
+
+    XCTAssertEqual(observed.source.storeID, local.id)
+    XCTAssertEqual(observed.source.storageMode, .localOnly)
+    XCTAssertNil(observed.source.namespaceKey)
+    XCTAssertTrue(observed.states.isEmpty)
+    let afterAccountCalls = await fixture.account.lookupCount()
+    let afterControlCalls = await fixture.control.fetchCount()
+    XCTAssertEqual(afterAccountCalls, accountCalls)
+    XCTAssertEqual(afterControlCalls, controlCalls)
+    let durable = try await managed.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["Local checked content"])
+  }
+
+  func testCheckedAttachmentReadPropagatesTheActualControlError() async throws {
+    let fixture = try await Fixture.make(normalScheduling: OwnerNormalScheduleProbe())
+    await fixture.control.rejectFetches()
+    do {
+      _ = try await fixture.handler.checkedAttachmentStates()
+      XCTFail("A failed source resolution is not an empty checked read.")
+    } catch { XCTAssertEqual(error as? CloudTransportError, .fetchFailed) }
+  }
+
+  @MainActor
+  func testCurrentCheckpointUsesTheExistingNormalOwnerAndRejectsItsReplacement() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    let source = try await fixture.handler.checkedAttachmentStates().source
+    do {
+      _ = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+      XCTFail("A checkpoint must not create a normal owner.")
+    } catch CloudRecordWorkError.replaced {}
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let transfers = await fixture.recordTransport.events()
+
+    let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+
+    XCTAssertEqual(current.source, source)
+    XCTAssertNil(current.issue)
+    XCTAssertTrue(current.settled)
+    let after = await fixture.recordTransport.events()
+    XCTAssertEqual(after, transfers, "A checkpoint must not fetch or send another batch")
+    try await fixture.persistence.activateEmptyCollection(namespace: nil)
+    do {
+      _ = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+      XCTFail("A retired normal owner must not confirm the new local store.")
+    } catch CloudRecordWorkError.replaced {}
+    let final = await fixture.recordTransport.events()
+    XCTAssertEqual(final, transfers)
+  }
+
+  @MainActor
+  func testInstalledCurrentStatusNotifiesWithoutReplayingOverAReentrantStop() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let source = try await fixture.handler.checkedAttachmentStates().source
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+    let start = settings.recordSyncStarted()
+    let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+    let prepared = try XCTUnwrap(settings.prepareCurrentState(current, for: start))
+    let changes = Mutex(0)
+    withObservationTracking {
+      _ = settings.state
+      _ = settings.detail
+      _ = settings.canSyncNow
+    } onChange: {
+      changes.withLock { $0 += 1 }
+      MainActor.assumeIsolated { settings.recordSyncStopped(.iCloudAccountChanged) }
+    }
+
+    let closing = try XCTUnwrap(current.publication).beginApplication()
+    let installed = settings.installPreparedCurrentState(prepared, within: closing)
+    closing.finish()
+
+    XCTAssertTrue(installed)
+    XCTAssertEqual(settings.state, .ready, "Public getters read the silent authoritative install")
+    XCTAssertEqual(changes.withLock { $0 }, 0, "Installing under ownership cannot notify observers")
+    settings.notifyInstalledCurrentState(prepared)
+    XCTAssertEqual(changes.withLock { $0 }, 1)
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .failed(.iCloudAccountChanged))
+    XCTAssertEqual(settings.detail,
+      "Your previous account’s snips stay separate. Choose whether to keep them before syncing again.")
+  }
+
+  @MainActor
+  func testPreparedCurrentStatusCannotOverwriteAStopOrANewerOperation() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let source = try await fixture.handler.checkedAttachmentStates().source
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+    let start = settings.recordSyncStarted()
+    let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+    let prepared = try XCTUnwrap(settings.prepareCurrentState(current, for: start))
+    _ = settings.recordSyncStarted()
+    let closing = try XCTUnwrap(current.publication).beginApplication()
+    let installed = settings.installPreparedCurrentState(prepared, within: closing)
+    closing.finish()
+    XCTAssertFalse(installed, "A newer operation invalidates preparation even with the same visible state")
+    XCTAssertEqual(settings.state, .syncing)
+    settings.recordSyncStopped(.signInRequired)
+    XCTAssertNil(settings.prepareCurrentState(current, for: start))
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .failed(.signInRequired))
+  }
+
+  @MainActor
+  func testPreparedCurrentStatusCannotCompleteANewerRemoval() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let source = try await fixture.handler.checkedAttachmentStates().source
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    let start = settings.recordSyncStarted()
+    let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+    let prepared = try XCTUnwrap(settings.prepareCurrentState(current, for: start))
+    settings.recordRemovalCompleted(start)
+    XCTAssertEqual(settings.state, .deleted)
+    settings.recordRemovalPending()
+    let closing = try XCTUnwrap(current.publication).beginApplication()
+    let installed = settings.installPreparedCurrentState(prepared, within: closing)
+    closing.finish()
+    XCTAssertFalse(installed)
+    XCTAssertEqual(settings.state, .removalPending)
+    XCTAssertTrue(settings.canFinishDeleting)
+    XCTAssertNil(settings.finishDeletingIssue)
+  }
+}
+
+extension CloudAppAccountOwnershipTests {
+  @MainActor
+  func testCheckedAttachmentReadPublishesItsActualResultOnlyAfterSuccessfulRelease() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    let library = try await fixture.persistence.activeLibrary()
+    let session = SavedSnipsSession(library: library)
+    let before = try await session.checkedRead(sortedBy: .manual)
+    let observed = try await fixture.handler.checkedAttachmentStates()
+    XCTAssertEqual(observed.source, before.source)
+    XCTAssertEqual(observed.states, [:])
+    XCTAssertTrue(observed.continuesApplication(before.publication))
+    let closing = try XCTUnwrap(observed.publication).beginApplication()
+    closing.finish()
+    let storage = try await fixture.persistence.snapshot()
+    XCTAssertFalse(storage.hasActiveMutationReservation)
+    try await Self.add("available after checked release", to: library)
+    let durable = try await session.checkedRead(sortedBy: .manual)
+    XCTAssertEqual(durable.snapshot.snips.map(\.content), ["available after checked release"])
+    await fixture.cleanUp()
+  }
+
+  @MainActor
+  func testQueuedManagedWriterRevokesTheSameAttachmentResultBeforeItsContentWrite() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make(holdRead: true)
+    let library = try await fixture.persistence.activeLibrary()
+    var response: Result<SyncedAttachmentReadObservation, any Error>?
+    let read = fixture.start {
+      do { response = .success(try await fixture.handler.checkedAttachmentStates()) }
+      catch { response = .failure(error) }
+    }
+    if await fixture.ready(fixture.readPause.entered, "actual transfer-state read") {
+      fixture.fault.holdWriter = true
+      let writer = fixture.start {
+        do { try await Self.add("winning queued content", to: library) }
+        catch { XCTFail("Queued durable write failed: \(error)") }
+      }
+      if await fixture.ready(fixture.queued, "managed write admission behind the actual read") {
+        fixture.readPause.release()
+        if await fixture.ready(fixture.writerPause.entered, "winning writer before its content operation"),
+           await fixture.complete(read, "same read result returned after FIFO grant") {
+          do {
+            let observed = try XCTUnwrap(response).get()
+            XCTAssertEqual(observed.states, [:])
+            do {
+              let closing = try XCTUnwrap(observed.publication).beginApplication()
+              closing.finish()
+              XCTFail("The winning FIFO writer must already have revoked this exact read result")
+            } catch SnipLibraryReadPublicationError.revoked {}
+            let stillBeforeWrite = try await library.checkedSnapshot(sortedBy: .manual)
+            XCTAssertTrue(stillBeforeWrite.snips.isEmpty)
+          } catch { XCTFail("The completed read must preserve its successful value: \(error)") }
+        }
+        fixture.writerPause.release()
+        if await fixture.complete(writer, "queued writer commits after test release") {
+          do {
+            let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+            let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(durable.snips.map(\.content), ["winning queued content"])
+          } catch { XCTFail("Independent durable read failed: \(error)") }
+        }
+      }
+    }
+    await fixture.cleanUp()
+  }
+
+  @MainActor
+  func testAttachmentOperationErrorWinsOverItsReservationClearFault() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    let original = CheckedOwnerReadFailure()
+    fixture.fault.operationError = original
+    fixture.fault.armClearFailure = true
+    do {
+      _ = try await fixture.handler.checkedAttachmentStates()
+      XCTFail("An operation error cannot return a checked value")
+    } catch { XCTAssertTrue((error as AnyObject) === original) }
+    XCTAssertEqual(fixture.fault.clearAttempts, 1)
+    let library = try await fixture.persistence.activeLibrary()
+    try await Self.add("local recovery after operation failure", to: library)
+    let durable = try await library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["local recovery after operation failure"])
+    await fixture.cleanUp()
+  }
+
+  @MainActor
+  func testSuccessfulAttachmentReadRetainsItsFirstClearErrorWhenCleanupRetrySucceeds() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    fixture.fault.armClearFailure = true
+    do {
+      _ = try await fixture.handler.checkedAttachmentStates()
+      XCTFail("A successful cleanup retry cannot grant an unreturned read result")
+    } catch { XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure) }
+    XCTAssertEqual(fixture.fault.clearAttempts, 2)
+    let storage = try await fixture.persistence.snapshot()
+    XCTAssertFalse(storage.hasActiveMutationReservation)
+    let actual = try await fixture.handler.checkedAttachmentStates()
+    XCTAssertEqual(actual.states, [:])
+    let closing = try XCTUnwrap(actual.publication).beginApplication()
+    closing.finish()
+    await fixture.cleanUp()
+  }
+
+  @MainActor
+  func testAttachmentReadPublishedBeforeClearErrorReturnsNoResultAndKeepsLocalWorkWritable() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    fixture.fault.armClearFailure = true
+    fixture.fault.writeThenFail = true
+    do {
+      _ = try await fixture.handler.checkedAttachmentStates()
+      XCTFail("A manifest published before its error is still a failed checked read")
+    } catch { XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure) }
+    XCTAssertEqual(fixture.fault.clearAttempts, 2)
+    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+    let storage = try await reopened.snapshot()
+    XCTAssertFalse(storage.hasActiveMutationReservation)
+    let local = try await reopened.activeLibrary()
+    try await Self.add("writable after uncertain release", to: local)
+    let durable = try await local.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["writable after uncertain release"])
+    await fixture.cleanUp()
+  }
+}
+
+private final class CheckedOwnerReadFailure: Error, @unchecked Sendable {}
+
+private final class CheckedOwnerReadFault: @unchecked Sendable {
+  private let lock = NSLock()
+  private var error: CheckedOwnerReadFailure?
+  private var arm = false
+  private var armed = false
+  private var attempts = 0
+  private var failAfterWrite = false
+  private var writerHeld = false
+  private var stateReads = 0
+  var stateReadCount: Int { lock.withLock { stateReads } }
+  func enteredStateRead() { lock.withLock { stateReads += 1 } }
+  var operationError: CheckedOwnerReadFailure? {
+    get { lock.withLock { error } }
+    set { lock.withLock { error = newValue } }
+  }
+  var armClearFailure: Bool {
+    get { lock.withLock { arm } }
+    set { lock.withLock { arm = newValue } }
+  }
+  var writeThenFail: Bool {
+    get { lock.withLock { failAfterWrite } }
+    set { lock.withLock { failAfterWrite = newValue } }
+  }
+  var holdWriter: Bool {
+    get { lock.withLock { writerHeld } }
+    set { lock.withLock { writerHeld = newValue } }
+  }
+  var clearAttempts: Int { lock.withLock { attempts } }
+  func returnedActualStates() throws {
+    let failure = lock.withLock { armed = arm; return error }
+    if let failure { throw failure }
+  }
+  func write(_ data: Data, _ url: URL) throws {
+    let action = lock.withLock { () -> (fail: Bool, after: Bool) in
+      guard armed else { return (false, false) }
+      attempts += 1
+      return (attempts == 1, failAfterWrite)
+    }
+    if action.fail && !action.after { throw CheckedOwnerReadFailure() }
+    try DurableFile.write(data, to: url)
+    if action.fail { throw CheckedOwnerReadFailure() }
+  }
+}
+
+private actor CheckedOwnerAttachmentReader: CloudAttachmentTransferring {
+  let base: CloudAttachmentTransferCoordinator
+  let fault: CheckedOwnerReadFault
+  let pause: OwnerControlTransport.FetchPause?
+  init(base: CloudAttachmentTransferCoordinator, fault: CheckedOwnerReadFault,
+       pause: OwnerControlTransport.FetchPause?) { self.base = base; self.fault = fault; self.pause = pause }
+  func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+    try await base.prepare(attachmentID: attachmentID, for: use)
+  }
+  func clearDownloads() async throws { try await base.clearDownloads() }
+  func transferStates() async throws -> [UUID: CloudAttachmentTransferState] {
+    fault.enteredStateRead()
+    let actual = try await base.transferStates()
+    try fault.returnedActualStates()
+    try await pause?.suspend()
+    return actual
+  }
+}
+
+@MainActor
+private final class CheckedOwnerReadFixture {
+  struct Work {
+    let task: Task<Void, Never>
+    let finished: OwnerNormalScheduleSignal
+  }
+  let root: URL
+  let persistence: SwiftDataSyncModePersistence
+  let handler: AppleAccountCacheCoordinatorHandler
+  let lifecycle: SnipSnapICloudSyncLifecycle
+  let recordTransport: FakeCloudRecordTransport
+  let fault: CheckedOwnerReadFault
+  let readPause: OwnerControlTransport.FetchPause
+  let writerPause: OwnerControlTransport.FetchPause
+  let queued: OwnerNormalScheduleSignal
+  private var work: [Work] = []
+  private var retainedAfterFailedJoin: CheckedOwnerReadFixture?
+
+  init(root: URL, persistence: SwiftDataSyncModePersistence, handler: AppleAccountCacheCoordinatorHandler,
+       lifecycle: SnipSnapICloudSyncLifecycle, recordTransport: FakeCloudRecordTransport,
+       fault: CheckedOwnerReadFault, readPause: OwnerControlTransport.FetchPause,
+       writerPause: OwnerControlTransport.FetchPause, queued: OwnerNormalScheduleSignal) {
+    self.root = root; self.persistence = persistence; self.handler = handler; self.fault = fault
+    self.lifecycle = lifecycle; self.recordTransport = recordTransport
+    self.readPause = readPause; self.writerPause = writerPause; self.queued = queued
+  }
+  static func make(holdRead: Bool = false) async throws -> CheckedOwnerReadFixture {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CheckedOwnerRead-\(UUID())")
+    NSLog("CheckedOwnerRead retained store root: %@", root.path)
+    let fault = CheckedOwnerReadFault()
+    let readPause = OwnerControlTransport.FetchPause()
+    let writerPause = OwnerControlTransport.FetchPause()
+    let queued = OwnerNormalScheduleSignal()
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root, manifestWriter: fault.write,
+      writeHook: { point in
+        if point == .afterRevisionReserved, fault.holdWriter { try await writerPause.suspend() }
+      }, diagnostics: AppDiagnosticRecorder { event in
+        if event.operation == "library.write_admission", event.outcome == .started,
+           event.writeReason == .syncBusy { queued.fire() }
+      })
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
+    let account = OwnerAccountSource()
+    let server = FakeCloudServer()
+    let coordinator = ICloudSyncModeCoordinator(persistence: persistence, namespace: namespace,
+      textZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone,
+      makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }, accountStateSource: account)
+    _ = try await coordinator.enableOrRetry()
+    let control = FakeCloudControlTransport(server: server)
+    await control.seedControl(descriptor)
+    let recordTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+    let lifecycle = SnipSnapICloudSyncLifecycle(rootURL: root, sourceLibrary: try await persistence.activeLibrary(),
+      syncModeStore: SnipSyncModeStore(persistence), cloudScope: "private", accountLineage: "account-a",
+      accountStateSource: account, ownerName: "owner", controlTransport: control,
+      makeRecordTransport: { _ in recordTransport },
+      makeDescriptor: { descriptor })
+    let handler = lifecycle.makeAccountCacheHandler(operationGate: AsyncOperationGate(),
+      makeAttachmentCoordinator: { library, namespace, descriptor in
+        CheckedOwnerAttachmentReader(base: CloudAttachmentTransferCoordinator(library: library, namespace: namespace,
+          payloadZone: descriptor.payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace),
+          maximumCacheBytes: 0), fault: fault, pause: holdRead ? readPause : nil)
+      })
+    return CheckedOwnerReadFixture(root: root, persistence: persistence, handler: handler,
+      lifecycle: lifecycle, recordTransport: recordTransport, fault: fault,
+      readPause: readPause, writerPause: writerPause, queued: queued)
+  }
+  func start(_ operation: @escaping @MainActor () async -> Void) -> Work {
+    let finished = OwnerNormalScheduleSignal()
+    let task = Task { await operation(); finished.fire() }
+    let owned = Work(task: task, finished: finished)
+    work.append(owned)
+    return owned
+  }
+  func ready(_ expectation: XCTestExpectation, _ stage: String) async -> Bool {
+    let ready = await XCTWaiter.fulfillment(of: [expectation], timeout: 30) == .completed
+    XCTAssertTrue(ready, "Checked read setup failed: \(stage)")
+    return ready
+  }
+  func ready(_ signal: OwnerNormalScheduleSignal, _ stage: String) async -> Bool {
+    let ready = await signal.wait(for: .seconds(30))
+    XCTAssertTrue(ready, "Checked read setup failed: \(stage)")
+    return ready
+  }
+  func complete(_ owned: Work, _ stage: String) async -> Bool {
+    let completed = await owned.finished.wait(for: .seconds(2))
+    XCTAssertTrue(completed, "Checked read prompt completion failed: \(stage)")
+    return completed
+  }
+  func cleanUp() async {
+    readPause.release(); writerPause.release()
+    work.forEach { $0.task.cancel() }
+    let deadline = ContinuousClock.now + .seconds(30)
+    var joined = true
+    for owned in work {
+      let settled = await owned.finished.wait(for: ContinuousClock.now.duration(to: deadline))
+      XCTAssertTrue(settled, "Checked read cleanup failed to join its caller")
+      joined = joined && settled
+      if settled { await owned.task.value }
+    }
+    if joined { work.removeAll() }
+    else { retainedAfterFailedJoin = self; NSLog("CheckedOwnerRead retained live work/root: %@", root.path) }
+  }
+}
+
+extension CloudAppAccountOwnershipTests {
+  @MainActor
+  func testCancelledQueuedWriterCannotRevokeTheReleasedReadOrBlockLaterLocalWork() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make(holdRead: true)
+    let library = try await fixture.persistence.activeLibrary()
+    var response: Result<SyncedAttachmentReadObservation, any Error>?
+    var cancelled = false
+    let read = fixture.start {
+      do { response = .success(try await fixture.handler.checkedAttachmentStates()) }
+      catch { response = .failure(error) }
+    }
+    if await fixture.ready(fixture.readPause.entered, "actual checked attachment owner") {
+      let writer = fixture.start {
+        do { try await Self.add("cancelled queued text", to: library); XCTFail("Cancelled writer committed") }
+        catch is CancellationError { cancelled = true }
+        catch { XCTFail("Queued cancellation changed error identity: \(error)") }
+      }
+      if await fixture.ready(fixture.queued, "actual queued write") {
+        writer.task.cancel()
+        if await fixture.complete(writer, "cancelled queued caller before read release") {
+          XCTAssertTrue(cancelled)
+          XCTAssertTrue(fixture.readPause.isHeld)
+          XCTAssertFalse(read.finished.isSet)
+          fixture.readPause.release()
+          if await fixture.complete(read, "read release after queue cancellation") {
+            do {
+              let observed = try XCTUnwrap(response).get()
+              XCTAssertEqual(observed.states, [:])
+              let closing = try XCTUnwrap(observed.publication).beginApplication()
+              closing.finish()
+              try await Self.add("local text after cancelled queue", to: library)
+              let durable = try await library.checkedSnapshot(sortedBy: .manual)
+              XCTAssertEqual(durable.snips.map(\.content), ["local text after cancelled queue"])
+            } catch { XCTFail("Cancelled queue must preserve the real read and local availability: \(error)") }
+          }
+        }
+      }
+    }
+    await fixture.cleanUp()
+  }
+
+  @MainActor
+  func testCancellationBeforeCheckedHandlerAdmissionRunsNoAttachmentRead() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    var cancelled = false
+    let caller = fixture.start {
+      withUnsafeCurrentTask { $0?.cancel() }
+      do {
+        _ = try await fixture.handler.checkedAttachmentStates()
+        XCTFail("A cancelled caller cannot enter the checked read")
+      } catch is CancellationError { cancelled = true }
+      catch { XCTFail("Admission cancellation changed error identity: \(error)") }
+    }
+    if await fixture.complete(caller, "cancellation before actual admission") {
+      XCTAssertTrue(cancelled)
+      XCTAssertEqual(fixture.fault.stateReadCount, 0)
+      do {
+        let library = try await fixture.persistence.activeLibrary()
+        try await Self.add("available after pre-admission cancellation", to: library)
+        let durable = try await library.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(durable.snips.map(\.content), ["available after pre-admission cancellation"])
+      } catch { XCTFail("Pre-admission cancellation cannot reserve local content: \(error)") }
+    }
+    await fixture.cleanUp()
+  }
+}
+
+extension CloudAppAccountOwnershipTests {
+  @MainActor
+  func testRetiringTheActualSourceRejectsPreparedCurrentStatusBeforeInstallation() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let source = try await fixture.handler.checkedAttachmentStates().source
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+    let start = settings.recordSyncStarted()
+    let current = try await fixture.handler.checkedCurrentSyncStatus(for: source)
+    let prepared = try XCTUnwrap(settings.prepareCurrentState(current, for: start))
+    try await fixture.persistence.activateEmptyCollection(namespace: nil)
+    let actualReplacement = try await fixture.persistence.snapshot().activeStore
+    XCTAssertNotEqual(actualReplacement.id, source.storeID)
+    var installed = false
+    do {
+      let closing = try XCTUnwrap(current.publication).beginApplication()
+      installed = settings.installPreparedCurrentState(prepared, within: closing)
+      closing.finish()
+      XCTFail("The actual source replacement must retire this publication before its Settings install")
+    } catch SnipLibraryReadPublicationError.revoked {}
+    XCTAssertFalse(installed)
+    XCTAssertEqual(settings.mode, .iCloudSync)
+    XCTAssertEqual(settings.state, .syncing)
+    XCTAssertEqual(settings.detail, "Checking for changes…")
+    let managed = try await fixture.persistence.activeLibrary()
+    try await Self.add("replacement remains writable", to: managed)
+    let durable = try await managed.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["replacement remains writable"])
+  }
+}
+
+extension CloudAppAccountOwnershipTests {
+  @MainActor
+  func testEnableTargetDoesNotTurnActualModeAttentionIntoSuccess() async throws {
+    let fixture = try await CheckedOwnerReadFixture.make()
+    let original = try await fixture.persistence.snapshot().activeStore
+    let originalNamespace = try XCTUnwrap(original.namespace)
+    let initial = try await fixture.lifecycle.enableICloudSyncWithTarget()
+    XCTAssertEqual(initial.outcome, .enabled)
+    XCTAssertEqual(initial.target?.application.source.storeID, original.id)
+    XCTAssertEqual(initial.target?.namespace, originalNamespace)
+    try await fixture.persistence.recordAttention(.terminalFetchFailure)
+
+    do {
+      _ = try await fixture.lifecycle.enableICloudSyncWithTarget()
+      XCTFail("An actual original target cannot suppress a live needs-attention result")
+    } catch CloudCollectionError.syncNeedsAttention {}
+
+    XCTAssertTrue(PendingICloudSyncEnable.needsAttention(at: fixture.root))
+    let after = try await fixture.persistence.snapshot()
+    XCTAssertEqual(after.activeStore.id, original.id)
+    XCTAssertEqual(after.activeStore.namespace, originalNamespace)
+    XCTAssertEqual(after.attentionReason, .terminalFetchFailure)
   }
 }

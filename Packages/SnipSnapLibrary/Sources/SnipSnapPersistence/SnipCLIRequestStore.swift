@@ -24,6 +24,10 @@ public actor SnipCLIRequestStore {
   }
 
   public func publishActiveScopeToken(_ token: String) throws {
+    try publishActiveScopeToken(token, publication: nil)
+  }
+
+  private func publishActiveScopeToken(_ token: String, publication: SnipLibraryReadPublication?) throws {
     try withLock {
       if let appInstance = appSession.instance {
         guard !appSession.isEnded, try readAppInstance() == appInstance else {
@@ -32,13 +36,28 @@ public actor SnipCLIRequestStore {
       }
       // Termination may cancel the lifecycle while this task waits for the lock.
       try Task.checkCancellation()
-      try DurableFile.write(Data(token.utf8), to: paths.activeScopeURL)
-      if let appInstance = appSession.instance {
-        try DurableFile.write(try Self.encoder.encode(
-          SnipCLIAppReadiness(instance: appInstance, scopeToken: token)
-        ), to: paths.readinessURL)
+      if let publication {
+        let readiness = try appSession.instance.map { appInstance in
+          try Self.encoder.encode(SnipCLIAppReadiness(instance: appInstance, scopeToken: token))
+        }
+        let tokenData = Data(token.utf8)
+        let closing = try publication.beginApplication()
+        defer { closing.finish() }
+        try DurableFile.write(tokenData, to: paths.activeScopeURL)
+        if let readiness {
+          try DurableFile.write(readiness, to: paths.readinessURL)
+        } else {
+          try removeIfPresent(paths.readinessURL)
+        }
       } else {
-        try removeIfPresent(paths.readinessURL)
+        try DurableFile.write(Data(token.utf8), to: paths.activeScopeURL)
+        if let appInstance = appSession.instance {
+          try DurableFile.write(try Self.encoder.encode(
+            SnipCLIAppReadiness(instance: appInstance, scopeToken: token)
+          ), to: paths.readinessURL)
+        } else {
+          try removeIfPresent(paths.readinessURL)
+        }
       }
     }
   }
@@ -90,6 +109,14 @@ public actor SnipCLIRequestStore {
   public func publishActiveScopeToken(_ token: String, ifUnchangedSince revision: UUID) throws -> Bool {
     guard revision == readinessRevision, !appSession.isEnded else { return false }
     try publishActiveScopeToken(token)
+    return true
+  }
+
+  public func publishActiveScopeToken(
+    _ token: String, ifUnchangedSince revision: UUID, publication: SnipLibraryReadPublication?
+  ) throws -> Bool {
+    guard revision == readinessRevision, !appSession.isEnded else { return false }
+    try publishActiveScopeToken(token, publication: publication)
     return true
   }
 

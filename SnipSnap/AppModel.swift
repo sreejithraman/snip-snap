@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SnipSnapCloud
 import SnipSnapCore
 import SnipSnapPersistence
 import UniformTypeIdentifiers
@@ -21,10 +22,10 @@ final class AppModel: ObservableObject {
     static let listDraftsDefaultsKey = "listDrafts"
     static let appearanceDefaultsKey = "appAppearance"
 
-    @Published private(set) var snips: [Snip] = []
-    @Published private(set) var lists: [SnipList] = [.inbox]
-    @Published private(set) var libraryRevision = UUID()
-    @Published var activeListID: UUID
+    @ApplicationPublished private(set) var snips: [Snip] = []
+    @ApplicationPublished private(set) var lists: [SnipList] = [.inbox]
+    @ApplicationPublished private(set) var libraryRevision = UUID()
+    @ApplicationPublished var activeListID: UUID = SnipList.inboxID
     @Published private(set) var isShowingClipboard = false
     @Published var clipboardViewOptions = ClipboardViewOptions()
     private enum SearchMode: Equatable {
@@ -70,7 +71,7 @@ final class AppModel: ObservableObject {
             reconcileSelection()
         }
     }
-    @Published private(set) var selectionState = SnipSelection.Update(selection: [], anchor: nil, focus: nil)
+    @ApplicationPublished private(set) var selectionState = SnipSelection.Update(selection: [], anchor: nil, focus: nil)
     var selection: Set<UUID> {
         get { selectionState.selection }
         set {
@@ -130,7 +131,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    @Published private var inlineEditor = InlineEditor.closed
+    @ApplicationPublished private var inlineEditor = InlineEditor.closed
     private var pendingEditOpening: (snipID: UUID, request: UUID)?
     var editingID: UUID? { inlineEditor.edit?.snipID }
     var inlineEditSessionID: UUID? { inlineEditor.edit?.sessionID }
@@ -212,7 +213,7 @@ final class AppModel: ObservableObject {
         reconcileActiveList()
     }
 
-    @Published private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    @ApplicationPublished private var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var presentedError: String? { snackbarAndErrors.presentedFailure?.message }
     var presentedErrorTitle: String? { snackbarAndErrors.presentedTitle }
@@ -248,7 +249,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var latestAddedSnipID: UUID?
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
-    @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
+    @ApplicationPublished var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published var legacyDraftCount = 0
     @Published private(set) var pendingImportPreview: SavedSnipsImportPreview?
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
@@ -384,6 +385,10 @@ final class AppModel: ObservableObject {
     private let preparePasteboardExport: @Sendable (String, [URL]) async throws
         -> SnipPasteboardExport
     private let publishShareDestinations: (([SnipList]) -> Void)?
+    private var checkedCatalogPublisher: ShareListCatalogPublisher?
+    private var appliedReadSource: SnipLibraryReadSource?
+    private var appliedFiles: Result<[UUID: SnipLibraryFileObservation], any Error>?
+    private var appliedReadPublication: SnipLibraryReadPublication?
     private let clipboardWrites = ClipboardWriteSequence()
     private var initialLoadTask: Task<Void, Never>?
     let clipboardHistory: ClipboardHistory
@@ -393,7 +398,11 @@ final class AppModel: ObservableObject {
     }
 
     var displayedLists: [SnipList] {
-        guard let origin = inlineEditor.edit?.origin,
+        displayedLists(lists, editor: inlineEditor)
+    }
+
+    private func displayedLists(_ lists: [SnipList], editor: InlineEditor) -> [SnipList] {
+        guard let origin = editor.edit?.origin,
               !lists.contains(where: { $0.id == origin.list.id }) else { return lists }
         var displayed = lists
         displayed.insert(origin.list, at: min(origin.index, displayed.count))
@@ -410,6 +419,14 @@ final class AppModel: ObservableObject {
     }
 
     func filteredSnips(in listID: UUID) -> [Snip] {
+        filteredSnips(in: listID, snapshot: SnipLibrarySnapshot(snips: snips, lists: lists), editor: inlineEditor)
+    }
+
+    private func filteredSnips(
+        in listID: UUID, snapshot: SnipLibrarySnapshot, editor: InlineEditor
+    ) -> [Snip] {
+        let snips = snapshot.snips
+        let lists = snapshot.lists
         let matches = SnipFilter.apply(
             snips: snips,
             query: query,
@@ -419,7 +436,7 @@ final class AppModel: ObservableObject {
             sourceLabel: { $0.displaySourceLabel }
         )
         let rendered: [Snip]
-        if let editingID, let origin = inlineEditor.edit?.origin {
+        if let editingID = editor.edit?.snipID, let origin = editor.edit?.origin {
             let matchingIDs = Set(matches.map(\.id))
             // Moving the mounted row would discard its draft and temporary attachments.
             rendered = snips.compactMap { snip in
@@ -437,7 +454,7 @@ final class AppModel: ObservableObject {
             return rendered.filter { $0.listID == listID }
         }
         let matchesByList = Dictionary(grouping: rendered, by: \.listID)
-        return displayedLists.flatMap { matchesByList[$0.id] ?? [] }
+        return displayedLists(lists, editor: editor).flatMap { matchesByList[$0.id] ?? [] }
     }
 
     var selectedSnips: [Snip] {
@@ -487,17 +504,18 @@ final class AppModel: ObservableObject {
             scope: recoveryScope?.rawValue ?? "local"
         )
         self.clipboardHistory = clipboardHistory ?? ClipboardHistory()
-        activeListID = defaults.string(forKey: Self.activeListDefaultsKey)
-            .flatMap(UUID.init(uuidString:)) ?? SnipList.inboxID
+        _activeListID = ApplicationPublished(wrappedValue: defaults.string(forKey: Self.activeListDefaultsKey)
+            .flatMap(UUID.init(uuidString:)) ?? SnipList.inboxID)
         sortMode = SnipSortMode(
             rawValue: defaults.string(forKey: Self.sortModeDefaultsKey) ?? ""
         ) ?? .chronological
         appearance = AppAppearance(
             rawValue: defaults.string(forKey: Self.appearanceDefaultsKey) ?? ""
         ) ?? .system
+        let initialTarget = SnipLibraryApplicationTarget.initial(for: library)
         session = SavedSnipsSession(
-            library: library,
-            userActions: userActions,
+            library: initialTarget?.library ?? library,
+            userActions: initialTarget == nil ? userActions : nil,
             userActionsFactory: userActionsFactory,
             recoveryScope: recoveryScope
         )
@@ -508,6 +526,8 @@ final class AppModel: ObservableObject {
         self.preparePasteboardExport = preparePasteboardExport
         self.diagnostics = diagnostics
         self.publishShareDestinations = publishShareDestinations
+        appliedReadSource = initialTarget?.source
+        appliedTarget = initialTarget
         legacyDraftCount = composerDrafts.unattributedLegacyDrafts().count
         presentError(
             initialError,
@@ -647,6 +667,256 @@ final class AppModel: ObservableObject {
 
     func reload() async {
         await withCommandLock { await reloadUnlocked() }
+    }
+
+    func setCheckedCatalogPublisher(_ publisher: ShareListCatalogPublisher?) {
+        checkedCatalogPublisher = publisher
+    }
+
+    func reloadChecked() async throws -> SnipLibraryReadObservation {
+        try await withCommandLock {
+            let read = try await session.checkedRead(sortedBy: sortMode)
+            let recovery = try await session.checkedRecovery()
+            try Task.checkCancellation()
+            try installChecked(read, recovery: recovery, scope: composerDrafts.scope, replacing: false)
+            return read
+        }
+    }
+
+    func replaceLibraryChecked(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?
+    ) async throws -> SnipLibraryReadObservation {
+        try await withCommandLock {
+            let checked = try await session.prepareLibraryApplication(
+                library, recoveryScope: recoveryScope, replacing: true, sortedBy: sortMode)
+            try Task.checkCancellation()
+            try installChecked(checked.read, recovery: checked.recovery,
+                scope: recoveryScope?.rawValue ?? "local", replacing: true,
+                unscoped: recoveryScope == nil, sessionApplication: checked)
+            await checked.finishRetiredActions()
+            return checked.read
+        }
+    }
+
+    func reconcileLibraryChecked(
+        _ library: any SnipLibrary, recoveryScope: SnipRecoveryScope?
+    ) async throws -> SnipLibraryReadObservation {
+        try await withCommandLock {
+            let checked = try await session.prepareLibraryReconciliation(library, recoveryScope: recoveryScope,
+                replacing: appliedReadSource, sortedBy: sortMode)
+            try Task.checkCancellation()
+            try installChecked(checked.read, recovery: checked.recovery,
+                scope: recoveryScope?.rawValue ?? "local", replacing: checked.replaced,
+                unscoped: checked.replaced && recoveryScope == nil, sessionApplication: checked)
+            await checked.finishRetiredActions()
+            return checked.read
+        }
+    }
+
+    final class SyncApplicationCompletion {
+        weak var settings: SyncedContentSettingsModel?
+        let start: SyncedContentSyncStart
+        let stoppedIssue: SyncedContentSyncIssue?
+        let enabling: Bool
+        let removalCompleted: Bool?
+        init(settings: SyncedContentSettingsModel, start: SyncedContentSyncStart,
+             stoppedIssue: SyncedContentSyncIssue? = nil, enabling: Bool = false, removalCompleted: Bool? = nil) {
+            self.settings = settings; self.start = start; self.stoppedIssue = stoppedIssue; self.enabling = enabling; self.removalCompleted = removalCompleted
+        }
+    }
+
+    var appliedSource: SnipLibraryReadSource? { appliedReadSource }
+    var applicationPublication: SnipLibraryReadPublication? { appliedReadPublication }
+    private var appliedTarget: SnipLibraryApplicationTarget?
+
+
+    func applyChecked(
+        _ target: SnipLibraryApplicationTarget, completion: SyncApplicationCompletion? = nil
+    ) async throws -> SnipLibraryReadObservation {
+        try await withCommandLock {
+            let checked = try await session.prepareLibraryReconciliation(target.library,
+                recoveryScope: target.recoveryScope, replacing: appliedReadSource, sortedBy: sortMode)
+            guard checked.read.source == target.source else { throw SnipLibraryReadPublicationError.revoked }
+            let currentState: (SyncedContentSettingsModel, SyncedContentSettingsModel.PreparedCurrentState)?
+            if let completion {
+                guard let settings = completion.settings else { throw CancellationError() }
+                let prepared: SyncedContentSettingsModel.PreparedCurrentState?
+                if let issue = completion.stoppedIssue {
+                    prepared = settings.prepareStoppedCurrentState(issue, read: checked.read, for: completion.start)
+                } else if let completed = completion.removalCompleted {
+                    prepared = settings.prepareRemovalCurrentState(completed: completed, read: checked.read, for: completion.start)
+                } else if completion.enabling {
+                    prepared = settings.prepareEnabledCurrentState(read: checked.read, for: completion.start)
+                } else { prepared = nil }
+                if completion.stoppedIssue != nil || completion.enabling || completion.removalCompleted != nil {
+                    guard let prepared else { throw SnipLibraryReadPublicationError.revoked }
+                    currentState = (settings, prepared)
+                } else { currentState = nil }
+            } else { currentState = nil }
+            let installed = try installChecked(checked.read, recovery: checked.recovery,
+                scope: target.recoveryScope?.rawValue ?? "local", replacing: checked.replaced,
+                unscoped: checked.replaced && target.recoveryScope == nil,
+                sessionApplication: checked, currentState: currentState)
+            await checked.finishRetiredActions()
+            if currentState != nil, !installed { throw SnipLibraryReadPublicationError.revoked }
+            if installed, completion?.stoppedIssue != nil { await clipboardHistory.resetCloudAccount() }
+            return checked.read
+        }
+    }
+
+    func applyCheckedAndPublishReadiness(
+        _ target: SnipLibraryApplicationTarget, lifecycle: SnipCLIAppLifecycle,
+        completion: SyncApplicationCompletion? = nil
+    ) async throws {
+        _ = try await lifecycle.refreshAndReturnScope(for: target) { [self] in
+            let read = try await applyChecked(target, completion: completion)
+            return (cliScopeToken, read.publication)
+        }
+        guard appliedSource == target.source else { throw SnipLibraryReadPublicationError.revoked }
+    }
+
+    func applySyncDelivery(
+        _ delivery: SnipSnapCloudSyncDelivery, lifecycle: SnipCLIAppLifecycle,
+        settings: SyncedContentSettingsModel, handler: (any OptionalCloudSyncHandling)?,
+        start: SyncedContentSyncStart
+    ) async -> SyncedContentOriginalActionReturn {
+        defer { settings.endSyncAction(start) }
+        let original = delivery.result.originalActionValue
+        if delivery.result.requiresApplication {
+            guard let target = delivery.target else { return .finished(original, .unavailable(.sourceUnavailable)) }
+            do {
+                try await applyCheckedAndPublishReadiness(target.application, lifecycle: lifecycle,
+                    completion: SyncApplicationCompletion(settings: settings, start: start,
+                        stoppedIssue: original.stopIssue, enabling: delivery.result == .iCloudSyncEnabled,
+                        removalCompleted: delivery.result.removalCompleted))
+            } catch { return .finished(original, .failed(error)) }
+        }
+        if case .iCloudSyncSettingUp(let issue) = delivery.result { settings.recordEnableSettingUp(issue, for: start) }
+        settings.endSyncAction(start)
+        if delivery.result.offersCurrentConfirmation, let target = delivery.target {
+            await confirmCurrentSyncStatus(target.application.source, settings: settings, handler: handler, start: start)
+        }
+        return .finished(original, delivery.result.requiresApplication ? .applied : .notRequired)
+    }
+
+    func confirmCurrentSyncStatus(
+        _ source: SnipLibraryReadSource, settings: SyncedContentSettingsModel,
+        handler: (any OptionalCloudSyncHandling)?, start: SyncedContentSyncStart
+    ) async {
+        guard let handler = handler ?? cloudSyncHandler, appliedSource == source else { return }
+        do {
+            let current = try await handler.checkedCurrentSyncStatus(for: source)
+            _ = try installCurrentSyncStatus(current, settings: settings, start: start)
+        } catch { /* Later confirmation cannot replace the original result or required application. */ }
+    }
+
+    @discardableResult
+    func installCurrentSyncStatus(
+        _ observation: SyncedContentCurrentSyncObservation,
+        settings: SyncedContentSettingsModel, start: SyncedContentSyncStart
+    ) throws -> Bool {
+        guard observation.source == appliedReadSource, observation.matchesApplicationTarget(appliedTarget),
+              let publication = observation.publication,
+              let prepared = settings.prepareCurrentState(observation, for: start) else { return false }
+        var urls: [UUID: URL] = [:]
+        for attachment in snips.flatMap(\.attachments) {
+            urls[attachment.id] = attachmentPreparation.cachedURL(for: attachment)
+        }
+        let snapshot = SnipLibrarySnapshot(snips: snips, lists: lists, attachmentURLs: urls)
+        let matches = observation.matchesApplication(snapshot, after: appliedReadPublication, target: appliedTarget, recovery: recoverySnapshot, files: appliedFiles)
+        let closing = try publication.beginApplication()
+        guard !observation.settled || matches else { closing.finish(); return false }
+        let installed = settings.installPreparedCurrentState(prepared, within: closing)
+        if installed && matches { appliedReadPublication = publication }
+        closing.finish()
+        if installed { settings.notifyInstalledCurrentState(prepared) }
+        if installed && matches, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(snapshot.lists, publication: publication)
+        }
+        return installed
+    }
+
+    @discardableResult
+    private func installChecked(
+        _ read: SnipLibraryReadObservation, recovery: SnipRecoverySnapshot,
+        scope: String, replacing: Bool, unscoped: Bool = false,
+        sessionApplication: SavedSnipsSession.PreparedApplication? = nil,
+        currentState: (SyncedContentSettingsModel, SyncedContentSettingsModel.PreparedCurrentState)? = nil
+    ) throws -> Bool {
+        if read.source != nil, read.publication == nil { throw SnipLibraryReadPublicationError.revoked }
+        let snapshot = read.snapshot
+        let previous = (snips, lists, recoverySnapshot, inlineEditor, snackbarAndErrors)
+        let oldActiveListID = activeListID
+        let scopeChanged = scope != composerDrafts.scope
+        let draftScope = composerDrafts.prepareScope(scope)
+        let liveIDs = Set(snapshot.lists.map(\.id))
+        var editor = inlineEditor
+        if replacing && (unscoped || scopeChanged)
+            || editor.edit.map({ edit in !snapshot.snips.contains { $0.id == edit.snipID } }) == true {
+            editor = .closed
+        }
+        let displayed = displayedLists(snapshot.lists, editor: editor)
+        let active = displayed.contains { $0.id == activeListID } ? activeListID : SnipList.inboxID
+        let ordered = filteredSnips(in: active, snapshot: snapshot, editor: editor).map(\.id)
+        let selected = replacing ? Set<UUID>() : selection.intersection(ordered)
+        let anchor = selectionState.anchor.flatMap { selected.contains($0) ? $0 : nil }
+            ?? ordered.first(where: selected.contains)
+        let focus = selectionState.focus.flatMap { selected.contains($0) ? $0 : nil } ?? anchor
+        let selection = SnipSelection.Update(selection: selected, anchor: anchor, focus: focus)
+        var presentation = snackbarAndErrors
+        if replacing { presentation.endUndoWindow() }
+        var redirection = composerRedirection
+        redirection.listsReturned(liveIDs)
+        if scopeChanged { redirection.switchScope(retiring: Set(lists.map(\.id)).subtracting(liveIDs)) }
+        let revision = replacing ? UUID() : libraryRevision
+        try composerDrafts.validatePreparedScope(draftScope)
+        let closing = try read.publication?.beginApplication()
+        let scopeWrite: ComposerDraftStore.RetiredScopeWrite?
+        var installedCurrentState = false
+        do {
+            try sessionApplication?.install(within: closing)
+            scopeWrite = composerDrafts.installValidatedScope(draftScope)
+            _snips.install(snapshot.snips)
+            _lists.install(snapshot.lists)
+            _recoverySnapshot.install(recovery)
+            _inlineEditor.install(editor)
+            _selectionState.install(selection)
+            _activeListID.install(active)
+            _libraryRevision.install(revision)
+            _snackbarAndErrors.install(presentation)
+            composerRedirection = redirection
+            attachmentPreparation.replaceCachedURLs(with: snapshot.attachmentURLs)
+            appliedReadSource = read.source
+            appliedTarget = read.target
+            appliedReadPublication = read.publication
+            appliedFiles = read.files
+            if let currentState, let closing {
+                installedCurrentState = currentState.0.installPreparedCurrentState(currentState.1, within: closing)
+            }
+        } catch {
+            closing?.finish()
+            throw error
+        }
+        closing?.finish()
+        withExtendedLifetime(previous) {}
+        composerDrafts.finishScopeWrite(scopeWrite)
+        for id in composerDrafts.draftListIDs() where !liveIDs.contains(id) && !composerRedirection.isRetired(id) {
+            redirectDeletedListDraft(from: id)
+        }
+        if active != oldActiveListID {
+            defaults.set(active.uuidString, forKey: Self.activeListDefaultsKey)
+        }
+        if installedCurrentState, let currentState { currentState.0.notifyInstalledCurrentState(currentState.1) }
+        objectWillChange.send()
+        _snips.publish(); _lists.publish(); _recoverySnapshot.publish()
+        _inlineEditor.publish(); _selectionState.publish(); _activeListID.publish()
+        _libraryRevision.publish(); _snackbarAndErrors.publish()
+        if let publication = read.publication, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(snapshot.lists, publication: publication)
+        } else if read.source == nil {
+            publishShareDestinations?(snapshot.lists)
+        }
+        return installedCurrentState
     }
 
     func replaceLibrary(
@@ -790,7 +1060,9 @@ final class AppModel: ObservableObject {
         }
         reconcileActiveList()
         reconcileSelection()
-        publishShareDestinations?(lists)
+        if let target = appliedTarget, let checkedCatalogPublisher {
+            checkedCatalogPublisher.enqueue(lists, from: session, target: target)
+        } else if appliedReadSource == nil { publishShareDestinations?(lists) }
     }
 
     private func reconcileActiveList() {
@@ -2016,9 +2288,9 @@ final class AppModel: ObservableObject {
     }
 
     func withCommandLock<Value: Sendable>(
-        _ operation: @MainActor @Sendable () async -> Value
-    ) async -> Value {
-        await session.withExclusiveAccess { _ in await operation() }
+        _ operation: @MainActor @Sendable () async throws -> Value
+    ) async rethrows -> Value {
+        try await session.withExclusiveAccess { _ in try await operation() }
     }
 
     func clearPendingUndoToast() {
@@ -2029,4 +2301,42 @@ final class AppModel: ObservableObject {
         guard let cloudSyncHandler else { return }
         Task { await cloudSyncHandler.scheduleSyncAfterLocalChange() }
     }
+}
+
+
+/// The stored value is authoritative; its publisher is notified only outside checked installation.
+@MainActor
+@propertyWrapper
+private final class ApplicationPublished<Value> {
+    private var value: Value
+    @Published private var notification: Value
+
+    init(wrappedValue: Value) {
+        value = wrappedValue
+        notification = wrappedValue
+    }
+
+    @available(*, unavailable, message: "ApplicationPublished requires an ObservableObject owner")
+    var wrappedValue: Value {
+        get { fatalError() }
+        set { fatalError() }
+    }
+
+    var projectedValue: Published<Value>.Publisher { $notification }
+
+    static subscript<Owner: ObservableObject>(
+        _enclosingInstance owner: Owner,
+        wrapped wrappedKeyPath: ReferenceWritableKeyPath<Owner, Value>,
+        storage storageKeyPath: ReferenceWritableKeyPath<Owner, Self>
+    ) -> Value where Owner.ObjectWillChangePublisher == ObservableObjectPublisher {
+        get { owner[keyPath: storageKeyPath].value }
+        set {
+            owner.objectWillChange.send()
+            owner[keyPath: storageKeyPath].notification = newValue
+            owner[keyPath: storageKeyPath].value = newValue
+        }
+    }
+
+    func install(_ value: Value) { self.value = value }
+    func publish() { notification = value }
 }

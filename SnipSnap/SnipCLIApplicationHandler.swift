@@ -118,21 +118,27 @@ final class SnipCLIApplicationHandler {
         case .retrySync:
             try model.beginCLIScopeChange()
             defer { model.endCLIScopeChange() }
-            var finishingDeletionFailed = false
+            let outcome: SyncedContentActionOutcome
             if syncedContentSettings.mode == .localOnly {
                 guard syncedContentSettings.canEnable else { throw cliApplicationError(syncedContentSettings.detail) }
-                await syncedContentSettings.enableICloudSync()
+                outcome = await syncedContentSettings.enableICloudSyncWithOutcome()
             } else {
                 guard syncedContentSettings.canSyncNow || syncedContentSettings.canFinishDeleting, let cloudSyncHandler else {
                     throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
                 }
-                await cloudSyncHandler.retrySyncWhenPossible()
-                finishingDeletionFailed = syncedContentSettings.finishDeletingIssue != nil
+                outcome = try await cloudSyncHandler.retrySyncWithOutcome()
             }
-            let retryFailed = cliSyncHasFailure || finishingDeletionFailed
-            return SnipCLIReceipt(request: request, status: retryFailed ? .failed : .success,
-                message: syncedContentSettings.detail, extendedResult: .application(cliSyncResult()),
-                resultingScopeToken: model.cliScopeToken)
+            switch outcome {
+            case .completed(let report):
+                return SnipCLIReceipt(request: request, status: report.operation.status == .failed ? .failed : .success,
+                    message: report.operation.message, extendedResult: .application(cliSyncResult()),
+                    resultingScopeToken: model.cliScopeToken)
+            case .notRun:
+                throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
+            case .interrupted(let reason, _):
+                if reason == .cancelled { throw CancellationError() }
+                throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
+            }
         case .clipboardSyncStatus: return receipt(cliClipboardSyncResult())
         case .setClipboardSync(let enabled, let revision):
             return try await cliApplicationLocked(request) {

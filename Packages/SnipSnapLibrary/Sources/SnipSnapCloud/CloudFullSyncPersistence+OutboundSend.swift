@@ -26,17 +26,35 @@ extension CloudFullSyncPersistence {
   }
 
   package func isSyncSettled() async throws -> Bool {
-    let pending = try await pendingChanges()
+    try await isSyncSettled(capturing: nil)
+  }
+
+  private func isSyncSettled(capturing capture: CurrentStatusReadCapture?) async throws -> Bool {
+    let pending: CloudOutboundBatch
+    if let capture { pending = try await pendingChangesWithinMutation(capturing: capture) }
+    else { pending = try await pendingChanges() }
     guard pending.operations.isEmpty, pending.zonesToSave.isEmpty else { return false }
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard stored.namespaceState.phase == .active else { return false }
-    return try await unresolvedSyncIssue() == nil
+    return try await unresolvedSyncIssue(capturing: capture) == nil
   }
 
   package func unresolvedSyncIssue() async throws -> SyncedContentSyncIssue? {
+    try await unresolvedSyncIssue(capturing: nil)
+  }
+
+  private func unresolvedSyncIssue(capturing capture: CurrentStatusReadCapture?) async throws -> SyncedContentSyncIssue? {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    capture?.attachmentStates = Dictionary(uniqueKeysWithValues: attachments.publications.map { publication in
+      let state: SyncedAttachmentTransferState = switch publication.transferState {
+      case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: .waiting
+      case .available: .available
+      case .failed: .failed
+      }
+      return (publication.metadata.attachmentID, state)
+    })
     var issues = recovery.map(Self.storedSyncIssue(for:))
     if stored.namespaceState.phase == .blocked
       || !stored.conflicts.isEmpty
@@ -95,7 +113,13 @@ extension CloudFullSyncPersistence {
     try await mutate { try await self.pendingChangesWithinMutation() }
   }
 
-  private func pendingChangesWithinMutation() async throws -> CloudOutboundBatch {
+  func currentStatusWithinMutation(capturing capture: CurrentStatusReadCapture) async throws -> CloudFullSyncStatus {
+    if try await destructiveResetSignal() != nil { return .purged }
+    if let issue = try await unresolvedSyncIssue(capturing: capture) { return .issue(issue) }
+    return try await isSyncSettled(capturing: capture) ? .settled : .pending
+  }
+
+  private func pendingChangesWithinMutation(capturing capture: CurrentStatusReadCapture? = nil) async throws -> CloudOutboundBatch {
     // The durable local rows and request ledger, compared with the durable accepted shadows,
     // are the change-history seam. Share imports use this same path; keep one sync driver and
     // do not add a second Share-only queue or cursor.
@@ -313,6 +337,7 @@ extension CloudFullSyncPersistence {
       phase: phase, reason: failedFetchIDs.isEmpty ? nil : .recordBlocked,
       pendingUploads: batch.operations.count, pendingDownloads: stored.deferredEntities.count,
       blockedRecords: failedFetchIDs.count))
+    capture?.snapshot = local
     return batch
   }
 

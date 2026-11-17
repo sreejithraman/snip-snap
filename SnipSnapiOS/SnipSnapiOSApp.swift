@@ -74,6 +74,7 @@ struct SnipSnapiOSApp: App {
         let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
             syncWhenPossible: { await syncActionBridge.syncWhenPossible() },
             retrySyncWhenPossible: { await syncActionBridge.retrySyncWhenPossible() },
+            retrySyncWithOutcome: { try await syncActionBridge.retrySyncWithOutcome() },
             scheduleSyncAfterLocalChange: {
                 await syncActionBridge.scheduleSyncAfterLocalChange()
             }

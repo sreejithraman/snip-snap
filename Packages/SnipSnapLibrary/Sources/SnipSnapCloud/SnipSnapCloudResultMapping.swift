@@ -10,6 +10,7 @@ package enum CloudAccountIsolationError: Error, Equatable, Sendable {
 }
 
 func automaticSyncResult(for error: any Error) -> SnipSnapCloudSyncResult {
+  if let isolation = error as? CloudAccountIsolationDeliveryError { return isolation.original.syncResult }
   if let isolation = error as? CloudAccountIsolationError { return isolation.syncResult }
   return .syncIssue(SnipSnapCloudSyncIssueMapper.issue(for: error))
 }
@@ -52,5 +53,50 @@ struct NoopCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   }
   func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
     .sent
+  }
+}
+
+public extension SnipSnapCloudSyncResult {
+  var originalActionValue: SyncedContentOriginalActionValue {
+    switch self {
+    case .noChange: .noChange
+    case .contentUpdated: .contentUpdated
+    case .libraryReplaced: .libraryReplaced
+    case .libraryReplacedAndSyncCompleted: .libraryReplacedAndSyncCompleted
+    case .libraryReplacedAndSyncScheduled: .libraryReplacedAndSyncScheduled
+    case .iCloudDataReset: .iCloudDataReset
+    case .iCloudSignedOut: .iCloudSignedOut
+    case .iCloudAccountChanged: .iCloudAccountChanged
+    case .syncCompleted: .syncCompleted
+    case .syncScheduled: .syncScheduled
+    case .iCloudSyncEnabled: .iCloudSyncEnabled
+    case .oldSyncedContentRemovalPending: .oldSyncedContentRemovalPending
+    case .oldSyncedContentRemovalCompleted: .oldSyncedContentRemovalCompleted
+    case .libraryReplacedWithSyncIssue(let issue): .libraryReplacedWithSyncIssue(issue)
+    case .syncIssue(let issue): .syncIssue(issue)
+    case .iCloudSyncSettingUp(let issue): .iCloudSyncSettingUp(issue)
+    }
+  }
+
+  var requiresApplication: Bool {
+    switch self {
+    case .noChange, .syncScheduled, .syncIssue, .iCloudSyncSettingUp: false
+    default: true
+    }
+  }
+
+  var offersCurrentConfirmation: Bool {
+    switch self {
+    case .noChange, .syncScheduled, .iCloudSyncSettingUp: false
+    default: true
+    }
+  }
+
+  var removalCompleted: Bool? {
+    switch self { case .oldSyncedContentRemovalPending: false; case .oldSyncedContentRemovalCompleted: true; default: nil }
+  }
+
+  var skipsMacClipboardTail: Bool {
+    switch self { case .syncIssue, .libraryReplacedWithSyncIssue: true; default: false }
   }
 }

@@ -136,7 +136,23 @@ package struct CloudCollectionSyncContext: Equatable, Sendable {
   }
 }
 
+package struct CloudCollectionStateRead: Sendable {
+  let state: CloudCollectionLocalState
+  let target: SnipSnapCloudApplicationTarget?
+}
+
+package struct CloudCollectionDelivery: Sendable {
+  let status: CloudCollectionStatus
+  let target: SnipSnapCloudApplicationTarget?
+  init(_ status: CloudCollectionStatus, target: SnipSnapCloudApplicationTarget?) {
+    self.status = status; self.target = target
+  }
+}
+
 package protocol CloudCollectionLocalStore: Sendable {
+  func stateWithTarget() async throws -> CloudCollectionStateRead
+  func adoptWithTarget(_ namespace: CloudSyncNamespace) async throws -> SnipSnapCloudApplicationTarget?
+  func markPurgedWithTarget() async throws -> SnipSnapCloudApplicationTarget?
   func state() async throws -> CloudCollectionLocalState
   func stageCleanup(_ zones: Set<CloudZoneID>) async throws
   func finishCleanup(_ zones: Set<CloudZoneID>) async throws
@@ -145,6 +161,20 @@ package protocol CloudCollectionLocalStore: Sendable {
   func markDeletionPending() async throws
   func markDeletionCompleted() async throws
   func beginEncryptedDataReset(from namespace: CloudSyncNamespace) async throws
+}
+
+package extension CloudCollectionLocalStore {
+  func stateWithTarget() async throws -> CloudCollectionStateRead {
+    CloudCollectionStateRead(state: try await state(), target: nil)
+  }
+  func adoptWithTarget(_ namespace: CloudSyncNamespace) async throws -> SnipSnapCloudApplicationTarget? {
+    try await adopt(namespace)
+    return nil
+  }
+  func markPurgedWithTarget() async throws -> SnipSnapCloudApplicationTarget? {
+    try await markPurged()
+    return nil
+  }
 }
 
 package enum CloudCollectionFetchResult: Equatable, Sendable {
@@ -419,33 +449,45 @@ package actor CloudCollectionCoordinator {
 
   /// Fetches the control record before work and again immediately before the only send.
   package func synchronize() async throws -> CloudCollectionStatus {
-    try await synchronize(.transfer)
+    try await synchronize(.transfer).status
   }
 
   /// Retries failures that need a clear user action before another CloudKit request.
   package func retrySynchronization() async throws -> CloudCollectionStatus {
-    try await synchronize(.retry)
+    try await synchronize(.retry).status
   }
 
   /// Checks the collection, then lets the record engine choose when to fetch and send.
   package func scheduleSynchronization() async throws -> CloudCollectionStatus {
+    try await synchronize(.schedule).status
+  }
+
+  package func synchronizeWithTarget() async throws -> CloudCollectionDelivery {
+    try await synchronize(.transfer)
+  }
+  package func retrySynchronizationWithTarget() async throws -> CloudCollectionDelivery {
+    try await synchronize(.retry)
+  }
+  package func scheduleSynchronizationWithTarget() async throws -> CloudCollectionDelivery {
     try await synchronize(.schedule)
   }
 
-  private func synchronize(_ request: SyncRequest) async throws -> CloudCollectionStatus {
+  private func synchronize(_ request: SyncRequest) async throws -> CloudCollectionDelivery {
     try beginOperation()
     defer { finishOperation() }
-    let local = try await localStore.state()
+    let selected = try await localStore.stateWithTarget()
+    let local = selected.state
+    let target = selected.target
     if local.encryptedDataReset != nil {
-      try await localStore.markPurged()
-      return .purged
+      let purged = try await localStore.markPurgedWithTarget()
+      return CloudCollectionDelivery(.purged, target: purged
+        ?? (target?.application.source.storageMode == .localOnly ? target : nil))
     }
     guard let control = try await transport.fetchControl() else {
       if local.activeNamespace != nil {
-        try await localStore.markPurged()
-        return .purged
+        return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
       }
-      return .requiresEnable
+      return CloudCollectionDelivery(.requiresEnable, target: target)
     }
     try validate(control.descriptor)
     let remoteNamespace = control.descriptor.namespace(
@@ -456,11 +498,8 @@ package actor CloudCollectionCoordinator {
     do {
       try await cleanPendingZones(protecting: control.descriptor.zones)
     } catch {
-      return try cleanupFailureStatus(
-        error,
-        remoteNamespace,
-        deletionState: local.deletionState
-      )
+      return CloudCollectionDelivery(try cleanupFailureStatus(
+        error, remoteNamespace, deletionState: local.deletionState), target: target)
     }
     let cleanedLocal = try await localStore.state()
     guard local.activeNamespace == remoteNamespace else {
@@ -475,12 +514,9 @@ package actor CloudCollectionCoordinator {
     switch request {
     case .schedule:
       try await syncDriver.prepareAutomaticSync(context(control.descriptor))
-      if try await localStore.state().activeNamespace == nil { return .purged }
-      return try await deletionStatusIfNeeded(
-        cleanedLocal.deletionState,
-        remoteNamespace,
-        fallback: .scheduled(remoteNamespace)
-      )
+      if try await localStore.state().activeNamespace == nil { return CloudCollectionDelivery(.purged, target: nil) }
+      return CloudCollectionDelivery(try await deletionStatusIfNeeded(
+        cleanedLocal.deletionState, remoteNamespace, fallback: .scheduled(remoteNamespace)), target: target)
     case .retry:
       try await syncDriver.prepareManualRetry(context(control.descriptor))
     case .transfer:
@@ -489,12 +525,10 @@ package actor CloudCollectionCoordinator {
 
     let fetchResult = try await syncDriver.fetch(context(control.descriptor))
     if fetchResult == .purged {
-      try await localStore.markPurged()
-      return .purged
+      return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
     }
     guard let checked = try await transport.fetchControl() else {
-      try await localStore.markPurged()
-      return .purged
+      return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
     }
     try validate(checked.descriptor)
     try await localStore.finishCleanup(checked.descriptor.zones)
@@ -512,17 +546,14 @@ package actor CloudCollectionCoordinator {
     }
     let sendResult = try await syncDriver.send(context(checked.descriptor))
     if sendResult == .purged {
-      try await localStore.markPurged()
-      return .purged
+      return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
     }
     if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
     let state = try await localStore.state()
     let settled = request == .retry && sendResult == .settled
-    return try await deletionStatusIfNeeded(
-      state.deletionState,
-      remoteNamespace,
-      fallback: settled ? .settled(remoteNamespace) : .on(remoteNamespace)
-    )
+    return CloudCollectionDelivery(try await deletionStatusIfNeeded(
+      state.deletionState, remoteNamespace,
+      fallback: settled ? .settled(remoteNamespace) : .on(remoteNamespace)), target: target)
   }
 
   private func adoptRemoteCollection(
@@ -530,9 +561,10 @@ package actor CloudCollectionCoordinator {
     replacing initialNamespace: CloudSyncNamespace?,
     deletionState: CloudCollectionDeletionState,
     request: SyncRequest
-  ) async throws -> CloudCollectionStatus {
+  ) async throws -> CloudCollectionDelivery {
     var descriptor = initialDescriptor
     var priorNamespace = initialNamespace
+    var target: SnipSnapCloudApplicationTarget?
     while true {
       let namespace = descriptor.namespace(
         cloudScope: cloudScope,
@@ -542,31 +574,28 @@ package actor CloudCollectionCoordinator {
       if let priorNamespace {
         try await localStore.stageCleanup(priorNamespace.zones.subtracting(descriptor.zones))
       }
-      try await localStore.adopt(namespace)
+      target = try await localStore.adoptWithTarget(namespace)
       do {
         let fallback: CloudCollectionStatus
         switch request {
         case .schedule:
           try await syncDriver.prepareAutomaticSync(context(descriptor))
-          if try await localStore.state().activeNamespace == nil { return .purged }
+          if try await localStore.state().activeNamespace == nil { return CloudCollectionDelivery(.purged, target: nil) }
           fallback = .adoptedRemoteCollectionScheduled(namespace)
         case .transfer:
           let fetchResult = try await syncDriver.fetch(context(descriptor))
           if fetchResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
           }
           fallback = adoptionResult(namespace, fetchResult: fetchResult, settled: false)
         case .retry:
           try await syncDriver.prepareManualRetry(context(descriptor))
           let fetchResult = try await syncDriver.fetch(context(descriptor))
           if fetchResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
           }
           guard let checked = try await transport.fetchControl() else {
-            try await localStore.markPurged()
-            return .purged
+            return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
           }
           try validate(checked.descriptor)
           let checkedNamespace = checked.descriptor.namespace(
@@ -580,8 +609,7 @@ package actor CloudCollectionCoordinator {
           }
           let sendResult = try await syncDriver.send(context(descriptor))
           if sendResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
           }
           fallback = adoptionResult(
             namespace,
@@ -589,11 +617,10 @@ package actor CloudCollectionCoordinator {
             settled: sendResult == .settled
           )
         }
-        return try await adoptedStatus(
-          namespace,
-          deletionState: deletionState,
-          fallback: fallback
-        )
+        return CloudCollectionDelivery(try await adoptedStatus(
+          namespace, deletionState: deletionState, fallback: fallback), target: target)
+      } catch let isolation as CloudAccountIsolationDeliveryError {
+        throw isolation
       } catch let isolation as CloudAccountIsolationError {
         throw isolation
       } catch let account as ICloudAccountGateError
@@ -601,10 +628,8 @@ package actor CloudCollectionCoordinator {
       {
         throw account
       } catch {
-        return .adoptedRemoteCollectionWithIssue(
-          namespace,
-          SnipSnapCloudSyncIssueMapper.issue(for: error)
-        )
+        return CloudCollectionDelivery(.adoptedRemoteCollectionWithIssue(
+          namespace, SnipSnapCloudSyncIssueMapper.issue(for: error)), target: target)
       }
     }
   }
@@ -636,6 +661,10 @@ package actor CloudCollectionCoordinator {
 
   /// Explicit user intent is required before a missing control record may be recreated.
   package func enableSync() async throws -> CloudCollectionStatus {
+    try await enableSyncWithTarget().status
+  }
+
+  package func enableSyncWithTarget() async throws -> CloudCollectionDelivery {
     try beginOperation()
     defer { finishOperation() }
     if try await localStore.state().encryptedDataReset != nil {
@@ -649,16 +678,15 @@ package actor CloudCollectionCoordinator {
         accountLineage: accountLineage
       )
       try await cleanPendingZones(protecting: current.descriptor.zones)
-      if try await localStore.state().activeNamespace != namespace {
-        try await localStore.adopt(namespace)
-      }
+      let selected = try await localStore.stateWithTarget()
+      let target = selected.state.activeNamespace != namespace
+        ? try await localStore.adoptWithTarget(namespace) : selected.target
       let result = try await syncDriver.fetch(context(current.descriptor))
       if result == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
       }
       if let issue = result.issue { throw CloudSyncIssueError(issue) }
-      return .enabled(namespace)
+      return CloudCollectionDelivery(.enabled(namespace), target: target)
     }
 
     let fresh = makeDescriptor()
@@ -673,31 +701,29 @@ package actor CloudCollectionCoordinator {
         cloudScope: cloudScope,
         accountLineage: accountLineage
       )
-      try await localStore.adopt(namespace)
+      let target = try await localStore.adoptWithTarget(namespace)
       try await localStore.finishCleanup(accepted.descriptor.zones)
       let fetchResult = try await syncDriver.fetch(context(accepted.descriptor))
       if fetchResult == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
       }
       if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: accepted.descriptor.zones)
-      return .enabled(namespace)
+      return CloudCollectionDelivery(.enabled(namespace), target: target)
     case .conflict(let winning):
       try validate(winning.descriptor)
       let namespace = winning.descriptor.namespace(
         cloudScope: cloudScope,
         accountLineage: accountLineage
       )
-      try await localStore.adopt(namespace)
+      let target = try await localStore.adoptWithTarget(namespace)
       let fetchResult = try await syncDriver.fetch(context(winning.descriptor))
       if fetchResult == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return CloudCollectionDelivery(.purged, target: try await localStore.markPurgedWithTarget())
       }
       if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: winning.descriptor.zones)
-      return .enabled(namespace)
+      return CloudCollectionDelivery(.enabled(namespace), target: target)
     }
   }
 

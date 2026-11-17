@@ -979,3 +979,201 @@ extension CloudFullSyncPersistenceTests {
   }
 
 }
+
+
+extension CloudFullSyncPersistenceTests {
+  func testCurrentCheckpointSeesNewDurableWorkWithoutAnotherFetchOrSend() async throws {
+    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
+    let first = try await fixture.coordinator.checkedCurrentCheckpoint()
+    XCTAssertTrue(first.settled)
+    let beforeEvents = await fixture.transport.events()
+    let added = try await fixture.managed.perform(.add(content: "Committed after original result",
+      origin: .quickEntry, source: nil, listID: SnipList.inboxID, attachmentURLs: [],
+      requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let snipID = try XCTUnwrap(added.snapshot.snips.first?.id)
+    try await fixture.store.approveEnrollment(references: [CloudEntityReference(kind: .snip, domainID: snipID)])
+
+    let current = try await fixture.coordinator.checkedCurrentCheckpoint()
+
+    XCTAssertFalse(current.settled)
+    let afterEvents = await fixture.transport.events()
+    XCTAssertEqual(afterEvents, beforeEvents)
+    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+    let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["Committed after original result"])
+  }
+
+  func testCurrentCheckpointIncludesCleanupFailureWhenAttachmentStatesAreEmpty() async throws {
+    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
+    let attachmentID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    let metadataIdentity = CloudTextStorageIdentity(zoneName: fixture.zone.name,
+      ownerName: fixture.zone.ownerName, recordName: "a-11111111-1111-1111-1111-111111111111")
+    let payloadIdentity = CloudTextStorageIdentity(zoneName: fixture.zone.name,
+      ownerName: fixture.zone.ownerName, recordName: "p-original-cleanup")
+    try await fixture.library.commitCloudAttachmentTransitions(namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.remoteMetadataAccepted(metadata: CloudAttachmentMetadataValue(
+        attachmentID: attachmentID, snipID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+        position: 0, fileName: "old.txt", contentType: "text/plain", byteCount: 4,
+        sha256: Data(repeating: 1, count: 32), payloadIdentity: payloadIdentity),
+        metadataIdentity: metadataIdentity, shadowData: Data(), systemFields: Data()),
+        .remoteMetadataDeleted(metadataIdentity: metadataIdentity)])
+    let pending = try await fixture.store.pendingChanges()
+    let cleanupID = CloudAttachmentRecordCodec.recordID(payloadIdentity)
+    XCTAssertTrue(pending.operations.contains { $0.id == cleanupID })
+    let failed = CloudSentBatch(id: UUID(), items: [.failed(cleanupID, .quotaExceeded)], engineState: nil)
+    try await fixture.store.stage(.sent(failed), outbound: pending)
+    try await fixture.store.applyStaged(failed.id)
+    let transfer = CloudAttachmentTransferCoordinator(library: fixture.library, namespace: fixture.namespace,
+      payloadZone: fixture.zone, transport: fixture.transport, maximumCacheBytes: 0)
+    let states = try await transfer.transferStates()
+    XCTAssertTrue(states.isEmpty)
+    let stored = try await fixture.library.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+    XCTAssertEqual(stored.cleanups.first?.lastFailure, .quotaExceeded)
+    let events = await fixture.transport.events()
+
+    let current = try await fixture.coordinator.checkedCurrentCheckpoint()
+
+    XCTAssertEqual(current.issue, .iCloudStorageFull)
+    XCTAssertFalse(current.settled)
+    let after = await fixture.transport.events()
+    XCTAssertEqual(after, events)
+  }
+
+  func testCurrentCheckpointCannotInventAnOwnerRunOrFinishTheInitialFetch() async throws {
+    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace(), finishInitialFetch: false)
+    let coordinator = fixture.coordinator
+    let transport = fixture.transport
+    do {
+      _ = try await coordinator.checkedCurrentCheckpoint()
+      XCTFail("A checkpoint must not create an earlier completed run.")
+    } catch SnipLibraryError.transferUnsupported {}
+    _ = try await coordinator.processAutomaticChanges()
+    let events = await transport.events()
+
+    let current = try await coordinator.checkedCurrentCheckpoint()
+
+    XCTAssertNil(current.issue)
+    XCTAssertFalse(current.settled)
+    let after = await transport.events()
+    XCTAssertEqual(after, events)
+  }
+}
+
+private func currentCheckpointRoot() -> URL {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent("CurrentCheckpoint-\(UUID())")
+  print("OFFLINE-CHECKED-APPLICATION retained unique root: \(root.path)")
+  return root
+}
+
+private struct CurrentCheckpointFixture {
+  let root: URL
+  let namespace: CloudSyncNamespace
+  let zone: CloudZoneID
+  let persistence: SwiftDataSyncModePersistence
+  let managed: any SnipLibrary
+  let library: SwiftDataSnipLibrary
+  let store: CloudFullSyncPersistence
+  let transport: FakeCloudRecordTransport
+  let coordinator: CloudFullSyncCoordinator
+
+  static func make(namespace: CloudSyncNamespace, finishInitialFetch: Bool = true) async throws -> Self {
+    let root = currentCheckpointRoot()
+    let zone = try XCTUnwrap(namespace.zones.first)
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: namespace.binding)
+    let active = try await persistence.snapshot().activeStore
+    let managed = try await persistence.activeLibrary()
+    let library = try await persistence.libraryForTransition(storeID: active.id)
+    let lease = try await persistence.activeCloudMutationLease(storeID: active.id)
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone, mutationLease: lease)
+    try await store.approveEnrollment(references: [CloudEntityReference(kind: .list, domainID: SnipList.inboxID)])
+    let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+    if finishInitialFetch {
+      _ = try await coordinator.fetchRemote()
+      _ = try await coordinator.sendPendingUntilSettled()
+    }
+    return Self(root: root, namespace: namespace, zone: zone, persistence: persistence, managed: managed, library: library,
+      store: store, transport: transport, coordinator: coordinator)
+  }
+}
+
+
+extension CloudFullSyncPersistenceTests {
+  func testCurrentCheckpointCannotConfirmEqualRowsAfterTheAppliedFilesChanged() async throws {
+    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
+    let sourceFile = fixture.root.appendingPathComponent("original.txt")
+    try Data("original bytes".utf8).write(to: sourceFile)
+    let added = try await fixture.managed.perform(.add(content: "Same content and file URL", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [sourceFile], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let id = try XCTUnwrap(added.snapshot.snips.first?.id)
+    try await fixture.store.approveEnrollment(references: [.init(kind: .snip, domainID: id)])
+    _ = try await fixture.coordinator.sendPendingUntilSettled()
+    let scope = SnipRecoveryScope(fixture.namespace.namespaceKey.rawValue)
+    let session = SavedSnipsSession(library: fixture.managed, recoveryScope: scope)
+    let applied = try await session.checkedRead(sortedBy: .manual)
+    let recovery = try await session.checkedRecovery()
+    let attachment = try XCTUnwrap(applied.snapshot.snips.first?.attachments.first)
+    let url = try XCTUnwrap(applied.snapshot.attachmentURLs[attachment.id])
+    let originalFiles = try XCTUnwrap(applied.files).get()
+    let originalTime = try XCTUnwrap(originalFiles[attachment.id]?.modifiedAt)
+    try FileManager.default.setAttributes([.modificationDate: originalTime.addingTimeInterval(120)], ofItemAtPath: url.path)
+
+    let current = try await fixture.coordinator.checkedCurrentCheckpoint()
+
+    XCTAssertTrue(current.settled, "A file metadata change with identical bytes does not invent outbound work")
+    let matches = current.matchesApplication(applied.snapshot, after: applied.publication, target: applied.target,
+      recovery: recovery, files: applied.files)
+    let closing = try XCTUnwrap(current.publication).beginApplication()
+    closing.finish()
+    XCTAssertFalse(matches, "Equal rows and URLs cannot confirm the older applied file observation")
+    XCTAssertEqual(try Data(contentsOf: url), Data("original bytes".utf8))
+    let fresh = try await session.checkedRead(sortedBy: .manual)
+    let freshRecovery = try await session.checkedRecovery()
+    XCTAssertEqual(fresh.snapshot, applied.snapshot)
+    let freshFiles = try XCTUnwrap(fresh.files).get()
+    XCTAssertNotEqual(freshFiles, originalFiles)
+    let confirmed = try await fixture.coordinator.checkedCurrentCheckpoint()
+    let freshMatches = confirmed.matchesApplication(fresh.snapshot, after: fresh.publication, target: fresh.target,
+      recovery: freshRecovery, files: fresh.files)
+    let confirmedClosing = try XCTUnwrap(confirmed.publication).beginApplication()
+    confirmedClosing.finish()
+    XCTAssertTrue(freshMatches, "The next real application may establish the current file observation")
+  }
+
+  func testCurrentCheckpointCannotConfirmEqualRowsAfterRecoveryWasResolved() async throws {
+    let fixture = try await CurrentCheckpointFixture.make(namespace: makeNamespace())
+    let current = Snip(id: UUID(uuidString: "11111111-AAAA-BBBB-CCCC-111111111111")!, content: "Current durable value", origin: .quickEntry)
+    _ = try await fixture.managed.perform(.restore(snips: [current]), sortedBy: .manual)
+    try await fixture.store.approveEnrollment(references: [.init(kind: .snip, domainID: current.id)])
+    _ = try await fixture.coordinator.sendPendingUntilSettled()
+    let alternate = Snip(id: UUID(uuidString: "22222222-AAAA-BBBB-CCCC-222222222222")!, content: "Recovered alternate", origin: .quickEntry)
+    let recovered = RecoveredSnip(id: alternate.id, currentSnipID: current.id, recovered: alternate, conflictingFields: [.text])
+    try await fixture.library.testStoreCloudConflict(namespaceKey: fixture.namespace.namespaceKey,
+      key: "original-application-recovery", reference: .init(kind: .snip, domainID: current.id),
+      payload: Data("retained original conflict".utf8), recovery: .snip(recovered))
+    let scope = SnipRecoveryScope(fixture.namespace.namespaceKey.rawValue)
+    let session = SavedSnipsSession(library: fixture.managed, recoveryScope: scope)
+    let applied = try await session.checkedRead(sortedBy: .manual)
+    let recovery = try await session.checkedRecovery()
+    XCTAssertEqual(recovery.pendingSnips.map(\.id), [alternate.id])
+    _ = try await fixture.managed.resolveRecovery(alternate.id, in: scope, choice: .keepCurrent)
+    let fresh = try await session.checkedRead(sortedBy: .manual)
+    let freshRecovery = try await session.checkedRecovery()
+    XCTAssertEqual(fresh.snapshot.snips.map(\.content), ["Current durable value"])
+    XCTAssertEqual(fresh.snapshot, applied.snapshot)
+    XCTAssertTrue(freshRecovery.pendingSnips.isEmpty)
+
+    let observed = try await fixture.coordinator.checkedCurrentCheckpoint()
+
+    XCTAssertTrue(observed.settled)
+    let oldMatches = observed.matchesApplication(applied.snapshot, after: applied.publication, target: applied.target,
+      recovery: recovery, files: applied.files)
+    let freshMatches = observed.matchesApplication(fresh.snapshot, after: fresh.publication, target: fresh.target,
+      recovery: freshRecovery, files: fresh.files)
+    let closing = try XCTUnwrap(observed.publication).beginApplication()
+    closing.finish()
+    XCTAssertFalse(oldMatches, "Equal rows cannot confirm an application still showing the resolved recovery")
+    XCTAssertTrue(freshMatches)
+  }
+}

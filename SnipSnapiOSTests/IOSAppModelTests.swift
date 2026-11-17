@@ -434,3 +434,509 @@ private func writeActivationManifest(
         to: rootURL.appendingPathComponent("activation.json")
     )
 }
+
+extension IOSAppModelTests {
+    func testCheckedLoadKeepsDurableAddPromptWhileItsRequiredStatusReadIsHeld() async throws {
+        let fixture = try IOSCheckedApplicationFixture.make()
+        var loadError: (any Error)?
+        let load = fixture.start {
+            do { _ = try await fixture.model.loadChecked() }
+            catch { loadError = error }
+        }
+        if await fixture.ready(fixture.handler.entered, "required status read") {
+            var saved = false
+            let add = fixture.start { saved = await fixture.model.createSnip(content: "Durable while checked read waits", in: SnipList.inboxID) }
+            if await fixture.prompt(add, "durable add before status release") {
+                XCTAssertTrue(saved)
+                XCTAssertTrue(fixture.handler.isHeld)
+                do {
+                    let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+                    let durable = try await reopened.checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(durable.snips.map(\.content), ["Durable while checked read waits"])
+                    XCTAssertEqual(fixture.model.snips.map(\.content), ["Durable while checked read waits"])
+                } catch { XCTFail("Independent durable read failed: \(error)") }
+                XCTAssertFalse(load.finished.isSet)
+            }
+            fixture.handler.release()
+            if await fixture.prompt(load, "terminal required read error") {
+                if let loadError { XCTAssertTrue((loadError as AnyObject) === fixture.handler.failure) }
+                else { XCTFail("The required status failure must reach its checked caller") }
+                XCTAssertEqual(fixture.handler.maximumConcurrentReads, 1)
+                XCTAssertEqual(fixture.handler.readCount, 2, "One coalesced follow-up must read the committed local change")
+            }
+        }
+        await fixture.cleanUp()
+    }
+
+    func testCancellingOneCheckedLoadDoesNotCancelItsSharedReadOrAnotherCaller() async throws {
+        let fixture = try IOSCheckedApplicationFixture.make()
+        var cancelled = false
+        var followerError: (any Error)?
+        let first = fixture.start {
+            do { _ = try await fixture.model.loadChecked(); XCTFail("The cancelled caller cannot return success") }
+            catch is CancellationError { cancelled = true }
+            catch { XCTFail("Cancellation lost its identity: \(error)") }
+        }
+        if await fixture.ready(fixture.handler.entered, "shared required read") {
+            let follower = fixture.start {
+                do { _ = try await fixture.model.loadChecked(); XCTFail("The actual read failure cannot become success") }
+                catch { followerError = error }
+            }
+            first.task.cancel()
+            if await fixture.prompt(first, "one cancelled waiter") { XCTAssertTrue(cancelled) }
+            XCTAssertTrue(fixture.handler.isHeld)
+            XCTAssertEqual(fixture.handler.activeReads, 1)
+            XCTAssertFalse(follower.finished.isSet)
+            fixture.handler.release()
+            if await fixture.prompt(follower, "remaining waiter receives its real terminal read") {
+                if let followerError { XCTAssertTrue((followerError as AnyObject) === fixture.handler.failure) }
+                else { XCTFail("The remaining waiter must receive the original read failure") }
+                XCTAssertEqual(fixture.handler.maximumConcurrentReads, 1)
+            }
+        }
+        await fixture.cleanUp()
+    }
+
+    func testHandlerFreeCheckedLoadUsesRealDurableContentAndCheckedRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("IOSCheckedLocal-\(UUID())")
+        NSLog("IOSCheckedLocal retained store root: %@", root.path)
+        let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+        _ = try await library.perform(.add(content: "Literal checked local text", origin: .quickEntry,
+            source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast),
+            sortedBy: .manual)
+        let model = IOSAppModel(library: library)
+        let applied = try await model.loadChecked()
+        XCTAssertNil(applied.read.source, "A raw local read stays honestly unbound")
+        XCTAssertNil(applied.attachments)
+        XCTAssertEqual(model.snips.map(\.content), ["Literal checked local text"])
+        XCTAssertTrue(model.recoverySnapshot.pendingSnips.isEmpty)
+        XCTAssertTrue(model.recoverySnapshot.pendingLists.isEmpty)
+        let reopened = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+        let durable = try await reopened.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(durable.snips.map(\.content), ["Literal checked local text"])
+    }
+}
+
+private final class IOSCheckedSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            defer { waiters.removeAll() }
+            return Array(waiters.values)
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+    func observe() async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate: Bool? = lock.withLock {
+                    if fired { return true }
+                    if Task.isCancelled { return false }
+                    waiters[id] = continuation
+                    return nil
+                }
+                if let immediate { continuation.resume(returning: immediate) }
+            }
+        } onCancel: { self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false) }
+    }
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        guard timeout > .zero else { return false }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.observe() }
+            group.addTask { do { try await Task.sleep(for: timeout) } catch {}; return false }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class IOSCheckedReadFailure: Error, @unchecked Sendable {}
+
+private final class IOSCheckedStatusHandler: OptionalCloudSyncHandling, @unchecked Sendable {
+    let failure = IOSCheckedReadFailure()
+    let entered = IOSCheckedSignal()
+    private let forwarding: (any OptionalCloudSyncHandling)?
+
+    init(forwarding: (any OptionalCloudSyncHandling)? = nil) { self.forwarding = forwarding }
+    private let lock = NSLock()
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var reads = 0
+    private var active = 0
+    private var maximum = 0
+    var readCount: Int { lock.withLock { reads } }
+    var activeReads: Int { lock.withLock { active } }
+    var maximumConcurrentReads: Int { lock.withLock { maximum } }
+    var isHeld: Bool { entered.isSet && lock.withLock { !released } }
+    func release() {
+        let pending = lock.withLock {
+            released = true
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume()
+    }
+    func checkedAttachmentStates() async throws -> SyncedAttachmentReadObservation {
+        let first = lock.withLock {
+            reads += 1; active += 1; maximum = max(maximum, active)
+            return reads == 1
+        }
+        defer { lock.withLock { active -= 1 } }
+        if first {
+            // Noncooperative with worker cancellation; only test-owned release ends this read.
+            await withCheckedContinuation { pending in
+                let finish = lock.withLock {
+                    if released { return true }
+                    continuation = pending
+                    return false
+                }
+                entered.fire()
+                if finish { pending.resume() }
+            }
+        }
+        if let forwarding { return try await forwarding.checkedAttachmentStates() }
+        throw failure
+    }
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func isCloudSyncActive() async throws -> Bool { false }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.attachmentCopyFailed
+    }
+    func clearDownloadedFiles() async throws {}
+}
+
+@MainActor
+private final class IOSCheckedApplicationFixture {
+    struct Work { let task: Task<Void, Never>; let finished: IOSCheckedSignal }
+    let root: URL
+    let storeURL: URL
+    let model: IOSAppModel
+    let handler: IOSCheckedStatusHandler
+    private var work: [Work] = []
+    private var retainedAfterFailedJoin: IOSCheckedApplicationFixture?
+    init(root: URL, library: any SnipLibrary, handler: IOSCheckedStatusHandler = IOSCheckedStatusHandler()) {
+        self.root = root
+        storeURL = root.appendingPathComponent("snips.store")
+        self.handler = handler
+        model = IOSAppModel(library: library, cloudSyncHandler: handler)
+    }
+    static func make() throws -> IOSCheckedApplicationFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("IOSCheckedApplication-\(UUID())")
+        NSLog("IOSCheckedApplication retained store root: %@", root.path)
+        return IOSCheckedApplicationFixture(root: root,
+            library: try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store")))
+    }
+    func start(_ operation: @escaping @MainActor () async -> Void) -> Work {
+        let finished = IOSCheckedSignal()
+        let task = Task { await operation(); finished.fire() }
+        let owned = Work(task: task, finished: finished)
+        work.append(owned)
+        return owned
+    }
+    func ready(_ signal: IOSCheckedSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "Checked iOS setup failed: \(stage)")
+        return ready
+    }
+    func prompt(_ owned: Work, _ stage: String) async -> Bool {
+        let completed = await owned.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "Checked iOS completion failed: \(stage)")
+        return completed
+    }
+    func cleanUp() async {
+        handler.release()
+        work.forEach { $0.task.cancel() }
+        let drainer = start { await self.model.load() }
+        let deadline = ContinuousClock.now + .seconds(30)
+        var joined = true
+        for owned in work {
+            let settled = await owned.finished.wait(for: deadline - ContinuousClock.now)
+            XCTAssertTrue(settled, "Checked iOS cleanup must join callers and the actual status drainer")
+            joined = joined && settled
+            if settled { await owned.task.value }
+        }
+        if joined {
+            XCTAssertEqual(handler.activeReads, 0)
+            work.removeAll()
+        } else {
+            drainer.task.cancel()
+            retainedAfterFailedJoin = self
+            NSLog("IOSCheckedApplication retained live ownership/root: %@", root.path)
+        }
+    }
+}
+
+
+extension IOSAppModelTests {
+    func testActualEnableAppliesItsManagedTargetThroughTheIOSSession() async throws {
+        let fixture = try await IOSCheckedEnableFixture.make()
+        var result: SyncedContentActionOutcome?
+        let operation = fixture.start { result = await fixture.services.syncedContentSettings.enableICloudSyncWithOutcome() }
+        if await fixture.completed(operation) {
+            if case .completed(let report) = result {
+                guard case .success(.iCloudSyncEnabled) = report.origin else {
+                    XCTFail("The receipt must retain the actual original enable result")
+                    await fixture.cleanUp(); return
+                }
+                guard case .applied = report.requiredApplication else {
+                    XCTFail("Required application must pass through the real iOS model/status owner")
+                    await fixture.cleanUp(); return
+                }
+                XCTAssertEqual(report.operation.status, .succeeded)
+                XCTAssertEqual(report.operation.message, "Your snips and attachments sync through iCloud.")
+                XCTAssertEqual(fixture.session.model.snips.map(\.content), ["Seed iOS enable"])
+                XCTAssertEqual(fixture.session.model.appliedSource?.storageMode, .iCloudSync)
+                XCTAssertEqual(fixture.services.syncedContentSettings.mode, .iCloudSync)
+                let reopened = SnipLibraryAssembly(library: fixture.source, syncModeRootURL: fixture.modeRoot)
+                XCTAssertNotNil(reopened.syncModeStore)
+                XCTAssertNotNil(reopened.recoveryScope)
+                do {
+                    let durable = try await reopened.library.checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(durable.snips.map(\.content), ["Seed iOS enable"])
+                } catch { XCTFail("Independent managed reopen failed: \(error)") }
+            } else { XCTFail("The actual checked enable route must not use a Void success or unsupported fallback") }
+        }
+        await fixture.cleanUp()
+    }
+
+    func testActualEnableKeepsItsOriginalResultWhenRequiredIOSApplicationFails() async throws {
+        let fixture = try await IOSCheckedEnableFixture.make()
+        let failure = IOSCheckedReadFailure()
+        var hookCalls = 0
+        fixture.services.syncedContentSettings.setCheckedEnableCompletionAction { _, _ in
+            hookCalls += 1
+            throw failure
+        }
+        var result: SyncedContentActionOutcome?
+        let operation = fixture.start { result = await fixture.services.syncedContentSettings.enableICloudSyncWithOutcome() }
+        if await fixture.completed(operation) {
+            XCTAssertEqual(hookCalls, 1)
+            if case .completed(let report) = result {
+                guard case .success(.iCloudSyncEnabled) = report.origin else {
+                    XCTFail("Required application failure cannot replace the actual original backend result")
+                    await fixture.cleanUp(); return
+                }
+                guard case .failed(let error) = report.requiredApplication else {
+                    XCTFail("An actual required hook failure cannot become optional current-proof loss")
+                    await fixture.cleanUp(); return
+                }
+                XCTAssertTrue((error as? IOSCheckedReadFailure) === failure)
+                XCTAssertEqual(report.operation.status, .failed)
+                XCTAssertNil(fixture.session.model.appliedSource)
+                let reopened = SnipLibraryAssembly(library: fixture.source, syncModeRootURL: fixture.modeRoot)
+                XCTAssertNotNil(reopened.syncModeStore)
+                XCTAssertNotNil(reopened.recoveryScope, "The original enable really switched storage before the hook failed")
+            } else { XCTFail("The original enabled value and real required hook error must remain distinguishable") }
+        }
+        await fixture.cleanUp()
+    }
+
+    func testDeadIOSOutcomeBridgeDoesNotTurnMissingApplicationIntoVoidSuccess() async throws {
+        let bridge = IOSCloudSyncActionBridge()
+        let result = try await bridge.retrySyncWithOutcome()
+        guard case .notRun(.unavailableSession) = result else {
+            return XCTFail("A dead weak application owner cannot produce an admitted receipt")
+        }
+    }
+}
+
+@MainActor
+private final class IOSCheckedEnableFixture {
+    struct Work { let task: Task<Void, Never>; let finished: IOSCheckedSignal }
+    let root: URL
+    let modeRoot: URL
+    let source: SwiftDataSnipLibrary
+    let services: SnipSnapCloudAppServices
+    let session: IOSAppSession
+    let handler: AppleAccountCacheCoordinatorHandler?
+    private var work: [Work] = []
+    private var retainedAfterFailedJoin: IOSCheckedEnableFixture?
+
+    private init(
+        root: URL, source: SwiftDataSnipLibrary, services: SnipSnapCloudAppServices, session: IOSAppSession,
+        handler: AppleAccountCacheCoordinatorHandler?
+    ) {
+        self.root = root; self.modeRoot = root.appendingPathComponent("mode")
+        self.source = source; self.services = services; self.session = session; self.handler = handler
+    }
+
+    static func make() async throws -> IOSCheckedEnableFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("IOSCheckedEnable-\(UUID())")
+        NSLog("IOSCheckedEnable retained store root: %@", root.path)
+        let source = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("source/snips.store"))
+        _ = try await source.perform(.add(content: "Seed iOS enable", origin: .quickEntry, source: nil,
+            listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+        let services = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(rootURL: root.appendingPathComponent("mode"), sourceLibrary: source)
+        let bridge = IOSCloudSyncActionBridge()
+        let handler = services.makeAccountCacheHandler(syncWhenPossible: { await bridge.syncWhenPossible() },
+            retrySyncWhenPossible: { await bridge.retrySyncWhenPossible() },
+            retrySyncWithOutcome: { try await bridge.retrySyncWithOutcome() },
+            scheduleSyncAfterLocalChange: { await bridge.scheduleSyncAfterLocalChange() })
+        let session = IOSAppSession(library: source, syncedContentSettings: services.syncedContentSettings,
+            cloudSyncSession: services.syncSession, cloudSyncHandler: handler,
+            clipboardRootURL: root.appendingPathComponent("clipboard"))
+        bridge.session = session
+        return IOSCheckedEnableFixture(root: root, source: source, services: services, session: session, handler: handler)
+    }
+
+    func start(_ operation: @escaping @MainActor () async -> Void) -> Work {
+        let signal = IOSCheckedSignal()
+        let task = Task { await operation(); signal.fire() }
+        let owned = Work(task: task, finished: signal)
+        work.append(owned)
+        return owned
+    }
+
+    func completed(_ owned: Work) async -> Bool {
+        let completed = await owned.finished.wait(for: .seconds(30))
+        XCTAssertTrue(completed, "Actual enable/setup and required application must finish before inspection")
+        return completed
+    }
+
+    func cleanUp() async {
+        work.forEach { $0.task.cancel() }
+        _ = start { await self.session.model.load() }
+        let deadline = ContinuousClock.now + .seconds(30)
+        var joined = true
+        for owned in work {
+            let settled = await owned.finished.wait(for: deadline - ContinuousClock.now)
+            XCTAssertTrue(settled, "Enable cleanup must join callers and the existing model status owner")
+            joined = joined && settled
+            if settled { await owned.task.value }
+        }
+        if joined { work.removeAll() }
+        else {
+            retainedAfterFailedJoin = self
+            NSLog("IOSCheckedEnable retained live ownership/root: %@", root.path)
+        }
+    }
+}
+
+extension IOSAppModelTests {
+    func testActualNormalSchedulingEndsWithoutEngineDeliveryAndAllowsAnotherExplicitRetry() async throws {
+        let fixture = try await IOSCheckedEnableFixture.make()
+        do {
+            let services = fixture.services
+            let backend = try XCTUnwrap(services.syncSession)
+            let handler = try XCTUnwrap(fixture.handler)
+            let settings = services.syncedContentSettings
+            let operation = fixture.start {
+                guard case .completed(let enable) = await settings.enableICloudSyncWithOutcome(),
+                      enable.operation.status == .succeeded else {
+                    return XCTFail("Real mode enable must succeed before exercising an active schedule")
+                }
+                do {
+                    let scheduled = try await backend.synchronizeWithTarget()
+                    XCTAssertEqual(scheduled.result, .syncScheduled)
+                    XCTAssertNotNil(scheduled.target)
+                    // The simulated service supplies no automatic delivery stream.
+                    await handler.syncWhenPossible()
+                    XCTAssertTrue(settings.canSyncNow)
+                    XCTAssertEqual(settings.state, .ready)
+
+                    settings.recordSyncFailure(.waitingForConnection)
+                    await handler.syncWhenPossible()
+                    XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+                    XCTAssertTrue(settings.canSyncNow)
+
+                    guard case .completed(let retry) = try await handler.retrySyncWithOutcome() else {
+                        return XCTFail("The actual handler and Core must admit the next explicit retry")
+                    }
+                    XCTAssertEqual(retry.operation.status, .succeeded)
+                    guard case .applied = retry.requiredApplication else {
+                        return XCTFail("The explicit retry still awaits its real required application")
+                    }
+                    XCTAssertEqual(fixture.session.model.snips.map(\.content), ["Seed iOS enable"])
+                } catch { XCTFail("Actual scheduling or retry failed: \(error)") }
+            }
+            _ = await fixture.completed(operation)
+        } catch {
+            await fixture.cleanUp()
+            throw error
+        }
+        await fixture.cleanUp()
+    }
+
+    func testDifferentSameStoreApplicationCannotCompleteSupersededIOSCohort() async throws {
+        let enabled = try await IOSCheckedEnableFixture.make()
+        let settings = enabled.services.syncedContentSettings
+        var outcome: SyncedContentActionOutcome?
+        let enable = enabled.start { outcome = await settings.enableICloudSyncWithOutcome() }
+        guard await enabled.completed(enable) else { await enabled.cleanUp(); return }
+        guard case .completed(let report) = outcome, report.operation.status == .succeeded else {
+            XCTFail("The real managed source must be enabled before the cohort test")
+            await enabled.cleanUp()
+            return
+        }
+        do {
+            let backend = try XCTUnwrap(enabled.services.syncSession)
+            let handler = try XCTUnwrap(enabled.handler)
+            let firstValue = try await backend.currentApplicationTarget()
+            let secondValue = try await backend.currentApplicationTarget()
+            let firstTarget = try XCTUnwrap(firstValue?.application)
+            let secondTarget = try XCTUnwrap(secondValue?.application)
+            XCTAssertEqual(firstTarget.source, secondTarget.source)
+            XCTAssertFalse(firstTarget === secondTarget)
+            let probe = IOSCheckedStatusHandler(forwarding: handler)
+            let fixture = IOSCheckedApplicationFixture(root: enabled.root, library: firstTarget.library, handler: probe)
+            let firstSettings = SyncedContentSettingsModel(mode: .localOnly)
+            let start = firstSettings.recordSyncStarted()
+            let completion = IOSAppModel.SyncApplicationCompletion(
+                settings: firstSettings, clipboard: enabled.session.clipboard, start: start, enabling: true)
+            var firstError: (any Error)?
+            let first = fixture.start {
+                do {
+                    _ = try await fixture.model.applyChecked(firstTarget, completion: completion)
+                    XCTFail("A supplanted cohort cannot borrow its successor's attachment frame")
+                } catch { firstError = error }
+            }
+            if await fixture.ready(probe.entered, "original required attachment read") {
+                let secondDispatched = IOSCheckedSignal()
+                let second = fixture.start {
+                    secondDispatched.fire()
+                    do { _ = try await fixture.model.applyChecked(secondTarget) }
+                    catch { XCTFail("Second target should apply its real checked result: \(error)") }
+                }
+                if await fixture.ready(secondDispatched, "second target dispatched") {
+                    let followerDispatched = IOSCheckedSignal()
+                    let follower = fixture.start {
+                        followerDispatched.fire()
+                        do { _ = try await fixture.model.applyChecked(secondTarget) }
+                        catch { XCTFail("Same-target checked follower failed: \(error)") }
+                    }
+                    if await fixture.ready(followerDispatched, "same-target follower dispatched") {
+                        XCTAssertTrue(probe.isHeld)
+                        XCTAssertFalse(first.finished.isSet)
+                        XCTAssertFalse(second.finished.isSet)
+                        XCTAssertFalse(follower.finished.isSet)
+                        probe.release()
+                        if await fixture.prompt(first, "superseded target rejected"),
+                           await fixture.prompt(second, "second target applied"),
+                           await fixture.prompt(follower, "same-target follower delivered") {
+                            XCTAssertTrue(firstError is SnipLibraryReadPublicationError)
+                            XCTAssertEqual(firstSettings.mode, .localOnly)
+                            XCTAssertEqual(probe.readCount, 2)
+                            XCTAssertEqual(probe.maximumConcurrentReads, 1)
+                            XCTAssertEqual(fixture.model.snips.map(\.content), ["Seed iOS enable"])
+                        }
+                    }
+                }
+            }
+            await fixture.cleanUp()
+        } catch {
+            await enabled.cleanUp()
+            throw error
+        }
+        await enabled.cleanUp()
+    }
+}

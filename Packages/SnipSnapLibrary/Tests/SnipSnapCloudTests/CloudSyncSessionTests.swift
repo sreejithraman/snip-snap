@@ -983,3 +983,80 @@ extension CloudSyncSessionTests {
     }
   }
 }
+
+
+extension CloudSyncSessionTests {
+  @MainActor
+  func testOriginalBatchTargetDoesNotBecomeALaterActiveCollection() async throws {
+    let work = CloudOutcomeOwnership()
+    let gate = work.gate()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("OriginalBatchTarget-\(UUID())")
+    NSLog("OriginalBatchTarget retained store root: %@", root.path)
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    work.retain(persistence)
+    let first = CloudCollectionDescriptor(generation: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+      metadataZone: CloudZoneID(name: "original-metadata", ownerName: "owner"),
+      payloadZone: CloudZoneID(name: "original-payload", ownerName: "owner"))
+    let namespace = first.namespace(cloudScope: "private", accountLineage: "original-account")
+    try await persistence.activateEmptyCollection(namespace: namespace.binding)
+    let originalStoreID = try await persistence.snapshot().activeStore.id
+    let library = try await persistence.activeLibrary()
+    _ = try await library.perform(.add(content: "Original A durable", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let server = FakeCloudServer()
+    let transport = FakeCloudControlTransport(server: server)
+    await transport.seedControl(first)
+    let local = try SwiftDataCloudCollectionLocalStore(rootURL: root, persistence: persistence)
+    let coordinator = CloudCollectionCoordinator(cloudScope: "private", accountLineage: "original-account",
+      ownerName: "owner", localStore: local, transport: transport, syncDriver: NoopCloudCollectionSyncDriver(),
+      makeDescriptor: { first })
+    let session = SnipSnapCloudSyncSession(synchronize: { .noChange },
+      synchronizeWithTarget: {
+        let original = try await coordinator.synchronizeWithTarget()
+        await gate.suspend()
+        return SnipSnapCloudSyncDelivery(result: syncResult(for: original.status), target: original.target)
+      }, enable: { .enabled }, disable: { _ in }, delete: { .completed },
+      activeLibrary: { SnipSnapCloudActiveLibrary(library: library, recoveryScope: nil) },
+      applicationTarget: {
+        SnipSnapCloudApplicationTarget(persistence: persistence, store: try await persistence.snapshot().activeStore)
+      })
+    work.retain(session)
+    var received: SnipSnapCloudSyncDelivery?
+    let caller = work.start {
+      do { received = try await session.synchronizeWithTarget() }
+      catch { XCTFail("Original backend request failed: \(error)") }
+    }
+    if await work.ready(gate.entered, "actual original coordinator result selected") {
+      do {
+        try await persistence.activateEmptyCollection(namespace: nil)
+        _ = try await library.perform(.add(content: "Replacement B durable", origin: .quickEntry, source: nil,
+          listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+        let replacementID = try await persistence.snapshot().activeStore.id
+        XCTAssertNotEqual(replacementID, originalStoreID)
+        XCTAssertFalse(caller.finished.isSet)
+        gate.release()
+        let finished = await caller.finished.wait(for: .seconds(2))
+        XCTAssertTrue(finished)
+        if finished {
+          let delivery = try XCTUnwrap(received)
+          XCTAssertEqual(delivery.result, .contentUpdated)
+          let target = try XCTUnwrap(delivery.target)
+          XCTAssertEqual(target.application.source.storeID, originalStoreID)
+          XCTAssertEqual(target.namespace, namespace.binding)
+          XCTAssertEqual(target.application.source.namespaceKey, namespace.namespaceKey.rawValue)
+          do {
+            _ = try await target.application.library.checkedSnapshot(sortedBy: .manual)
+            XCTFail("The original managed target must reject retirement, not read B through an active adapter")
+          } catch { XCTAssertTrue(error is SnipLibraryReadPublicationError) }
+          let currentTarget = try await session.currentApplicationTarget()
+          let current = try XCTUnwrap(currentTarget)
+          XCTAssertEqual(current.application.source.storeID, replacementID)
+          XCTAssertEqual(current.application.source.storageMode, .localOnly)
+          let durable = try await current.application.library.checkedSnapshot(sortedBy: .manual)
+          XCTAssertEqual(durable.snips.map(\.content), ["Replacement B durable"])
+        }
+      } catch { XCTFail("Replacement or target proof failed: \(error)") }
+    }
+    await work.cleanUp()
+  }
+}

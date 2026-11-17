@@ -6,22 +6,25 @@ import SnipSnapPersistence
 public actor SnipSnapCloudSyncSession {
   package typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   package typealias SynchronizeAction = @Sendable () async throws -> SnipSnapCloudSyncResult
+  package typealias DeliveryAction = @Sendable () async throws -> SnipSnapCloudSyncDelivery
   package typealias ScheduleAction = @Sendable () async throws -> Void
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
 
-  private let synchronizeAction: SynchronizeAction
-  private let retryAction: SynchronizeAction
+  private let synchronizeAction: DeliveryAction
+  private let retryAction: DeliveryAction
   private let scheduleAction: ScheduleAction
+  private let enableDeliveryAction: (@Sendable () async throws -> SnipSnapCloudEnableDelivery)?
   private let enableAction: SyncedContentSettingsModel.EnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
+  private let applicationTargetAction: (@Sendable () async throws -> SnipSnapCloudApplicationTarget?)?
   private let automaticErrorHandler: @Sendable (any Error) async -> Void
   private enum RequestKind: Int {
     case schedule, synchronize, retry
   }
-  private typealias RequestWaiter = CheckedContinuation<SnipSnapCloudSyncResult, any Error>
+  private typealias RequestWaiter = CheckedContinuation<SnipSnapCloudSyncDelivery, any Error>
   private struct SyncRequest {
     let id: UUID
     let kind: RequestKind
@@ -118,6 +121,7 @@ public actor SnipSnapCloudSyncSession {
   private var requestQueue = RequestQueue.idle
   private let operationGate: AsyncOperationGate
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
+  public nonisolated let automaticSyncDeliveries: AsyncStream<SnipSnapCloudSyncDelivery>
 
   package init(
     coordinator: CloudCollectionCoordinator,
@@ -127,12 +131,23 @@ public actor SnipSnapCloudSyncSession {
   ) {
     self.operationGate = operationGate
     self.automaticSyncResults = automaticSyncResults
+    automaticSyncDeliveries = AsyncStream { $0.finish() }
     automaticErrorHandler = { _ in }
+    applicationTargetAction = {
+      let selected = try await persistence.snapshot().activeStore
+      return SnipSnapCloudApplicationTarget(persistence: persistence, store: selected)
+    }
+    enableDeliveryAction = {
+      let delivery = try await coordinator.enableSyncWithTarget()
+      return SnipSnapCloudEnableDelivery(outcome: .enabled, target: delivery.target)
+    }
     synchronizeAction = {
-      syncResult(for: try await coordinator.synchronize())
+      let delivery = try await coordinator.synchronizeWithTarget()
+      return SnipSnapCloudSyncDelivery(result: syncResult(for: delivery.status), target: delivery.target)
     }
     retryAction = {
-      syncResult(for: try await coordinator.retrySynchronization())
+      let delivery = try await coordinator.retrySynchronizationWithTarget()
+      return SnipSnapCloudSyncDelivery(result: syncResult(for: delivery.status), target: delivery.target)
     }
     scheduleAction = {}
     enableAction = {
@@ -156,36 +171,61 @@ public actor SnipSnapCloudSyncSession {
   package init(
     synchronize: @escaping SynchronizeAction,
     retry: SynchronizeAction? = nil,
+    synchronizeWithTarget: DeliveryAction? = nil,
+    retryWithTarget: DeliveryAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
+    enableWithTarget: (@Sendable () async throws -> SnipSnapCloudEnableDelivery)? = nil,
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
     },
     delete: @escaping DeleteAction,
     activeLibrary: @escaping LibraryAction,
+    applicationTarget: (@Sendable () async throws -> SnipSnapCloudApplicationTarget?)? = nil,
     operationGate: AsyncOperationGate = AsyncOperationGate(),
     automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() },
+    automaticSyncDeliveries: AsyncStream<SnipSnapCloudSyncDelivery>? = nil,
     automaticErrorHandler: @escaping @Sendable (any Error) async -> Void = { _ in }
   ) {
     self.operationGate = operationGate
-    self.automaticSyncResults = automaticSyncResults
-    synchronizeAction = synchronize
-    retryAction = retry ?? synchronize
+    if let automaticSyncDeliveries {
+      self.automaticSyncDeliveries = automaticSyncDeliveries
+      let projection = LegacyAutomaticResults(automaticSyncDeliveries)
+      self.automaticSyncResults = AsyncStream(unfolding: { await projection.next() })
+    } else {
+      self.automaticSyncResults = automaticSyncResults
+      self.automaticSyncDeliveries = AsyncStream { $0.finish() }
+    }
+    let actualSync: DeliveryAction = synchronizeWithTarget ?? { .unavailable(try await synchronize()) }
+    synchronizeAction = actualSync
+    if let retryWithTarget { retryAction = retryWithTarget }
+    else if let retry { retryAction = { .unavailable(try await retry()) } }
+    else { retryAction = actualSync }
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
+    enableDeliveryAction = enableWithTarget
     cancelEnableAction = cancelEnable
     disableAction = disable
     deleteAction = delete
     libraryAction = activeLibrary
+    applicationTargetAction = applicationTarget
     self.automaticErrorHandler = automaticErrorHandler
   }
 
   public func synchronize() async throws -> SnipSnapCloudSyncResult {
-    try await request(.synchronize)
+    try await request(.synchronize).result
   }
 
   public func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
+    try await request(.retry).result
+  }
+
+  public func synchronizeWithTarget() async throws -> SnipSnapCloudSyncDelivery {
+    try await request(.synchronize)
+  }
+
+  public func retrySynchronizationWithTarget() async throws -> SnipSnapCloudSyncDelivery {
     try await request(.retry)
   }
 
@@ -195,6 +235,13 @@ public actor SnipSnapCloudSyncSession {
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
     try await operationGate.withLease(enableAction)
+  }
+
+  public func enableICloudSyncWithTarget() async throws -> SnipSnapCloudEnableDelivery {
+    guard let enableDeliveryAction else {
+      return SnipSnapCloudEnableDelivery(outcome: try await operationGate.withLease(enableAction), target: nil)
+    }
+    return try await operationGate.withLease(enableDeliveryAction)
   }
 
   public func cancelICloudSyncSetup() async throws {
@@ -213,10 +260,15 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease(libraryAction)
   }
 
+  public func currentApplicationTarget() async throws -> SnipSnapCloudApplicationTarget? {
+    guard let applicationTargetAction else { return nil }
+    return try await operationGate.withLease(applicationTargetAction)
+  }
+
   /// Requests waiting for the next batch, not counting the batch that is running.
   var queuedRequestCount: Int { requestQueue.queuedCount }
 
-  private func request(_ kind: RequestKind) async throws -> SnipSnapCloudSyncResult {
+  private func request(_ kind: RequestKind) async throws -> SnipSnapCloudSyncDelivery {
     let id = UUID()
     return try await withTaskCancellationHandler {
       try Task.checkCancellation()
@@ -240,13 +292,13 @@ public actor SnipSnapCloudSyncSession {
   private func drainRequests() async {
     while let batch = requestQueue.startBatch() {
       let kind = batch.kind
-      let result: Result<SnipSnapCloudSyncResult, any Error>
+      let result: Result<SnipSnapCloudSyncDelivery, any Error>
       do {
         let value = try await operationGate.withLease { [synchronizeAction, retryAction, scheduleAction] in
           switch kind {
           case .schedule:
             try await scheduleAction()
-            return SnipSnapCloudSyncResult.noChange
+            return SnipSnapCloudSyncDelivery.unavailable(.noChange)
           case .synchronize:
             return try await synchronizeAction()
           case .retry:
@@ -266,4 +318,17 @@ public actor SnipSnapCloudSyncSession {
     }
   }
 
+}
+
+// Pull projection over the same stream; no second buffer, producer task, or backend queue.
+private actor LegacyAutomaticResults {
+  private var iterator: AsyncStream<SnipSnapCloudSyncDelivery>.Iterator?
+  init(_ stream: AsyncStream<SnipSnapCloudSyncDelivery>) { iterator = stream.makeAsyncIterator() }
+  func next() async -> SnipSnapCloudSyncResult? {
+    guard var current = iterator else { return nil }
+    iterator = nil
+    let value = await current.next(isolation: self)
+    iterator = current
+    return value?.result
+  }
 }

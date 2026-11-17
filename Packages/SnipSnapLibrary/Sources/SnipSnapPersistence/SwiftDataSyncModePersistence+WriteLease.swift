@@ -41,10 +41,95 @@ struct ActiveStoreWriteAdmission {
 }
 
 extension SwiftDataSyncModePersistence {
+  @discardableResult
+  func revokeReadPublication() -> SnipLibraryReadPublication? {
+    let previous = readPublication
+    if readPublication == nil { readPublication = SnipLibraryReadPublication() }
+    let wasAvailable = readPublication?.revoke() == true
+    return wasAvailable ? previous : nil
+  }
+
+  package func beginAttachmentRead(_ reservation: SyncModeWriteReservation) throws {
+    guard case .admitted(.reserved(_, reservation), _) = writeAdmission.phase,
+      let active = store(id: manifest.activeStoreID), active.id == reservation.storeID,
+      active.kind == .iCloudSync, let namespace = active.namespace
+    else { throw SyncModePersistenceError.namespaceMismatch }
+    let publication = SnipLibraryReadPublication(pending: true)
+    let predecessor = readAdmissionPredecessor.flatMap {
+      $0.reservation == reservation ? $0.publication : nil
+    }
+    pendingOwnedRead = PendingOwnedRead(reservation: reservation,
+      source: SnipLibraryReadSource(storeID: active.id, storageMode: .iCloudSync,
+        namespaceKey: namespace.namespaceKey.rawValue), libraryBinding: library(boundTo: active), publication: publication,
+      predecessor: predecessor, value: nil)
+    readPublication = publication
+  }
+
+  package func captureAttachmentRead(
+    _ states: [UUID: SyncedAttachmentTransferState], source: SnipLibraryReadSource,
+    reservation: SyncModeWriteReservation
+  ) throws -> SyncedAttachmentReadObservation {
+    guard case .admitted(.reserved(_, reservation), _) = writeAdmission.phase,
+      let active = store(id: manifest.activeStoreID), active.id == reservation.storeID,
+      active.id == source.storeID, active.kind == .iCloudSync, source.storageMode == .iCloudSync,
+      active.namespace?.namespaceKey.rawValue == source.namespaceKey
+    else { throw SyncModePersistenceError.namespaceMismatch }
+    guard let record = pendingOwnedRead, record.reservation == reservation, record.source == source else {
+      throw SyncModePersistenceError.namespaceMismatch
+    }
+    let observation = SyncedAttachmentReadObservation(source: source, states: states,
+      publication: record.publication, predecessor: record.predecessor, libraryBinding: record.libraryBinding)
+    pendingOwnedRead?.value = .attachments(observation)
+    return observation
+  }
+
+  package func captureCurrentStatus(
+    issue: SyncedContentSyncIssue?, settled: Bool, namespaceKey: String,
+    snapshot: SnipLibrarySnapshot?, recovery: SnipRecoverySnapshot?,
+    files: Result<[UUID: SnipLibraryFileObservation], any Error>?, states: [UUID: SyncedAttachmentTransferState]?,
+    reservation: SyncModeWriteReservation
+  ) throws -> SyncedContentCurrentSyncObservation {
+    guard case .admitted(.reserved(_, reservation), _) = writeAdmission.phase,
+      let record = pendingOwnedRead, record.reservation == reservation,
+      record.source.namespaceKey == namespaceKey else { throw SyncModePersistenceError.namespaceMismatch }
+    let observation = SyncedContentCurrentSyncObservation(source: record.source, issue: issue, settled: settled,
+      publication: record.publication, predecessor: record.predecessor, snapshot: snapshot, recovery: recovery, states: states, files: files, libraryBinding: record.libraryBinding)
+    pendingOwnedRead?.value = .currentSync(observation)
+    return observation
+  }
+
+  func discardAttachmentRead(_ reservation: SyncModeWriteReservation) {
+    guard pendingOwnedRead?.reservation == reservation else { return }
+    pendingOwnedRead?.publication.revoke()
+    pendingOwnedRead = nil
+    if readAdmissionPredecessor?.reservation == reservation { readAdmissionPredecessor = nil }
+  }
+
+  nonisolated package func library(boundTo store: SyncModeStore) -> any SnipLibrary {
+    ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: nil,
+      expectedSource: ManagedLibrarySource(store))
+  }
+
+  nonisolated package func library(
+    boundTo source: SnipLibraryReadSource, namespace: ICloudSyncNamespaceBinding?
+  ) -> any SnipLibrary {
+    ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: nil,
+      expectedSource: ManagedLibrarySource(observation: source, namespace: namespace))
+  }
+
+  private func requireSource(_ expected: ManagedLibrarySource?) throws {
+    guard let expected else { return }
+    guard let active = store(id: manifest.activeStoreID), active.id == expected.observation.storeID,
+      (active.kind == .iCloudSync ? SyncedContentMode.iCloudSync : .localOnly) == expected.observation.storageMode,
+      active.namespace == expected.namespace,
+      active.namespace?.namespaceKey.rawValue == expected.observation.namespaceKey
+    else { throw SnipLibraryReadPublicationError.revoked }
+  }
+
   package func activeLibrary() async throws -> any SnipLibrary {
     try clearLeftoverReservation()
-    let initial = try await managedSnapshot(sortedBy: .chronological)
-    return ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: initial)
+    let initial = try await managedRead(sortedBy: .chronological)
+    return ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: initial.snapshot, originalTarget: initial.target)
   }
 
   nonisolated package func activeLibrary(
@@ -78,6 +163,7 @@ extension SwiftDataSyncModePersistence {
 
   func beginStoreReplacement() throws {
     guard writeAdmissionIsIdle() else { throw SyncModePersistenceError.transitionInProgress }
+    revokeReadPublication()
     writeAdmission.phase = .admitted(.storeReplacement, queue: [])
   }
 
@@ -161,11 +247,13 @@ extension SwiftDataSyncModePersistence {
       storeID: activeID,
       reservedRevision: revision
     )
+    let predecessor = revokeReadPublication()
     var next = manifest
     next.stores[index].revision = revision
     next.writeReservation = reservation
     try commit(next)
     writeAdmission.phase = .admitted(.reserved(request, reservation), queue: queue)
+    readAdmissionPredecessor = (reservation, predecessor)
     return reservation
   }
 
@@ -176,7 +264,17 @@ extension SwiftDataSyncModePersistence {
       defer { handOff(queue) }
       do {
         try clearReservation()
+        if pendingOwnedRead?.reservation == reservation {
+          if pendingOwnedRead?.value != nil {
+            pendingOwnedRead?.publication.completeRead()
+          } else {
+            pendingOwnedRead?.publication.revoke()
+          }
+          pendingOwnedRead = nil
+        }
+        if readAdmissionPredecessor?.reservation == reservation { readAdmissionPredecessor = nil }
       } catch {
+        discardAttachmentRead(reservation)
         writeAdmission.phase = .releaseFailed(reservation)
         throw error
       }
@@ -258,9 +356,12 @@ extension SwiftDataSyncModePersistence {
     try await managedRead(sortedBy: sortedBy).snapshot
   }
 
-  fileprivate func managedRead(sortedBy: SnipSortMode) async throws -> SnipLibraryReadObservation {
+  fileprivate func managedRead(
+    sortedBy: SnipSortMode, expectedSource: ManagedLibrarySource? = nil
+  ) async throws -> SnipLibraryReadObservation {
     await finishRecoveryQuarantines()
     try await readHook()
+    try requireSource(expectedSource)
     let selectedStore = manifest.stores[try storeIndex(id: manifest.activeStoreID)]
     let library = try libraryForTransition(storeID: selectedStore.id)
     let storageMode: SyncedContentMode = switch selectedStore.kind {
@@ -272,32 +373,43 @@ extension SwiftDataSyncModePersistence {
       storageMode: storageMode,
       namespaceKey: selectedStore.namespace?.namespaceKey.rawValue
     )
-    return SnipLibraryReadObservation(
-      snapshot: try await library.checkedSnapshot(sortedBy: sortedBy),
-      source: source
-    )
+    let publication: SnipLibraryReadPublication?
+    if case .idle = writeAdmission.phase {
+      if readPublication == nil { readPublication = SnipLibraryReadPublication() }
+      publication = readPublication.flatMap { $0.isRevoked ? nil : $0 }
+    } else {
+      publication = nil
+    }
+    let snapshot = try await library.checkedSnapshot(sortedBy: sortedBy)
+    let target = SnipLibraryApplicationTarget(source: source,
+      library: ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: snapshot, expectedSource: ManagedLibrarySource(observation: source, namespace: selectedStore.namespace)),
+      recoveryScope: selectedStore.namespace.map { SnipRecoveryScope($0.namespaceKey.rawValue) })
+    return SnipLibraryReadObservation(snapshot: snapshot, source: source, publication: publication, target: target,
+      files: SnipLibraryFileObservations.read(snapshot))
   }
 
-  fileprivate func managedArchive() async throws -> SnipLibraryArchive {
+  fileprivate func managedArchive(expectedSource: ManagedLibrarySource? = nil) async throws -> SnipLibraryArchive {
     await finishRecoveryQuarantines()
     try await readHook()
+    try requireSource(expectedSource)
     return try await libraryForTransition(storeID: manifest.activeStoreID).archive()
   }
 
   fileprivate func managedRecoverySnapshot(
-    in scope: SnipRecoveryScope
+    in scope: SnipRecoveryScope, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipRecoverySnapshot {
     await finishRecoveryQuarantines()
     try await readHook()
+    try requireSource(expectedSource)
     return try await libraryForTransition(storeID: manifest.activeStoreID)
       .recoverySnapshot(in: scope)
   }
 
   fileprivate func managedPerform(
     _ command: SnipLibraryCommand,
-    sortedBy: SnipSortMode
+    sortedBy: SnipSortMode, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipLibraryUpdate {
-    try await managedWrite { library in
+    try await managedWrite(expectedSource: expectedSource) { library in
       try await library.perform(command, sortedBy: sortedBy)
     }
   }
@@ -306,22 +418,25 @@ extension SwiftDataSyncModePersistence {
     _ id: UUID,
     in scope: SnipRecoveryScope,
     choice: SnipRecoveryChoice,
-    expectation: SnipRecoveryExpectation?
+    expectation: SnipRecoveryExpectation?, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipLibrarySnapshot {
-    try await managedWrite { library in
+    try await managedWrite(expectedSource: expectedSource) { library in
       try await library.resolveRecovery(id, in: scope, choice: choice, expectation: expectation)
     }
   }
 
   private func managedWrite<Value: Sendable>(
+    expectedSource: ManagedLibrarySource? = nil,
     _ operation: @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
     await finishRecoveryQuarantines()
+    try requireSource(expectedSource)
     let reservation = try await reserveMutation(
-      storeID: manifest.activeStoreID, request: .libraryWrite)
+      storeID: expectedSource?.observation.storeID ?? manifest.activeStoreID, request: .libraryWrite)
     defer { abandonWriteAdmission(ifHeldBy: reservation) }
     try await writeHook(.afterRevisionReserved)
     do {
+      try requireSource(expectedSource)
       try Task.checkCancellation()
       let value = try await operation(libraryForTransition(storeID: reservation.storeID))
       try await writeHook(.beforeReservationCleared)
@@ -335,8 +450,9 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedPreviewImport(
     _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID
+    transitionID: UUID, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipImportPreview {
+    try requireSource(expectedSource)
     guard writeAdmissionIsIdle(), manifest.transition == nil
     else { throw blockedContentWrite(reason: currentWriteBlockReason) }
     return try await libraryForTransition(storeID: manifest.activeStoreID)
@@ -344,8 +460,9 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedPreviewTransferSnapshot(
-    revision: UInt64
+    revision: UInt64, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipLibraryTransferSnapshot {
+    try requireSource(expectedSource)
     guard writeAdmissionIsIdle(), manifest.transition == nil
     else { throw blockedContentWrite(reason: currentWriteBlockReason) }
     return try await libraryForTransition(storeID: manifest.activeStoreID)
@@ -353,14 +470,16 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedApplyImport(
-    _ preview: SnipImportPreview
+    _ preview: SnipImportPreview, expectedSource: ManagedLibrarySource? = nil
   ) async throws -> SnipImportResult {
+    try requireSource(expectedSource)
     guard writeAdmissionIsIdle(), manifest.transition == nil
     else { throw blockedContentWrite(reason: currentWriteBlockReason) }
     let reservation = try reserveRevision(for: .libraryWrite)
     defer { abandonWriteAdmission(ifHeldBy: reservation) }
     try await writeHook(.afterRevisionReserved)
     do {
+      try requireSource(expectedSource)
       let result = try await libraryForTransition(storeID: reservation.storeID)
         .applyImport(preview)
       try await writeHook(.beforeReservationCleared)
@@ -400,19 +519,57 @@ extension SwiftDataSyncModePersistence {
   }
 }
 
-private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
+fileprivate struct ManagedLibrarySource: Equatable, Sendable {
+  let observation: SnipLibraryReadSource
+  let namespace: ICloudSyncNamespaceBinding?
+
+  init(observation: SnipLibraryReadSource, namespace: ICloudSyncNamespaceBinding?) {
+    self.observation = observation; self.namespace = namespace
+  }
+
+  init(_ store: SyncModeStore) {
+    observation = SnipLibraryReadSource(storeID: store.id,
+      storageMode: store.kind == .iCloudSync ? .iCloudSync : .localOnly,
+      namespaceKey: store.namespace?.namespaceKey.rawValue)
+    namespace = store.namespace
+  }
+}
+
+private actor ModeManagedSnipLibrary: SnipLibraryReadObserving, SnipLibraryApplicationBinding {
   let persistence: SwiftDataSyncModePersistence
+  private let expectedSource: ManagedLibrarySource?
+  private let originalTarget: SnipLibraryApplicationTarget?
+  private let originalSnapshot: SnipLibrarySnapshot?
   private let fallback: (any SnipLibrary)?
   private var lastKnown: SnipLibrarySnapshot?
 
   init(
     persistence: SwiftDataSyncModePersistence,
     fallback: (any SnipLibrary)?,
-    lastKnown: SnipLibrarySnapshot?
+    lastKnown: SnipLibrarySnapshot?, expectedSource: ManagedLibrarySource? = nil, originalTarget: SnipLibraryApplicationTarget? = nil
   ) {
     self.persistence = persistence
+    self.expectedSource = expectedSource
+    self.originalTarget = originalTarget
+    originalSnapshot = lastKnown
     self.fallback = fallback
     self.lastKnown = lastKnown
+  }
+
+  nonisolated var initialApplicationTarget: SnipLibraryApplicationTarget? {
+    guard expectedSource == nil else { return nil }
+    if let originalTarget { return originalTarget }
+    let selected = persistence.initialApplicationStore
+    let source = ManagedLibrarySource(selected)
+    return SnipLibraryApplicationTarget(source: source.observation,
+      library: ModeManagedSnipLibrary(persistence: persistence, fallback: fallback,
+        lastKnown: originalSnapshot, expectedSource: source),
+      recoveryScope: selected.namespace.map { SnipRecoveryScope($0.namespaceKey.rawValue) })
+  }
+
+  nonisolated func sharesApplicationBinding(with library: any SnipLibrary) -> Bool {
+    guard let other = library as? ModeManagedSnipLibrary else { return false }
+    return persistence === other.persistence && expectedSource == other.expectedSource
   }
 
   func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
@@ -433,9 +590,11 @@ private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
     let attempt = await persistence.beginManagedReadAttempt()
     let observation: SnipLibraryReadObservation
     do {
-      observation = try await persistence.managedRead(sortedBy: sortMode)
+      observation = try await persistence.managedRead(sortedBy: sortMode, expectedSource: expectedSource)
     } catch {
-      await persistence.recordStoreReadFailure(at: attempt)
+      if !(expectedSource != nil && error is SnipLibraryReadPublicationError) {
+        await persistence.recordStoreReadFailure(at: attempt)
+      }
       throw error
     }
     lastKnown = observation.snapshot
@@ -447,9 +606,11 @@ private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
     let attempt = await persistence.beginManagedReadAttempt()
     let archive: SnipLibraryArchive
     do {
-      archive = try await persistence.managedArchive()
+      archive = try await persistence.managedArchive(expectedSource: expectedSource)
     } catch {
-      await persistence.recordStoreReadFailure(at: attempt)
+      if !(expectedSource != nil && error is SnipLibraryReadPublicationError) {
+        await persistence.recordStoreReadFailure(at: attempt)
+      }
       throw error
     }
     let state = SnipLibraryState(
@@ -470,7 +631,7 @@ private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
     _ command: SnipLibraryCommand,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryUpdate {
-    let update = try await persistence.managedPerform(command, sortedBy: sortMode)
+    let update = try await persistence.managedPerform(command, sortedBy: sortMode, expectedSource: expectedSource)
     lastKnown = update.snapshot
     return update
   }
@@ -479,9 +640,11 @@ private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
     let attempt = await persistence.beginManagedReadAttempt()
     let recovery: SnipRecoverySnapshot
     do {
-      recovery = try await persistence.managedRecoverySnapshot(in: scope)
+      recovery = try await persistence.managedRecoverySnapshot(in: scope, expectedSource: expectedSource)
     } catch {
-      await persistence.recordStoreReadFailure(at: attempt)
+      if !(expectedSource != nil && error is SnipLibraryReadPublicationError) {
+        await persistence.recordStoreReadFailure(at: attempt)
+      }
       throw error
     }
     try await persistence.clearRecoveredStoreReadFailure(at: attempt)
@@ -503,24 +666,24 @@ private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
     expectation: SnipRecoveryExpectation?
   ) async throws -> SnipLibrarySnapshot {
     let snapshot = try await persistence.managedResolveRecovery(
-      id, in: scope, choice: choice, expectation: expectation)
+      id, in: scope, choice: choice, expectation: expectation, expectedSource: expectedSource)
     lastKnown = snapshot
     return snapshot
   }
 
   func previewTransferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
-    try await persistence.managedPreviewTransferSnapshot(revision: revision)
+    try await persistence.managedPreviewTransferSnapshot(revision: revision, expectedSource: expectedSource)
   }
 
   func previewImport(
     _ source: SnipLibraryTransferSnapshot,
     transitionID: UUID
   ) async throws -> SnipImportPreview {
-    try await persistence.managedPreviewImport(source, transitionID: transitionID)
+    try await persistence.managedPreviewImport(source, transitionID: transitionID, expectedSource: expectedSource)
   }
 
   func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
-    let result = try await persistence.managedApplyImport(preview)
+    let result = try await persistence.managedApplyImport(preview, expectedSource: expectedSource)
     lastKnown = result.snapshot
     return result
   }

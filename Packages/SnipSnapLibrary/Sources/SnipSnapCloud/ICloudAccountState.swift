@@ -124,13 +124,15 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     private let retryAction: SyncAction?
     private let retryOutcomeAction: RetryOutcomeAction?
     private let scheduleAction: ScheduleAction?
+    private let currentStatusAction: (@Sendable (SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation)?
 
     package init(
         coordinator: ICloudSyncModeCoordinator,
         syncWhenPossible: SyncAction? = nil,
         retrySyncWhenPossible: SyncAction? = nil,
         retrySyncWithOutcome: RetryOutcomeAction? = nil,
-        scheduleSyncAfterLocalChange: ScheduleAction? = nil
+        scheduleSyncAfterLocalChange: ScheduleAction? = nil,
+        checkedCurrentSyncStatus: (@Sendable (SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation)? = nil
     ) {
         coordinatorSource = .injected(coordinator)
         operationGate = AsyncOperationGate()
@@ -138,6 +140,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         retryAction = retrySyncWhenPossible
         retryOutcomeAction = retrySyncWithOutcome
         scheduleAction = scheduleSyncAfterLocalChange
+        currentStatusAction = checkedCurrentSyncStatus
     }
 
     package init(
@@ -152,7 +155,8 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         syncWhenPossible: SyncAction? = nil,
         retrySyncWhenPossible: SyncAction? = nil,
         retrySyncWithOutcome: RetryOutcomeAction? = nil,
-        scheduleSyncAfterLocalChange: ScheduleAction? = nil
+        scheduleSyncAfterLocalChange: ScheduleAction? = nil,
+        checkedCurrentSyncStatus: (@Sendable (SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation)? = nil
     ) {
         coordinatorSource = .resolved(Configuration(
             persistence: persistence,
@@ -168,6 +172,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         retryAction = retrySyncWhenPossible
         retryOutcomeAction = retrySyncWithOutcome
         scheduleAction = scheduleSyncAfterLocalChange
+        currentStatusAction = checkedCurrentSyncStatus
     }
 
     public func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
@@ -289,6 +294,33 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         }
     }
 
+    public func checkedAttachmentStates() async throws -> SyncedAttachmentReadObservation {
+        try await operationGate.withLease {
+            guard case .resolved(let configuration) = self.coordinatorSource,
+                  let persistence = try await configuration.persistence()
+            else { throw SnipLibraryError.transferUnsupported }
+            let storage = try await persistence.snapshot()
+            if storage.activeStore.kind == .localOnly {
+                let library = try await persistence.activeLibrary()
+                guard let observing = library as? any SnipLibraryReadObserving else {
+                    throw SnipLibraryError.transferUnsupported
+                }
+                let read = try await observing.checkedRead(sortedBy: .manual)
+                guard let source = read.source, source.storageMode == .localOnly else {
+                    throw SyncModePersistenceError.namespaceMismatch
+                }
+                return SyncedAttachmentReadObservation(source: source, states: [:], publication: read.publication,
+                    predecessor: read.publication, libraryBinding: read.target?.library)
+            }
+            return try await self.withCheckedAttachmentCoordinator()
+        }
+    }
+
+    public func checkedCurrentSyncStatus(for source: SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation {
+        guard let currentStatusAction else { throw SnipLibraryError.transferUnsupported }
+        return try await currentStatusAction(source)
+    }
+
     public func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         try await operationGate.withLease {
             try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.prepare(attachmentID: id, for: use) }
@@ -391,9 +423,16 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         return created
     }
 
-    private func withAttachmentCoordinator<Value: Sendable>(
-        _ operation: @escaping @Sendable (any CloudAttachmentTransferring, AttachmentSource?) async throws -> Value
-    ) async throws -> Value {
+    private struct AttachmentLease: Sendable {
+        let persistence: SwiftDataSyncModePersistence
+        let storage: SyncModeStorageSnapshot
+        let binding: ICloudSyncNamespaceBinding
+        let descriptor: CloudCollectionDescriptor
+        let configuration: Configuration
+        let lease: SyncModeActiveMutationLease
+    }
+
+    private func selectAttachmentLease() async throws -> AttachmentLease {
         guard case .resolved(let configuration) = coordinatorSource,
               let persistence = try await configuration.persistence()
         else { throw SnipLibraryError.transferUnsupported }
@@ -401,21 +440,54 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         guard storage.activeStore.kind == .iCloudSync,
               let binding = storage.activeStore.namespace
         else { throw SnipLibraryError.transferUnsupported }
-        let descriptor = try await resolveDescriptor(
-            matching: binding,
-            configuration: configuration
-        )
+        let descriptor = try await resolveDescriptor(matching: binding, configuration: configuration)
         try await requireCurrentSource(storage, persistence: persistence)
         let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
-        return try await lease.run {
-            try await self.requireCurrentSource(storage, persistence: persistence)
-            let attachment = try await self.attachmentCoordinator(
-                persistence: persistence, storeID: storage.activeStore.id,
-                binding: binding, descriptor: descriptor, configuration: configuration)
-            try await self.requireCurrentSource(storage, persistence: persistence)
-            let source = AttachmentSource(library: try await persistence.libraryForTransition(storeID: storage.activeStore.id),
-                storeID: storage.activeStore.id, namespaceKey: binding.namespaceKey)
-            return try await operation(attachment, source)
+        return AttachmentLease(persistence: persistence, storage: storage, binding: binding,
+            descriptor: descriptor, configuration: configuration, lease: lease)
+    }
+
+    private func boundAttachment(
+        _ selected: AttachmentLease
+    ) async throws -> (coordinator: any CloudAttachmentTransferring, source: AttachmentSource) {
+        let persistence = selected.persistence
+        let storage = selected.storage
+        try await requireCurrentSource(storage, persistence: persistence)
+        let attachment = try await attachmentCoordinator(persistence: persistence,
+            storeID: storage.activeStore.id, binding: selected.binding,
+            descriptor: selected.descriptor, configuration: selected.configuration)
+        try await requireCurrentSource(storage, persistence: persistence)
+        let source = AttachmentSource(library: try await persistence.libraryForTransition(storeID: storage.activeStore.id),
+            storeID: storage.activeStore.id, namespaceKey: selected.binding.namespaceKey)
+        return (attachment, source)
+    }
+
+    private func withAttachmentCoordinator<Value: Sendable>(
+        _ operation: @escaping @Sendable (any CloudAttachmentTransferring, AttachmentSource?) async throws -> Value
+    ) async throws -> Value {
+        let selected = try await selectAttachmentLease()
+        return try await selected.lease.run {
+            let bound = try await self.boundAttachment(selected)
+            return try await operation(bound.coordinator, bound.source)
+        }
+    }
+
+    private func withCheckedAttachmentCoordinator() async throws -> SyncedAttachmentReadObservation {
+        let selected = try await selectAttachmentLease()
+        return try await selected.lease.runAttachmentRead { reservation in
+            try await selected.persistence.beginAttachmentRead(reservation)
+            let bound = try await self.boundAttachment(selected)
+            let values = try await bound.coordinator.transferStates()
+            let states = values.mapValues { value in
+                switch value {
+                case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: SyncedAttachmentTransferState.waiting
+                case .available: .available
+                case .failed: .failed
+                }
+            }
+            return try await selected.persistence.captureAttachmentRead(states,
+                source: SnipLibraryReadSource(storeID: bound.source.storeID, storageMode: .iCloudSync,
+                    namespaceKey: bound.source.namespaceKey.rawValue), reservation: reservation)
         }
     }
 

@@ -14,11 +14,15 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let beganEditing = await model.beginEditing(snip.id)
         XCTAssertTrue(beganEditing)
         let originalScope = model.cliScopeToken
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let cloud = ApplicationCLICloudEffects {
-            await model.replaceLibrary(InMemorySnipLibrary(snips: []),
-                                       recoveryScope: SnipRecoveryScope("replacement"))
+            try await settings.performExplicitSyncWithOutcome { _ in
+                await model.replaceLibrary(InMemorySnipLibrary(snips: []),
+                                           recoveryScope: SnipRecoveryScope("replacement"))
+                return .finished(.libraryReplaced, .applied)
+            }
         }
-        let handler = makeHandler(model: model, cloud: cloud)
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
 
         do {
             _ = try await handle(.retrySync, using: handler, model: model)
@@ -37,12 +41,16 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         await model.waitForInitialLoad()
         let gate = ApplicationCLITransitionGate()
         let replacement = Snip(content: "Downloaded collection", origin: .quickEntry)
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let cloud = ApplicationCLICloudEffects {
-            await gate.suspend()
-            await model.replaceLibrary(InMemorySnipLibrary(snips: [replacement]),
-                                       recoveryScope: SnipRecoveryScope("downloaded"))
+            try await settings.performExplicitSyncWithOutcome { _ in
+                await gate.suspend()
+                await model.replaceLibrary(InMemorySnipLibrary(snips: [replacement]),
+                                           recoveryScope: SnipRecoveryScope("downloaded"))
+                return .finished(.libraryReplaced, .applied)
+            }
         }
-        let handler = makeHandler(model: model, cloud: cloud)
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
         let request = SnipCLIRequest(action: .extended(.application(.retrySync)), scopeToken: model.cliScopeToken)
         let retry = Task { try await handler.handle(request, action: .retrySync) }
         await gate.waitUntilEntered()
@@ -74,7 +82,12 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let retries = ApplicationCLIRetryCounter()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         let handler = makeHandler(
-            model: model, cloud: ApplicationCLICloudEffects { retries.record() }, syncSettings: settings
+            model: model, cloud: ApplicationCLICloudEffects {
+                try await settings.performExplicitSyncWithOutcome { _ in
+                    retries.record()
+                    return .finished(.noChange, .notRequired)
+                }
+            }, syncSettings: settings
         )
 
         let receipt = try await handle(.retrySync, using: handler, model: model)
@@ -89,7 +102,10 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         await model.waitForInitialLoad()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         let cloud = ApplicationCLICloudEffects {
-            await settings.performExplicitSync { settings.recordSyncFailure(.waitingForConnection) }
+            try await settings.performExplicitSyncWithOutcome { _ in
+                settings.recordSyncFailure(.waitingForConnection)
+                return .finished(.syncIssue(.waitingForConnection), .notRequired)
+            }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
 
@@ -105,7 +121,10 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         await model.waitForInitialLoad()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         let cloud = ApplicationCLICloudEffects {
-            await settings.performExplicitSync { settings.recordRemovalPending() }
+            try await settings.performExplicitSyncWithOutcome { _ in
+                settings.recordRemovalPending()
+                return .finished(.oldSyncedContentRemovalPending, .notRequired)
+            }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
 
@@ -122,10 +141,11 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         // Like the Mac app's sync, the retry takes its start before any result arrives.
         let cloud = ApplicationCLICloudEffects {
-            await settings.performExplicitSync {
+            try await settings.performExplicitSyncWithOutcome { _ in
                 let start = settings.recordSyncStarted()
                 settings.recordSyncFailure(.waitingForConnection)
                 settings.recordSyncCompleted(start)
+                return .finished(.oldSyncedContentRemovalCompleted, .notRequired)
             }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
@@ -162,7 +182,12 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let retries = ApplicationCLIRetryCounter()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .deleting)
         let handler = makeHandler(
-            model: model, cloud: ApplicationCLICloudEffects { retries.record() }, syncSettings: settings
+            model: model, cloud: ApplicationCLICloudEffects {
+                try await settings.performExplicitSyncWithOutcome { _ in
+                    retries.record()
+                    return .finished(.noChange, .notRequired)
+                }
+            }, syncSettings: settings
         )
 
         do {
@@ -296,6 +321,12 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let cloud = SimulatedCloudSyncHandler(
             syncWhenPossible: { otherSyncs.record() },
             retrySyncWhenPossible: { retries.record() },
+            retrySyncWithOutcome: {
+                try await settings.performExplicitSyncWithOutcome { _ in
+                    retries.record()
+                    return .finished(.noChange, .notRequired)
+                }
+            },
             scheduleSyncAfterLocalChange: { otherSyncs.record() }
         )
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
@@ -459,14 +490,15 @@ private final class ApplicationCLIRetryCounter {
 
 @MainActor
 private final class ApplicationCLICloudEffects: OptionalCloudSyncHandling {
-    let retry: @MainActor () async -> Void
+    let retry: @MainActor () async throws -> SyncedContentActionOutcome
 
-    init(retry: @escaping @MainActor () async -> Void) { self.retry = retry }
+    init(retry: @escaping @MainActor () async throws -> SyncedContentActionOutcome) { self.retry = retry }
 
     func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async {}
-    func retrySyncWhenPossible() async { await retry() }
+    func retrySyncWhenPossible() async { _ = try? await retry() }
+    func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome { try await retry() }
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {

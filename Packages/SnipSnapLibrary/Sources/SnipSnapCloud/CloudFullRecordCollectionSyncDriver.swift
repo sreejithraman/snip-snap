@@ -26,6 +26,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
   private let beforeRecordWork: @Sendable (CloudRecordWorkContext) async throws -> Void
   private let automaticResultHandler: @Sendable (CloudRecordWorkContext, SnipSnapCloudSyncResult) async throws -> Void
   private var active: Owner?
+  private var checkpointPublication: (context: CloudRecordWorkContext, publication: SnipLibraryReadPublication)?
 
   package init(
     persistence: SwiftDataSyncModePersistence,
@@ -41,6 +42,8 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
 
   package func invalidate() async {
     let prior = active
+    checkpointPublication?.publication.revoke()
+    checkpointPublication = nil
     active = nil
     await prior?.transport.reset()
   }
@@ -85,6 +88,30 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     )
   }
 
+  package func checkedCurrentSyncStatus(
+    for source: SnipLibraryReadSource
+  ) async throws -> SyncedContentCurrentSyncObservation {
+    guard let owner = active, source.storageMode == .iCloudSync,
+      owner.context.storeID == source.storeID,
+      owner.context.binding.namespaceKey.rawValue == source.namespaceKey
+    else { throw CloudRecordWorkError.replaced }
+    try await requireActive(owner.context)
+    let observation = try await owner.coordinator.checkedCurrentCheckpoint()
+    do {
+      guard active?.coordinator === owner.coordinator, observation.source == source else {
+        throw CloudRecordWorkError.replaced
+      }
+      if let publication = observation.publication {
+        checkpointPublication = (owner.context, publication)
+      }
+      try await requireActive(owner.context)
+      return observation
+    } catch {
+      observation.publication?.revoke()
+      throw error
+    }
+  }
+
   private func recordOwner(_ collection: CloudCollectionSyncContext) async throws -> Owner {
     let storage = try await persistence.snapshot()
     let context = CloudRecordWorkContext(collection: collection, storeID: storage.activeStore.id)
@@ -93,6 +120,8 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     else { throw CloudRecordWorkError.replaced }
     if let active, active.context == context { return active }
     let previous = active
+    checkpointPublication?.publication.revoke()
+    checkpointPublication = nil
     active = nil
     await previous?.transport.reset()
     let library = try await persistence.libraryForTransition(storeID: context.storeID)
@@ -110,6 +139,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
       await automatic.configureAutomaticSync(
         workAvailableHandler: { [weak self, weak coordinator] in
           guard let self, let coordinator else { return }
+          guard await self.beginAutomaticWork(context) else { return }
           _ = try? await coordinator.processAutomaticChanges(
             beforeApply: { try await self.requireCurrent(context) },
             beforeStateSave: { try await self.requireActive(context) }
@@ -134,10 +164,26 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     else { throw CloudRecordWorkError.replaced }
   }
 
+  private func beginAutomaticWork(_ context: CloudRecordWorkContext) -> Bool {
+    guard active?.context == context else { return false }
+    if checkpointPublication?.context == context {
+      checkpointPublication?.publication.revoke()
+      checkpointPublication = nil
+    }
+    return true
+  }
+
   private func requireCurrent(_ context: CloudRecordWorkContext) async throws {
-    try await requireActive(context)
-    try await beforeRecordWork(context)
-    try await requireActive(context)
+    do {
+      try await requireActive(context)
+      try await beforeRecordWork(context)
+      try await requireActive(context)
+    } catch {
+      if let owner = active, owner.context == context {
+        await owner.coordinator.recordCurrentRunFailure(error)
+      }
+      throw error
+    }
   }
 
   private func deliver(_ result: SnipSnapCloudSyncResult, from context: CloudRecordWorkContext) async throws {

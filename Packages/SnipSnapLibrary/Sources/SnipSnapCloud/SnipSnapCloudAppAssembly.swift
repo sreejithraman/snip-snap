@@ -72,7 +72,7 @@ public enum SnipSnapCloudAppAssembly {
     let container = CKContainer(identifier: identifier)
     let database = container.privateCloudDatabase
     let accountStateSource = CloudKitICloudAccountStateSource(container: container)
-    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncDelivery.self)
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: rootURL,
       attachmentCacheRootURL: attachmentCacheRootURL,
@@ -107,7 +107,7 @@ public enum SnipSnapCloudAppAssembly {
       },
       reservedZones: [CloudCollectionAssembly.productionControlID.zone],
       operationGate: CloudCollectionAssembly.productionOperationGate,
-      automaticResultHandler: { result in
+      automaticDeliveryHandler: { result in
         automaticResults.continuation.yield(result)
       }
     )
@@ -115,16 +115,20 @@ public enum SnipSnapCloudAppAssembly {
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       retry: { try await lifecycle.retrySynchronization() },
+      synchronizeWithTarget: { try await lifecycle.synchronizeWithTarget() },
+      retryWithTarget: { try await lifecycle.retrySynchronizationWithTarget() },
       scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
       enable: { try await lifecycle.enableICloudSync() },
+      enableWithTarget: { try await lifecycle.enableICloudSyncWithTarget() },
       cancelEnable: { try await lifecycle.cancelPendingEnable() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
+      applicationTarget: { try await lifecycle.currentApplicationTarget() },
       operationGate: appOperationGate,
-      automaticSyncResults: automaticResults.stream,
+      automaticSyncDeliveries: automaticResults.stream,
       automaticErrorHandler: { error in
-        automaticResults.continuation.yield(automaticSyncResult(for: error))
+        automaticResults.continuation.yield(.unavailable(automaticSyncResult(for: error)))
       }
     )
     let accountHandlerFactory: SnipSnapCloudAppServices.AccountHandlerFactory = Self.accountHandlerFactory(
@@ -135,6 +139,7 @@ public enum SnipSnapCloudAppAssembly {
           mode: .iCloudSync,
           issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
           enableAction: { try await session.enableICloudSync() },
+          checkedEnableAction: { try await session.enableICloudSyncWithTarget().originalAction },
           disableAction: { choice in try await session.disableICloudSync(choice) },
           deleteAction: { try await session.deleteSyncedContent() }
         ),
@@ -148,6 +153,7 @@ public enum SnipSnapCloudAppAssembly {
         initialState: settingsStartup.state,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
+          checkedEnableAction: { try await session.enableICloudSyncWithTarget().originalAction },
         cancelEnableAction: { try await session.cancelICloudSyncSetup() },
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
@@ -203,23 +209,27 @@ public enum SnipSnapCloudAppAssembly {
       simulateEncryptedDataReset: environment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] == "1",
       simulateRemovalPending: simulateRemovalPending
     )
-    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+    let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncDelivery.self)
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await reset.synchronize() },
       retry: { try await reset.retrySynchronization() },
+      synchronizeWithTarget: { try await reset.synchronizeWithTarget() },
+      retryWithTarget: { try await reset.retrySynchronizationWithTarget() },
       scheduleAutomaticSync: {
-        automaticResults.continuation.yield(try await reset.synchronize())
+        automaticResults.continuation.yield(try await reset.synchronizeWithTarget())
       },
       enable: {
         try await reset.enableSync()
         return .enabled
       },
+      enableWithTarget: { try await reset.enableSyncWithTarget() },
       disable: { choice in try await reset.disableICloudSync(choice) },
       delete: { try await reset.deleteSyncedContent() },
       activeLibrary: { try await reset.activeLibrary() },
-      automaticSyncResults: automaticResults.stream,
+      applicationTarget: { try await reset.currentApplicationTarget() },
+      automaticSyncDeliveries: automaticResults.stream,
       automaticErrorHandler: { error in
-        automaticResults.continuation.yield(automaticSyncResult(for: error))
+        automaticResults.continuation.yield(.unavailable(automaticSyncResult(for: error)))
       }
     )
     return SnipSnapCloudAppServices(
@@ -229,6 +239,7 @@ public enum SnipSnapCloudAppAssembly {
         initialState: simulateRemovalPending ? .removalPending : .ready,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
+          checkedEnableAction: { try await session.enableICloudSyncWithTarget().originalAction },
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
       ),
@@ -263,10 +274,14 @@ public enum SnipSnapCloudAppAssembly {
     let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
+      synchronizeWithTarget: { try await lifecycle.synchronizeWithTarget() },
+      retryWithTarget: { try await lifecycle.retrySynchronizationWithTarget() },
       enable: { try await lifecycle.enableICloudSync() },
+      enableWithTarget: { try await lifecycle.enableICloudSyncWithTarget() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
+      applicationTarget: { try await lifecycle.currentApplicationTarget() },
       operationGate: appOperationGate
     )
     return SnipSnapCloudAppServices(
@@ -274,6 +289,7 @@ public enum SnipSnapCloudAppAssembly {
         mode: .localOnly,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
+          checkedEnableAction: { try await session.enableICloudSyncWithTarget().originalAction },
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
       ),

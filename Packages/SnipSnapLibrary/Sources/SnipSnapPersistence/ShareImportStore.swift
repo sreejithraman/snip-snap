@@ -212,6 +212,16 @@ public actor ShareImportStore {
     try ShareDestinationCatalog.write(lists, to: paths.catalogURL)
   }
 
+  public func publishAvailableLists(
+    _ lists: [SnipList], publication: SnipLibraryReadPublication
+  ) async throws {
+    let data = try JSONEncoder.shareImport.encode(lists)
+    let closing = try publication.beginApplication()
+    defer { closing.finish() }
+    // The concrete synchronous file commit is ordered with retirement; no caller callback runs here.
+    try DurableFile.write(data, to: paths.catalogURL)
+  }
+
   public func save(_ request: ShareImportRequest) async throws -> ShareImportSaveResult {
     try validate(request)
     try publishPending(request)

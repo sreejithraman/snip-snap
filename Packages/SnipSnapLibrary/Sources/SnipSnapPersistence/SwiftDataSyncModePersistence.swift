@@ -131,6 +131,50 @@ package actor SyncModeActiveMutationLease {
       throw error
     }
   }
+
+  package func runAttachmentRead(
+    _ operation: @escaping @Sendable (SyncModeWriteReservation) async throws -> SyncedAttachmentReadObservation
+  ) async throws -> SyncedAttachmentReadObservation {
+    let reservation = try await persistence.reserveActiveMutation(storeID: storeID, purpose: purpose)
+    do {
+      try Task.checkCancellation()
+      let value = try await operation(reservation)
+      try await persistence.finishActiveMutation(reservation)
+      return value
+    } catch {
+      await persistence.discardAttachmentRead(reservation)
+      try? await persistence.finishActiveMutation(reservation)
+      throw error
+    }
+  }
+
+  package func runCurrentStatusRead(
+    _ operation: @escaping @Sendable (SyncModeWriteReservation) async throws -> SyncedContentCurrentSyncObservation
+  ) async throws -> SyncedContentCurrentSyncObservation {
+    let reservation = try await persistence.reserveActiveMutation(storeID: storeID, purpose: purpose)
+    do {
+      try Task.checkCancellation()
+      try await persistence.beginAttachmentRead(reservation)
+      let value = try await operation(reservation)
+      try await persistence.finishActiveMutation(reservation)
+      return value
+    } catch {
+      await persistence.discardAttachmentRead(reservation)
+      try? await persistence.finishActiveMutation(reservation)
+      throw error
+    }
+  }
+
+  package func captureCurrentStatus(
+    issue: SyncedContentSyncIssue?, settled: Bool, namespaceKey: String,
+    snapshot: SnipLibrarySnapshot?, recovery: SnipRecoverySnapshot?,
+    files: Result<[UUID: SnipLibraryFileObservation], any Error>?, states: [UUID: SyncedAttachmentTransferState]?,
+    reservation: SyncModeWriteReservation
+  ) async throws -> SyncedContentCurrentSyncObservation {
+    try await persistence.captureCurrentStatus(issue: issue, settled: settled, namespaceKey: namespaceKey,
+      snapshot: snapshot, recovery: recovery, files: files, states: states, reservation: reservation)
+  }
+
 }
 
 package enum SyncModeCrashPoint: Equatable, Sendable {
@@ -255,6 +299,22 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+  nonisolated let initialApplicationStore: SyncModeStore
+  var readPublication: SnipLibraryReadPublication?
+  var pendingOwnedRead: PendingOwnedRead?
+  var readAdmissionPredecessor: (reservation: SyncModeWriteReservation, publication: SnipLibraryReadPublication?)?
+  struct PendingOwnedRead {
+    let reservation: SyncModeWriteReservation
+    let source: SnipLibraryReadSource
+    let libraryBinding: any SnipLibrary
+    let publication: SnipLibraryReadPublication
+    let predecessor: SnipLibraryReadPublication?
+    enum Value {
+      case attachments(SyncedAttachmentReadObservation)
+      case currentSync(SyncedContentCurrentSyncObservation)
+    }
+    var value: Value?
+  }
 
   /// Reconciles of an account-isolation choice take turns, so a background status never runs a
   /// second Keep merge.
@@ -309,6 +369,10 @@ package actor SwiftDataSyncModePersistence {
         try Self.validate(loaded)
         manifest = loaded
         try Self.write(loaded, to: manifestURL, using: manifestWriter)
+        guard let initial = loaded.stores.first(where: { $0.id == loaded.activeStoreID }) else {
+          throw SyncModePersistenceError.missingStore
+        }
+        initialApplicationStore = initial
       } catch {
         throw SyncModePersistenceError.invalidManifest
       }
@@ -338,6 +402,7 @@ package actor SwiftDataSyncModePersistence {
       )
       try DurableFile.syncDirectory(storeURL)
       store.lifecycle = .ready
+      initialApplicationStore = store
       manifest = Manifest(
         version: 2,
         activeStoreID: store.id,
@@ -385,15 +450,26 @@ package actor SwiftDataSyncModePersistence {
     guard store.id == manifest.activeStoreID || !isModeChangeStore
       || FileManager.default.fileExists(atPath: fileURL.path)
     else { throw SyncModePersistenceError.missingStore }
-    return try SwiftDataSnipLibrary(
+    let publication: SnipLibraryReadPublication?
+    if storeID == manifest.activeStoreID {
+      if readPublication == nil { readPublication = SnipLibraryReadPublication() }
+      publication = readPublication
+    } else {
+      publication = nil
+    }
+    let publicationWasLive = publication?.isRevoked == false
+    let library = try SwiftDataSnipLibrary(
       storeURL: fileURL,
       attachmentCacheRootURL: Self.cacheRootURL(
         base: attachmentCacheRootURL,
         storeID: store.id
       ),
       afterMutationBeforeSave: afterMutationBeforeSave,
+      beforeOpenRepairSave: { publication?.revoke() },
       diagnostics: diagnostics
     )
+    if publicationWasLive, publication?.isRevoked == true { readPublication = nil }
+    return library
   }
 
   package func candidateRevision(transitionID: UUID) throws -> UInt64 {
@@ -606,6 +682,12 @@ package actor SwiftDataSyncModePersistence {
   package func activateEmptyCollection(
     namespace: ICloudSyncNamespaceBinding?
   ) async throws {
+    _ = try await activateEmptyCollection(namespace: namespace, returningTarget: ())
+  }
+
+  package func activateEmptyCollection(
+    namespace: ICloudSyncNamespaceBinding?, returningTarget: Void
+  ) async throws -> SyncModeStore {
     guard manifest.transition == nil,
       writeAdmissionIsIdle(),
       let current = store(id: manifest.activeStoreID)
@@ -613,7 +695,7 @@ package actor SwiftDataSyncModePersistence {
     if current.namespace == namespace,
       (namespace == nil ? current.kind == .localOnly : current.kind == .iCloudSync)
     {
-      return
+      return current
     }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
@@ -652,6 +734,7 @@ package actor SwiftDataSyncModePersistence {
       } catch {
         try? recordAttention(.storageFailure)
       }
+      return candidate
     } catch {
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
@@ -666,18 +749,28 @@ package actor SwiftDataSyncModePersistence {
 
   /// Replaces the active synced cache and queues its store for deletion.
   package func discardActiveCloudCollection() async throws {
-    _ = try await discardActiveCloudCollection(matching: nil)
+    _ = try await discardActiveCloudCollection(matching: nil, returningTarget: ())
   }
 
   package func discardActiveCloudCollection(
     storeID: UUID, namespace: ICloudSyncNamespaceBinding
   ) async throws -> UUID? {
-    try await discardActiveCloudCollection(matching: (storeID, namespace))
+    try await discardActiveCloudCollection(matching: (storeID, namespace), returningTarget: ())?.id
+  }
+
+  package func discardActiveCloudCollection(returningTarget: Void) async throws -> SyncModeStore? {
+    try await discardActiveCloudCollection(matching: nil, returningTarget: ())
+  }
+
+  package func discardActiveCloudCollection(
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding, returningTarget: Void
+  ) async throws -> SyncModeStore? {
+    try await discardActiveCloudCollection(matching: (storeID, namespace), returningTarget: ())
   }
 
   private func discardActiveCloudCollection(
-    matching expected: (UUID, ICloudSyncNamespaceBinding)?
-  ) async throws -> UUID? {
+    matching expected: (UUID, ICloudSyncNamespaceBinding)?, returningTarget: Void
+  ) async throws -> SyncModeStore? {
     if let expected {
       guard manifest.activeStoreID == expected.0,
         store(id: expected.0)?.namespace == expected.1
@@ -723,7 +816,7 @@ package actor SwiftDataSyncModePersistence {
       activated.activeStoreID = candidate.id
       try commit(activated)
       try? cleanupRetiredStores()
-      return candidate.id
+      return candidate
     } catch {
       if let currentLibrary = try? libraryForTransition(storeID: current.id) {
         try? await currentLibrary.removeReadOnlyRecoveryMarker()
@@ -868,12 +961,22 @@ package actor SwiftDataSyncModePersistence {
 
   func commit(_ next: Manifest) throws {
     try Self.validate(next)
+    let before = manifest.stores.first { $0.id == manifest.activeStoreID }
+    let after = next.stores.first { $0.id == next.activeStoreID }
+    if before?.id != after?.id || before?.kind != after?.kind
+      || before?.namespace != after?.namespace || before?.lifecycle != after?.lifecycle
+      || manifest.transition?.id != next.transition?.id
+      || manifest.transition?.phase != next.transition?.phase
+      || manifest.accountIsolation != next.accountIsolation {
+      revokeReadPublication()
+    }
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)
     } catch {
       throw SyncModePersistenceError.storageFailure
     }
     manifest = next
+    if readPublication?.isRevoked == true { readPublication = nil }
   }
 
   private static func newStore(

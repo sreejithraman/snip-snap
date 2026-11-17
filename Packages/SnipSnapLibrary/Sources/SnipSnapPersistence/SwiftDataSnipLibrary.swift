@@ -105,6 +105,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     storeURL: URL,
     attachmentCacheRootURL: URL? = nil,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
+    beforeOpenRepairSave: @Sendable () -> Void = {},
     beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
     cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in },
@@ -141,12 +142,14 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     if loaded.lists.isEmpty {
       guard loaded.isEmpty else { throw SnipLibraryError.invalidStore }
       context.insert(StoredListRecord(.inbox))
+      beforeOpenRepairSave()
       try lock.check()
       try context.save()
       loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
     }
     if try Self.backfillLibraryMetadata(loaded, context: context) {
       try metadataBackfillHook(.beforeSave)
+      beforeOpenRepairSave()
       try lock.check()
       try context.save()
       try metadataBackfillHook(.afterSave)
@@ -154,6 +157,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     }
     if try Self.backfillCloudFullRecords(context: context) {
       try cloudFullRecordBackfillHook(.beforeSave)
+      beforeOpenRepairSave()
       try lock.check()
       try context.save()
       try cloudFullRecordBackfillHook(.afterSave)
@@ -815,5 +819,28 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
           )
         }
       })
+  }
+}
+
+/// File metadata for the concrete URLs in one checked application read. Failure stays explicit.
+package enum SnipLibraryFileObservations {
+  package static func read(_ snapshot: SnipLibrarySnapshot) -> Result<[UUID: SnipLibraryFileObservation], any Error> {
+    Result {
+      try snapshot.attachmentURLs.mapValues { url in
+        do {
+          let values = try FileManager.default.attributesOfItem(atPath: url.path)
+          return SnipLibraryFileObservation(url: url, kind: (values[.type] as? FileAttributeType)?.rawValue,
+            device: (values[.systemNumber] as? NSNumber)?.uint64Value,
+            fileNumber: (values[.systemFileNumber] as? NSNumber)?.uint64Value,
+            byteCount: (values[.size] as? NSNumber)?.uint64Value, modifiedAt: values[.modificationDate] as? Date)
+        } catch {
+          let failure = error as NSError
+          guard failure.domain == NSCocoaErrorDomain,
+            failure.code == NSFileReadNoSuchFileError || failure.code == NSFileNoSuchFileError else { throw error }
+          return SnipLibraryFileObservation(url: url, kind: nil, device: nil, fileNumber: nil,
+            byteCount: nil, modifiedAt: nil)
+        }
+      }
+    }
   }
 }

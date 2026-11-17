@@ -34,6 +34,92 @@ public struct SyncedAttachmentCacheSnapshot: Equatable, Sendable {
     }
 }
 
+public struct SyncedAttachmentReadObservation: Sendable {
+    public let source: SnipLibraryReadSource
+    public let states: [UUID: SyncedAttachmentTransferState]
+    public let publication: SnipLibraryReadPublication?
+    private let predecessor: SnipLibraryReadPublication?
+    private let libraryBinding: (any SnipLibrary)?
+
+    package init(source: SnipLibraryReadSource, states: [UUID: SyncedAttachmentTransferState],
+                 publication: SnipLibraryReadPublication? = nil,
+                 predecessor: SnipLibraryReadPublication? = nil, libraryBinding: (any SnipLibrary)? = nil) {
+        self.libraryBinding = libraryBinding
+        self.source = source
+        self.states = states
+        self.publication = publication
+        self.predecessor = predecessor
+    }
+
+    public func matchesApplicationTarget(_ target: SnipLibraryApplicationTarget?) -> Bool {
+        guard let target, let binding = libraryBinding as? any SnipLibraryApplicationBinding else { return false }
+        return binding.sharesApplicationBinding(with: target.library)
+    }
+
+    /// Admission continuity, not publication authority; close `publication` before consuming.
+    public func continuesApplication(_ applied: SnipLibraryReadPublication?) -> Bool {
+        guard let applied else { return false }
+        return predecessor === applied
+    }
+}
+
+public struct SyncedContentCurrentSyncObservation: Sendable {
+    public let source: SnipLibraryReadSource
+    public let issue: SyncedContentSyncIssue?
+    public let settled: Bool
+    public let publication: SnipLibraryReadPublication?
+    private let predecessor: SnipLibraryReadPublication?
+    private let libraryBinding: (any SnipLibrary)?
+    private let snapshot: SnipLibrarySnapshot?
+    private let files: Result<[UUID: SnipLibraryFileObservation], any Error>?
+    private let recovery: SnipRecoverySnapshot?
+    private let states: [UUID: SyncedAttachmentTransferState]?
+
+    package init(source: SnipLibraryReadSource, issue: SyncedContentSyncIssue?, settled: Bool,
+                 publication: SnipLibraryReadPublication? = nil,
+                 predecessor: SnipLibraryReadPublication? = nil,
+                 snapshot: SnipLibrarySnapshot? = nil, recovery: SnipRecoverySnapshot? = nil,
+                 states: [UUID: SyncedAttachmentTransferState]? = nil,
+                 files: Result<[UUID: SnipLibraryFileObservation], any Error>? = nil,
+                 libraryBinding: (any SnipLibrary)? = nil) {
+        self.libraryBinding = libraryBinding
+        self.files = files
+        self.source = source
+        self.issue = issue
+        self.settled = settled
+        self.publication = publication
+        self.predecessor = predecessor
+        self.snapshot = snapshot
+        self.recovery = recovery
+        self.states = states
+    }
+
+    public func matchesApplicationTarget(_ target: SnipLibraryApplicationTarget?) -> Bool {
+        guard let target, let binding = libraryBinding as? any SnipLibraryApplicationBinding else { return false }
+        return binding.sharesApplicationBinding(with: target.library)
+    }
+
+    /// Prepare the comparison before closing; consume it only while this publication is held.
+    public func matchesApplication(
+        _ applied: SnipLibrarySnapshot,
+        after publication: SnipLibraryReadPublication?, target: SnipLibraryApplicationTarget?, recovery: SnipRecoverySnapshot,
+        files appliedFiles: Result<[UUID: SnipLibraryFileObservation], any Error>?,
+        attachmentStates: [UUID: SyncedAttachmentTransferState]? = nil
+    ) -> Bool {
+        guard publication != nil, let snapshot, self.recovery == recovery,
+          matchesApplicationTarget(target),
+          case .success(let currentFiles) = files, case .success(let knownFiles) = appliedFiles,
+          currentFiles == knownFiles else { return false }
+        let orderSnips: (Snip, Snip) -> Bool = { $0.id.uuidString < $1.id.uuidString }
+        let orderLists: (SnipList, SnipList) -> Bool = { $0.id.uuidString < $1.id.uuidString }
+        guard applied.snips.sorted(by: orderSnips) == snapshot.snips.sorted(by: orderSnips),
+          applied.lists.sorted(by: orderLists) == snapshot.lists.sorted(by: orderLists),
+          applied.attachmentURLs == snapshot.attachmentURLs else { return false }
+        if let attachmentStates { return states == attachmentStates }
+        return true
+    }
+}
+
 /// One main-app owner for optional sync and verified, on-demand attachment files.
 public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func syncWhenPossible() async
@@ -42,6 +128,8 @@ public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func scheduleSyncAfterLocalChange() async
     func isCloudSyncActive() async throws -> Bool
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
+    func checkedAttachmentStates() async throws -> SyncedAttachmentReadObservation
+    func checkedCurrentSyncStatus(for source: SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL
     func clearDownloadedFiles() async throws
     func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot
@@ -49,6 +137,14 @@ public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
 }
 
 public extension OptionalCloudSyncHandling {
+    func checkedAttachmentStates() async throws -> SyncedAttachmentReadObservation {
+        throw SnipLibraryError.transferUnsupported
+    }
+
+    func checkedCurrentSyncStatus(for source: SnipLibraryReadSource) async throws -> SyncedContentCurrentSyncObservation {
+        throw SnipLibraryError.transferUnsupported
+    }
+
     func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome {
         .notRun(.unsupportedLegacyHandler)
     }
@@ -174,13 +270,105 @@ public struct SnipLibraryReadSource: Equatable, Sendable {
     }
 }
 
+public struct SnipLibraryFileObservation: Equatable, Sendable {
+    public let url: URL
+    public let kind: String?
+    public let device: UInt64?
+    public let fileNumber: UInt64?
+    public let byteCount: UInt64?
+    public let modifiedAt: Date?
+
+    package init(url: URL, kind: String?, device: UInt64?, fileNumber: UInt64?, byteCount: UInt64?, modifiedAt: Date?) {
+        self.url = url; self.kind = kind; self.device = device; self.fileNumber = fileNumber
+        self.byteCount = byteCount; self.modifiedAt = modifiedAt
+    }
+}
+
 public struct SnipLibraryReadObservation: Sendable {
     public let snapshot: SnipLibrarySnapshot
     public let source: SnipLibraryReadSource?
+    public let publication: SnipLibraryReadPublication?
+    public let target: SnipLibraryApplicationTarget?
+    public let files: Result<[UUID: SnipLibraryFileObservation], any Error>?
 
-    package init(snapshot: SnipLibrarySnapshot, source: SnipLibraryReadSource?) {
+    package init(snapshot: SnipLibrarySnapshot, source: SnipLibraryReadSource?,
+                 publication: SnipLibraryReadPublication? = nil, target: SnipLibraryApplicationTarget? = nil,
+                 files: Result<[UUID: SnipLibraryFileObservation], any Error>? = nil) {
+        self.files = files
+        self.target = target
         self.snapshot = snapshot
         self.source = source
+        self.publication = publication
+    }
+}
+
+/// Historical operation target. Its managed library rejects access after this source is retired.
+public final class SnipLibraryApplicationTarget: Sendable {
+    public let source: SnipLibraryReadSource
+    public let library: any SnipLibrary
+    public let recoveryScope: SnipRecoveryScope?
+
+    package init(source: SnipLibraryReadSource, library: any SnipLibrary, recoveryScope: SnipRecoveryScope?) {
+        self.source = source; self.library = library; self.recoveryScope = recoveryScope
+    }
+}
+
+package protocol SnipLibraryApplicationBinding: SnipLibrary {
+    nonisolated var initialApplicationTarget: SnipLibraryApplicationTarget? { get }
+    /// Compares immutable producer bindings, without asserting either is current.
+    nonisolated func sharesApplicationBinding(with library: any SnipLibrary) -> Bool
+}
+
+public extension SnipLibraryApplicationTarget {
+    static func initial(for library: any SnipLibrary) -> SnipLibraryApplicationTarget? {
+        (library as? any SnipLibraryApplicationBinding)?.initialApplicationTarget
+    }
+}
+
+public enum SnipLibraryReadPublicationError: Error, Sendable {
+    case revoked
+}
+
+/// Serializes a prepared, callback-free application install with source retirement.
+public final class SnipLibraryReadPublication: @unchecked Sendable {
+    private let lock = NSLock()
+    private enum State { case pending, available, revoked }
+    private var state: State
+
+    package init(pending: Bool = false) { state = pending ? .pending : .available }
+    package var isRevoked: Bool { lock.withLock { if case .revoked = state { true } else { false } } }
+    @discardableResult
+    package func revoke() -> Bool {
+        lock.withLock {
+            let wasAvailable: Bool = if case .available = state { true } else { false }
+            state = .revoked
+            return wasAvailable
+        }
+    }
+    package func completeRead() {
+        lock.withLock { if case .pending = state { state = .available } }
+    }
+
+    /// Finish synchronously on the acquiring thread, before callbacks or suspension.
+    public func beginApplication() throws -> Application {
+        lock.lock()
+        guard case .available = state else {
+            lock.unlock()
+            throw SnipLibraryReadPublicationError.revoked
+        }
+        return Application(publication: self)
+    }
+
+    public final class Application {
+        private var publication: SnipLibraryReadPublication?
+        fileprivate init(publication: SnipLibraryReadPublication) { self.publication = publication }
+        func owns(_ expected: SnipLibraryReadPublication) -> Bool { publication === expected }
+        public func finish() {
+            guard let publication else { return }
+            self.publication = nil
+            publication.lock.unlock()
+        }
+        deinit { finish() }
     }
 }
 

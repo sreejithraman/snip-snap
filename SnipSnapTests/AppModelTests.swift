@@ -5571,3 +5571,299 @@ private final class MacLocalFeedbackFixture {
         await cleanup.value
     }
 }
+
+
+extension AppModelTests {
+    @MainActor
+    func testPreparedDraftScopeDoesNotWriteOrSwitchUntilItsActualInstall() throws {
+        let name = "CheckedDraftScope-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts", scope: "first")
+        store.setText("First unsaved text", for: SnipList.inboxID)
+        let before = defaults.persistentDomain(forName: name) as NSDictionary?
+
+        let prepared = store.prepareScope("second")
+
+        XCTAssertEqual(store.scope, "first")
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "First unsaved text")
+        XCTAssertEqual(defaults.persistentDomain(forName: name) as NSDictionary?, before)
+        let write = try store.installPreparedScope(prepared)
+        XCTAssertEqual(store.scope, "second")
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "")
+        XCTAssertEqual(defaults.persistentDomain(forName: name) as NSDictionary?, before)
+        store.finishScopeWrite(write)
+        store.setText("Second scope text", for: SnipList.inboxID)
+        store.flushText()
+        let reopenedFirst = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts", scope: "first")
+        let reopenedSecond = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts", scope: "second")
+        XCTAssertEqual(reopenedFirst.draft(for: SnipList.inboxID).text, "First unsaved text")
+        XCTAssertEqual(reopenedSecond.draft(for: SnipList.inboxID).text, "Second scope text")
+    }
+
+    @MainActor
+    func testChangedDraftRejectsPreparedScopeWithoutLosingItsNewTextOrAttachments() throws {
+        let name = "ChangedCheckedDraftScope-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts", scope: "first")
+        let originalURL = URL(fileURLWithPath: "/tmp/original-draft-attachment")
+        let laterURL = URL(fileURLWithPath: "/tmp/later-draft-attachment")
+        store.setText("Prepared old text", for: SnipList.inboxID)
+        store.add([originalURL], to: SnipList.inboxID)
+        let prepared = store.prepareScope("second")
+        store.setText("Actual newer text", for: SnipList.inboxID)
+        store.add([laterURL], to: SnipList.inboxID)
+        do {
+            _ = try store.installPreparedScope(prepared)
+            XCTFail("A stale preparation must not replace live draft ownership.")
+        } catch { XCTAssertEqual(error as? SnipLibraryError, .importChanged) }
+        XCTAssertEqual(store.scope, "first")
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "Actual newer text")
+        XCTAssertEqual(store.draft(for: SnipList.inboxID).attachments, [originalURL, laterURL])
+        store.flushText()
+        let reopened = ComposerDraftStore(defaults: defaults, textDefaultsKey: "drafts", scope: "first")
+        XCTAssertEqual(reopened.draft(for: SnipList.inboxID).text, "Actual newer text")
+    }
+}
+
+extension AppModelTests {
+    @MainActor
+    func testCheckedReloadRejectsAStoreRetiredDuringItsRequiredRecoveryRead() async throws {
+        let fixture = try await MacCheckedApplicationFixture.make()
+        fixture.pause.armAfterContentRead()
+        var failure: (any Error)?
+        var publications = 0
+        let subscription = fixture.model.$snips.dropFirst().sink { _ in publications += 1 }
+        let reload = fixture.start {
+            do { _ = try await fixture.model.reloadChecked(); return true }
+            catch { failure = error; return false }
+        }
+        if await fixture.ready() {
+            do {
+                try await fixture.persistence.activateEmptyCollection(namespace: nil)
+                _ = try await fixture.library.perform(.add(content: "Replacement durable text", origin: .quickEntry,
+                    source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast),
+                    sortedBy: .manual)
+                fixture.pause.release()
+                if await fixture.completed(reload) {
+                    XCTAssertTrue(failure is SnipLibraryReadPublicationError)
+                    XCTAssertEqual(reload.result, false)
+                    XCTAssertEqual(fixture.model.snips.map(\.content), ["Original durable text"])
+                    XCTAssertEqual(publications, 0, "Rejected preparation cannot publish the retired snapshot")
+                    XCTAssertEqual(fixture.model.composerDraftScope, "original-scope")
+                    let staleWrite = await fixture.model.add(content: "Must not enter the replacement", origin: .quickEntry)
+                    XCTAssertFalse(staleWrite, "The displayed retired root cannot write through the newer source")
+                    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+                    let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(durable.snips.map(\.content), ["Replacement durable text"])
+                    _ = try await fixture.model.replaceLibraryChecked(fixture.library,
+                        recoveryScope: SnipRecoveryScope("replacement-scope"))
+                    XCTAssertEqual(fixture.model.snips.map(\.content), ["Replacement durable text"])
+                    XCTAssertEqual(fixture.model.composerDraftScope, "replacement-scope")
+                }
+            } catch { XCTFail("Actual replacement/setup failed: \(error)") }
+        }
+        subscription.cancel()
+        await fixture.cleanUp()
+    }
+
+    @MainActor
+    func testCheckedReloadRejectsAnInterveningSameSourceWriteWithoutPublishingOldRows() async throws {
+        let fixture = try await MacCheckedApplicationFixture.make()
+        fixture.pause.armAfterContentRead()
+        var failure: (any Error)?
+        let reload = fixture.start {
+            do { _ = try await fixture.model.reloadChecked(); return true }
+            catch { failure = error; return false }
+        }
+        if await fixture.ready() {
+            do {
+                _ = try await fixture.library.perform(.add(content: "Later same-source write", origin: .quickEntry,
+                    source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast),
+                    sortedBy: .manual)
+                fixture.pause.release()
+                if await fixture.completed(reload) {
+                    XCTAssertTrue(failure is SnipLibraryReadPublicationError)
+                    XCTAssertEqual(reload.result, false)
+                    XCTAssertEqual(fixture.model.snips.map(\.content), ["Original durable text"])
+                    _ = try await fixture.model.reloadChecked()
+                    XCTAssertEqual(Set(fixture.model.snips.map(\.content)),
+                        ["Original durable text", "Later same-source write"])
+                    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+                    let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(Set(durable.snips.map(\.content)),
+                        ["Original durable text", "Later same-source write"])
+                }
+            } catch { XCTFail("Actual same-source write/setup failed: \(error)") }
+        }
+        await fixture.cleanUp()
+    }
+}
+
+private final class MacCheckedRecoveryPause: @unchecked Sendable {
+    let entered = XCTestExpectation(description: "actual checked recovery read held after content")
+    private let lock = NSLock()
+    private var readsRemaining: Int?
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func armAfterContentRead() { lock.withLock { readsRemaining = 2 } }
+    func read() async throws {
+        let hold = lock.withLock {
+            guard let remaining = readsRemaining else { return false }
+            readsRemaining = remaining == 1 ? nil : remaining - 1
+            return remaining == 1
+        }
+        guard hold else { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { pending in
+                let finish = lock.withLock {
+                    if released || Task.isCancelled { return true }
+                    continuation = pending
+                    return false
+                }
+                entered.fulfill()
+                if finish { pending.resume() }
+            }
+        } onCancel: { self.release() }
+        try Task.checkCancellation()
+    }
+    func release() {
+        let pending = lock.withLock {
+            released = true
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume()
+    }
+}
+
+@MainActor
+private final class MacCheckedApplicationFixture {
+    let root: URL
+    let suite: String
+    let defaults: UserDefaults
+    let persistence: SwiftDataSyncModePersistence
+    let library: any SnipLibrary
+    let model: AppModel
+    let pasteboard: NSPasteboard
+    let pause: MacCheckedRecoveryPause
+    private var work: [MacLocalFeedbackWork] = []
+    private var retainedAfterFailedJoin: MacCheckedApplicationFixture?
+    private init(root: URL, suite: String, defaults: UserDefaults, persistence: SwiftDataSyncModePersistence,
+                 library: any SnipLibrary, model: AppModel, pasteboard: NSPasteboard, pause: MacCheckedRecoveryPause) {
+        self.root = root; self.suite = suite; self.defaults = defaults; self.persistence = persistence
+        self.library = library; self.model = model; self.pasteboard = pasteboard; self.pause = pause
+    }
+    static func make() async throws -> MacCheckedApplicationFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MacCheckedApplication-\(UUID())")
+        NSLog("MacCheckedApplication retained store root: %@", root.path)
+        let pause = MacCheckedRecoveryPause()
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, readHook: pause.read)
+        try await persistence.activateEmptyCollection(namespace: ICloudSyncNamespaceBinding(
+            scope: "private", accountLineage: "mac-original",
+            generation: UUID(uuidString: "BBBBBBBB-1111-2222-3333-BBBBBBBBBBBB")!,
+            zones: [ICloudSyncZoneBinding(name: "mac-original", ownerName: "owner")]))
+        let library = try await persistence.activeLibrary()
+        _ = try await library.perform(.add(content: "Original durable text", origin: .quickEntry,
+            source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast),
+            sortedBy: .manual)
+        let suite = "MacCheckedApplication.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(true, forKey: "clipboardHistoryPaused")
+        let board = NSPasteboard(name: .init("MacCheckedApplication.\(UUID())"))
+        let clipboard = ClipboardHistory(pasteboard: board, defaults: defaults,
+            storeURL: root.appendingPathComponent("clipboard.json"))
+        let model = AppModel(library: library, defaults: defaults, clipboardHistory: clipboard,
+            recoveryScope: SnipRecoveryScope("original-scope"))
+        await model.waitForInitialLoad()
+        return MacCheckedApplicationFixture(root: root, suite: suite, defaults: defaults,
+            persistence: persistence, library: library, model: model, pasteboard: board, pause: pause)
+    }
+    func start(_ operation: @escaping @MainActor () async -> Bool) -> MacLocalFeedbackWork {
+        let owned = MacLocalFeedbackWork(operation)
+        work.append(owned)
+        return owned
+    }
+    func ready() async -> Bool {
+        let ready = await XCTWaiter.fulfillment(of: [pause.entered], timeout: 30) == .completed
+        XCTAssertTrue(ready, "Actual checked content must precede the held recovery read")
+        return ready
+    }
+    func completed(_ owned: MacLocalFeedbackWork) async -> Bool {
+        let completed = await owned.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "Checked application must finish after the read is released")
+        return completed
+    }
+    func cleanUp() async {
+        pause.release()
+        work.forEach { $0.task?.cancel() }
+        let deadline = ContinuousClock.now + .seconds(30)
+        var joined = true
+        for owned in work {
+            let settled = await owned.finished.wait(for: deadline - ContinuousClock.now)
+            XCTAssertTrue(settled, "Checked application cleanup must join every caller")
+            joined = joined && settled
+            if settled { await owned.task?.value }
+        }
+        if joined {
+            work.removeAll()
+            pasteboard.releaseGlobally()
+            defaults.removePersistentDomain(forName: suite)
+        } else {
+            retainedAfterFailedJoin = self
+            NSLog("MacCheckedApplication retained live ownership/root: %@", root.path)
+        }
+    }
+}
+
+
+extension AppModelTests {
+    @MainActor
+    func testOriginalCheckedTargetCannotRedirectCommandsWhenReplacementWinsItsRecoveryRead() async throws {
+        let fixture = try await MacCheckedApplicationFixture.make()
+        let originalSession = SavedSnipsSession(library: fixture.library)
+        let originalRead = try await originalSession.checkedRead(sortedBy: .manual)
+        let original = try XCTUnwrap(originalRead.target)
+        let originalID = original.source.storeID
+        fixture.model.saveComposerText("Original scoped draft", for: SnipList.inboxID)
+        fixture.pause.armAfterContentRead()
+        var originalError: (any Error)?
+        let first = fixture.start {
+            do { _ = try await fixture.model.applyChecked(original); return true }
+            catch { originalError = error; return false }
+        }
+        if await fixture.ready() {
+            do {
+                try await fixture.persistence.activateEmptyCollection(namespace: nil)
+                _ = try await fixture.library.perform(.add(content: "Only replacement B", origin: .quickEntry,
+                    source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+                let replacementRead = try await originalSession.checkedRead(sortedBy: .manual)
+                let replacement = try XCTUnwrap(replacementRead.target)
+                XCTAssertNotEqual(replacement.source.storeID, originalID)
+                let later = fixture.start {
+                    do { _ = try await fixture.model.applyChecked(replacement); return true }
+                    catch { XCTFail("The genuine replacement application failed: \(error)"); return false }
+                }
+                fixture.pause.release()
+                if await fixture.completed(first), await fixture.completed(later) {
+                    XCTAssertTrue(originalError is SnipLibraryReadPublicationError)
+                    XCTAssertEqual(first.result, false)
+                    XCTAssertEqual(later.result, true)
+                    XCTAssertEqual(fixture.model.appliedSource, replacement.source)
+                    XCTAssertEqual(fixture.model.snips.map(\.content), ["Only replacement B"])
+                    XCTAssertEqual(fixture.model.composerDraftScope, "local")
+                    let added = await fixture.model.add(content: "Command routed to B", origin: .quickEntry)
+                    XCTAssertTrue(added)
+                    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+                    let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(Set(durable.snips.map(\.content)), ["Only replacement B", "Command routed to B"])
+                    let old = try await fixture.persistence.libraryForTransition(storeID: originalID)
+                    let retired = try await old.checkedSnapshot(sortedBy: .manual)
+                    XCTAssertEqual(retired.snips.map(\.content), ["Original durable text"])
+                }
+            } catch { XCTFail("Original-target replacement setup failed: \(error)") }
+        }
+        await fixture.cleanUp()
+    }
+}

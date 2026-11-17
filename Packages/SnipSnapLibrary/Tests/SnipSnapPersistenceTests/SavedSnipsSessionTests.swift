@@ -722,3 +722,265 @@ private final class ExclusiveAccessProbe {
     heldFirst = nil
   }
 }
+
+extension SavedSnipsSessionTests {
+  func testCheckedReplacementBindsOnceAndReturnsActualContentAndRecovery() async throws {
+    let root = checkedReplacementRoot()
+    let old = try JSONSnipLibrary(fileURL: root.appendingPathComponent("old.json"))
+    let oldAdded = try await old.add(content: "Old Done", origin: .quickEntry)
+    let oldSnip = try XCTUnwrap(oldAdded)
+    let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+    _ = try await replacement.add(content: "Replacement durable", origin: .quickEntry)
+    let observed = CheckedReplacementLibrary(base: replacement)
+    let bindings = CheckedReplacementBindings()
+    let session = SavedSnipsSession(library: old, userActionsFactory: { library in
+      bindings.record()
+      return DirectSnipLibraryUserActions(library: library)
+    })
+    let changed = try await session.setDone(ids: [oldSnip.id], done: true, sortedBy: .manual)
+    let token = try XCTUnwrap(changed.undo).id
+
+    let result = try await session.replaceLibraryChecked(
+      observed, recoveryScope: SnipRecoveryScope("replacement"), sortedBy: .manual
+    )
+
+    XCTAssertEqual(result.read.snapshot.snips.map(\.content), ["Replacement durable"])
+    XCTAssertNil(result.read.source)
+    XCTAssertEqual(result.recovery, .empty)
+    XCTAssertEqual(bindings.count, 2, "One initial bind and one replacement bind")
+    let calls = await observed.calls()
+    XCTAssertEqual(calls.checked, 1)
+    XCTAssertEqual(calls.unchecked, 0)
+    XCTAssertEqual(calls.recoveryScopes, ["replacement"])
+    let retained = await session.retainsUndo(token: token)
+    XCTAssertFalse(retained)
+    _ = try await session.performUserCommand(
+      .add(content: "Written after bind", origin: .quickEntry, source: nil,
+           listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()),
+      sortedBy: .manual
+    )
+    let reopened = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+    let durable = try await reopened.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(durable.snips.map(\.content)), ["Replacement durable", "Written after bind"])
+    let oldDurable = try await old.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(oldDurable.snips.map(\.content), ["Old Done"])
+    XCTAssertTrue(try XCTUnwrap(oldDurable.snips.first).isDone)
+  }
+
+  func testCheckedReplacementPropagatesReadErrorWithoutFallbackOrRecovery() async throws {
+    let root = checkedReplacementRoot()
+    let raw = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+    _ = try await raw.add(content: "Durable despite read error", origin: .quickEntry)
+    let failure = CheckedReplacementFailure()
+    let library = CheckedReplacementLibrary(base: raw, readFailure: failure)
+    let session = SavedSnipsSession(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("old.json")))
+    do {
+      _ = try await session.replaceLibraryChecked(
+        library, recoveryScope: SnipRecoveryScope("checked"), sortedBy: .manual
+      )
+      XCTFail("A replacement read error must not become fallback success.")
+    } catch { XCTAssertTrue((error as? CheckedReplacementFailure) === failure) }
+    let calls = await library.calls()
+    XCTAssertEqual(calls.checked, 1)
+    XCTAssertEqual(calls.unchecked, 0)
+    XCTAssertTrue(calls.recoveryScopes.isEmpty)
+    let durable = try await raw.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["Durable despite read error"])
+    _ = try await session.performUserCommand(.add(content: "Old owner after failed read", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let old = try JSONSnipLibrary(fileURL: root.appendingPathComponent("old.json"))
+    let oldDurable = try await old.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(oldDurable.snips.map(\.content), ["Old owner after failed read"])
+    let stillReplacement = try await raw.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(stillReplacement.snips.map(\.content), ["Durable despite read error"])
+
+  }
+
+  func testCheckedReplacementPropagatesRecoveryErrorWithoutReturningEmptySuccess() async throws {
+    let root = checkedReplacementRoot()
+    let raw = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
+    _ = try await raw.add(content: "Checked before recovery error", origin: .quickEntry)
+    let failure = CheckedReplacementFailure()
+    let library = CheckedReplacementLibrary(base: raw, recoveryFailure: failure)
+    let session = SavedSnipsSession(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("old.json")))
+    do {
+      _ = try await session.replaceLibraryChecked(
+        library, recoveryScope: SnipRecoveryScope("required recovery"), sortedBy: .manual
+      )
+      XCTFail("Required recovery failure must not become an empty successful replacement.")
+    } catch { XCTAssertTrue((error as? CheckedReplacementFailure) === failure) }
+    let calls = await library.calls()
+    XCTAssertEqual(calls.checked, 1)
+    XCTAssertEqual(calls.unchecked, 0)
+    XCTAssertEqual(calls.recoveryScopes, ["required recovery"])
+    let durable = try await raw.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(durable.snips.map(\.content), ["Checked before recovery error"])
+    _ = try await session.performUserCommand(.add(content: "Old owner after failed recovery", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let old = try JSONSnipLibrary(fileURL: root.appendingPathComponent("old.json"))
+    let oldDurable = try await old.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(oldDurable.snips.map(\.content), ["Old owner after failed recovery"])
+    let stillReplacement = try await raw.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(stillReplacement.snips.map(\.content), ["Checked before recovery error"])
+
+  }
+}
+
+private func checkedReplacementRoot() -> URL {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent("CheckedReplacement-\(UUID())")
+  print("OFFLINE-CHECKED-APPLICATION retained unique root: \(root.path)")
+  return root
+}
+
+private final class CheckedReplacementFailure: Error, @unchecked Sendable {}
+
+private final class CheckedReplacementBindings: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  var count: Int { lock.withLock { value } }
+  func record() { lock.withLock { value += 1 } }
+}
+
+private actor CheckedReplacementLibrary: SnipLibrary {
+  let base: JSONSnipLibrary
+  let readFailure: CheckedReplacementFailure?
+  let recoveryFailure: CheckedReplacementFailure?
+  private var checked = 0
+  private var unchecked = 0
+  private var scopes: [String] = []
+
+  init(base: JSONSnipLibrary, readFailure: CheckedReplacementFailure? = nil,
+       recoveryFailure: CheckedReplacementFailure? = nil) {
+    self.base = base
+    self.readFailure = readFailure
+    self.recoveryFailure = recoveryFailure
+  }
+
+  func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    checked += 1
+    let value = try await base.checkedSnapshot(sortedBy: sortMode)
+    if let readFailure { throw readFailure }
+    return value
+  }
+
+  func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
+    unchecked += 1
+    return await base.snapshot(sortedBy: sortMode)
+  }
+
+  func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot {
+    scopes.append(scope.rawValue)
+    let value = try await base.recoverySnapshot(in: scope)
+    if let recoveryFailure { throw recoveryFailure }
+    return value
+  }
+
+  func perform(_ command: SnipLibraryCommand, sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate {
+    try await base.perform(command, sortedBy: sortMode)
+  }
+
+  func calls() -> (checked: Int, unchecked: Int, recoveryScopes: [String]) { (checked, unchecked, scopes) }
+}
+
+
+extension SavedSnipsSessionTests {
+  @MainActor
+  func testCancelledCheckedReplacementKeepsUndoAndSubsequentCommandsOnTheDisplayedOwner() async throws {
+    let root = checkedReplacementRoot()
+    let oldURL = root.appendingPathComponent("old.json")
+    let replacementURL = root.appendingPathComponent("replacement.json")
+    let old = try JSONSnipLibrary(fileURL: oldURL)
+    let oldAdded = try await old.add(content: "Original Done", origin: .quickEntry)
+    let oldSnip = try XCTUnwrap(oldAdded)
+    let replacement = try JSONSnipLibrary(fileURL: replacementURL)
+    _ = try await replacement.add(content: "Replacement untouched", origin: .quickEntry)
+    let observed = CheckedReplacementLibrary(base: replacement)
+    let session = SavedSnipsSession(library: old)
+    let done = try await session.setDone(ids: [oldSnip.id], done: true, sortedBy: .manual)
+    let undo = try XCTUnwrap(done.undo)
+    let finished = XCTestExpectation(description: "cancelled real checked replacement returned")
+    let joined = XCTestExpectation(description: "cancelled checked replacement cleanup joined")
+    var failure: (any Error)?
+    let operation = Task { @MainActor in
+      defer { finished.fulfill(); joined.fulfill() }
+      do {
+        _ = try await session.replaceLibraryChecked(observed, recoveryScope: SnipRecoveryScope("replacement"), sortedBy: .manual)
+        XCTFail("Cancellation cannot bind the replacement or discard original undo")
+      } catch { failure = error }
+    }
+    operation.cancel()
+    let settled = await XCTWaiter.fulfillment(of: [finished], timeout: 30) == .completed
+    XCTAssertTrue(settled, "Cancellation must return through the actual checked replacement owner")
+    if settled {
+      await operation.value
+      XCTAssertTrue(failure is CancellationError)
+      let retained = await session.retainsUndo(token: undo.id)
+      XCTAssertTrue(retained)
+      _ = try await session.performUserCommand(.add(content: "Command after cancelled preparation", origin: .quickEntry,
+        source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+      let reopenedOld = try JSONSnipLibrary(fileURL: oldURL)
+      let oldDurable = try await reopenedOld.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(Set(oldDurable.snips.map(\.content)), ["Original Done", "Command after cancelled preparation"])
+      XCTAssertTrue(try XCTUnwrap(oldDurable.snips.first { $0.id == oldSnip.id }).isDone)
+      let reopenedReplacement = try JSONSnipLibrary(fileURL: replacementURL)
+      let newDurable = try await reopenedReplacement.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(newDurable.snips.map(\.content), ["Replacement untouched"])
+    } else {
+      operation.cancel()
+      let cleanup = await XCTWaiter.fulfillment(of: [joined], timeout: 30) == .completed
+      XCTAssertTrue(cleanup, "Failed cleanup retains the task-owned libraries and the logged root")
+      if cleanup { await operation.value }
+    }
+  }
+}
+
+
+extension SavedSnipsSessionTests {
+  func testRetiredPreparedReplacementCannotRedirectTheOriginalSessionsNextCommand() async throws {
+    let root = checkedReplacementRoot()
+    let oldURL = root.appendingPathComponent("original.json")
+    let old = try JSONSnipLibrary(fileURL: oldURL)
+    let created = try await old.add(content: "Displayed original", origin: .quickEntry)
+    let snip = try XCTUnwrap(created)
+    let session = SavedSnipsSession(library: old)
+    let done = try await session.setDone(ids: [snip.id], done: true, sortedBy: .manual)
+    let undo = try XCTUnwrap(done.undo)
+    let modeRoot = root.appendingPathComponent("mode")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: modeRoot)
+    let managed = try await persistence.activeLibrary()
+    _ = try await managed.perform(.add(content: "Prepared target B", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let storeB = try await persistence.snapshot().activeStore.id
+    let prepared = try await session.prepareLibraryApplication(managed, recoveryScope: nil, replacing: true, sortedBy: .manual)
+    XCTAssertEqual(prepared.read.snapshot.snips.map(\.content), ["Prepared target B"])
+    try await persistence.activateEmptyCollection(namespace: ICloudSyncNamespaceBinding(scope: "private",
+      accountLineage: "retired-preparation", generation: UUID(uuidString: "AAAAAAAA-3333-4444-5555-AAAAAAAAAAAA")!,
+      zones: [.init(name: "target-c", ownerName: "owner")]))
+    _ = try await managed.perform(.add(content: "Actual target C", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+
+    do {
+      let closing = try XCTUnwrap(prepared.read.publication).beginApplication()
+      defer { closing.finish() }
+      try prepared.install(within: closing)
+      XCTFail("A retired prepared target cannot install its command owner")
+    } catch { XCTAssertTrue(error is SnipLibraryReadPublicationError) }
+    do {
+      try prepared.install()
+      XCTFail("A bound command owner cannot bypass its actual closing operation")
+    } catch { XCTAssertTrue(error is SnipLibraryReadPublicationError) }
+    let retained = await session.retainsUndo(token: undo.id)
+    XCTAssertTrue(retained)
+    _ = try await session.performUserCommand(.add(content: "Command remains on displayed original", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let reopened = try JSONSnipLibrary(fileURL: oldURL)
+    let originalDurable = try await reopened.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(originalDurable.snips.map(\.content)), ["Displayed original", "Command remains on displayed original"])
+    let retiredB = try await persistence.libraryForTransition(storeID: storeB)
+    let bDurable = try await retiredB.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(bDurable.snips.map(\.content), ["Prepared target B"])
+    let reopenedMode = try SwiftDataSyncModePersistence(rootURL: modeRoot)
+    let currentDurable = try await (try await reopenedMode.activeLibrary()).checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(currentDurable.snips.map(\.content), ["Actual target C"])
+  }
+}

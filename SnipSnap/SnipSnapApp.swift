@@ -293,6 +293,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let dragSessionController = PanelDragSessionController()
         self.model = model
         self.shareListCatalogPublisher = shareListCatalogPublisher
+        model.setCheckedCatalogPublisher(shareListCatalogPublisher)
         self.shortcutSettings = shortcutSettings
         self.updateChannelSettings = updateChannelSettings
         syncedContentSettings = cloudServices.syncedContentSettings
@@ -310,87 +311,40 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
             try await cliLifecycle.refresh()
         }
-        let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
-            guard let session = cloudServices.syncSession else { return }
-            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
-            var stopIssue: SyncedContentSyncIssue?
+        let performSync: @MainActor @Sendable (Bool, SyncedContentSyncStart) async throws -> SyncedContentOriginalActionReturn = { retry, start in
+            defer { cloudServices.syncedContentSettings.endSyncAction(start) }
+            guard let session = cloudServices.syncSession else {
+                return .interrupted(.sourceUnavailable, originalIfKnown: nil)
+            }
             do {
-                let result: SnipSnapCloudSyncResult
-                if retry {
-                    result = try await session.retrySynchronization()
-                } else {
-                    result = try await session.synchronize()
+                let delivery = try await (retry ? session.retrySynchronizationWithTarget() : session.synchronizeWithTarget())
+                try Task.checkCancellation()
+                let original = await model.applySyncDelivery(delivery, lifecycle: cliLifecycle,
+                    settings: cloudServices.syncedContentSettings, handler: nil, start: start)
+                switch original {
+                case .finished(_, .applied), .finished(_, .notRequired):
+                    if !delivery.result.skipsMacClipboardTail { await model.clipboardHistory.syncNow() }
+                default: break
                 }
-                switch result {
-                case .noChange:
-                    break
-                case .contentUpdated:
-                    await model.reload()
-                case .syncCompleted:
-                    await model.reload()
-                    cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
-                case .syncScheduled:
-                    break
-                case .libraryReplaced:
-                    try await reloadActiveLibrary()
-                case .libraryReplacedWithSyncIssue(let issue):
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordSyncFailure(issue)
-                    return
-                case .libraryReplacedAndSyncCompleted:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordOutstandingSyncRecovered()
-                case .libraryReplacedAndSyncScheduled:
-                    try await reloadActiveLibrary()
-                    break
-                case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-                    let issue: SyncedContentSyncIssue
-                    switch result {
-                    case .iCloudDataReset:
-                        issue = .iCloudDataReset
-                    case .iCloudSignedOut:
-                        issue = .signInRequired
-                    default:
-                        issue = .iCloudAccountChanged
-                    }
-                    stopIssue = issue
-                    await model.suspendCLIActiveScope(in: cliRequestStore)
-                    await model.clipboardHistory.resetCloudAccount()
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordSyncStopped(issue)
-                case .syncIssue(let issue):
-                    cloudServices.syncedContentSettings.recordSyncFailure(issue)
-                    return
-                case .iCloudSyncSettingUp(let issue):
-                    cloudServices.syncedContentSettings.recordEnableSettingUp(issue)
-                case .iCloudSyncEnabled:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordEnableCompleted()
-                case .oldSyncedContentRemovalPending:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalPending()
-                case .oldSyncedContentRemovalCompleted:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordRemovalCompleted(syncStart)
-                }
-                if result != .oldSyncedContentRemovalPending {
-                    cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
-                }
-                await model.clipboardHistory.syncNow()
+                return original
             } catch {
-                cloudServices.syncedContentSettings.recordSyncFailure(
-                    SnipSnapCloudSyncIssueMapper.issue(for: error)
-                )
-                if let stopIssue { cloudServices.syncedContentSettings.recordSyncStopped(stopIssue) }
+                if !(error is CancellationError) {
+                    cloudServices.syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error), for: start)
+                }
+                throw error
             }
         }
         let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
-            await performSync(false)
+            _ = try? await performSync(false, cloudServices.syncedContentSettings.recordSyncStarted())
+        }
+        let retryOutcomeAction: AppleAccountCacheCoordinatorHandler.RetryOutcomeAction = {
+            guard cloudServices.syncSession != nil else { return .notRun(.unavailableSession) }
+            return try await cloudServices.syncedContentSettings.performExplicitSyncWithOutcome { start in
+                try await performSync(true, start)
+            }
         }
         let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction = {
-            await cloudServices.syncedContentSettings.performExplicitSync {
-                await performSync(true)
-            }
+            _ = try? await retryOutcomeAction()
         }
         let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction = {
             await cloudServices.syncSession?.scheduleAutomaticSync()
@@ -405,6 +359,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
             syncWhenPossible: syncAction,
             retrySyncWhenPossible: retryAction,
+            retrySyncWithOutcome: retryOutcomeAction,
             scheduleSyncAfterLocalChange: scheduleAction
         )
 #if DEBUG
@@ -413,6 +368,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             ? SimulatedCloudSyncHandler(
                 syncWhenPossible: syncAction,
                 retrySyncWhenPossible: retryAction,
+                retrySyncWithOutcome: retryOutcomeAction,
                 scheduleSyncAfterLocalChange: scheduleAction
             )
             : nil
@@ -455,6 +411,15 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
+        if cloudSyncSession != nil {
+            syncedContentSettings.setCheckedEnableCompletionAction { [weak model, weak settings = cloudServices.syncedContentSettings] target, start in
+                guard let model, let settings else { throw SnipLibraryReadPublicationError.revoked }
+                try await model.applyCheckedAndPublishReadiness(target, lifecycle: cliLifecycle,
+                    completion: AppModel.SyncApplicationCompletion(settings: settings, start: start, enabling: true))
+                settings.endSyncAction(start)
+                await model.confirmCurrentSyncStatus(target.source, settings: settings, handler: nil, start: start)
+            }
+        }
         super.init()
     }
 
@@ -490,21 +455,23 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         coordinator.start()
         Task {
             do {
-                try await cliLifecycle.start(reconcile: { [self] in
+                try await cliLifecycle.start(reconcileChecked: { [self] in
                     try await accountNoticeModel?.refreshCheckingAccount(notifyActiveLibraryChange: false)
+                    let read: SnipLibraryReadObservation
                     if let cloudSyncSession {
-                        let active = try await cloudSyncSession.activeLibrary()
-                        // An uncertain account must never expose a cloud-bound library.
-                        if active.recoveryScope != nil, accountNoticeModel?.notice == .paused {
-                            throw SnipCLIAppReadinessError.unavailable
-                        }
-                        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                        if let target = try await cloudSyncSession.currentApplicationTarget() {
+                            if target.application.source.storageMode == .iCloudSync, accountNoticeModel?.notice == .paused {
+                                throw SnipCLIAppReadinessError.unavailable
+                            }
+                            read = try await model.applyChecked(target.application)
+                        } else if model.appliedSource == nil {
+                            read = try await model.reloadChecked()
+                        } else { throw SnipCLIAppReadinessError.unavailable }
                     } else {
-                        await model.reload()
+                        read = try await model.reloadChecked()
                     }
-                    shareListCatalogPublisher?.enqueue(model.lists, force: true)
                     try await cliRequests.pruneAbandoned()
-                    return model.cliScopeToken
+                    return (model.cliScopeToken, read.publication)
                 }, scheduleSync: { [cloudLifecycleHooks] in
                     await cloudLifecycleHooks.run()
                 })
@@ -515,11 +482,14 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if let cloudSyncSession {
-            let results = cloudSyncSession.automaticSyncResults
+            let results = cloudSyncSession.automaticSyncDeliveries
             automaticSyncTask = Task { @MainActor [weak self] in
-                for await result in results {
+                for await delivery in results {
                     guard let self, !Task.isCancelled else { return }
-                    await self.handleAutomaticSyncResult(result)
+                    let start = self.syncedContentSettings.recordSyncStarted()
+                    _ = await self.model.applySyncDelivery(delivery, lifecycle: self.cliLifecycle,
+                        settings: self.syncedContentSettings, handler: self.cloudSyncHandler, start: start)
+                    if delivery.result == .syncCompleted { self.model.clipboardHistory.requestSync() }
                 }
             }
         }
@@ -596,47 +566,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             return try await model.handleCLIRequest(request)
         }
     }
-
-    private func handleAutomaticSyncResult(_ result: SnipSnapCloudSyncResult) async {
-        switch result {
-        case .contentUpdated:
-            await model.reload()
-        case .syncCompleted:
-            await model.reload()
-            syncedContentSettings.recordOutstandingSyncRecovered()
-            model.clipboardHistory.requestSync()
-        case .syncScheduled:
-            break
-        case .libraryReplacedWithSyncIssue(let issue):
-            await reloadActiveLibrary()
-            syncedContentSettings.recordSyncFailure(issue)
-        case .libraryReplacedAndSyncCompleted:
-            await reloadActiveLibrary()
-            syncedContentSettings.recordOutstandingSyncRecovered()
-        case .libraryReplacedAndSyncScheduled:
-            await reloadActiveLibrary()
-        case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-            await model.suspendCLIActiveScope(in: cliRequests)
-            await model.clipboardHistory.resetCloudAccount()
-            await reloadActiveLibrary()
-            let issue: SyncedContentSyncIssue
-            switch result {
-            case .iCloudDataReset:
-                issue = .iCloudDataReset
-            case .iCloudSignedOut:
-                issue = .signInRequired
-            default:
-                issue = .iCloudAccountChanged
-            }
-            syncedContentSettings.recordSyncStopped(issue)
-        case .syncIssue(let issue):
-            syncedContentSettings.recordSyncFailure(issue)
-            return
-        default:
-            break
-        }
-    }
-
 
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -745,15 +674,18 @@ private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
 actor SimulatedCloudSyncHandler: OptionalCloudSyncHandling {
     private let syncAction: AppleAccountCacheCoordinatorHandler.SyncAction
     private let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction
+    private let retryOutcomeAction: AppleAccountCacheCoordinatorHandler.RetryOutcomeAction?
     private let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction
 
     init(
         syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
         retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+        retrySyncWithOutcome: AppleAccountCacheCoordinatorHandler.RetryOutcomeAction? = nil,
         scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
     ) {
         syncAction = syncWhenPossible
         retryAction = retrySyncWhenPossible
+        retryOutcomeAction = retrySyncWithOutcome
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
@@ -761,6 +693,10 @@ actor SimulatedCloudSyncHandler: OptionalCloudSyncHandling {
     func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { await syncAction() }
     func retrySyncWhenPossible() async { await retryAction() }
+    func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome {
+        guard let retryOutcomeAction else { return .notRun(.unsupportedLegacyHandler) }
+        return try await retryOutcomeAction()
+    }
     func scheduleSyncAfterLocalChange() async { await scheduleAction() }
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
