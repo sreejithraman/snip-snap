@@ -188,8 +188,11 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let retries = ApplicationCLIRetryCounter()
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         // Like the Mac app's retry action, this retry runs only if no explicit sync is running.
-        let cloud = ApplicationCLICloudEffects {
-            await settings.performExplicitSync { retries.record() }
+        let cloud = ApplicationCLIOutcomeEffects {
+            try await settings.performExplicitSyncWithOutcome { _ in
+                retries.record()
+                return .finished(.noChange, .notRequired)
+            }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
         work.retain(handler)
@@ -234,9 +237,12 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
         let callback = work.gate()
         let winner = work.gate()
-        let cloud = ApplicationCLICloudEffects {
+        let cloud = ApplicationCLIOutcomeEffects {
             await callback.suspend()
-            await settings.performExplicitSync { retries.record() }
+            return try await settings.performExplicitSyncWithOutcome { _ in
+                retries.record()
+                return .finished(.noChange, .notRequired)
+            }
         }
         let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
         work.retain(handler)
@@ -610,5 +616,325 @@ private final class ApplicationCLINoRunOwnership {
             resources.removeAll()
         }
         await cleanup.value
+    }
+}
+
+
+extension SnipCLIApplicationHandlerTests {
+    @MainActor
+    func testRetryEnableAwaitsTheRealRequiredHookBeforeItsOriginalSuccessReceipt() async throws {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "original enable CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let enables = ApplicationCLIRetryCounter()
+        let applications = ApplicationCLIRetryCounter()
+        let gate = work.gate()
+        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {
+            await enables.record()
+            return .enabled
+        })
+        settings.setEnableCompletionAction {
+            applications.record()
+            await gate.suspend()
+        }
+        work.retain(settings)
+        let handler = makeHandler(model: model, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                let receipt = try await self.handle(.retrySync, using: handler, model: model)
+                XCTAssertEqual(receipt.status, .success)
+                XCTAssertEqual(receipt.message, "Your snips and attachments sync through iCloud.")
+                guard case .application(let current) = receipt.extendedResult else {
+                    return XCTFail("Expected the existing current application result")
+                }
+                XCTAssertEqual(current.values["mode"], "icloud-sync")
+                XCTAssertEqual(current.values["state"], "ready")
+            } catch { XCTFail("Actual completed enable must succeed: \(error)") }
+        }
+        guard await work.ready(gate.entered, "actual required enable application") else {
+            await work.cleanUp(); return
+        }
+        let premature = await retry.finished.wait(for: .seconds(2))
+        XCTAssertFalse(premature, "CLI cannot treat a required application as optional proof")
+        XCTAssertTrue(gate.isHeld)
+        XCTAssertEqual(enables.count, 1)
+        XCTAssertEqual(applications.count, 1)
+        XCTAssertEqual(settings.mode, .localOnly)
+        gate.release()
+        guard await work.prompt(retry.finished, "CLI original enable after required hook") else {
+            await work.cleanUp(); return
+        }
+        await work.cleanUp()
+        XCTAssertEqual(enables.count, 1)
+        XCTAssertEqual(applications.count, 1)
+    }
+
+    @MainActor
+    func testRetryEnableKeepsTheOriginalPendingSetupMessageAndSuccessEncoding() async throws {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "pending enable CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let enables = ApplicationCLIRetryCounter()
+        let applications = ApplicationCLIRetryCounter()
+        let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {
+            await enables.record()
+            return .settingUp(.waitingForConnection)
+        })
+        settings.setEnableCompletionAction { applications.record() }
+        work.retain(settings)
+        let handler = makeHandler(model: model, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                let receipt = try await self.handle(.retrySync, using: handler, model: model)
+                XCTAssertEqual(receipt.status, .success)
+                XCTAssertEqual(receipt.message, "Connect to the internet to finish setup.")
+                guard case .application(let current) = receipt.extendedResult else {
+                    return XCTFail("Expected current application state alongside the original operation")
+                }
+                XCTAssertEqual(current.values["mode"], "local-only")
+                XCTAssertEqual(current.values["state"], "enabling:sync.waitingForConnection")
+            } catch { XCTFail("Pending setup retains its existing operation encoding: \(error)") }
+        }
+        guard await work.prompt(retry.finished, "pending setup original receipt") else {
+            await work.cleanUp(); return
+        }
+        XCTAssertEqual(enables.count, 1)
+        XCTAssertEqual(applications.count, 0)
+        XCTAssertEqual(settings.state, .enabling(.waitingForConnection))
+        await work.cleanUp()
+    }
+
+    @MainActor
+    func testRetryEnableReportsAnActualRequiredApplicationFailure() async throws {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "failed application CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let enables = ApplicationCLIRetryCounter()
+        let applications = ApplicationCLIRetryCounter()
+        let failure = ApplicationCLIOriginalFailure()
+        let settings = SyncedContentSettingsModel(mode: .localOnly, issueMapper: { _ in .attachmentMissing },
+            enableAction: { await enables.record(); return .enabled })
+        settings.setEnableCompletionAction { applications.record(); throw failure }
+        work.retain(settings)
+        let handler = makeHandler(model: model, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                let receipt = try await self.handle(.retrySync, using: handler, model: model)
+                XCTAssertEqual(receipt.status, .failed, "A required application really failed")
+                XCTAssertEqual(receipt.message, "Can’t read an attachment. Retry sync. If it still fails, contact support.")
+                guard case .application(let current) = receipt.extendedResult else {
+                    return XCTFail("Expected independently current application state")
+                }
+                XCTAssertEqual(current.values["mode"], "local-only")
+                XCTAssertEqual(current.values["state"], "failed:sync.attachmentMissing")
+            } catch { XCTFail("Existing failed-enable receipt semantics must remain: \(error)") }
+        }
+        guard await work.prompt(retry.finished, "failed required application receipt") else {
+            await work.cleanUp(); return
+        }
+        XCTAssertEqual(enables.count, 1)
+        XCTAssertEqual(applications.count, 1)
+        XCTAssertEqual(settings.state, .failed(.attachmentMissing))
+        await work.cleanUp()
+    }
+
+    @MainActor
+    func testRetryPreservesTheActualCoreActionErrorRatherThanReturningCurrentReadySuccess() async throws {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "throwing original CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        work.retain(settings)
+        let failure = ApplicationCLIOriginalFailure()
+        let entries = ApplicationCLIRetryCounter()
+        let cloud = ApplicationCLIOutcomeEffects {
+            try await settings.performExplicitSyncWithOutcome { _ in
+                entries.record()
+                throw failure
+            }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                _ = try await self.handle(.retrySync, using: handler, model: model)
+                XCTFail("The original thrown action must not be replaced by current ready state")
+            } catch {
+                XCTAssertTrue((error as AnyObject) === failure, "Actual original error identity must survive Core and CLI")
+            }
+        }
+        let completed = await retry.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed)
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(settings.state, .syncing)
+        XCTAssertFalse(settings.canSyncNow)
+        await work.cleanUp()
+        XCTAssertEqual(entries.count, 1)
+    }
+
+    @MainActor
+    func testRetryCancellationPropagatesFromRealCoreWithoutAReceiptOrASecondAction() async throws {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "cancelled original CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+        work.retain(settings)
+        let gate = work.gate()
+        let entries = ApplicationCLIRetryCounter()
+        let cloud = ApplicationCLIOutcomeEffects {
+            try await settings.performExplicitSyncWithOutcome { _ in
+                entries.record()
+                await gate.suspend()
+                try Task.checkCancellation()
+                return .finished(.noChange, .notRequired)
+            }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                _ = try await self.handle(.retrySync, using: handler, model: model)
+                XCTFail("Cancellation before an original result must not return a receipt")
+            } catch is CancellationError {}
+            catch { XCTFail("Expected actual caller cancellation: \(error)") }
+        }
+        guard await work.ready(gate.entered, "real Core CLI body before cancellation") else {
+            await work.cleanUp(); return
+        }
+        retry.task.cancel()
+        XCTAssertTrue(gate.isHeld)
+        XCTAssertFalse(retry.finished.isSet)
+        XCTAssertEqual(entries.count, 1)
+        gate.release()
+        guard await work.prompt(retry.finished, "original CLI cancellation extracted") else {
+            await work.cleanUp(); return
+        }
+        XCTAssertFalse(settings.canSyncNow)
+        XCTAssertEqual(settings.state, .syncing)
+        await work.cleanUp()
+        XCTAssertEqual(entries.count, 1)
+    }
+}
+
+private final class ApplicationCLIOriginalFailure: Error, @unchecked Sendable {}
+
+@MainActor
+private final class ApplicationCLIOutcomeEffects: OptionalCloudSyncHandling {
+    private let retry: @MainActor () async throws -> SyncedContentActionOutcome
+
+    init(_ retry: @escaping @MainActor () async throws -> SyncedContentActionOutcome) { self.retry = retry }
+
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async {}
+    func retrySyncWhenPossible() async { _ = try? await retry() }
+    func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome { try await retry() }
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.transferUnsupported
+    }
+    func clearDownloadedFiles() async throws {}
+}
+
+@MainActor
+private extension ApplicationCLINoRunOwnership {
+    func prompt(_ signal: ApplicationCLINoRunSignal, _ stage: String) async -> Bool {
+        let completed = await signal.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "Original-outcome completion exceeded prompt budget: \(stage)")
+        return completed
+    }
+}
+
+
+// These cases test CLI projection from actual Core admission, not Session/application provenance.
+extension SnipCLIApplicationHandlerTests {
+    @MainActor
+    func testRetryUsesTheCoreOriginalResultValuedIssueSeparatelyFromCurrentStartedState() async {
+        await checkCLIOriginalProjection(initial: .ready,
+            returning: .finished(.syncIssue(.waitingForConnection), .notRequired), failed: true,
+            message: "Your changes will sync when you’re back online.", currentState: "syncing")
+    }
+
+    @MainActor
+    func testRetryUsesTheCoreOriginalRemovalIssueWithTheGenericMessage() async {
+        await checkCLIOriginalProjection(initial: .removalPending,
+            returning: .finished(.syncIssue(.waitingForConnection), .notRequired), failed: true,
+            message: "Some synced content is still in iCloud. This device keeps a recovery copy.",
+            currentState: "removal-pending")
+    }
+
+    @MainActor
+    func testRetryUsesItsCoreOriginalRemovalCompletionWithoutCompletingCurrentState() async {
+        await checkCLIOriginalProjection(initial: .removalPending,
+            returning: .finished(.noChange, .notRequired), failed: false,
+            message: "This device keeps a recovery copy.", currentState: "removal-pending")
+    }
+
+    @MainActor
+    private func checkCLIOriginalProjection(
+        initial: SyncedContentSettingsState, returning raw: SyncedContentOriginalActionReturn,
+        failed: Bool, message: String, currentState: String
+    ) async {
+        let work = ApplicationCLINoRunOwnership()
+        let model = AppModel(library: InMemorySnipLibrary(snips: []), defaults: defaults())
+        work.retain(model)
+        let loading = work.start { await model.waitForInitialLoad() }
+        guard await work.ready(loading.finished, "Core original projection CLI model load") else {
+            await work.cleanUp(); return
+        }
+        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: initial)
+        work.retain(settings)
+        let entries = ApplicationCLIRetryCounter()
+        let cloud = ApplicationCLIOutcomeEffects {
+            try await settings.performExplicitSyncWithOutcome { _ in
+                entries.record()
+                return raw
+            }
+        }
+        let handler = makeHandler(model: model, cloud: cloud, syncSettings: settings)
+        work.retain(handler)
+        let retry = work.start {
+            do {
+                let receipt = try await self.handle(.retrySync, using: handler, model: model)
+                XCTAssertEqual(receipt.status, failed ? .failed : .success)
+                XCTAssertEqual(receipt.message, message)
+                guard case .application(let current) = receipt.extendedResult else {
+                    return XCTFail("Expected the separate current application result")
+                }
+                XCTAssertEqual(current.values["mode"], "icloud-sync")
+                XCTAssertEqual(current.values["state"], currentState)
+            } catch { XCTFail("A real Core projected operation must keep its receipt semantics: \(error)") }
+        }
+        guard await work.prompt(retry.finished, "original Core operation to CLI receipt") else {
+            await work.cleanUp(); return
+        }
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertNil(settings.finishDeletingIssue, "Raw original input cannot impersonate a live consumer issue")
+        await work.cleanUp()
+        XCTAssertEqual(entries.count, 1)
     }
 }

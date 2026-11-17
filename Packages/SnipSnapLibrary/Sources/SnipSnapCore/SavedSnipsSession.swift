@@ -123,6 +123,17 @@ public actor SavedSnipsSession {
         try await library.checkedSnapshot(sortedBy: sortMode)
     }
 
+    public func checkedRead(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryReadObservation {
+        let selectedLibrary = library
+        if let observed = selectedLibrary as? any SnipLibraryReadObserving {
+            return try await observed.checkedRead(sortedBy: sortMode)
+        }
+        return SnipLibraryReadObservation(
+            snapshot: try await selectedLibrary.checkedSnapshot(sortedBy: sortMode),
+            source: nil
+        )
+    }
+
     public func performLibraryCommand(
         _ command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode

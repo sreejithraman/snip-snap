@@ -10,6 +10,7 @@ public struct SnipSnapCloudAppServices {
   package typealias AccountHandlerFactory = @MainActor (
     AppleAccountCacheCoordinatorHandler.SyncAction?,
     AppleAccountCacheCoordinatorHandler.SyncAction?,
+    AppleAccountCacheCoordinatorHandler.RetryOutcomeAction?,
     AppleAccountCacheCoordinatorHandler.ScheduleAction?
   ) -> AppleAccountCacheCoordinatorHandler
   private let accountHandlerFactory: AccountHandlerFactory?
@@ -27,14 +28,27 @@ public struct SnipSnapCloudAppServices {
   public func makeAccountCacheHandler(
     syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
     retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
+    retrySyncWithOutcome: AppleAccountCacheCoordinatorHandler.RetryOutcomeAction? = nil,
     scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
   ) -> AppleAccountCacheCoordinatorHandler? {
-    accountHandlerFactory?(syncWhenPossible, retrySyncWhenPossible, scheduleSyncAfterLocalChange)
+    accountHandlerFactory?(syncWhenPossible, retrySyncWhenPossible, retrySyncWithOutcome, scheduleSyncAfterLocalChange)
   }
 }
 
 /// Main-app sync wiring. A blank container keeps a contributor build local-only.
 public enum SnipSnapCloudAppAssembly {
+  @MainActor
+  package static func accountHandlerFactory(
+    lifecycle: SnipSnapICloudSyncLifecycle,
+    operationGate: AsyncOperationGate
+  ) -> SnipSnapCloudAppServices.AccountHandlerFactory {
+    { sync, retry, outcome, schedule in
+      lifecycle.makeAccountCacheHandler(operationGate: operationGate,
+        syncWhenPossible: sync, retrySyncWhenPossible: retry,
+        retrySyncWithOutcome: outcome, scheduleSyncAfterLocalChange: schedule)
+    }
+  }
+
   @MainActor
   public static func services(
     rootURL: URL,
@@ -113,11 +127,8 @@ public enum SnipSnapCloudAppAssembly {
         automaticResults.continuation.yield(automaticSyncResult(for: error))
       }
     )
-    let accountHandlerFactory: SnipSnapCloudAppServices.AccountHandlerFactory = { sync, retry, schedule in
-      lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
-        syncWhenPossible: sync, retrySyncWhenPossible: retry,
-        scheduleSyncAfterLocalChange: schedule)
-    }
+    let accountHandlerFactory: SnipSnapCloudAppServices.AccountHandlerFactory = Self.accountHandlerFactory(
+      lifecycle: lifecycle, operationGate: appOperationGate)
     if settingsStartup.mode == .iCloudSync {
       return SnipSnapCloudAppServices(
         syncedContentSettings: SyncedContentSettingsModel(
@@ -267,11 +278,7 @@ public enum SnipSnapCloudAppAssembly {
         deleteAction: { try await session.deleteSyncedContent() }
       ),
       syncSession: session,
-      accountHandlerFactory: { sync, retry, schedule in
-        lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
-          syncWhenPossible: sync, retrySyncWhenPossible: retry,
-          scheduleSyncAfterLocalChange: schedule)
-      }
+      accountHandlerFactory: Self.accountHandlerFactory(lifecycle: lifecycle, operationGate: appOperationGate)
     )
   }
 #endif

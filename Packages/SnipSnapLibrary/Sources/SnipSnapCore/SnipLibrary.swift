@@ -38,6 +38,7 @@ public struct SyncedAttachmentCacheSnapshot: Equatable, Sendable {
 public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
     func syncWhenPossible() async
     func retrySyncWhenPossible() async
+    func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome
     func scheduleSyncAfterLocalChange() async
     func isCloudSyncActive() async throws -> Bool
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
@@ -48,6 +49,10 @@ public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
 }
 
 public extension OptionalCloudSyncHandling {
+    func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome {
+        .notRun(.unsupportedLegacyHandler)
+    }
+
     func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot {
         throw SnipLibraryError.transferUnsupported
     }
@@ -154,6 +159,28 @@ public struct SnipLibrarySnapshot: Equatable, Sendable {
         self.snips = snips
         self.lists = lists
         self.attachmentURLs = attachmentURLs
+    }
+}
+
+public struct SnipLibraryReadSource: Equatable, Sendable {
+    public let storeID: UUID
+    public let storageMode: SyncedContentMode
+    public let namespaceKey: String?
+
+    package init(storeID: UUID, storageMode: SyncedContentMode, namespaceKey: String?) {
+        self.storeID = storeID
+        self.storageMode = storageMode
+        self.namespaceKey = namespaceKey
+    }
+}
+
+public struct SnipLibraryReadObservation: Sendable {
+    public let snapshot: SnipLibrarySnapshot
+    public let source: SnipLibraryReadSource?
+
+    package init(snapshot: SnipLibrarySnapshot, source: SnipLibraryReadSource?) {
+        self.snapshot = snapshot
+        self.source = source
     }
 }
 
@@ -505,6 +532,10 @@ public struct SnipImportResult: Equatable, Sendable {
         self.recoveredSnipCount = recoveredSnipCount
         self.devicePatch = devicePatch
     }
+}
+
+package protocol SnipLibraryReadObserving: SnipLibrary {
+    func checkedRead(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryReadObservation
 }
 
 public protocol SnipLibrary: Sendable {

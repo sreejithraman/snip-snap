@@ -36,6 +36,7 @@ package struct FixedICloudAccountStateSource: ICloudAccountStateSource {
 /// Narrow production-capable action seam for platform notice models.
 public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     public typealias SyncAction = @MainActor @Sendable () async -> Void
+    public typealias RetryOutcomeAction = @MainActor @Sendable () async throws -> SyncedContentActionOutcome
     public typealias ScheduleAction = @MainActor @Sendable () async -> Void
     package typealias AttachmentCoordinatorFactory = @Sendable (
         SwiftDataSnipLibrary,
@@ -121,18 +122,21 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     private let operationGate: AsyncOperationGate
     private let syncAction: SyncAction?
     private let retryAction: SyncAction?
+    private let retryOutcomeAction: RetryOutcomeAction?
     private let scheduleAction: ScheduleAction?
 
     package init(
         coordinator: ICloudSyncModeCoordinator,
         syncWhenPossible: SyncAction? = nil,
         retrySyncWhenPossible: SyncAction? = nil,
+        retrySyncWithOutcome: RetryOutcomeAction? = nil,
         scheduleSyncAfterLocalChange: ScheduleAction? = nil
     ) {
         coordinatorSource = .injected(coordinator)
         operationGate = AsyncOperationGate()
         syncAction = syncWhenPossible
         retryAction = retrySyncWhenPossible
+        retryOutcomeAction = retrySyncWithOutcome
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
@@ -147,6 +151,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         operationGate: AsyncOperationGate = AsyncOperationGate(),
         syncWhenPossible: SyncAction? = nil,
         retrySyncWhenPossible: SyncAction? = nil,
+        retrySyncWithOutcome: RetryOutcomeAction? = nil,
         scheduleSyncAfterLocalChange: ScheduleAction? = nil
     ) {
         coordinatorSource = .resolved(Configuration(
@@ -161,6 +166,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         self.operationGate = operationGate
         syncAction = syncWhenPossible
         retryAction = retrySyncWhenPossible
+        retryOutcomeAction = retrySyncWithOutcome
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
@@ -245,6 +251,11 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             return
         }
         await syncWhenPossible()
+    }
+
+    public func retrySyncWithOutcome() async throws -> SyncedContentActionOutcome {
+        guard let retryOutcomeAction else { return .notRun(.unsupportedLegacyHandler) }
+        return try await retryOutcomeAction()
     }
 
     public func scheduleSyncAfterLocalChange() async {

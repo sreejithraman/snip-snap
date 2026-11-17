@@ -255,10 +255,27 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    try await managedRead(sortedBy: sortedBy).snapshot
+  }
+
+  fileprivate func managedRead(sortedBy: SnipSortMode) async throws -> SnipLibraryReadObservation {
     await finishRecoveryQuarantines()
     try await readHook()
-    return try await libraryForTransition(storeID: manifest.activeStoreID)
-      .checkedSnapshot(sortedBy: sortedBy)
+    let selectedStore = manifest.stores[try storeIndex(id: manifest.activeStoreID)]
+    let library = try libraryForTransition(storeID: selectedStore.id)
+    let storageMode: SyncedContentMode = switch selectedStore.kind {
+    case .localOnly: .localOnly
+    case .iCloudSync: .iCloudSync
+    }
+    let source = SnipLibraryReadSource(
+      storeID: selectedStore.id,
+      storageMode: storageMode,
+      namespaceKey: selectedStore.namespace?.namespaceKey.rawValue
+    )
+    return SnipLibraryReadObservation(
+      snapshot: try await library.checkedSnapshot(sortedBy: sortedBy),
+      source: source
+    )
   }
 
   fileprivate func managedArchive() async throws -> SnipLibraryArchive {
@@ -383,7 +400,7 @@ extension SwiftDataSyncModePersistence {
   }
 }
 
-private actor ModeManagedSnipLibrary: SnipLibrary {
+private actor ModeManagedSnipLibrary: SnipLibraryReadObserving {
   let persistence: SwiftDataSyncModePersistence
   private let fallback: (any SnipLibrary)?
   private var lastKnown: SnipLibrarySnapshot?
@@ -409,17 +426,21 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
   }
 
   func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    try await checkedRead(sortedBy: sortMode).snapshot
+  }
+
+  func checkedRead(sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryReadObservation {
     let attempt = await persistence.beginManagedReadAttempt()
-    let snapshot: SnipLibrarySnapshot
+    let observation: SnipLibraryReadObservation
     do {
-      snapshot = try await persistence.managedSnapshot(sortedBy: sortMode)
+      observation = try await persistence.managedRead(sortedBy: sortMode)
     } catch {
       await persistence.recordStoreReadFailure(at: attempt)
       throw error
     }
-    lastKnown = snapshot
+    lastKnown = observation.snapshot
     try await persistence.clearRecoveredStoreReadFailure(at: attempt)
-    return snapshot
+    return observation
   }
 
   func archive() async throws -> SnipLibraryArchive {

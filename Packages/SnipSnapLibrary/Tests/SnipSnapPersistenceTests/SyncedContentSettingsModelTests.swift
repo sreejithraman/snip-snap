@@ -822,3 +822,840 @@ private actor DeleteEventRecorder {
   func record(_ event: String) { events.append(event) }
   func values() -> [String] { events }
 }
+
+
+extension SyncedContentSettingsModelTests {
+  @MainActor
+  func testLegacyExplicitAdmissionRefusesTypedRetryWithoutTouchingWinnerOrPriorIssue() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .failed(.waitingForConnection))
+    work.retain(settings)
+    let gate = work.gate()
+    var winnerCalls = 0
+    var loserCalls = 0
+    let winner = work.start {
+      await settings.performExplicitSync {
+        winnerCalls += 1
+        await gate.suspend()
+      }
+    }
+    guard await work.ready(gate.entered, "legacy explicit admission") else {
+      await work.cleanUp(); return
+    }
+    let loser = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          loserCalls += 1
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .notRun(.overlappingExplicitAction) = outcome else {
+          return XCTFail("The actual shared admission must report overlap")
+        }
+      } catch { XCTFail("Admission refusal must be a notRun result: \(error)") }
+    }
+    let completed = await loser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(completed, "Typed refusal must not join the legacy winner")
+    XCTAssertEqual(winnerCalls, 1)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertFalse(winner.finished.isSet)
+    XCTAssertFalse(settings.canSyncNow)
+    XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+    gate.release()
+    let finished = await winner.finished.wait(for: .seconds(2))
+    XCTAssertTrue(finished, "Legacy winner must end after its own release")
+    XCTAssertTrue(settings.canSyncNow)
+    XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+    await work.cleanUp()
+    XCTAssertEqual(loserCalls, 0)
+  }
+
+  @MainActor
+  func testTypedExplicitAdmissionRefusesLegacyRetryWithoutFinishingTheWinner() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    work.retain(settings)
+    let gate = work.gate()
+    var winnerCalls = 0
+    var loserCalls = 0
+    let winner = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          winnerCalls += 1
+          await gate.suspend()
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .completed = outcome else {
+          return XCTFail("Core must project the admitted raw original return")
+        }
+      } catch { XCTFail("Unexpected winner error: \(error)") }
+    }
+    guard await work.ready(gate.entered, "typed explicit admission") else {
+      await work.cleanUp(); return
+    }
+    let loser = work.start { await settings.performExplicitSync { loserCalls += 1 } }
+    let completed = await loser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(completed, "The legacy loser must return without joining typed work")
+    XCTAssertEqual(winnerCalls, 1)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertFalse(winner.finished.isSet)
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertEqual(settings.state, .removalPending)
+    XCTAssertTrue(settings.canFinishDeleting)
+    XCTAssertNil(settings.finishDeletingIssue)
+    gate.release()
+    let finished = await winner.finished.wait(for: .seconds(2))
+    XCTAssertTrue(finished)
+    XCTAssertEqual(settings.state, .removalPending, "Releasing admission is not removal completion")
+    await work.cleanUp()
+    XCTAssertEqual(loserCalls, 0)
+  }
+
+  @MainActor
+  func testTypedThrowPreservesErrorIdentityAndReleasesOnlyItsOwnAdmission() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .failed(.waitingForConnection))
+    work.retain(settings)
+    let failure = OriginalOutcomeFailure()
+    var caughtOriginal = false
+    let throwing = work.start {
+      do {
+        _ = try await settings.performExplicitSyncWithOutcome { _ in throw failure }
+        XCTFail("A thrown original action must not become completed success")
+      } catch { caughtOriginal = (error as AnyObject) === failure }
+    }
+    guard await work.prompt(throwing.finished, "original throwing action") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertTrue(caughtOriginal)
+    XCTAssertTrue(settings.canSyncNow)
+    XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+    let gate = work.gate()
+    let next = work.start { await settings.performExplicitSync { await gate.suspend() } }
+    guard await work.ready(gate.entered, "next legacy owner after throw") else {
+      await work.cleanUp(); return
+    }
+    throwing.task.cancel()
+    var loserCalls = 0
+    let loser = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          loserCalls += 1
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .notRun(.overlappingExplicitAction) = outcome else {
+          return XCTFail("A completed prior caller cannot release the next owner's admission")
+        }
+      } catch { XCTFail("Unexpected refusal error: \(error)") }
+    }
+    let completed = await loser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(completed)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertFalse(next.finished.isSet)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testTypedCancellationKeepsAdmissionUntilItsBodyExitsAndDoesNotInventAReport() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .failed(.waitingForConnection))
+    work.retain(settings)
+    let gate = work.gate()
+    var cancelled = false
+    let owner = work.start {
+      do {
+        _ = try await settings.performExplicitSyncWithOutcome { _ in
+          await gate.suspend()
+          try Task.checkCancellation()
+          return .finished(.noChange, .notRequired)
+        }
+        XCTFail("Real cancellation before an origin must throw, not fabricate a report")
+      } catch is CancellationError { cancelled = true }
+      catch { XCTFail("The actual cancellation must survive: \(error)") }
+    }
+    guard await work.ready(gate.entered, "cancellable typed body") else {
+      await work.cleanUp(); return
+    }
+    owner.task.cancel()
+    var loserCalls = 0
+    let loser = work.start { await settings.performExplicitSync { loserCalls += 1 } }
+    let refused = await loser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(refused)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertFalse(owner.finished.isSet)
+    gate.release()
+    guard await work.prompt(owner.finished, "cancelled body released") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertTrue(cancelled)
+    XCTAssertTrue(settings.canSyncNow)
+    XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+    let nextGate = work.gate()
+    let next = work.start { await settings.performExplicitSync { await nextGate.suspend() } }
+    guard await work.ready(nextGate.entered, "new owner after cancellation") else {
+      await work.cleanUp(); return
+    }
+    owner.task.cancel()
+    let laterLoser = work.start { await settings.performExplicitSync { loserCalls += 1 } }
+    let laterRefused = await laterLoser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(laterRefused)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertTrue(nextGate.isHeld)
+    XCTAssertFalse(next.finished.isSet)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testTypedEnableWaitsForItsRealRequiredCompletionBeforeReportingSuccess() async {
+    let work = OriginalOutcomeOwnership()
+    let events = DeleteEventRecorder()
+    let gate = work.gate()
+    let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {
+      await events.record("enable")
+      return .enabled
+    })
+    work.retain(settings)
+    settings.setEnableCompletionAction {
+      await events.record("required application")
+      await gate.suspend()
+    }
+    let enable = work.start {
+      let outcome = await settings.enableICloudSyncWithOutcome()
+      guard case .completed(let report) = outcome else {
+        return XCTFail("Actual enabled plus completed hook must produce its original report")
+      }
+      guard case .succeeded = report.operation.status else {
+        return XCTFail("The actual enable and required completion succeeded")
+      }
+      XCTAssertEqual(report.operation.message, "Your snips and attachments sync through iCloud.")
+    }
+    guard await work.ready(gate.entered, "real enable completion hook") else {
+      await work.cleanUp(); return
+    }
+    let premature = await enable.finished.wait(for: .seconds(2))
+    XCTAssertFalse(premature, "Required application is awaited, not optional current evidence")
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .enabling())
+    gate.release()
+    guard await work.prompt(enable.finished, "enabled report after required hook") else {
+      await work.cleanUp(); return
+    }
+    let actualEvents = await events.values()
+    XCTAssertEqual(actualEvents, ["enable", "required application"])
+    XCTAssertEqual(settings.mode, .iCloudSync)
+    XCTAssertEqual(settings.state, .ready)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testTypedEnableReportsActualPendingSetupWithoutCallingTheCompletionHook() async {
+    let work = OriginalOutcomeOwnership()
+    let events = DeleteEventRecorder()
+    let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {
+      await events.record("enable")
+      return .settingUp(.waitingForConnection)
+    })
+    work.retain(settings)
+    settings.setEnableCompletionAction { await events.record("must not apply pending setup") }
+    let enable = work.start {
+      let outcome = await settings.enableICloudSyncWithOutcome()
+      guard case .completed(let report) = outcome else { return XCTFail("Pending setup is an original outcome") }
+      guard case .succeeded = report.operation.status else {
+        return XCTFail("Existing pending-setup operation encoding is success, not enabled confirmation")
+      }
+      XCTAssertEqual(report.operation.message, "Connect to the internet to finish setup.")
+    }
+    guard await work.prompt(enable.finished, "pending setup report") else {
+      await work.cleanUp(); return
+    }
+    let actualEvents = await events.values()
+    XCTAssertEqual(actualEvents, ["enable"])
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .enabling(.waitingForConnection))
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testTypedEnableReportsItsActualRequiredHookFailure() async {
+    let work = OriginalOutcomeOwnership()
+    let failure = OriginalOutcomeFailure()
+    var hookCalls = 0
+    let settings = SyncedContentSettingsModel(mode: .localOnly, issueMapper: { _ in .attachmentMissing },
+                                            enableAction: { .enabled })
+    work.retain(settings)
+    settings.setEnableCompletionAction { hookCalls += 1; throw failure }
+    let enable = work.start {
+      let outcome = await settings.enableICloudSyncWithOutcome()
+      guard case .completed(let report) = outcome else { return XCTFail("The real failed enable owns a report") }
+      guard case .failed = report.operation.status else {
+        return XCTFail("A real required application failure cannot be optional unverified success")
+      }
+      XCTAssertEqual(report.operation.message, "Can’t read an attachment. Retry sync. If it still fails, contact support.")
+    }
+    guard await work.prompt(enable.finished, "required hook failure report") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(hookCalls, 1)
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .failed(.attachmentMissing))
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testTypedLateEnableCannotReportSuccessAfterTheOriginalStatusSessionStops() async {
+    let work = OriginalOutcomeOwnership()
+    let gate = work.gate()
+    let settings = SyncedContentSettingsModel(mode: .localOnly, enableAction: {
+      await gate.suspend()
+      return .enabled
+    })
+    work.retain(settings)
+    let enable = work.start {
+      let outcome = await settings.enableICloudSyncWithOutcome()
+      guard case .interrupted = outcome else {
+        return XCTFail("A stopped original session cannot manufacture an enabled report")
+      }
+    }
+    guard await work.ready(gate.entered, "original enable before status-session stop") else {
+      await work.cleanUp(); return
+    }
+    settings.recordSyncStopped(.iCloudAccountChanged)
+    gate.release()
+    guard await work.prompt(enable.finished, "late original enable report") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .failed(.iCloudAccountChanged))
+    await work.cleanUp()
+  }
+}
+
+
+extension SyncedContentSettingsModelTests {
+  @MainActor
+  func testTypedOverlapDoesNotClearTheWinningRemovalsActualFailure() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    work.retain(settings)
+    let gate = work.gate()
+    let winner = work.start {
+      await settings.performExplicitSync {
+        settings.recordSyncFailure(.waitingForConnection)
+        await gate.suspend()
+      }
+    }
+    guard await work.ready(gate.entered, "winning removal retry after its own issue") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+    var loserCalls = 0
+    let loser = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          loserCalls += 1
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .notRun(.overlappingExplicitAction) = outcome else {
+          return XCTFail("Real overlap must refuse before clearing removal failure")
+        }
+      } catch { XCTFail("Unexpected refusal error: \(error)") }
+    }
+    let completed = await loser.finished.wait(for: .seconds(2))
+    XCTAssertTrue(completed)
+    XCTAssertEqual(loserCalls, 0)
+    XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+    XCTAssertEqual(settings.state, .removalPending)
+    XCTAssertEqual(settings.detail, "Some synced content is still in iCloud. This device keeps a recovery copy.")
+    XCTAssertTrue(gate.isHeld)
+    XCTAssertFalse(winner.finished.isSet)
+    gate.release()
+    guard await work.prompt(winner.finished, "winning removal body finished") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .removalPending)
+    XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+    await work.cleanUp()
+    XCTAssertEqual(loserCalls, 0)
+  }
+
+  @MainActor
+  func testTypedEnableAfterAnOldAccountStopDoesNotInheritTheOldRemovalIssue() async {
+    let work = OriginalOutcomeOwnership()
+    let events = DeleteEventRecorder()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending,
+      enableAction: { await events.record("enable"); return .enabled })
+    work.retain(settings)
+    let failedRemoval = work.start {
+      await settings.performExplicitSync { settings.recordSyncFailure(.waitingForConnection) }
+    }
+    guard await work.prompt(failedRemoval.finished, "old explicit removal issue") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+    settings.recordSyncStopped(.iCloudAccountChanged)
+    settings.setEnableCompletionAction { await events.record("required application") }
+    let enable = work.start {
+      let outcome = await settings.enableICloudSyncWithOutcome()
+      guard case .completed(let report) = outcome else { return XCTFail("Actual fresh enable must own its report") }
+      guard case .succeeded = report.operation.status else {
+        return XCTFail("An old removal/account issue cannot replace the new original enabled outcome")
+      }
+      XCTAssertEqual(report.operation.message, "Your snips and attachments sync through iCloud.")
+    }
+    guard await work.prompt(enable.finished, "fresh original enable after old account stop") else {
+      await work.cleanUp(); return
+    }
+    let actualEvents = await events.values()
+    XCTAssertEqual(actualEvents, ["enable", "required application"])
+    XCTAssertEqual(settings.mode, .iCloudSync)
+    XCTAssertEqual(settings.state, .ready)
+    XCTAssertNil(settings.finishDeletingIssue)
+    await work.cleanUp()
+  }
+}
+
+private final class OriginalOutcomeFailure: Error, @unchecked Sendable {}
+
+// A timeout ends observation only; it never releases either retry's behavior gate.
+private final class OriginalOutcomeSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            return pending
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+
+    private func observe() async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate: Bool? = lock.withLock {
+                    if fired { return true }
+                    if Task.isCancelled { return false }
+                    waiters[id] = continuation
+                    return nil
+                }
+                if let immediate { continuation.resume(returning: immediate) }
+            }
+        } onCancel: {
+            self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+        }
+    }
+
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.observe() }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch {}
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class OriginalOutcomeGate: @unchecked Sendable {
+    let entered = OriginalOutcomeSignal()
+    private let lock = NSLock()
+    private var released = false
+    private var pending: CheckedContinuation<Void, Never>?
+    var isHeld: Bool { entered.isSet && lock.withLock { !released } }
+
+    func suspend() async {
+        await withCheckedContinuation { continuation in
+            let resume = lock.withLock {
+                if released { return true }
+                pending = continuation
+                return false
+            }
+            entered.fire()
+            if resume { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let continuation = lock.withLock {
+            released = true
+            let continuation = pending
+            pending = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+}
+
+@MainActor
+private final class OriginalOutcomeTask {
+    let finished: OriginalOutcomeSignal
+    let task: Task<Void, Never>
+
+    init(_ operation: @escaping @MainActor () async -> Void) {
+        let completion = OriginalOutcomeSignal()
+        finished = completion
+        task = Task {
+            await operation()
+            completion.fire()
+        }
+    }
+}
+
+@MainActor
+private final class OriginalOutcomeOwnership {
+    private var gates: [OriginalOutcomeGate] = []
+    private var tasks: [OriginalOutcomeTask] = []
+    private var resources: [AnyObject] = []
+    private var retainedAfterFailedJoin: OriginalOutcomeOwnership?
+
+    func retain(_ resource: AnyObject) { resources.append(resource) }
+
+    func gate() -> OriginalOutcomeGate {
+        let gate = OriginalOutcomeGate()
+        gates.append(gate)
+        return gate
+    }
+
+    func start(_ operation: @escaping @MainActor () async -> Void) -> OriginalOutcomeTask {
+        let task = OriginalOutcomeTask(operation)
+        tasks.append(task)
+        return task
+    }
+
+    func ready(_ signal: OriginalOutcomeSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "Original-outcome setup/readiness failed: \(stage)")
+        return ready
+    }
+
+    func cleanUp() async {
+        let cleanup = Task { @MainActor [self] in
+            gates.forEach { $0.release() }
+            tasks.forEach { $0.task.cancel() }
+            let deadline = ContinuousClock.now + .seconds(30)
+            var settled = true
+            for operation in tasks {
+                let joined = await operation.finished.wait(for: deadline - ContinuousClock.now)
+                XCTAssertTrue(joined, "Original-outcome cleanup could not join an owned caller")
+                if joined { await operation.task.value } else { settled = false }
+            }
+            guard settled else {
+                retainedAfterFailedJoin = self
+                return
+            }
+            tasks.removeAll()
+            gates.removeAll()
+            resources.removeAll()
+        }
+        await cleanup.value
+    }
+}
+
+@MainActor
+private extension OriginalOutcomeOwnership {
+    func prompt(_ signal: OriginalOutcomeSignal, _ stage: String) async -> Bool {
+        let completed = await signal.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "Original-outcome completion exceeded prompt budget: \(stage)")
+        return completed
+    }
+}
+
+
+// Raw returns exercise Core projection only, without application or managed-current proof.
+extension SyncedContentSettingsModelTests {
+  @MainActor
+  func testOriginalFoldStartsBeforeTheBodyAndReturnsTheOriginalReadyDetail() async {
+    await checkOriginalProjection(initial: .ready, bodyState: .syncing,
+      returning: .finished(.noChange, .notRequired), failed: false,
+      message: "Your snips and attachments sync through iCloud.")
+  }
+
+  @MainActor
+  func testOriginalFetchAndScheduleValuesDoNotEraseTheOriginalPriorIssue() async {
+    let values: [SyncedContentOriginalActionReturn] = [
+      .finished(.noChange, .notRequired),
+      .finished(.contentUpdated, .notRequired),
+      .finished(.syncScheduled, .notRequired)
+    ]
+    for value in values {
+      await checkOriginalProjection(initial: .failed(.waitingForConnection),
+        bodyState: .failed(.waitingForConnection), returning: value, failed: true,
+        message: "Your changes will sync when you’re back online.")
+    }
+  }
+
+  @MainActor
+  func testOriginalSettledValueRecoversItsOwnPriorIssueInTheProjectionOnly() async {
+    await checkOriginalProjection(initial: .failed(.waitingForConnection),
+      bodyState: .failed(.waitingForConnection), returning: .finished(.syncCompleted, .notRequired),
+      failed: false, message: "Your snips and attachments sync through iCloud.")
+  }
+
+  @MainActor
+  func testOriginalResultValuedIssueUsesItsOwnLiteralDetail() async {
+    await checkOriginalProjection(initial: .ready, bodyState: .syncing,
+      returning: .finished(.syncIssue(.attachmentUnavailable), .notRequired), failed: true,
+      message: "iCloud can’t provide this attachment yet. Sync will try again.")
+  }
+
+  @MainActor
+  func testOriginalRemovalIssueAndPendingValueKeepTheGenericIncompleteRemovalDetail() async {
+    let values: [SyncedContentOriginalActionReturn] = [
+      .finished(.syncIssue(.waitingForConnection), .notRequired),
+      .finished(.oldSyncedContentRemovalPending, .notRequired)
+    ]
+    for value in values {
+      await checkOriginalProjection(initial: .removalPending, bodyState: .removalPending,
+        returning: value, failed: true,
+        message: "Some synced content is still in iCloud. This device keeps a recovery copy.")
+    }
+  }
+
+  @MainActor
+  func testOriginalNormalAndRemovalCompletionValuesFinishTheirOwnPendingRemoval() async {
+    let values: [SyncedContentOriginalActionReturn] = [
+      .finished(.noChange, .notRequired),
+      .finished(.oldSyncedContentRemovalCompleted, .notRequired)
+    ]
+    for value in values {
+      await checkOriginalProjection(initial: .removalPending, bodyState: .removalPending,
+        returning: value, failed: false, message: "This device keeps a recovery copy.")
+    }
+  }
+
+  @MainActor
+  func testOriginalRemovalNormalCompletionAfterItsOwnIssueStillProjectsSuccess() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    work.retain(settings)
+    var calls = 0
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          calls += 1
+          settings.recordSyncFailure(.waitingForConnection)
+          XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected the original removal projection") }
+        guard case .succeeded = report.operation.status else {
+          return XCTFail("Own normal completion takes precedence over the earlier removal issue")
+        }
+        XCTAssertEqual(report.operation.message, "This device keeps a recovery copy.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "original issue then normal completion fold") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(calls, 1)
+    XCTAssertEqual(settings.state, .removalPending, "The report is not permission to publish current completion")
+    XCTAssertEqual(settings.finishDeletingIssue, .waitingForConnection)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testPureOriginalIssueFoldDoesNotReplayFailureAfterACoreRecoveryEvent() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          XCTAssertEqual(settings.state, .syncing)
+          settings.recordOutstandingSyncRecovered()
+          XCTAssertEqual(settings.state, .ready)
+          return .finished(.syncIssue(.waitingForConnection), .notRequired)
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected the original result-valued issue") }
+        guard case .failed = report.operation.status else {
+          return XCTFail("Current recovery must not rewrite the original issue as success")
+        }
+        XCTAssertEqual(report.operation.message, "Your changes will sync when you’re back online.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "historical issue projection after Core recovery event") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .ready, "Historical projection must not republish a global issue")
+    XCTAssertTrue(settings.canSyncNow)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testPureOriginalPriorIssueFoldDoesNotBorrowACoreRecoveryEventsSuccess() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .failed(.waitingForConnection))
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          XCTAssertEqual(settings.state, .failed(.waitingForConnection))
+          settings.recordOutstandingSyncRecovered()
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected the original unresolved action projection") }
+        guard case .failed = report.operation.status else {
+          return XCTFail("A later current recovery cannot settle this origin's fetch-only value")
+        }
+        XCTAssertEqual(report.operation.message, "Your changes will sync when you’re back online.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "original prior issue retained after separate Core event") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .ready)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testPureOriginalRemovalCompletionCannotCompleteANewerCurrentRemoval() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { start in
+          settings.recordRemovalCompleted(start)
+          XCTAssertEqual(settings.state, .deleted)
+          settings.recordRemovalPending()
+          XCTAssertEqual(settings.state, .removalPending)
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected the original r1 completion projection") }
+        guard case .succeeded = report.operation.status else {
+          return XCTFail("Original normal completion still belongs to r1, not the current r2")
+        }
+        XCTAssertEqual(report.operation.message, "This device keeps a recovery copy.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "original removal identity fold") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .removalPending, "Original r1 report cannot complete current r2")
+    XCTAssertTrue(settings.canFinishDeleting)
+    XCTAssertNil(settings.finishDeletingIssue)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testPureOriginalRemovalIssueCannotBorrowALaterCurrentCompletion() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { start in
+          settings.recordRemovalCompleted(start)
+          return .finished(.syncIssue(.waitingForConnection), .notRequired)
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected original incomplete removal report") }
+        guard case .failed = report.operation.status else {
+          return XCTFail("Current deletion completion cannot rewrite the original incomplete removal")
+        }
+        XCTAssertEqual(report.operation.message, "Some synced content is still in iCloud. This device keeps a recovery copy.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "original failed removal after independent Core completion") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .deleted)
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testOriginalRequiredFailureFoldRetainsTheErrorAndCannotProjectBackendSuccess() async {
+    let work = OriginalOutcomeOwnership()
+    let failure = OriginalOutcomeFailure()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, issueMapper: { _ in .attachmentMissing })
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          return .finished(.contentUpdated, .failed(failure))
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected the original required-failure report") }
+        guard case .failed = report.operation.status else {
+          return XCTFail("Required failure is not optional current-proof loss")
+        }
+        guard case .failed(let originalError) = report.requiredApplication else {
+          return XCTFail("Retain the actual required failure separately from backend value")
+        }
+        XCTAssertTrue((originalError as AnyObject) === failure)
+        XCTAssertEqual(report.operation.message, "Can’t read an attachment. Retry sync. If it still fails, contact support.")
+      } catch { XCTFail("Unexpected original projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "raw required failure projection") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.state, .syncing, "Raw failure projection is not a current-consumer publication")
+    await work.cleanUp()
+  }
+
+  @MainActor
+  func testOriginalContextRejectsALaterStatusSessionEvenForANormalRawReturn() async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync)
+    work.retain(settings)
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          settings.recordSyncStopped(.iCloudAccountChanged)
+          return .finished(.noChange, .notRequired)
+        }
+        guard case .interrupted = outcome else {
+          return XCTFail("A stopped original status session cannot complete by reading later state")
+        }
+      } catch { XCTFail("Expected an interrupted original context: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "original status-session interruption") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(settings.mode, .localOnly)
+    XCTAssertEqual(settings.state, .failed(.iCloudAccountChanged))
+    await work.cleanUp()
+  }
+
+  @MainActor
+  private func checkOriginalProjection(
+    initial: SyncedContentSettingsState, bodyState: SyncedContentSettingsState,
+    returning raw: SyncedContentOriginalActionReturn, failed: Bool, message: String
+  ) async {
+    let work = OriginalOutcomeOwnership()
+    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: initial)
+    work.retain(settings)
+    var bodyCalls = 0
+    let operation = work.start {
+      do {
+        let outcome = try await settings.performExplicitSyncWithOutcome { _ in
+          bodyCalls += 1
+          XCTAssertEqual(settings.state, bodyState)
+          return raw
+        }
+        guard case .completed(let report) = outcome else { return XCTFail("Expected Core's original value projection") }
+        switch report.operation.status {
+        case .succeeded: XCTAssertFalse(failed, "This original value must retain failure")
+        case .failed: XCTAssertTrue(failed, "This original value must retain success")
+        }
+        XCTAssertEqual(report.operation.message, message)
+      } catch { XCTFail("Unexpected Core projection error: \(error)") }
+    }
+    guard await work.prompt(operation.finished, "pure original value/detail projection") else {
+      await work.cleanUp(); return
+    }
+    XCTAssertEqual(bodyCalls, 1)
+    XCTAssertEqual(settings.state, bodyState, "Pure original projection cannot replay current progress")
+    await work.cleanUp()
+  }
+}

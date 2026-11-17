@@ -580,6 +580,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     operationGate: AsyncOperationGate,
     syncWhenPossible: AppleAccountCacheCoordinatorHandler.SyncAction? = nil,
     retrySyncWhenPossible: AppleAccountCacheCoordinatorHandler.SyncAction? = nil,
+    retrySyncWithOutcome: AppleAccountCacheCoordinatorHandler.RetryOutcomeAction? = nil,
     scheduleSyncAfterLocalChange: AppleAccountCacheCoordinatorHandler.ScheduleAction? = nil,
     makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil
   ) -> AppleAccountCacheCoordinatorHandler {
@@ -609,6 +610,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       },
       ownerName: ownerName, reservedZones: reservedZones, operationGate: operationGate,
       syncWhenPossible: syncWhenPossible, retrySyncWhenPossible: retrySyncWhenPossible,
+      retrySyncWithOutcome: retrySyncWithOutcome,
       scheduleSyncAfterLocalChange: scheduleSyncAfterLocalChange
     )
   }

@@ -182,10 +182,273 @@ public enum SyncedContentDeleteOutcome: Equatable, Sendable {
   case removalPending
 }
 
-/// What Settings showed when a sync request started. A request can finish only a removal
-/// that was already pending then. A removal that began later may still be running.
+/// Original operation values, without checked-source or current-sync authority.
+public enum SyncedContentOriginalActionValue: Equatable, Sendable {
+  case noChange
+  case contentUpdated
+  case syncCompleted
+  case syncScheduled
+  case libraryReplaced
+  case libraryReplacedWithSyncIssue(SyncedContentSyncIssue)
+  case libraryReplacedAndSyncCompleted
+  case libraryReplacedAndSyncScheduled
+  case iCloudDataReset
+  case iCloudSignedOut
+  case iCloudAccountChanged
+  case syncIssue(SyncedContentSyncIssue)
+  case iCloudSyncSettingUp(SyncedContentSyncIssue? = nil)
+  case iCloudSyncEnabled
+  case oldSyncedContentRemovalPending
+  case oldSyncedContentRemovalCompleted
+}
+
+public enum SyncedContentActionNotRunReason: Equatable, Sendable {
+  case overlappingExplicitAction
+  case unavailableSession
+  case unsupportedLegacyHandler
+  case unavailableAction
+}
+
+public enum SyncedContentActionInterruption: Equatable, Sendable {
+  case cancelled
+  case statusSessionChanged
+  case sourceUnavailable
+  case applicationUnavailable
+}
+
+/// Operation handling data, never a managed application or confirmation certificate.
+public enum SyncedContentRequiredApplicationDisposition: Sendable {
+  case notRequired
+  /// The required operation hook returned; this attests no checked model application.
+  case applied
+  case failed(any Error)
+  case interrupted(SyncedContentActionInterruption)
+  case unavailable(SyncedContentActionInterruption)
+}
+
+public struct SyncedContentOriginalActionResult: Sendable {
+  public let value: Result<SyncedContentOriginalActionValue, any Error>
+  public let requiredApplication: SyncedContentRequiredApplicationDisposition
+
+  public init(
+    value: Result<SyncedContentOriginalActionValue, any Error>,
+    requiredApplication: SyncedContentRequiredApplicationDisposition
+  ) {
+    self.value = value
+    self.requiredApplication = requiredApplication
+  }
+}
+
+public enum SyncedContentOriginalActionReturn: Sendable {
+  case finished(SyncedContentOriginalActionValue, SyncedContentRequiredApplicationDisposition)
+  case interrupted(SyncedContentActionInterruption, originalIfKnown: SyncedContentOriginalActionResult?)
+}
+
+public struct SyncedContentOperationReceiptProjection: Sendable {
+  public enum Status: Equatable, Sendable { case succeeded, failed }
+  public let status: Status
+  public let message: String
+
+  fileprivate init(status: Status, message: String) {
+    self.status = status
+    self.message = message
+  }
+}
+
+/// One original operation projection, without current-state publication authority.
+public struct OriginalSyncActionReport: Sendable {
+  public let origin: Result<SyncedContentOriginalActionValue, any Error>
+  public let requiredApplication: SyncedContentRequiredApplicationDisposition
+  public let operation: SyncedContentOperationReceiptProjection
+
+  fileprivate init(
+    origin: Result<SyncedContentOriginalActionValue, any Error>,
+    requiredApplication: SyncedContentRequiredApplicationDisposition,
+    operation: SyncedContentOperationReceiptProjection
+  ) {
+    self.origin = origin
+    self.requiredApplication = requiredApplication
+    self.operation = operation
+  }
+}
+
+public enum SyncedContentActionOutcome: Sendable {
+  case completed(OriginalSyncActionReport)
+  case notRun(SyncedContentActionNotRunReason)
+  case interrupted(SyncedContentActionInterruption, originalIfKnown: SyncedContentOriginalActionResult?)
+}
+
+fileprivate struct SyncedContentStatus: Equatable, Sendable {
+  var mode: SyncedContentMode
+  var state: SyncedContentSettingsState
+
+  enum RemovalEffect {
+    case none
+    case begin
+    case failed(SyncedContentSyncIssue)
+  }
+
+  enum Change {
+    case state(SyncedContentSettingsState)
+    case replace(SyncedContentStatus)
+
+    func apply(to status: inout SyncedContentStatus) {
+      switch self {
+      case .state(let state): status.state = state
+      case .replace(let replacement): status = replacement
+      }
+    }
+  }
+
+  struct Transition {
+    var change: Change? = nil
+    var diagnostic: (issue: SyncedContentSyncIssue, operation: StaticString)? = nil
+    var removal: RemovalEffect = .none
+  }
+
+  func startingSync() -> Transition {
+    guard mode == .iCloudSync, state == .ready else { return Transition() }
+    return Transition(change: .state(.syncing))
+  }
+
+  func completingSync(removalMatches: Bool) -> Transition {
+    guard mode == .iCloudSync else { return Transition() }
+    switch state {
+    case .syncing: return Transition(change: .state(.ready))
+    case .removalPending where removalMatches:
+      return Transition(change: .state(.deleted))
+    default: return Transition()
+    }
+  }
+
+  func recoveringSync() -> Transition {
+    guard mode == .iCloudSync else { return Transition() }
+    switch state {
+    case .syncing, .failed: return Transition(change: .state(.ready))
+    default: return Transition()
+    }
+  }
+
+  func failingSync(
+    _ issue: SyncedContentSyncIssue, explicit: Bool, previousRemovalFailure: SyncedContentSyncIssue?
+  ) -> Transition {
+    switch (mode, state) {
+    case (.iCloudSync, .failed(let existing)) where existing == issue:
+      return Transition()
+    case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
+      return Transition(change: .state(.failed(issue)), diagnostic: (issue, "sync.run"))
+    case (.iCloudSync, .removalPending) where explicit && previousRemovalFailure != issue:
+      return Transition(diagnostic: (issue, "sync.run"), removal: .failed(issue))
+    case (.localOnly, .enabling(let existing)) where existing == issue:
+      return Transition()
+    case (.localOnly, .enabling) where issue.retriesAutomatically:
+      return Transition(change: .state(.enabling(issue)), diagnostic: (issue, "sync.setup"))
+    case (.localOnly, .enabling):
+      return Transition(change: .state(.failed(issue)), diagnostic: (issue, "sync.setup"))
+    default:
+      return Transition()
+    }
+  }
+
+  func stoppingSync(_ issue: SyncedContentSyncIssue) -> Transition {
+    guard mode != .localOnly || state != .failed(issue) else { return Transition() }
+    return Transition(change: .replace(SyncedContentStatus(mode: .localOnly, state: .failed(issue))),
+                      diagnostic: (issue, "sync.stop"))
+  }
+
+  func startingEnable() -> Transition { Transition(change: .state(.enabling())) }
+  func completingEnable() -> Transition {
+    Transition(change: .replace(SyncedContentStatus(mode: .iCloudSync, state: .ready)))
+  }
+  func failingEnable(_ issue: SyncedContentSyncIssue) -> Transition {
+    Transition(change: .state(.failed(issue)))
+  }
+
+  func settingUp(_ issue: SyncedContentSyncIssue?, deduplicating: Bool) -> Transition {
+    if deduplicating, mode == .localOnly, state == .enabling(issue) { return Transition() }
+    let diagnostic: (issue: SyncedContentSyncIssue, operation: StaticString)? = issue.map { ($0, "sync.setup") }
+    return Transition(change: .replace(SyncedContentStatus(mode: .localOnly, state: .enabling(issue))),
+                      diagnostic: diagnostic)
+  }
+
+  func beginningRemoval() -> Transition {
+    Transition(change: .state(.removalPending), diagnostic: (.someChangesPending, "sync.delete"),
+               removal: .begin)
+  }
+
+  func reportingPendingRemoval(explicit: Bool, previousFailure: SyncedContentSyncIssue?) -> Transition {
+    guard mode == .iCloudSync else { return Transition() }
+    switch state {
+    case .deleting:
+      return Transition()
+    case .removalPending where explicit && previousFailure != .someChangesPending:
+      return Transition(diagnostic: (.someChangesPending, "sync.delete"), removal: .failed(.someChangesPending))
+    case .removalPending:
+      return Transition()
+    default:
+      return beginningRemoval()
+    }
+  }
+
+  func completingRemoval(matches: Bool) -> Transition {
+    guard mode == .iCloudSync else { return Transition() }
+    switch state {
+    case .deleting:
+      return Transition()
+    case .removalPending where !matches:
+      return Transition()
+    default:
+      return Transition(change: .state(.deleted))
+    }
+  }
+
+  var detail: String {
+    switch (mode, state) {
+    case (_, .failed(let issue)), (_, .enabling(let issue?)):
+      issue.detail(mode: mode)
+    case (.localOnly, .enabling):
+      String(localized: "Getting your snips from iCloud…", bundle: .main)
+    case (.iCloudSync, .enabling):
+      String(localized: "Finishing sync setup…", bundle: .main)
+    case (.iCloudSync, .syncing):
+      String(localized: "Checking for changes…", bundle: .main)
+    case (.iCloudSync, .disabling):
+      String(localized: "Saving a copy on this device. Your iCloud data stays.", bundle: .main)
+    case (.localOnly, _):
+      String(localized: "Your snips aren’t syncing with iCloud.", bundle: .main)
+    case (_, .ready):
+      String(localized: "Your snips and attachments sync through iCloud.", bundle: .main)
+    case (_, .deleting):
+      String(localized: "Removing synced content from iCloud…", bundle: .main)
+    case (_, .removalPending):
+      String(localized: "Some synced content is still in iCloud. This device keeps a recovery copy.", bundle: .main)
+    case (_, .deleted):
+      String(localized: "This device keeps a recovery copy.", bundle: .main)
+    }
+  }
+}
+
+/// Original operation context; only Core captures it, before starting its operation.
 public struct SyncedContentSyncStart: Sendable {
+  fileprivate enum Kind: Equatable, Sendable { case synchronization, retry, enable }
+  fileprivate let status: SyncedContentStatus
   fileprivate let pendingRemoval: Int?
+  fileprivate let removalID: Int
+  fileprivate let statusSession: UUID
+  fileprivate let kind: Kind
+  fileprivate let explicitRemovalFailure: SyncedContentSyncIssue?
+
+  fileprivate init(
+    status: SyncedContentStatus, removalID: Int, statusSession: UUID, kind: Kind,
+    explicitRemovalFailure: SyncedContentSyncIssue?
+  ) {
+    self.status = status
+    pendingRemoval = status.state == .removalPending ? removalID : nil
+    self.removalID = removalID
+    self.statusSession = statusSession
+    self.kind = kind
+    self.explicitRemovalFailure = explicitRemovalFailure
+  }
 }
 
 @MainActor
@@ -198,11 +461,7 @@ public final class SyncedContentSettingsModel {
   public typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
 
-  /// What Settings shows. Every transition replaces it whole.
-  private struct Status: Equatable {
-    var mode: SyncedContentMode
-    var state: SyncedContentSettingsState
-  }
+  private typealias Status = SyncedContentStatus
 
   private var status: Status
   public var mode: SyncedContentMode { status.mode }
@@ -323,30 +582,7 @@ public final class SyncedContentSettingsModel {
     }
   }
 
-  public var detail: String {
-    switch (mode, state) {
-    case (_, .failed(let issue)), (_, .enabling(let issue?)):
-      issue.detail(mode: mode)
-    case (.localOnly, .enabling):
-      String(localized: "Getting your snips from iCloud…", bundle: .main)
-    case (.iCloudSync, .enabling):
-      String(localized: "Finishing sync setup…", bundle: .main)
-    case (.iCloudSync, .syncing):
-      String(localized: "Checking for changes…", bundle: .main)
-    case (.iCloudSync, .disabling):
-      String(localized: "Saving a copy on this device. Your iCloud data stays.", bundle: .main)
-    case (.localOnly, _):
-      String(localized: "Your snips aren’t syncing with iCloud.", bundle: .main)
-    case (_, .ready):
-      String(localized: "Your snips and attachments sync through iCloud.", bundle: .main)
-    case (_, .deleting):
-      String(localized: "Removing synced content from iCloud…", bundle: .main)
-    case (_, .removalPending):
-      String(localized: "Some synced content is still in iCloud. This device keeps a recovery copy.", bundle: .main)
-    case (_, .deleted):
-      String(localized: "This device keeps a recovery copy.", bundle: .main)
-    }
-  }
+  public var detail: String { status.detail }
 
   public var canRetryFailedSync: Bool {
     guard case .failed(let issue) = state else { return false }
@@ -361,19 +597,49 @@ public final class SyncedContentSettingsModel {
   }
 
   public func enableICloudSync() async {
-    guard canEnable, let enableAction else { return }
-    status.state = .enabling()
+    _ = await performEnable()
+  }
+
+  public func enableICloudSyncWithOutcome() async -> SyncedContentActionOutcome {
+    await performEnable()
+  }
+
+  private func performEnable() async -> SyncedContentActionOutcome {
+    guard canEnable, let enableAction else { return .notRun(.unavailableAction) }
+    let start = captureStart(kind: .enable)
+    apply(status.startingEnable())
     let session = statusSession
+    var originalValue: SyncedContentOriginalActionValue?
+    var application: SyncedContentRequiredApplicationDisposition = .notRequired
     do {
       switch try await enableAction() {
       case .enabled:
-        try await enableCompletionAction?()
-        guard session == statusSession else { return }
-        status = Status(mode: .iCloudSync, state: .ready)
+        originalValue = .iCloudSyncEnabled
+        if let completion = enableCompletionAction {
+          do {
+            try await completion()
+            application = .applied
+          } catch {
+            application = .failed(error)
+            throw error
+          }
+        }
+        let original = SyncedContentOriginalActionResult(value: .success(.iCloudSyncEnabled),
+                                                        requiredApplication: application)
+        guard session == statusSession else {
+          return .interrupted(.statusSessionChanged, originalIfKnown: original)
+        }
+        apply(status.completingEnable())
+        return finishOriginal(start: start, original: original)
       case .settingUp(let issue):
-        guard session == statusSession else { return }
-        if let issue { record(issue, operation: "sync.setup") }
-        status = Status(mode: .localOnly, state: .enabling(issue))
+        originalValue = .iCloudSyncSettingUp(issue)
+        let original = SyncedContentOriginalActionResult(value: .success(.iCloudSyncSettingUp(issue)),
+                                                        requiredApplication: .notRequired)
+        guard session == statusSession else {
+          return .interrupted(.statusSessionChanged, originalIfKnown: original)
+        }
+        apply(status.settingUp(issue, deduplicating: false))
+        return finishOriginal(start: start, original: original)
       }
     } catch {
       diagnostics.record(.failure(
@@ -381,8 +647,15 @@ public final class SyncedContentSettingsModel {
         error: error,
         visibility: .user
       ))
-      guard session == statusSession else { return }
-      status.state = .failed(issueMapper(error))
+      let origin: Result<SyncedContentOriginalActionValue, any Error>
+      if let originalValue { origin = .success(originalValue) } else { origin = .failure(error) }
+      let original = SyncedContentOriginalActionResult(value: origin, requiredApplication: application)
+      guard session == statusSession else {
+        return .interrupted(.statusSessionChanged, originalIfKnown: original)
+      }
+      let issue = issueMapper(error)
+      apply(status.failingEnable(issue))
+      return finishOriginal(start: start, original: original, mappedIssue: issue)
     }
   }
 
@@ -428,53 +701,60 @@ public final class SyncedContentSettingsModel {
   /// running delete reports its own outcome. Only an explicit sync records a removal that
   /// stays incomplete, so automatic syncs can't flood diagnostics.
   public func recordRemovalPending() {
-    guard mode == .iCloudSync else { return }
-    switch state {
-    case .deleting:
-      break
-    case .removalPending where isPerformingExplicitSync && explicitRemovalFailure != .someChangesPending:
-      record(.someChangesPending, operation: "sync.delete")
-      explicitRemovalFailure = .someChangesPending
-    case .removalPending:
-      break
-    default:
-      enterRemovalPending()
-    }
+    apply(status.reportingPendingRemoval(explicit: isPerformingExplicitSync,
+                                         previousFailure: explicitRemovalFailure))
   }
 
   /// Records that a sync request reported Delete Synced Content's removal finished. It
   /// finishes the removal `start` saw, or one Settings didn't know about. A running delete
   /// reports its own outcome.
   public func recordRemovalCompleted(_ start: SyncedContentSyncStart) {
-    guard mode == .iCloudSync else { return }
-    switch state {
-    case .deleting:
-      break
-    case .removalPending where start.pendingRemoval != removalID:
-      break
-    default:
-      status.state = .deleted
-    }
+    apply(status.completingRemoval(matches: start.pendingRemoval == removalID))
   }
 
   /// Shares admission across user retry controls without clearing an outstanding issue.
   public func performExplicitSync(_ action: @MainActor () async -> Void) async {
-    guard !isPerformingExplicitSync else { return }
+    _ = await withExplicitSync { _ in await action() }
+  }
+
+  public func performExplicitSyncWithOutcome(
+    _ action: @MainActor (SyncedContentSyncStart) async throws -> SyncedContentOriginalActionReturn
+  ) async throws -> SyncedContentActionOutcome {
+    try Task.checkCancellation()
+    let outcome: SyncedContentActionOutcome? = try await withExplicitSync { start in
+      apply(status.startingSync())
+      let returned = try await action(start)
+      try Task.checkCancellation()
+      switch returned {
+      case .finished(let value, let application):
+        return finishOriginal(start: start, original: SyncedContentOriginalActionResult(
+          value: .success(value), requiredApplication: application))
+      case .interrupted(let reason, let original):
+        return .interrupted(reason, originalIfKnown: original)
+      }
+    }
+    return outcome ?? .notRun(.overlappingExplicitAction)
+  }
+
+  private func withExplicitSync<Value>(
+    _ action: @MainActor (SyncedContentSyncStart) async throws -> Value
+  ) async rethrows -> Value? {
+    guard !isPerformingExplicitSync else { return nil }
+    let start = captureStart(kind: .retry)
     isPerformingExplicitSync = true
     defer { isPerformingExplicitSync = false }
     explicitRemovalFailure = nil
-    await action()
+    return try await action(start)
+  }
+
+  private func captureStart(kind: SyncedContentSyncStart.Kind) -> SyncedContentSyncStart {
+    SyncedContentSyncStart(status: status, removalID: removalID, statusSession: statusSession,
+                          kind: kind, explicitRemovalFailure: explicitRemovalFailure)
   }
 
   public func recordSyncStarted() -> SyncedContentSyncStart {
-    let start = SyncedContentSyncStart(pendingRemoval: state == .removalPending ? removalID : nil)
-    guard mode == .iCloudSync else { return start }
-    switch state {
-    case .ready:
-      status.state = .syncing
-    case .enabling, .syncing, .disabling, .deleting, .removalPending, .deleted, .failed:
-      break
-    }
+    let start = captureStart(kind: .synchronization)
+    apply(status.startingSync())
     return start
   }
 
@@ -483,68 +763,30 @@ public final class SyncedContentSettingsModel {
   /// finishes the removal `start` saw, even if its report was lost. Automatic sync engine
   /// results don't carry removal progress.
   public func recordSyncCompleted(_ start: SyncedContentSyncStart) {
-    guard mode == .iCloudSync else { return }
-    switch state {
-    case .syncing:
-      status.state = .ready
-    case .removalPending where start.pendingRemoval == removalID:
-      status.state = .deleted
-    default:
-      break
-    }
+    apply(status.completingSync(removalMatches: start.pendingRemoval == removalID))
   }
 
   /// Records that the sync engine reports no work or failures remain.
   public func recordOutstandingSyncRecovered() {
-    guard mode == .iCloudSync else { return }
-    switch state {
-    case .syncing, .failed:
-      status.state = .ready
-    default:
-      break
-    }
+    apply(status.recoveringSync())
   }
 
   public func recordSyncFailure(_ issue: SyncedContentSyncIssue) {
-    switch (mode, state) {
-    case (.iCloudSync, .failed(let existing)) where existing == issue:
-      break
-    case (.iCloudSync, .ready), (.iCloudSync, .syncing), (.iCloudSync, .failed):
-      record(issue, operation: "sync.run")
-      status.state = .failed(issue)
-    // Automatic syncs can fail on every schedule here, so only an explicit sync records.
-    // An automatic result can repeat the retry's own error, so a repeat records once.
-    case (.iCloudSync, .removalPending) where isPerformingExplicitSync && explicitRemovalFailure != issue:
-      record(issue, operation: "sync.run")
-      explicitRemovalFailure = issue
-    case (.localOnly, .enabling(let existing)) where existing == issue:
-      break
-    case (.localOnly, .enabling) where issue.retriesAutomatically:
-      record(issue, operation: "sync.setup")
-      status.state = .enabling(issue)
-    case (.localOnly, .enabling):
-      record(issue, operation: "sync.setup")
-      status.state = .failed(issue)
-    default:
-      break
-    }
+    apply(status.failingSync(issue, explicit: isPerformingExplicitSync,
+                             previousRemovalFailure: explicitRemovalFailure))
   }
 
   public func recordSyncStopped(_ issue: SyncedContentSyncIssue) {
     statusSession = UUID()
-    if mode == .localOnly, state == .failed(issue) { return }
-    record(issue, operation: "sync.stop")
-    status = Status(mode: .localOnly, state: .failed(issue))
+    apply(status.stoppingSync(issue))
   }
 
   public func recordEnableSettingUp(_ issue: SyncedContentSyncIssue? = nil) {
-    if mode == .localOnly, state == .enabling(issue) { return }
-    if let issue { record(issue, operation: "sync.setup") }
-    status = Status(mode: .localOnly, state: .enabling(issue))
+    apply(status.settingUp(issue, deduplicating: true))
   }
 
   public func recordEnableCompleted() {
-    status = Status(mode: .iCloudSync, state: .ready)
+    apply(status.completingEnable())
   }
 
   public func deleteSyncedContent() async {
@@ -572,10 +814,119 @@ public final class SyncedContentSettingsModel {
   }
 
   private func enterRemovalPending() {
-    removalID += 1
-    explicitRemovalFailure = nil
-    record(.someChangesPending, operation: "sync.delete")
-    status.state = .removalPending
+    apply(status.beginningRemoval())
+  }
+
+  private func apply(_ transition: Status.Transition) {
+    if case .begin = transition.removal {
+      removalID += 1
+      explicitRemovalFailure = nil
+    }
+    if let diagnostic = transition.diagnostic {
+      record(diagnostic.issue, operation: diagnostic.operation)
+    }
+    if case .failed(let issue) = transition.removal { explicitRemovalFailure = issue }
+    transition.change?.apply(to: &status)
+  }
+
+  private func finishOriginal(
+    start: SyncedContentSyncStart, original: SyncedContentOriginalActionResult,
+    mappedIssue: SyncedContentSyncIssue? = nil
+  ) -> SyncedContentActionOutcome {
+    if Task.isCancelled {
+      return .interrupted(.cancelled, originalIfKnown: original)
+    }
+    guard start.statusSession == statusSession else {
+      return .interrupted(.statusSessionChanged, originalIfKnown: original)
+    }
+    let failure: (any Error)?
+    switch original.requiredApplication {
+    case .interrupted(let reason), .unavailable(let reason):
+      return .interrupted(reason, originalIfKnown: original)
+    case .failed(let error): failure = error
+    case .notRequired, .applied:
+      if case .failure(let error) = original.value { failure = error } else { failure = nil }
+    }
+    if let failure, failure is CancellationError {
+      return .interrupted(.cancelled, originalIfKnown: original)
+    }
+    let issue = mappedIssue ?? failure.map(issueMapper)
+    return .completed(Self.originalReport(start: start, original: original, mappedIssue: issue))
+  }
+
+  private static func originalReport(
+    start: SyncedContentSyncStart, original: SyncedContentOriginalActionResult,
+    mappedIssue: SyncedContentSyncIssue?
+  ) -> OriginalSyncActionReport {
+    var projected = start.status
+    var projectedRemovalID = start.removalID
+    var removalFailure = start.explicitRemovalFailure
+    func advance(_ transition: Status.Transition) {
+      if case .begin = transition.removal {
+        projectedRemovalID += 1
+        removalFailure = nil
+      }
+      if case .failed(let issue) = transition.removal { removalFailure = issue }
+      transition.change?.apply(to: &projected)
+    }
+    switch start.kind {
+    case .retry:
+      removalFailure = nil
+      advance(projected.startingSync())
+    case .synchronization:
+      advance(projected.startingSync())
+    case .enable:
+      advance(projected.startingEnable())
+    }
+
+    var failed = false
+    if let mappedIssue {
+      failed = true
+      if start.kind == .enable {
+        advance(projected.failingEnable(mappedIssue))
+      } else {
+        advance(projected.failingSync(mappedIssue, explicit: true, previousRemovalFailure: removalFailure))
+      }
+      // A reset's stop remains authoritative when its required replacement fails.
+      if case .success(let value) = original.value, let stopIssue = value.stopIssue {
+        advance(projected.stoppingSync(stopIssue))
+      }
+    } else if case .success(let value) = original.value {
+      switch value {
+      case .noChange, .contentUpdated, .syncScheduled, .libraryReplaced, .libraryReplacedAndSyncScheduled:
+        break
+      case .syncCompleted, .libraryReplacedAndSyncCompleted:
+        advance(projected.recoveringSync())
+      case .libraryReplacedWithSyncIssue(let issue), .syncIssue(let issue):
+        advance(projected.failingSync(issue, explicit: true, previousRemovalFailure: removalFailure))
+      case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
+        if let issue = value.stopIssue { advance(projected.stoppingSync(issue)) }
+      case .iCloudSyncSettingUp(let issue):
+        advance(projected.settingUp(issue, deduplicating: true))
+      case .iCloudSyncEnabled:
+        advance(projected.completingEnable())
+      case .oldSyncedContentRemovalPending:
+        advance(projected.reportingPendingRemoval(explicit: true, previousFailure: removalFailure))
+        failed = true
+      case .oldSyncedContentRemovalCompleted:
+        advance(projected.completingRemoval(matches: start.pendingRemoval == projectedRemovalID))
+      }
+      switch value {
+      case .libraryReplacedWithSyncIssue, .syncIssue, .oldSyncedContentRemovalPending:
+        break
+      default:
+        if start.kind != .enable {
+          advance(projected.completingSync(removalMatches: start.pendingRemoval == projectedRemovalID))
+        }
+      }
+    }
+    if case .failed = projected.state { failed = true }
+    if projected.mode == .iCloudSync, projected.state == .removalPending, removalFailure != nil {
+      failed = true
+    }
+    return OriginalSyncActionReport(origin: original.value, requiredApplication: original.requiredApplication,
+      operation: SyncedContentOperationReceiptProjection(status: failed ? .failed : .succeeded,
+                                                        message: projected.detail))
   }
 
   private func record(_ issue: SyncedContentSyncIssue, operation: StaticString) {
@@ -584,5 +935,16 @@ public final class SyncedContentSettingsModel {
       errorCode: issue.diagnosticCode,
       visibility: .user
     ))
+  }
+}
+
+private extension SyncedContentOriginalActionValue {
+  var stopIssue: SyncedContentSyncIssue? {
+    switch self {
+    case .iCloudDataReset: .iCloudDataReset
+    case .iCloudSignedOut: .signInRequired
+    case .iCloudAccountChanged: .iCloudAccountChanged
+    default: nil
+    }
   }
 }

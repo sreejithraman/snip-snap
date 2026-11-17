@@ -599,3 +599,546 @@ actor ReadHealthOverlapGate {
         release = nil
     }
 }
+
+extension ICloudSyncModeCoordinatorTests {
+    func testSessionCheckedReadPairsLocalContentWithItsStoreAndRemainsWritable() async throws {
+        let root = pairedReadRoot()
+        let reads = PairedReadControl()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: reads.hit
+        )
+        let library = try await persistence.activeLibrary()
+        try await add("paired local", to: library)
+        let before = try await persistence.snapshot()
+        let session = SavedSnipsSession(library: library)
+        let calls = reads.calls
+
+        let observation = try await session.checkedRead(sortedBy: .chronological)
+
+        XCTAssertEqual(reads.calls, calls + 1)
+        XCTAssertEqual(observation.snapshot.snips.map(\.content), ["paired local"])
+        let source = try XCTUnwrap(observation.source)
+        XCTAssertEqual(source.storeID, before.activeStore.id)
+        XCTAssertEqual(source.storageMode, .localOnly)
+        XCTAssertNil(source.namespaceKey)
+        let afterRead = try await persistence.snapshot()
+        XCTAssertEqual(afterRead.activeStore, before.activeStore)
+        XCTAssertFalse(afterRead.hasActiveMutationReservation)
+
+        let checkedCalls = reads.calls
+        let legacySnapshot = try await library.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(reads.calls, checkedCalls + 1)
+        XCTAssertEqual(legacySnapshot.snips.map(\.content), ["paired local"])
+        try await add("later local", to: library)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let reopenedSession = SavedSnipsSession(library: try await reopened.activeLibrary())
+        let durable = try await reopenedSession.checkedRead(sortedBy: .chronological)
+        XCTAssertEqual(Set(durable.snapshot.snips.map(\.content)), ["paired local", "later local"])
+        XCTAssertEqual(durable.source?.storeID, before.activeStore.id)
+        XCTAssertEqual(durable.source?.storageMode, .localOnly)
+        XCTAssertNil(durable.source?.namespaceKey)
+    }
+
+    func testSessionCheckedReadPairsTheFullCloudNamespaceAndThenTheLocalReplacement() async throws {
+        let root = pairedReadRoot()
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let library = try await persistence.activeLibrary()
+        let session = SavedSnipsSession(library: library)
+        let initial = try await persistence.snapshot()
+        try await persistence.activateEmptyCollection(namespace: testBinding())
+        try await add("cloud collection", to: library)
+        let cloudStore = try await persistence.snapshot()
+        XCTAssertNotEqual(cloudStore.activeStore.id, initial.activeStore.id)
+
+        let cloud = try await session.checkedRead(sortedBy: .chronological)
+
+        XCTAssertEqual(cloud.snapshot.snips.map(\.content), ["cloud collection"])
+        let cloudSource = try XCTUnwrap(cloud.source)
+        XCTAssertEqual(cloudSource.storeID, cloudStore.activeStore.id)
+        XCTAssertEqual(cloudSource.storageMode, .iCloudSync)
+        XCTAssertEqual(cloudSource.namespaceKey,
+            "AAAAAAAAABtzbmlwc25hcC1jbG91ZC1uYW1lc3BhY2UtdjEAAAAAAAAAB3ByaXZhdGUAAAAAAAAAB2FjY291bnQAAAAAAAAAJDk5OTk5OTk5LTk5OTktOTk5OS05OTk5LTk5OTk5OTk5OTk5OQAAAAAAAAAFb3duZXIAAAAAAAAACG1ldGFkYXRh")
+
+        try await persistence.activateEmptyCollection(namespace: nil)
+        try await add("replacement local", to: library)
+        let localStore = try await persistence.snapshot()
+        XCTAssertNotEqual(localStore.activeStore.id, cloudStore.activeStore.id)
+        let local = try await session.checkedRead(sortedBy: .chronological)
+        XCTAssertEqual(local.snapshot.snips.map(\.content), ["replacement local"])
+        let localSource = try XCTUnwrap(local.source)
+        XCTAssertEqual(localSource.storeID, localStore.activeStore.id)
+        XCTAssertEqual(localSource.storageMode, .localOnly)
+        XCTAssertNil(localSource.namespaceKey)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let durable = try await (try await reopened.activeLibrary()).checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(durable.snips.map(\.content), ["replacement local"])
+    }
+
+    @MainActor
+    func testSessionCheckedReadSelectsTheReplacementAfterItsPreparatoryHook() async throws {
+        let binding = testBinding()
+        try await withPairedReadOwnership { work in
+            let root = pairedReadRoot()
+            let reads = PairedReadControl()
+            let persistence = try SwiftDataSyncModePersistence(
+                rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: reads.hit
+            )
+            let library = try await persistence.activeLibrary()
+            try await pairedReadAdd("before preparation", to: library)
+            let session = SavedSnipsSession(library: library)
+            work.retain(persistence)
+            work.retain(library as AnyObject)
+            work.retain(session)
+            let oldStore = try await persistence.snapshot()
+            let gate = work.gate()
+            reads.pauseNextRead(at: gate)
+            var result: Result<SnipLibraryReadObservation, any Error>?
+            let read = work.start {
+                do { result = .success(try await session.checkedRead(sortedBy: .chronological)) }
+                catch { result = .failure(error) }
+            }
+            guard await work.ready(gate.entered, "preparatory read hook") else { return }
+
+            var replacementError: (any Error)?
+            let replacement = work.start {
+                do {
+                    try await persistence.activateEmptyCollection(namespace: binding)
+                    let selectedID = try await persistence.snapshot().activeStore.id
+                    let selectedLibrary = try await persistence.libraryForTransition(storeID: selectedID)
+                    try await pairedReadAdd("selected after preparation", to: selectedLibrary)
+                } catch { replacementError = error }
+            }
+            guard await work.ready(replacement.finished, "real replacement and durable write") else { return }
+            if let replacementError { throw replacementError }
+            let selected = try await persistence.snapshot()
+            XCTAssertNotEqual(selected.activeStore.id, oldStore.activeStore.id)
+            XCTAssertFalse(read.finished.isSet)
+            XCTAssertTrue(gate.isHeld)
+            gate.release()
+            guard await work.completed(read, "paired read after preparation") else { return }
+            let observation = try XCTUnwrap(result).get()
+            XCTAssertEqual(observation.snapshot.snips.map(\.content), ["selected after preparation"])
+            XCTAssertEqual(observation.source?.storeID, selected.activeStore.id)
+            XCTAssertEqual(observation.source?.storageMode, .iCloudSync)
+            XCTAssertEqual(observation.source?.namespaceKey,
+                "AAAAAAAAABtzbmlwc25hcC1jbG91ZC1uYW1lc3BhY2UtdjEAAAAAAAAAB3ByaXZhdGUAAAAAAAAAB2FjY291bnQAAAAAAAAAJDk5OTk5OTk5LTk5OTktOTk5OS05OTk5LTk5OTk5OTk5OTk5OQAAAAAAAAAFb3duZXIAAAAAAAAACG1ldGFkYXRh")
+        }
+    }
+
+    func testSessionRawCheckedReadIsUnboundAndUsesTheRealCheckedSnapshot() async throws {
+        let root = pairedReadRoot()
+        let storeURL = root.appendingPathComponent("raw.store")
+        let raw = try SwiftDataSnipLibrary(storeURL: storeURL)
+        try await add("raw durable", to: raw)
+        let forwarding = PairedReadRawLibrary(library: raw)
+        let session = SavedSnipsSession(library: forwarding)
+
+        let observation = try await session.checkedRead(sortedBy: .chronological)
+
+        XCTAssertEqual(observation.snapshot.snips.map(\.content), ["raw durable"])
+        XCTAssertNil(observation.source)
+        let calls = await forwarding.readCalls()
+        XCTAssertEqual(calls.checked, 1)
+        XCTAssertEqual(calls.unchecked, 0)
+        try await add("raw still writable", to: forwarding)
+        let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
+        let durable = try await reopened.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(Set(durable.snips.map(\.content)), ["raw durable", "raw still writable"])
+    }
+
+    func testSessionRawCheckedReadPropagatesTheOriginalErrorWithoutFallback() async throws {
+        let root = pairedReadRoot()
+        let raw = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("raw.store"))
+        try await add("raw before error", to: raw)
+        let failure = PairedReadRawFailure()
+        let forwarding = PairedReadRawLibrary(library: raw, failure: failure)
+        let session = SavedSnipsSession(library: forwarding)
+
+        do {
+            _ = try await session.checkedRead(sortedBy: .chronological)
+            XCTFail("An unbound checked read must propagate its original error.")
+        } catch {
+            XCTAssertTrue((error as? PairedReadRawFailure) === failure)
+        }
+
+        let calls = await forwarding.readCalls()
+        XCTAssertEqual(calls.checked, 1)
+        XCTAssertEqual(calls.unchecked, 0)
+        let durable = try await raw.checkedSnapshot(sortedBy: .chronological)
+        XCTAssertEqual(durable.snips.map(\.content), ["raw before error"])
+    }
+
+    func testSessionManagedCheckedReadPreservesReadFailureCacheAndOtherAttention() async throws {
+        let root = pairedReadRoot()
+        let reads = PairedReadControl()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: reads.hit
+        )
+        let library = try await persistence.activeLibrary()
+        try await add("known managed", to: library)
+        let session = SavedSnipsSession(library: library)
+        reads.shouldFail = true
+        do {
+            _ = try await session.checkedRead(sortedBy: .chronological)
+            XCTFail("A managed checked read must not substitute its cached snapshot.")
+        } catch PairedReadControl.Failure.injected {}
+        let failed = try await persistence.snapshot()
+        XCTAssertEqual(failed.attentionReason, .storeReadFailed)
+        let cached = await library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(cached.snips.map(\.content), ["known managed"])
+
+        reads.shouldFail = false
+        let recovered = try await session.checkedRead(sortedBy: .chronological)
+        XCTAssertEqual(recovered.snapshot.snips.map(\.content), ["known managed"])
+        XCTAssertEqual(recovered.source?.storeID, failed.activeStore.id)
+        let healthy = try await persistence.snapshot()
+        XCTAssertNil(healthy.attentionReason)
+        try await persistence.recordAttention(.terminalFetchFailure)
+        reads.shouldFail = true
+        do {
+            _ = try await session.checkedRead(sortedBy: .chronological)
+            XCTFail("Another attention reason must not conceal the read error.")
+        } catch PairedReadControl.Failure.injected {}
+        reads.shouldFail = false
+        _ = try await session.checkedRead(sortedBy: .chronological)
+        let unrelated = try await persistence.snapshot()
+        XCTAssertEqual(unrelated.attentionReason, .terminalFetchFailure)
+    }
+
+    func testSessionCheckedReadCachesSuccessfulContentBeforeAttentionClearThrows() async throws {
+        let root = pairedReadRoot()
+        let reads = PairedReadControl()
+        let writer = PairedReadManifestWriter()
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root, defaultSyncProtocol: .legacyTextV1,
+            manifestWriter: writer.write, readHook: reads.hit
+        )
+        let library = try await persistence.activeLibrary()
+        try await add("cached before clear", to: library)
+        let session = SavedSnipsSession(library: library)
+        let storeID = try await persistence.snapshot().activeStore.id
+        let externalWriter = try await persistence.libraryForTransition(storeID: storeID)
+        try await add("committed outside cache", to: externalWriter)
+        try await persistence.recordAttention(.storeReadFailed)
+        writer.failNextWrite()
+
+        do {
+            _ = try await session.checkedRead(sortedBy: .chronological)
+            XCTFail("The checked read must report the failed recovered-attention commit.")
+        } catch {
+            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
+        }
+        XCTAssertEqual(writer.failures, 1)
+        let uncleared = try await persistence.snapshot()
+        XCTAssertEqual(uncleared.attentionReason, .storeReadFailed)
+        reads.shouldFail = true
+        let cachedAfterClearError = await library.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(Set(cachedAfterClearError.snips.map(\.content)),
+            ["cached before clear", "committed outside cache"])
+
+        reads.shouldFail = false
+        let recovered = try await session.checkedRead(sortedBy: .chronological)
+        XCTAssertEqual(Set(recovered.snapshot.snips.map(\.content)),
+            ["cached before clear", "committed outside cache"])
+        XCTAssertEqual(recovered.source?.storeID, storeID)
+        let healthy = try await persistence.snapshot()
+        XCTAssertNil(healthy.attentionReason)
+    }
+
+    @MainActor
+    func testSessionOlderPairedReadSuccessCannotClearANewerReadFailure() async throws {
+        try await withPairedReadOwnership { work in
+            let root = pairedReadRoot()
+            let reads = PairedReadControl()
+            let persistence = try SwiftDataSyncModePersistence(
+                rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: reads.hit
+            )
+            let firstLibrary = try await persistence.activeLibrary()
+            try await pairedReadAdd("overlapping durable", to: firstLibrary)
+            let secondLibrary = try await persistence.activeLibrary()
+            let first = SavedSnipsSession(library: firstLibrary)
+            let second = SavedSnipsSession(library: secondLibrary)
+            work.retain(persistence)
+            work.retain(first)
+            work.retain(second)
+            let expectedStore = try await persistence.snapshot().activeStore.id
+            let gate = work.gate()
+            reads.pauseNextRead(at: gate)
+            var result: Result<SnipLibraryReadObservation, any Error>?
+            let older = work.start {
+                do { result = .success(try await first.checkedRead(sortedBy: .chronological)) }
+                catch { result = .failure(error) }
+            }
+            guard await work.ready(gate.entered, "older managed read") else { return }
+            reads.shouldFail = true
+            do {
+                _ = try await second.checkedRead(sortedBy: .chronological)
+                XCTFail("The newer managed read must report its actual read error.")
+            } catch PairedReadControl.Failure.injected {}
+            let failed = try await persistence.snapshot()
+            XCTAssertEqual(failed.attentionReason, .storeReadFailed)
+            XCTAssertTrue(gate.isHeld)
+            XCTAssertFalse(older.finished.isSet)
+
+            gate.release()
+            guard await work.completed(older, "older read success") else { return }
+            let observation = try XCTUnwrap(result).get()
+            XCTAssertEqual(observation.snapshot.snips.map(\.content), ["overlapping durable"])
+            XCTAssertEqual(observation.source?.storeID, expectedStore)
+            XCTAssertEqual(observation.source?.storageMode, .localOnly)
+            XCTAssertNil(observation.source?.namespaceKey)
+            let afterOlder = try await persistence.snapshot()
+            XCTAssertEqual(afterOlder.attentionReason, .storeReadFailed)
+            reads.shouldFail = false
+            _ = try await second.checkedRead(sortedBy: .chronological)
+            let afterNewerRecovery = try await persistence.snapshot()
+            XCTAssertNil(afterNewerRecovery.attentionReason)
+        }
+    }
+}
+
+private func pairedReadRoot() -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("SnipSnapPairedRead-\(UUID().uuidString)", isDirectory: true)
+    print("OFFLINE-PAIRED-READ retained unique root (store-close completion unobservable): \(root.path)")
+    return root
+}
+
+private func pairedReadAdd(_ text: String, to library: any SnipLibrary) async throws {
+    _ = try await library.perform(
+        .add(
+            content: text, origin: .quickEntry, source: nil,
+            listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()
+        ),
+        sortedBy: .chronological
+    )
+}
+
+private final class PairedReadRawFailure: Error, @unchecked Sendable {}
+
+private actor PairedReadRawLibrary: SnipLibrary {
+    private let library: SwiftDataSnipLibrary
+    private let failure: PairedReadRawFailure?
+    private var checked = 0
+    private var unchecked = 0
+
+    init(library: SwiftDataSnipLibrary, failure: PairedReadRawFailure? = nil) {
+        self.library = library
+        self.failure = failure
+    }
+
+    func snapshot(sortedBy sortMode: SnipSortMode) async -> SnipLibrarySnapshot {
+        unchecked += 1
+        return await library.snapshot(sortedBy: sortMode)
+    }
+
+    func checkedSnapshot(sortedBy sortMode: SnipSortMode) async throws -> SnipLibrarySnapshot {
+        checked += 1
+        let snapshot = try await library.checkedSnapshot(sortedBy: sortMode)
+        if let failure { throw failure }
+        return snapshot
+    }
+
+    func perform(_ command: SnipLibraryCommand, sortedBy sortMode: SnipSortMode) async throws -> SnipLibraryUpdate {
+        try await library.perform(command, sortedBy: sortMode)
+    }
+
+    func readCalls() -> (checked: Int, unchecked: Int) { (checked, unchecked) }
+}
+
+private final class PairedReadControl: @unchecked Sendable {
+    enum Failure: Error { case injected }
+    private let lock = NSLock()
+    private var count = 0
+    private var failing = false
+    private var nextGate: PairedReadGate?
+    var calls: Int { lock.withLock { count } }
+    var shouldFail: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func pauseNextRead(at gate: PairedReadGate) {
+        lock.withLock { nextGate = gate }
+    }
+
+    func hit() async throws {
+        let (gate, fails) = lock.withLock {
+            count += 1
+            let gate = nextGate
+            nextGate = nil
+            return (gate, failing)
+        }
+        if let gate { try await gate.suspend() }
+        try Task.checkCancellation()
+        if fails { throw Failure.injected }
+    }
+}
+
+private final class PairedReadManifestWriter: @unchecked Sendable {
+    enum Failure: Error { case injected }
+    private let lock = NSLock()
+    private var armed = false
+    private var failed = 0
+    var failures: Int { lock.withLock { failed } }
+
+    func failNextWrite() { lock.withLock { armed = true } }
+
+    func write(_ data: Data, to url: URL) throws {
+        let fails = lock.withLock {
+            guard armed else { return false }
+            armed = false
+            failed += 1
+            return true
+        }
+        if fails { throw Failure.injected }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class PairedReadSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var isSet: Bool { lock.withLock { fired } }
+
+    func fire() {
+        let pending = lock.withLock {
+            fired = true
+            let pending = Array(waiters.values)
+            waiters.removeAll()
+            return pending
+        }
+        pending.forEach { $0.resume(returning: true) }
+    }
+
+    func observe() async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let immediate: Bool? = lock.withLock {
+                    if fired { return true }
+                    if Task.isCancelled { return false }
+                    waiters[id] = continuation
+                    return nil
+                }
+                if let immediate { continuation.resume(returning: immediate) }
+            }
+        } onCancel: {
+            self.lock.withLock { self.waiters.removeValue(forKey: id) }?.resume(returning: false)
+        }
+    }
+
+    func wait(for timeout: Duration) async -> Bool {
+        if isSet { return true }
+        guard timeout > .zero else { return false }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.observe() }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch {}
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+private final class PairedReadGate: @unchecked Sendable {
+    let entered = PairedReadSignal()
+    private let released = PairedReadSignal()
+    var isHeld: Bool { entered.isSet && !released.isSet }
+
+    func suspend() async throws {
+        entered.fire()
+        guard await released.observe() else { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
+    func release() { released.fire() }
+}
+
+@MainActor
+private final class PairedReadTask {
+    let finished: PairedReadSignal
+    let task: Task<Void, Never>
+
+    init(_ operation: @escaping @MainActor () async -> Void) {
+        let completion = PairedReadSignal()
+        finished = completion
+        task = Task {
+            await operation()
+            completion.fire()
+        }
+    }
+}
+
+@MainActor
+private final class PairedReadOwnership {
+    private var gates: [PairedReadGate] = []
+    private var tasks: [PairedReadTask] = []
+    private var resources: [AnyObject] = []
+    private var retainedAfterFailedJoin: PairedReadOwnership?
+
+    func retain(_ resource: AnyObject) { resources.append(resource) }
+
+    func gate() -> PairedReadGate {
+        let gate = PairedReadGate()
+        gates.append(gate)
+        return gate
+    }
+
+    func start(_ operation: @escaping @MainActor () async -> Void) -> PairedReadTask {
+        let task = PairedReadTask(operation)
+        tasks.append(task)
+        return task
+    }
+
+    func ready(_ signal: PairedReadSignal, _ stage: String) async -> Bool {
+        let ready = await signal.wait(for: .seconds(30))
+        XCTAssertTrue(ready, "Paired-read setup/readiness failed: \(stage)")
+        return ready
+    }
+
+    func completed(_ operation: PairedReadTask, _ stage: String) async -> Bool {
+        let completed = await operation.finished.wait(for: .seconds(2))
+        XCTAssertTrue(completed, "Paired-read completion failed: \(stage)")
+        return completed
+    }
+
+    func cleanUp() async {
+        let cleanup = Task { @MainActor [self] in
+            gates.forEach { $0.release() }
+            tasks.forEach { $0.task.cancel() }
+            let deadline = ContinuousClock.now + .seconds(30)
+            var settled = true
+            for operation in tasks {
+                let joined = await operation.finished.wait(for: deadline - ContinuousClock.now)
+                XCTAssertTrue(joined, "Paired-read cleanup could not join an owned caller; retaining ownership")
+                if joined { await operation.task.value } else { settled = false }
+            }
+            guard settled else {
+                retainedAfterFailedJoin = self
+                return
+            }
+            tasks.removeAll()
+            gates.removeAll()
+            resources.removeAll()
+        }
+        await cleanup.value
+    }
+}
+
+@MainActor
+private func withPairedReadOwnership(
+    _ operation: @MainActor (PairedReadOwnership) async throws -> Void
+) async throws {
+    let work = PairedReadOwnership()
+    do { try await operation(work) }
+    catch {
+        await work.cleanUp()
+        throw error
+    }
+    await work.cleanUp()
+}
