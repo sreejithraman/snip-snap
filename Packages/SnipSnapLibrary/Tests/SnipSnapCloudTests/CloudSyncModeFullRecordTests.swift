@@ -2645,7 +2645,7 @@ extension ICloudSyncModeCoordinatorTests {
                 $0.namespaceKey == namespaceKey
             })
             let state = try SwiftDataSnipLibrary.fullEnrollmentState(from: enrollment.referencesData).namespaceState
-            XCTAssertEqual(state.phase, .remoteChecked)
+            XCTAssertEqual(state.phase, .active)
             XCTAssertFalse(context.hasChanges)
             try lock.check()
             preApplyRows.continuation.yield((store.id, retryTransition.id, row, state.revision))
