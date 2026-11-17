@@ -540,14 +540,14 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func swapPointer() async throws {
-    try await withFailedEnableExposure(requiresAccepted: true) { unchangedAbsences in
+    try await withFailedEnableExposure(requiresAccepted: true) { checkedDispositions in
       // The final synchronous pointer commit remains inside the owner-held store locks.
-      try self.swapPointerAfterEvidenceCheck(unchangedAbsences: unchangedAbsences)
+      try self.swapPointerAfterEvidenceCheck(checkedDispositions: checkedDispositions)
     }
   }
 
-  private func swapPointerAfterEvidenceCheck(unchangedAbsences: Set<FailedEnableReference> = []) throws {
-    try requireFailedEnableSwapEvidence(unchangedAbsences: unchangedAbsences)
+  private func swapPointerAfterEvidenceCheck(checkedDispositions: Set<FailedEnableReference>) throws {
+    try requireFailedEnableSwapEvidence(checkedDispositions: checkedDispositions)
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,

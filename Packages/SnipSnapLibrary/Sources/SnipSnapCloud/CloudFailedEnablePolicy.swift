@@ -586,6 +586,230 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
     }
   }
 
+  func validateExposure(_ input: FailedEnableReviewRead, capture: FailedEnableCapture,
+    requiresAccepted: Bool
+  ) throws -> Set<FailedEnableReference> {
+    guard let evidence = input.evidence else { throw FailedEnableEvidenceError.reviewRequired }
+    try validateExposure(capture: capture, candidate: input.candidate,
+      evidence: evidence, requiresAccepted: requiresAccepted)
+    guard requiresAccepted, capture.records.contains(where: {
+      $0.preparation.classification == .realConflict && $0.preparation.baseKind == .checkedTurnOff
+    }) else { return [] }
+    return [try validateSameFieldConflictPublication(input, capture: capture, evidence: evidence)]
+  }
+
+  /// The existing ADR-0014 text conflict in Inbox, with one original and one recovered snip.
+  /// Publication of the pair does not make the conflicted record accepted-value ancestry.
+  private func validateSameFieldConflictPublication(_ input: FailedEnableReviewRead,
+    capture: FailedEnableCapture, evidence: FailedEnableInstalledEvidence
+  ) throws -> FailedEnableReference {
+    let transition = input.transition
+    let candidate = input.candidate
+    let sourceID = FailedEnableEncoding.uuid(transition.sourceStoreID)
+    let candidateID = FailedEnableEncoding.uuid(transition.candidateStoreID)
+    let binding = FailedEnableBinding(namespace.binding)
+    let inbox = CloudEntityReference(kind: .list, domainID: SnipList.inboxID)
+    let currentRevision = candidate.storage.namespaceState.revision
+    guard transition.phase == .firstSendComplete, transition.namespace == namespace.binding,
+      transition.syncProtocol == .fullRecordV1, transition.targetKind == .iCloudSync,
+      let freeze = transition.freezeToken, freeze.sourceStoreID == transition.sourceStoreID,
+      capture.armed, capture.syncProtocol == .fullRecordV1, capture.predecessors.isEmpty,
+      capture.transitionID == FailedEnableEncoding.uuid(transition.id),
+      capture.candidateStoreID == candidateID, capture.freeze.id == FailedEnableEncoding.uuid(freeze.id),
+      capture.freeze.sourceRevision == String(freeze.revision),
+      input.source.snapshot.revision == freeze.revision,
+      try input.source.sourceDigest(sourceID: transition.sourceStoreID) == capture.sourceDigest,
+      evidence.purpose == .installedEvidence, evidence.sourceStoreID == sourceID,
+      evidence.namespaces.count == 1, let group = evidence.namespaces.first,
+      group.binding == binding, group.captures == [capture],
+      group.reviews.isEmpty, group.alternatives.isEmpty, evidence.blobs.isEmpty,
+      evidence.transfers.count == 2,
+      let off = evidence.transfers.first(where: { $0.kind == .turnOff }),
+      off.state == .checked, off.namespace == binding, off.destinationStoreID == sourceID,
+      off.sourceStoreID != sourceID, off.sourceStoreID != candidateID, off.sourceCaptureIDs.isEmpty,
+      off.conflicts.isEmpty, off.recoveryDescriptors.isEmpty,
+      off.dormantDigest == FailedEnableEncoding.digest(input.source.snapshot.opaqueSyncStatePayload),
+      let transfer = evidence.transfers.first(where: { $0.kind == .candidate }),
+      transfer.state == .checked, transfer.namespace == binding, transfer.sourceStoreID == sourceID,
+      transfer.destinationStoreID == candidateID, transfer.sourceCaptureIDs == [capture.id],
+      let receipt = candidate.reenableReceiptDigest, FailedEnableEncoding.hex(receipt) == transfer.planDigest,
+      transfer.dormantDigest == FailedEnableEncoding.digest(candidate.snapshot.opaqueSyncStatePayload),
+      try candidate.images() == transfer.outputs,
+      !candidate.hasPendingBatches, candidate.storage.namespaceState.phase == .active,
+      candidate.storage.pendingDeletes.isEmpty, input.source.snapshot.lists == [.inbox],
+      candidate.snapshot.lists == [.inbox],
+      capture.records.count == 2,
+      let original = capture.records.first(where: { $0.preparation.classification == .realConflict }),
+      original.sourceMembership == .present, original.originalAcceptedExists,
+      original.preparation.baseKind == .checkedTurnOff, original.offlineChanged == ["text"],
+      original.preparation.conflictFields == ["text"], original.observedAccepted.value == nil,
+      case .snip(let localImage)? = original.source.value, localImage.attachments.isEmpty,
+      let originalFields = original.preparation.value.value,
+      original.preparation.knownFields == Self.snipKeys, original.preparation.reason.value == nil,
+      original.preparation.normalizedLocal.immutableOverrides.value == FailedEnableImmutableOverrides(
+        requestID: localImage.requestID, createdAt: localImage.createdAt, originRaw: localImage.originRaw),
+      originalFields.presence.keys.sorted() == Self.snipKeys,
+      originalFields.presence.values.allSatisfy({ $0 == .value })
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    let reference = try original.reference.domain
+    let originalIdentity = Self.identity(reference, zone: dataZone)
+    let local = try localImage.domain
+    let recoveredID = SnipLibraryTransferPlanner.derivedUUID(transitionID: transition.id, sourceID: local.id)
+    let recovered = CloudEntityReference(kind: .snip, domainID: recoveredID)
+    let recoveredIdentity = Self.identity(recovered, zone: dataZone)
+    // The one capture and its still-frozen intent bound the accumulated attempt. An earlier
+    // failed setup could have cleared its attempt, so additional captures are unsupported here.
+    guard reference == CloudEntityReference(kind: .snip, domainID: local.id), local.listID == inbox.domainID,
+      original.identity.domain == originalIdentity, recovered != reference,
+      original.preparation.recoveryIdentities == [FailedEnableReference(recovered)],
+      try input.source.images() == capture.records.compactMap({ $0.source.value }),
+      let attempt = transition.sendAttempt, attempt.namespace == namespace.binding,
+      attempt.operations == [SyncModeSendOperation(reference: recovered,
+        recordIdentity: recoveredIdentity, kind: .save)],
+      Set(candidate.storage.readyEntities.map(\.reference)) == [inbox, reference, recovered],
+      let server = candidate.storage.readyEntities.first(where: { $0.reference == reference }),
+      server.identity == originalIdentity, server.dependencyListID == inbox.domainID,
+      let copy = candidate.storage.readyEntities.first(where: { $0.reference == recovered }),
+      copy.identity == recoveredIdentity, copy.dependencyListID == inbox.domainID,
+      try Self.fields(server, namespace: namespace.binding) == originalFields.fields,
+      try Self.presence(server) == original.preparation.normalizedLocal.acceptedPresence,
+      original.preparation.normalizedLocal.defaults.isEmpty,
+      let current = original.unqualifiedObservation.value,
+      try matchesConflictObservation(current, row: server, candidateID: candidateID, revision: currentRevision)
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    // The immutable equal-fetched Inbox observation supplies the checked preparation revision.
+    // Verify its own fetched digest at that revision before using it for the original's digest.
+    // Enrollment and send move the namespace revision; the late observation cannot supply this preimage.
+    guard let inboxRecord = capture.records.first(where: { $0.reference == FailedEnableReference(inbox) }),
+      inboxRecord.preparation.classification == .equalFetched,
+      inboxRecord.preparation.baseKind == .equalFetched,
+      let observation = inboxRecord.observedAccepted.value,
+      let inboxRow = candidate.storage.readyEntities.first(where: { $0.reference == inbox }),
+      inboxRow.identity == Self.identity(inbox, zone: dataZone),
+      try qualifies(inboxRecord, observation: observation, candidate: candidate)
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    let fetchedRevision = try FailedEnableEncoding.revision(observation.namespaceRevision)
+    guard fetchedRevision < currentRevision,
+      try matchesConflictObservation(observation, row: inboxRow, candidateID: candidateID, revision: fetchedRevision),
+      try inboxRecord.preparation.fetchedDigest.value == Self.acceptedRevisionDigest(inboxRow,
+        namespaceRevision: fetchedRevision),
+      try original.preparation.fetchedDigest.value == Self.acceptedRevisionDigest(server,
+        namespaceRevision: fetchedRevision)
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    let entries = try CloudDormantAcceptedBaseBundle.decode(input.source.snapshot.opaqueSyncStatePayload).entries
+    guard entries.count == 2, Set(entries.map(\.reference)) == [inbox, reference],
+      entries.allSatisfy({ $0.namespaceKey == namespace.namespaceKey.rawValue }),
+      let ancestor = entries.first(where: { $0.reference == reference }),
+      ancestor.identity == originalIdentity,
+      original.preparation.baseDigest.value == FailedEnableEncoding.digest(ancestor.payload),
+      off.outputs.count == 2, off.outputs.contains(.list(FailedEnableListImage(.inbox))),
+      try off.planDigest == FailedEnableEncoding.digest(off.outputs),
+      let baseImage = off.outputs.first(where: { $0.reference == original.reference }),
+      case .snip(let baseSnip) = baseImage, baseSnip.attachments.isEmpty
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    let envelope = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: ancestor.payload)
+    guard envelope.reference == reference, envelope.identity == originalIdentity,
+      try Self.same(Self.fields(Self.entity(envelope), namespace: namespace.binding), Self.unbasedSource(baseImage)),
+      try Self.presence(Self.entity(envelope)).values.allSatisfy({ $0 == .value })
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    let base = try CloudFullSyncPersistence.snipFields(CloudFullSyncPersistence.snipRecord(Self.entity(envelope)))
+    let localFields = CloudFullSyncPersistence.snipFields(local, accepted: nil)
+    let serverFields = try CloudFullSyncPersistence.snipFields(CloudFullSyncPersistence.snipRecord(server))
+    var expectedLocal = base
+    expectedLocal.text = localFields.text
+    expectedLocal.updatedAt = localFields.updatedAt
+    var expectedServer = base
+    expectedServer.text = serverFields.text
+    expectedServer.updatedAt = serverFields.updatedAt
+    let originalKey = CloudConflictKey.make(namespaceKey: namespace.namespaceKey,
+      recordID: CloudRecordID.snip(local.id, in: dataZone), ancestorSystemFields: envelope.systemFields,
+      serverSystemFields: server.systemFields)
+    let recoveredRequest = SnipLibraryTransferPlanner.derivedUUID(transitionID: recoveredID, sourceID: local.requestID)
+    let output = Snip(id: recoveredID, requestID: recoveredRequest, createdAt: local.createdAt,
+      updatedAt: local.updatedAt, content: local.content, origin: local.origin, source: local.source,
+      listID: local.listID, isDone: local.isDone, pinnedAt: local.pinnedAt, manualSortKey: local.manualSortKey)
+    guard localFields == expectedLocal, serverFields == expectedServer,
+      Set([base.text, localFields.text, serverFields.text]).count == 3,
+      recoveredRequest != local.requestID,
+      candidate.snapshot.snips.count == 2, candidate.snapshot.snips.contains(output),
+      try Self.plannedValue(reference, in: candidate.snapshot, projection: originalFields.fields) == originalFields.fields,
+      try Self.fields(copy, namespace: namespace.binding) == Self.unbasedSource(
+        .snip(FailedEnableSnipImage(output, attachmentData: [:]))),
+      try Self.presence(copy).values.allSatisfy({ $0 == .value })
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    try validateSameFieldConflictRows(candidate, transfer: transfer, reference: reference,
+      key: originalKey, transitionID: transition.id, local: localFields, server: serverFields, output: output)
+    return original.reference
+  }
+
+  private func matchesConflictObservation(_ observation: FailedEnableObservation,
+    row: CloudAcceptedEntity, candidateID: String, revision: UInt64
+  ) throws -> Bool {
+    guard observation.kind == .fullRecord, observation.candidateStoreID == candidateID,
+      observation.namespaceRevision == String(revision), observation.localRevision == String(row.localRevision),
+      !observation.isDeferred, !observation.hasUnresolvedLegacyAbsence,
+      !row.isDeferred, !row.hasUnresolvedLegacyAbsence, row.deferredLocalMutation == nil, row.graphRepair == nil,
+      observation.dependencyListID.value == row.dependencyListID.map(FailedEnableEncoding.uuid)
+    else { return false }
+    return try observation.entityBase64 == Self.existingEnvelope(row)
+  }
+
+  private func validateSameFieldConflictRows(_ candidate: FailedEnableStoreRead,
+    transfer: FailedEnableTransfer, reference: CloudEntityReference, key: String, transitionID: UUID,
+    local: CloudSnipMergeFields, server: CloudSnipMergeFields, output: Snip
+  ) throws {
+    let decoder = JSONDecoder()
+    let review = SnipRecoveryRecord.snip(RecoveredSnip(id: output.id,
+      currentSnipID: reference.domainID, recovered: output, conflictingFields: [.text]))
+    guard transfer.conflicts.count == 1, let conflictBytes = transfer.conflicts.first,
+      candidate.storage.conflicts.count == 1, let row = candidate.storage.conflicts.first,
+      row.key == key, row.reference == reference, row.format == .snipMergeV1,
+      transfer.recoveryDescriptors.count == 1, let linkBytes = transfer.recoveryDescriptors.first,
+      candidate.recoveryRows.count == 2
+    else { throw FailedEnableEvidenceError.reviewRequired }
+    let conflict = try decoder.decode(CloudConflictInput.self, from: conflictBytes)
+    let payload = try decoder.decode(CloudSnipConflictPayload.self, from: row.payload)
+    let link = try decoder.decode(CloudFullRecoveryInput.self, from: linkBytes)
+    let linkBody = try JSONSerialization.jsonObject(with: link.resultData) as? [String: Any]
+    let salt = UUID(uuidString: "11111111-1111-5111-8111-111111111111")!
+    let linkID = SnipLibraryTransferPlanner.derivedUUID(
+      transitionID: SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: salt),
+      sourceID: reference.domainID)
+    guard conflict.key == key, conflict.reference == reference, conflict.format == .snipMergeV1,
+      conflict.payload == row.payload, conflict.recovery == review,
+      payload.fields == [.text], payload.local == local, payload.server == server,
+      link.storageVersion == 1, link.namespaceKey == namespace.namespaceKey.rawValue,
+      link.batchID == linkID, link.kind == .modeRecoveredSnip, link.outboundData.isEmpty,
+      let linkBody, Set(linkBody.keys) == ["storageVersion", "sourceID", "recoveredID"],
+      linkBody["storageVersion"] as? Int == 1,
+      linkBody["sourceID"] as? String == reference.domainID.uuidString,
+      linkBody["recoveredID"] as? String == output.id.uuidString
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    // Encode the existing review payload for byte comparison; no stored representation is added.
+    struct ReviewPayload: Encodable {
+      let storageVersion = 1
+      let conflictKey: String
+      let recovery: SnipRecoveryRecord
+    }
+    let namespaceKey = namespace.namespaceKey.rawValue
+    let modeKey = "full-recovery-\(linkID.uuidString.lowercased())"
+    let reviewKey = "review-recovery-\(output.id.uuidString.lowercased())"
+    let modeBytes = try CloudWirePayloadEnvelope(format: .fullRecordV1, payload: encoder.encode(link)).encoded()
+    let reviewBytes = try CloudWirePayloadEnvelope(format: .fullRecordV1,
+      payload: encoder.encode(ReviewPayload(conflictKey: key, recovery: review))).encoded()
+    guard Set(candidate.recoveryRows.map(\.eventKey)) == [modeKey, reviewKey],
+      candidate.recoveryRows.allSatisfy({ $0.id == "\(namespaceKey)|\($0.eventKey)" }),
+      candidate.recoveryRows.first(where: { $0.eventKey == modeKey })?.payload == modeBytes,
+      candidate.recoveryRows.first(where: { $0.eventKey == reviewKey })?.payload == reviewBytes
+    else { throw FailedEnableEvidenceError.reviewRequired }
+  }
+
   func observe(capture: FailedEnableCapture, candidate: FailedEnableStoreRead,
     candidateStoreID: UUID, namespace binding: ICloudSyncNamespaceBinding
   ) throws -> FailedEnableCapture {

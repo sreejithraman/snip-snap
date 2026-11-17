@@ -403,8 +403,12 @@ extension SwiftDataSyncModePersistence {
       let input = FailedEnableReviewRead(source: source, candidate: candidate,
         transition: transition, evidence: prior, retainedTurnOff: retained)
       let absent = try policy.validateTurnOffOutput(input, capture: capture, applied: true)
-      try policy.validateExposure(capture: capture, candidate: candidate,
-        evidence: prior, requiresAccepted: requiresAccepted)
+      let conflicts = try policy.validateExposure(input, capture: capture, requiresAccepted: requiresAccepted)
+      if !conflicts.isEmpty {
+        guard !transition.awaitsAcceptedServerCapture, self.failedEnableSendInFlight == nil else {
+          throw FailedEnableEvidenceError.reviewRequired
+        }
+      }
       guard try self.requireFailedEnableCapture() == capture else { throw FailedEnableEvidenceError.changed }
       if let attempt {
         var preflight = self.manifest
@@ -431,11 +435,11 @@ extension SwiftDataSyncModePersistence {
       }
       self.failedEnablePublicationInFlight = nil
       defer { self.failedEnablePublicationInFlight = transition.id }
-      return try publish(absent)
+      return try publish(absent.union(conflicts))
     }
   }
 
-  func requireFailedEnableSwapEvidence(unchangedAbsences: Set<FailedEnableReference> = []) throws {
+  func requireFailedEnableSwapEvidence(checkedDispositions: Set<FailedEnableReference>) throws {
     guard let capture = try requireFailedEnableCapture() else { return }
     guard let transition = manifest.transition,
       let bundle = try failedEnableFiles.read(transition.sourceStoreID),
@@ -443,7 +447,7 @@ extension SwiftDataSyncModePersistence {
       ([.nonconflicting, .equalFetched].contains(record.preparation.classification)
         && record.observedAccepted.value != nil)
         || hasFailedEnableReviewDecision(record, capture: capture, bundle: bundle)
-        || unchangedAbsences.contains(record.reference)
+        || checkedDispositions.contains(record.reference)
     }) else { throw FailedEnableEvidenceError.reviewRequired }
   }
 

@@ -23,6 +23,8 @@ package struct FailedEnableStoreRead: Sendable {
   package let seenRequestIDs: Set<UUID>
   package let storage: CloudFullStorageSnapshot
   package let recoveryDescriptors: [Data]
+  /// Current row identity and bytes, from the same locked namespace read.
+  package let recoveryRows: [(id: String, eventKey: String, payload: Data)]
   /// Existing stored engine bytes and pending work, read with the accepted rows.
   package let engineState: Data?
   package let hasPendingBatches: Bool
@@ -31,12 +33,14 @@ package struct FailedEnableStoreRead: Sendable {
   package init(snapshot: SnipLibraryTransferSnapshot, seenRequestIDs: Set<UUID>,
     storage: CloudFullStorageSnapshot, recoveryDescriptors: [Data],
     engineState: Data? = nil, hasPendingBatches: Bool = true,
-    reenableReceiptDigest: Data? = nil
+    reenableReceiptDigest: Data? = nil,
+    recoveryRows: [(id: String, eventKey: String, payload: Data)] = []
   ) {
     self.snapshot = snapshot
     self.seenRequestIDs = seenRequestIDs
     self.storage = storage
     self.recoveryDescriptors = recoveryDescriptors
+    self.recoveryRows = recoveryRows
     self.engineState = engineState
     self.hasPendingBatches = hasPendingBatches
     self.reenableReceiptDigest = reenableReceiptDigest
@@ -271,7 +275,8 @@ extension SwiftDataSnipLibrary {
       return value
     }
     let recoveries = try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
-      .filter { $0.namespaceKey == key }.sorted { $0.eventKey < $1.eventKey }.map(\.payload)
+      .filter { $0.namespaceKey == key }.sorted { $0.eventKey < $1.eventKey }
+      .map { (id: $0.id, eventKey: $0.eventKey, payload: $0.payload) }
     let quarantines = try Self.quarantines(namespaceKey: key, context: context)
     let receiptDigest: Data?
     if let reenableTransitionID {
@@ -297,9 +302,9 @@ extension SwiftDataSnipLibrary {
         deferredEntities: entities.filter(\.isDeferred), pendingDeletes: deletes,
         conflicts: conflicts, enrolledEntities: state.references,
         quarantines: quarantines,
-        namespaceState: state.namespaceState), recoveryDescriptors: recoveries,
+        namespaceState: state.namespaceState), recoveryDescriptors: recoveries.map(\.payload),
       engineState: engineStates.first?.envelopeData, hasPendingBatches: pendingBatches,
-      reenableReceiptDigest: receiptDigest)
+      reenableReceiptDigest: receiptDigest, recoveryRows: recoveries)
   }
 }
 
@@ -372,8 +377,8 @@ package protocol FailedEnableSemantics: Sendable {
   func validateTurnOffOutput(_ input: FailedEnableReviewRead, capture: FailedEnableCapture,
     applied: Bool) throws -> Set<FailedEnableReference>
   func validatePastTurnOffApply(_ input: FailedEnableReviewRead, capture: FailedEnableCapture) throws
-  func validateExposure(capture: FailedEnableCapture, candidate: FailedEnableStoreRead,
-    evidence: FailedEnableInstalledEvidence, requiresAccepted: Bool) throws
+  func validateExposure(_ input: FailedEnableReviewRead, capture: FailedEnableCapture,
+    requiresAccepted: Bool) throws -> Set<FailedEnableReference>
   func observe(
     capture: FailedEnableCapture,
     candidate: FailedEnableStoreRead,
