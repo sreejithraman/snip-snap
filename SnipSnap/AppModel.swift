@@ -2324,7 +2324,7 @@ final class AppModel: ObservableObject {
 /// The stored value is authoritative; its publisher is notified only outside checked installation.
 @MainActor
 @propertyWrapper
-private final class ApplicationPublished<Value> {
+final class ApplicationPublished<Value> {
     private var value: Value
     @Published private var notification: Value
 
@@ -2344,7 +2344,7 @@ private final class ApplicationPublished<Value> {
     static subscript<Owner: ObservableObject>(
         _enclosingInstance owner: Owner,
         wrapped wrappedKeyPath: ReferenceWritableKeyPath<Owner, Value>,
-        storage storageKeyPath: ReferenceWritableKeyPath<Owner, Self>
+        storage storageKeyPath: ReferenceWritableKeyPath<Owner, ApplicationPublished<Value>>
     ) -> Value where Owner.ObjectWillChangePublisher == ObservableObjectPublisher {
         get { owner[keyPath: storageKeyPath].value }
         set {

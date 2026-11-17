@@ -1293,6 +1293,47 @@ private final class FixtureWeakResource<Resource: AnyObject> {
     init(_ value: Resource) { self.value = value }
 }
 
+private final class StagedCopyObserver: FileManager, @unchecked Sendable {
+    private let boardName: String
+    private let lock = NSLock()
+    private var copiedDestinations: [Int: URL] = [:]
+    var destinations: [Int: URL] { lock.withLock { copiedDestinations } }
+
+    init(boardName: String) {
+        self.boardName = boardName
+        super.init()
+    }
+
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        try super.copyItem(at: srcURL, to: dstURL)
+        guard let ordinal = Int(dstURL.deletingLastPathComponent().lastPathComponent) else {
+            NSLog("OFFLINE-COPY-DIAG phase=after-copyItem board=%@ ordinal=unrecognized path=%@",
+                  boardName, dstURL.path)
+            return
+        }
+        lock.withLock { copiedDestinations[ordinal] = dstURL }
+        Self.log([ordinal: dstURL], phase: "after-copyItem", context: "board=\(boardName)", ordinals: [ordinal])
+    }
+
+    static func log(_ destinations: [Int: URL], phase: String, context: String, ordinals: [Int] = [1, 2]) {
+        let observations = ordinals.map { ordinal in
+            guard let url = destinations[ordinal] else { return "ordinal=\(ordinal) destination=unobserved" }
+            let path = url.path
+            let label = "ordinal=\(ordinal) path=\(path)"
+            let files = FileManager.default
+            do {
+                let attributes = try files.attributesOfItem(atPath: path)
+                let size = (attributes[.size] as? NSNumber)?.stringValue ?? "<unavailable>"
+                return "\(label) stat=ok size=\(size) readable=\(files.isReadableFile(atPath: path))"
+            } catch {
+                let error = error as NSError
+                return "\(label) stat-error=\(error.domain):\(error.code) size=<unavailable> readable=<unavailable>"
+            }
+        }
+        NSLog("OFFLINE-COPY-DIAG phase=%@ %@ %@", phase, context, observations.joined(separator: " | "))
+    }
+}
+
 @MainActor
 private final class CapturedCopyBoard: IOSPasteboardWriting {
     let suite = "CapturedCopy.\(UUID())"
@@ -1302,32 +1343,41 @@ private final class CapturedCopyBoard: IOSPasteboardWriting {
     let diagnosticStagingRoot: URL
     private let defaults: UserDefaults
     private let system: IOSSystemPasteboard
+    private let stagingObserver: StagedCopyObserver?
     private(set) var writes = 0
+    var observedStagingDestinations: [Int: URL] { stagingObserver?.destinations ?? [:] }
 
-    init(root: URL) throws {
+    init(root: URL, observeStagingCopies: Bool = false) throws {
         diagnosticStagingRoot = root.appendingPathComponent("copy-staging")
         defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         board = try XCTUnwrap(UIPasteboard(name: name, create: true))
-        system = IOSSystemPasteboard(pasteboard: board, stagingRoot: root.appendingPathComponent("copy-staging"))
+        let observer = observeStagingCopies ? StagedCopyObserver(boardName: name.rawValue) : nil
+        stagingObserver = observer
+        let fileManager = (observer as FileManager?) ?? .default
+        system = IOSSystemPasteboard(pasteboard: board, stagingRoot: diagnosticStagingRoot, fileManager: fileManager)
         feedback = IOSHapticFeedback(defaults: defaults, player: RecordingHapticPlayer())
         feedback.isActive = true
     }
 
     func write(_ items: [IOSCopyItem]) -> Bool {
-        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-before",
-                                    context: "board=\(name.rawValue) writes=\(writes)")
-        guard system.write(items) else { return false }
-        writes += 1
-        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-after",
-                                    context: "board=\(name.rawValue) writes=\(writes)")
-        return true
+        if stagingObserver == nil {
+            CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-before",
+                                        context: "board=\(name.rawValue) writes=\(writes)")
+        }
+        let written = system.write(items)
+        if written { writes += 1 }
+        if let stagingObserver {
+            StagedCopyObserver.log(stagingObserver.destinations, phase: "writer-return",
+                                   context: "board=\(name.rawValue) writes=\(writes) success=\(written)")
+        } else if written {
+            CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-after",
+                                        context: "board=\(name.rawValue) writes=\(writes)")
+        }
+        return written
     }
 
     func diagnosticContext(for provider: NSItemProvider, index: Int, selectedType: String) -> String {
-        let context = "board=\(name.rawValue) index=\(index) object=\(ObjectIdentifier(provider)) class=\(String(reflecting: type(of: provider))) types=\(provider.registeredTypeIdentifiers) selected=\(selectedType) suggestedName=\(provider.suggestedName ?? "<nil>")"
-        NSLog("OFFLINE-COPY-DIAG phase=before-load %@", context)
-        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "before-load", context: context)
-        return context
+        "board=\(name.rawValue) index=\(index) object=\(ObjectIdentifier(provider)) class=\(String(reflecting: type(of: provider))) types=\(provider.registeredTypeIdentifiers) selected=\(selectedType) suggestedName=\(provider.suggestedName ?? "<nil>")"
     }
 
     func close() {
@@ -1343,7 +1393,7 @@ private final class CopiedFileBytes: @unchecked Sendable {
     var data: Data? { lock.withLock { stored } }
 
     func read(_ url: URL?, providerError: Error? = nil, diagnosticContext: String? = nil,
-              diagnosticStagingRoot: URL? = nil) {
+              stagedDestinations: [Int: URL] = [:]) {
         var readError: NSError?
         let data = url.flatMap {
             do { return try Data(contentsOf: $0) }
@@ -1351,14 +1401,16 @@ private final class CopiedFileBytes: @unchecked Sendable {
         }
         lock.withLock { stored = data }
         loaded.fire()
-        guard let diagnosticContext, let diagnosticStagingRoot else { return }
+        guard let diagnosticContext else { return }
         NSLog("OFFLINE-COPY-DIAG phase=callback-after-read-and-loaded-signal %@ callbackURL=%@ providerError=%@ dataReadError=%@ readAttempted=%@ dataBytes=%@",
               diagnosticContext, url?.absoluteString ?? "<nil>",
               providerError.map { String(describing: $0 as NSError) } ?? "<nil>",
               readError.map { String(describing: $0) } ?? "<nil>",
               url == nil ? "no URL" : "yes", data.map { String($0.count) } ?? "<nil>")
-        Self.logFileState(stagingRoot: diagnosticStagingRoot, phase: "inside-callback-after-read",
-                          context: diagnosticContext, callbackURL: url)
+        if data == nil || providerError != nil {
+            StagedCopyObserver.log(stagedDestinations, phase: "failed-callback-after-read-and-signal",
+                                   context: diagnosticContext)
+        }
     }
 
     static func logFileState(stagingRoot: URL, phase: String, context: String, callbackURL: URL? = nil) {
@@ -1677,7 +1729,7 @@ extension IOSOfflineLocalFeedbackTests {
     }
 
     private func exerciseLateCapturedCopyChange(_ change: LateCopyChange, fixture: StatusGuardFixture) async throws {
-        let board = try CapturedCopyBoard(root: fixture.root)
+        let board = try CapturedCopyBoard(root: fixture.root, observeStagingCopies: change == .ordinaryDeletion)
         defer { board.close() }
         board.board.string = "Keep this clipboard until a valid copy finishes"
         let model = IOSAppModel(library: fixture.original.library, initialSnapshot: fixture.original.snapshot,
@@ -1777,17 +1829,16 @@ extension IOSOfflineLocalFeedbackTests {
                 for (provider, expected) in zip(board.board.itemProviders.dropFirst(), [Data("old!".utf8), Data("two!".utf8)]) {
                     let type = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
                     let bytes = CopiedFileBytes()
-                    let diagnosticStagingRoot = board.diagnosticStagingRoot
+                    let stagedDestinations = board.observedStagingDestinations
                     let diagnosticContext = board.diagnosticContext(for: provider, index: diagnosticProviderIndex,
                                                                     selectedType: type)
+                    StagedCopyObserver.log(stagedDestinations, phase: "before-load", context: diagnosticContext)
                     _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
                         bytes.read(url, providerError: error, diagnosticContext: diagnosticContext,
-                                   diagnosticStagingRoot: diagnosticStagingRoot)
+                                   stagedDestinations: stagedDestinations)
                     }
                     guard await fixture.ready(bytes.loaded, "actual multi-copy file bytes loaded") else { return }
                     XCTAssertEqual(bytes.data, expected)
-                    CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot,
-                                                phase: "after-loaded-observed-and-byte-oracle", context: diagnosticContext)
                     diagnosticProviderIndex += 1
                 }
             }
