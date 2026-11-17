@@ -478,7 +478,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             try await selected.persistence.beginAttachmentRead(reservation)
             let bound = try await self.boundAttachment(selected)
             let values = try await bound.coordinator.transferStates()
-            let states = values.mapValues { value in
+            let states = values.mapValues { value -> SyncedAttachmentTransferState in
                 switch value {
                 case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: SyncedAttachmentTransferState.waiting
                 case .available: .available
