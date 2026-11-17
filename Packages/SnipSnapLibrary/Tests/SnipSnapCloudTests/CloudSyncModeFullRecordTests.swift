@@ -2610,7 +2610,46 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(refusedReceipt.modern, corruptedDigest)
         XCTAssertNil(refusedReceipt.ambiguous)
 
-        let retryOwner = try SwiftDataSyncModePersistence(rootURL: root)
+        let reference = CloudEntityReference(kind: .snip, domainID: snipID)
+        let preApplyRows = AsyncStream.makeStream(
+            of: (storeID: UUID, transitionID: UUID, row: CloudAcceptedEntity, namespaceRevision: UInt64).self
+        )
+        let retryOwner = try SwiftDataSyncModePersistence(rootURL: root, writeHook: { point in
+            guard point == .beforeFullReenablePlanApply else { return }
+            // Preparation has observed this candidate, but apply and send have not changed its fetched row.
+            let current = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+                from: Data(contentsOf: manifestURL))
+            let retryTransition = try XCTUnwrap(current.transition)
+            XCTAssertEqual(current.activeStoreID, sourceStore.id)
+            XCTAssertEqual(retryTransition.phase, .sourceFrozen)
+            XCTAssertEqual(retryTransition.namespace, namespace.binding)
+            XCTAssertNotNil(retryTransition.mergeIntent)
+            XCTAssertNil(retryTransition.sendAttempt)
+            let store = try XCTUnwrap(current.stores.first { $0.id == retryTransition.candidateStoreID })
+            XCTAssertNotEqual(store.id, candidateStore.id)
+            XCTAssertEqual(store.namespace, namespace.binding)
+            let storeURL = root.appendingPathComponent(store.relativeRoot).appendingPathComponent("snips.store")
+            _ = try XCTUnwrap(FileManager.default.fileExists(atPath: storeURL.path) ? storeURL : nil)
+            let lock = try SnipStoreFileLock(url: storeURL.appendingPathExtension("lock"))
+            defer { withExtendedLifetime(lock) {} }
+            let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
+            let configuration = ModelConfiguration("SnipSnapLocal", schema: schema, url: storeURL,
+                allowsSave: false, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = SwiftDataSnipLibrary.makeContext(container: container)
+            let record = try XCTUnwrap(context.fetch(FetchDescriptor<StoredCloudEntityRecord>()).first {
+                $0.namespaceKey == namespaceKey && $0.reference == reference
+            })
+            let row = try SwiftDataSnipLibrary.entity(from: record)
+            let enrollment = try XCTUnwrap(context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()).first {
+                $0.namespaceKey == namespaceKey
+            })
+            let state = try SwiftDataSnipLibrary.fullEnrollmentState(from: enrollment.referencesData).namespaceState
+            XCTAssertEqual(state.phase, .remoteChecked)
+            XCTAssertFalse(context.hasChanges)
+            try lock.check()
+            preApplyRows.continuation.yield((store.id, retryTransition.id, row, state.revision))
+        })
         let retry = ICloudSyncModeCoordinator(
             persistence: retryOwner, namespace: namespace, textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
@@ -2677,7 +2716,65 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(finalTypes, ["List", "Snip"])
         let afterRetry = try XCTUnwrap(try files.read(sourceStore.id))
         let retainedGroup = try XCTUnwrap(afterRetry.namespaces.first { $0.binding == preparation.transfer.namespace })
-        XCTAssertEqual(retainedGroup.captures.first { $0.id == preparation.capture.id }, preparation.capture)
+        preApplyRows.continuation.finish()
+        var preApplyIterator = preApplyRows.stream.makeAsyncIterator()
+        let retryPreimage = await preApplyIterator.next()
+        let checked = try XCTUnwrap(retryPreimage, "Expected exactly one checked retry row before apply")
+        let extraPreimage = await preApplyIterator.next()
+        XCTAssertNil(extraPreimage)
+        XCTAssertEqual(checked.storeID, completed.activeStore.id)
+        XCTAssertTrue(retainedGroup.captures.contains {
+            $0.transitionID == FailedEnableEncoding.uuid(checked.transitionID)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(checked.storeID)
+        })
+        var retainedCapture = try XCTUnwrap(retainedGroup.captures.first { $0.id == preparation.capture.id })
+        let snipReference = FailedEnableReference(reference)
+        let oldRecord = try XCTUnwrap(preparation.capture.records.first { $0.reference == snipReference })
+        let recordIndex = try XCTUnwrap(retainedCapture.records.firstIndex { $0.reference == snipReference })
+        let oldObservation = try XCTUnwrap(oldRecord.unqualifiedObservation.value)
+        let refreshedObservation = try XCTUnwrap(retainedCapture.records[recordIndex].unqualifiedObservation.value)
+        let oldRow = try XCTUnwrap(acceptedBefore.readyEntities.first { $0.reference == reference })
+        let identity = CloudTextStorageIdentity(zoneName: zone.name, ownerName: zone.ownerName,
+            recordName: "s-\(snipID.uuidString.lowercased())")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        for (observation, row, storeID, revision) in [
+            (oldObservation, oldRow, candidateStore.id, acceptedBefore.namespaceState.revision),
+            (refreshedObservation, checked.row, checked.storeID, checked.namespaceRevision),
+        ] {
+            XCTAssertEqual(row.reference, reference)
+            XCTAssertEqual(row.identity, identity)
+            XCTAssertEqual(row.schemaVersion, CloudFullRecordCodec.schemaVersion)
+            XCTAssertEqual(row.dependencyListID, SnipList.inboxID)
+            XCTAssertFalse(row.isDeferred)
+            XCTAssertFalse(row.hasUnresolvedLegacyAbsence)
+            XCTAssertNil(row.graphRepair)
+            XCTAssertNil(row.deferredLocalMutation)
+            XCTAssertEqual(observation.kind, .fullRecord)
+            XCTAssertEqual(observation.candidateStoreID, FailedEnableEncoding.uuid(storeID))
+            XCTAssertEqual(observation.namespaceRevision, String(revision))
+            XCTAssertEqual(observation.localRevision, String(row.localRevision))
+            XCTAssertFalse(observation.isDeferred)
+            XCTAssertFalse(observation.hasUnresolvedLegacyAbsence)
+            XCTAssertEqual(observation.dependencyListID.value, FailedEnableEncoding.uuid(SnipList.inboxID))
+            let envelope = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: observation.entityBase64)
+            XCTAssertEqual(envelope.reference, row.reference)
+            XCTAssertEqual(envelope.identity, row.identity)
+            XCTAssertEqual(envelope.schemaVersion, row.schemaVersion)
+            XCTAssertEqual(envelope.dependencyListID, row.dependencyListID)
+            XCTAssertEqual(envelope.acceptedData, row.acceptedData)
+            XCTAssertEqual(envelope.presenceData, row.presenceData)
+            XCTAssertEqual(envelope.shadowData, row.shadowData)
+            XCTAssertEqual(envelope.systemFields, row.systemFields)
+            XCTAssertEqual(observation.entityBase64, try encoder.encode(envelope))
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: envelope.acceptedData),
+                originalRecord)
+            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: envelope.presenceData),
+                originalRecord)
+        }
+        // Only this verified review observation may refresh. The qualifying Inbox observation stays exact.
+        retainedCapture.records[recordIndex].unqualifiedObservation = oldRecord.unqualifiedObservation
+        XCTAssertEqual(retainedCapture, preparation.capture)
         XCTAssertTrue(afterRetry.transfers.contains(preparation.transfer))
         XCTAssertEqual(afterRetry.blobs[blobHash], bytes)
         XCTAssertEqual(try Data(contentsOf: planURL), planBefore)
