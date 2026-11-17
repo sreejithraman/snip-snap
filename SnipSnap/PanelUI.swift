@@ -167,7 +167,7 @@ struct PanelListHeader<Actions: View>: View {
         let showsPinnedSurface = hasScrolledFromTop
         HStack(spacing: SnipSnapSpacing.relatedContent) {
             Text(title)
-                .font(.headline)
+                .appFont(.headline)
                 .foregroundStyle(SnipSnapColors.textPrimary)
             Spacer(minLength: SnipSnapSpacing.relatedContent)
             actions

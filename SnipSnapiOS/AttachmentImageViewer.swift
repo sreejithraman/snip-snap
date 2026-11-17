@@ -180,7 +180,7 @@ private struct FullScreenAttachmentImage: View {
             .overlay(alignment: .topTrailing) {
                 Button("Done", systemImage: "xmark", action: close)
                     .labelStyle(.iconOnly)
-                    .font(.body.weight(.semibold))
+                    .appFont(.body, weight: .semibold)
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
                     .background(.black.opacity(0.55), in: Circle())

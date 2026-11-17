@@ -289,10 +289,16 @@ private struct AppToastPresenter: ViewModifier {
     func body(content: Content) -> some View {
         Group {
             if reservesSpace {
+#if os(iOS)
+                content.safeAreaInset(edge: .bottom, spacing: 0) {
+                    presentedToast
+                }
+#else
                 VStack(spacing: 0) {
                     content
                     presentedToast
                 }
+#endif
             } else {
                 content.overlay(alignment: alignment) {
                     presentedToast
@@ -376,11 +382,11 @@ private struct AppToastPresenter: ViewModifier {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(toast.message)
-                        .font(.subheadline.weight(.semibold))
+                        .appFont(.subheadline, weight: .semibold)
                         .lineLimit(2)
                     if let detail = toast.detail {
                         Text(detail)
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -392,7 +398,7 @@ private struct AppToastPresenter: ViewModifier {
                     } label: {
                         Text(toast.actionTitle)
                     }
-                    .font(.subheadline.weight(.bold))
+                    .appFont(.subheadline, weight: .bold)
                     .controlSize(.small)
 #if os(iOS)
                     .frame(minHeight: 44)

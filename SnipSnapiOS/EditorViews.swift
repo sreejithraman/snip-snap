@@ -733,7 +733,7 @@ struct InlineListEditor: View {
                     .accessibilityIdentifier("list-icon-preview")
 
                 TextField(list.displayName, text: $draft.name)
-                    .font(.system(.title, design: .rounded, weight: .bold))
+                    .appFont(.title, weight: .bold)
                     .foregroundStyle(draftPreview.accent.color)
                     .textFieldStyle(.plain)
                     .lineLimit(1)
@@ -829,14 +829,14 @@ struct IOSInlineFailureView: View {
            operations.contains(where: { failure.operation.hasPrefix($0) }) {
             VStack(alignment: .leading, spacing: 6) {
                 Label(failure.message, systemImage: "exclamationmark.triangle")
-                    .font(.subheadline)
+                    .appFont(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Details") { model.showErrorDetails(failure) }
                     Button("Dismiss") { model.dismissError() }
                 }
-                .font(.subheadline)
+                .appFont(.subheadline)
             }
             .accessibilityIdentifier("inline-operation-error")
         }

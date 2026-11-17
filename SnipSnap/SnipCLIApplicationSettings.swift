@@ -14,7 +14,8 @@ enum SnipCLIApplicationSettings {
         case .appearance: model.setAppearance(AppAppearance(rawValue: value)!)
         case .sort: model.setSortMode(SnipSortMode(rawValue: value)!)
         case .completionFilter: model.completionFilter = SnipCompletionFilter(rawValue: value)!
-        case .agentSnipsOnly: model.agentSnipsOnly = value == "on"
+        case .originFilter: model.originFilter = SnipOriginFilter(rawValue: value)!
+        case .agentSnipsOnly: model.originFilter = value == "on" ? .agent : .all
         case .clipboardOnlyPinned: model.clipboardViewOptions.onlyPinned = value == "on"
         case .clipboardNewestFirst: model.clipboardViewOptions.newestFirst = value == "on"
         case .betaUpdates:

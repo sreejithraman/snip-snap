@@ -77,7 +77,7 @@ enum SnipMarkdownParser {
                 segment.font = .body.monospaced()
                 if isHeading { segment.font = .body.monospaced().weight(.semibold) }
             } else if isHeading {
-                segment.font = .body.weight(.semibold)
+                segment.font = AppTypography.markdownHeadingFont
             }
             if components.contains(where: { if case .blockQuote = $0.kind { return true }; return false }) {
                 appendQuoted(segment, to: &result)

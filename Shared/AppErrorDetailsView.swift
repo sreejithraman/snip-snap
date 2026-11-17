@@ -28,7 +28,7 @@ struct AppUndoRecoveryView: View {
                 }
             }
         }
-        .font(.subheadline)
+        .appFont(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .accessibilityElement(children: .contain)
@@ -65,13 +65,13 @@ private struct AppErrorDetailsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label(failure.title, systemImage: "exclamationmark.triangle")
-                .font(.headline)
+                .appFont(.headline)
             Text(failure.message)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Error details")
-                    .font(.subheadline.weight(.semibold))
+                    .appFont(.subheadline, weight: .semibold)
                 Text(failure.operation)
                 Text(failure.code)
             }
@@ -96,7 +96,7 @@ private struct AppErrorDetailsContent: View {
             .accessibilityIdentifier("share-error-diagnostic-log")
             if let message = diagnosticNotice {
                 Text(message)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("error-diagnostic-notice")
             }

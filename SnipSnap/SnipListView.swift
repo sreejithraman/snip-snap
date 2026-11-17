@@ -268,13 +268,6 @@ struct SnipListView: View {
             )
     }
 
-    private var canDragReorder: Bool {
-        model.editingID == nil
-            && model.completionFilter == .all
-            && !model.agentSnipsOnly
-            && !model.hasActiveQuery
-    }
-
     private func listSectionHeader(_ title: String) -> some View {
         PanelListHeader(title, hasScrolledFromTop: hasScrolledFromTop)
             .background {
@@ -396,7 +389,8 @@ struct SnipListView: View {
                         token,
                         payload: payload,
                         listID: listID,
-                        reorderingFrom: canDragReorder ? snips.map(\.id) : nil,
+                        reorderingFrom: model.editingID == nil && model.canReorder(ids: Set(payload.ids))
+                            ? snips.map(\.id) : nil,
                         geometry: reorderGeometry
                     )
                 },
@@ -633,7 +627,7 @@ struct SnipListView: View {
                     Button(SnipCommand.toggleDone.title(allSelectedAreDone: snip.isDone)) {
                         model.toggleDone(id: snip.id)
                     }
-                    if !model.hasActiveQuery, model.completionFilter == .all, !model.agentSnipsOnly, snapshot.canReorder(snip) {
+                    if model.canReorder(ids: contextSelection(for: snip.id)) {
                         Button("Move Up") {
                             let ids = contextSelection(for: snip.id)
                             Task { await model.moveSelectionNow(by: -1, ids: ids) }
@@ -733,6 +727,7 @@ struct SnipListView: View {
 
     private func makeSelectionMenu(for ids: Set<UUID>) -> NSMenu {
         let menu = NSMenu()
+        menu.font = AppTypography.nativeFont(size: NSFont.systemFontSize)
         guard !ids.isEmpty else { return menu }
 
         menu.addPanelAction(SnipCommand.copy.title, systemImage: "doc.on.doc") { perform(.copy, on: ids) }

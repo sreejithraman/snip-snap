@@ -368,7 +368,7 @@ struct ListSelector: View {
     }
 
     private func width(for item: ListSelectorItem, in viewport: CGFloat) -> CGFloat {
-        let font = UIFont.rounded(size: fontSize, weight: .semibold)
+        let font = AppTypography.nativeFont(size: fontSize, weight: .semibold)
         let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
         // Reserve the faded edges for previews of neighboring tabs.
         let maximumWidth = viewport * (1 - edgeFadeFraction * 2)
@@ -388,7 +388,7 @@ struct ListSelector: View {
                     SnipListMarkView(mark: item.mark, appearance: item.appearance, diameter: fontSize * 1.5, scalesWithText: false)
                     Text(item.title).lineLimit(1)
                 }
-                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                .font(AppTypography.font(size: fontSize, weight: .semibold))
                 .foregroundStyle(item.appearance.color)
                 .opacity((pageFrame.directEntrance?.destination == item.page
                     ? Double(pageFrame.directEntrance?.selectorProgress ?? 1) : 1)

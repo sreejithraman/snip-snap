@@ -117,7 +117,7 @@ struct IOSAppRootView: View {
                 GeometryReader { geometry in
                     let bounds = geometry[anchor]
                     Text(verbatim: "DEV \(slot)")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(AppTypography.font(size: 9, weight: .bold))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                         .background(.yellow, in: Capsule())
@@ -134,7 +134,7 @@ struct IOSAppRootView: View {
                 Text(verbatim: model.haptics.event.map {
                     "\($0.kind):\($0.id)"
                 } ?? "none")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                     .allowsHitTesting(false)
@@ -145,7 +145,7 @@ struct IOSAppRootView: View {
             if (ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TESTING"] == "1" || shareProcessToken != nil),
                isUITestStartupComplete {
                 Text(verbatim: "UI test startup complete")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .frame(width: 1, height: 1)
                     .opacity(0.01)
                     .allowsHitTesting(false)
@@ -155,7 +155,7 @@ struct IOSAppRootView: View {
                 Text(
                     String(model.snips.filter { $0.content.contains(shareProcessToken) }.count)
                 )
-                .font(.caption2)
+                .appFont(.caption2)
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
                 .accessibilityIdentifier("share-process-count")
@@ -382,27 +382,25 @@ struct IOSAppRootView: View {
     private var appNavigation: some View {
         if usesCompactLayout {
             GeometryReader { proxy in
-                VStack(spacing: 0) {
-                    CompactLibraryPageStack(
-                        model: model,
-                        clipboard: session.clipboard,
-                        clipboardViewState: clipboardViewState,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        editMode: collectionEditModeBinding,
-                        motionState: listPageMotionState,
-                        isComposerFocused: isCompactComposerFocused,
-                        dismissComposerKeyboard: { isCompactComposerFocused = false },
-                        cancelNewList: requestCancelNewList,
-                        libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: true)
-                    )
-                    .libraryToast(
-                        model: model,
-                        isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
-                        usesFixedExpiry: true
-                    )
-                    .frame(maxHeight: .infinity)
-
+                CompactLibraryPageStack(
+                    model: model,
+                    clipboard: session.clipboard,
+                    clipboardViewState: clipboardViewState,
+                    copyShare: copyShare,
+                    sheet: $sheet,
+                    editMode: collectionEditModeBinding,
+                    motionState: listPageMotionState,
+                    isComposerFocused: isCompactComposerFocused,
+                    dismissComposerKeyboard: { isCompactComposerFocused = false },
+                    cancelNewList: requestCancelNewList,
+                    libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: true)
+                )
+                .libraryToast(
+                    model: model,
+                    isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
+                    usesFixedExpiry: true
+                )
+                .safeAreaInset(edge: .bottom, spacing: 0) {
                     ListPageFrameReader(
                         state: listPageMotionState, pages: model.pages, selectedPage: model.selectedPage
                     ) { frame in
@@ -812,15 +810,15 @@ private struct AppleAccountNoticeBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: model.systemImage)
-                    .font(.title3.weight(.semibold))
+                    .appFont(.title3, weight: .semibold)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.title)
-                        .font(.headline)
+                        .appFont(.headline)
                         .accessibilityIdentifier("apple-account-notice")
                     Text(model.message)
-                        .font(.subheadline)
+                        .appFont(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -842,7 +840,7 @@ private struct AppleAccountNoticeBanner: View {
             }
             if let errorMessage = model.errorMessage {
                 Text(errorMessage)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.red)
             }
         }

@@ -160,7 +160,7 @@ struct SnipListMarkView: View {
                     .foregroundStyle(appearance.color)
             case .letters(let letters):
                 Text(verbatim: letters)
-                    .font(.system(size: size * (letters.count > 1 ? 0.42 : 0.52), weight: .semibold, design: .rounded))
+                    .font(AppTypography.font(size: size * (letters.count > 1 ? 0.42 : 0.52), weight: .semibold))
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
                     .foregroundStyle(appearance.badgeLabel(in: environment))
@@ -237,7 +237,7 @@ struct SnipListColorPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             if showsTitle {
-                Text("Color").font(.subheadline.weight(.semibold))
+                Text("Color").appFont(.subheadline, weight: .semibold)
             }
             GlassEffectContainer(spacing: SnipSnapSpacing.relatedContent) {
                 LazyVGrid(
@@ -285,12 +285,12 @@ struct SnipListNoIconButton: View {
             HStack(spacing: SnipSnapSpacing.relatedContent) {
                 SnipListMarkView(mark: .letters("Aa"), appearance: SnipListAppearance(preset: nil), diameter: 28)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("No icon").font(.body.weight(.medium))
-                    Text("Show the list’s first letters").font(.caption).foregroundStyle(.secondary)
+                    Text("No icon").appFont(.body, weight: .medium)
+                    Text("Show the list’s first letters").appFont(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 if isSelected {
-                    Image(systemName: "checkmark").font(.body.weight(.semibold))
+                    Image(systemName: "checkmark").appFont(.body, weight: .semibold)
                 }
             }
             .padding(.horizontal, 10)

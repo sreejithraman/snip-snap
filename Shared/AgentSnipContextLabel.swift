@@ -23,7 +23,7 @@ struct AgentSnipContextLabel: View {
                     .truncationMode(.middle)
             }
         }
-        .font(.caption)
+        .appFont(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -63,7 +63,7 @@ struct SnipRowMetadata: View {
                         .fontWeight(.medium)
                 }
             }
-            .font(.caption)
+            .appFont(.caption)
             .foregroundStyle(.secondary)
         }
     }

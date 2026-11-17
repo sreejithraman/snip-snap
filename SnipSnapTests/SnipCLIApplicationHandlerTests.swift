@@ -7,6 +7,54 @@ import XCTest
 
 final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
     @MainActor
+    func testOriginSettingsSnapshotRevisionCompatibilityAndEditingGuard() async throws {
+        let snip = Snip(content: "Manual draft", origin: .quickEntry)
+        let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let handler = makeHandler(model: model)
+        func settings() async throws -> SnipCLIApplicationResult {
+            let receipt = try await handle(.settingsShow, using: handler, model: model)
+            guard case .application(let result) = receipt.extendedResult else {
+                throw SnipLibraryError.invalidCommand
+            }
+            return result
+        }
+        let initial = try await settings()
+        XCTAssertEqual(initial.values["origin-filter"], "all")
+        _ = try await handle(.setSetting(key: .originFilter, value: "human", expectedRevision: initial.revision),
+                             using: handler, model: model)
+        let human = try await settings()
+        XCTAssertEqual(human.values["origin-filter"], "human")
+        XCTAssertEqual(human.values["agent-snips-only"], "off")
+        XCTAssertNotEqual(human.revision, initial.revision)
+        do {
+            _ = try await handle(.setSetting(key: .originFilter, value: "agent", expectedRevision: initial.revision),
+                                 using: handler, model: model)
+            XCTFail("The previous filter revision must be stale.")
+        } catch {}
+        XCTAssertEqual(model.originFilter, .human)
+        _ = try await handle(.setSetting(key: .agentSnipsOnly, value: "on", expectedRevision: human.revision),
+                             using: handler, model: model)
+        let agent = try await settings()
+        XCTAssertEqual(agent.values["origin-filter"], "agent")
+        XCTAssertEqual(agent.values["agent-snips-only"], "on")
+        _ = try await handle(.setSetting(key: .agentSnipsOnly, value: "off", expectedRevision: agent.revision),
+                             using: handler, model: model)
+        let all = try await settings()
+        XCTAssertEqual(all.values["origin-filter"], "all")
+        let opened = await model.beginEditing(snip.id)
+        XCTAssertTrue(opened)
+        for key in [SnipCLIApplicationSetting.originFilter, .agentSnipsOnly] {
+            do {
+                _ = try await handle(.setSetting(key: key, value: key == .originFilter ? "human" : "on",
+                                                expectedRevision: all.revision), using: handler, model: model)
+                XCTFail("Changing origin must preserve the inline editor.")
+            } catch SnipCLIRequestError.editingInProgress {}
+        }
+        XCTAssertEqual(model.originFilter, .all)
+    }
+
+    @MainActor
     func testICloudRetryRejectsAnEditorWithoutReplacingItsLibrary() async throws {
         let snip = Snip(content: "Draft being edited", origin: .quickEntry)
         let model = AppModel(library: InMemorySnipLibrary(snips: [snip]), defaults: defaults())

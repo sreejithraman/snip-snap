@@ -940,3 +940,159 @@ extension IOSAppModelTests {
         await enabled.cleanUp()
     }
 }
+
+@MainActor
+final class IOSDoneLimitTests: IOSModelTestCase {
+    private func displayDefaults() -> UserDefaults {
+        let suite = "done-limit-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    private func doneSnips(in listID: UUID = SnipList.inboxID) -> [Snip] {
+        (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent,
+                 listID: listID, isDone: true, manualPosition: Int64($0))
+        }
+    }
+
+    func testDefaultLimitPreservesNotDoneAndPinnedSnipsAndPersistsUnlimited() async {
+        let settings = displayDefaults()
+        let done = doneSnips()
+        let pending = Snip(content: "Not Done", origin: .quickEntry)
+        let pin = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date(timeIntervalSince1970: 1))
+        let library = ModelTestLibrary(snips: done + [pending, pin])
+        let model = IOSAppModel(library: library, defaults: settings)
+        await model.load()
+        XCTAssertEqual(model.doneLimit, .ten)
+        XCTAssertEqual(model.visibleSnips.map(\.id), [pin.id, pending.id] + done[2...].reversed().map(\.id))
+        model.setDoneLimit(.unlimited)
+        let reopened = IOSAppModel(library: library, defaults: settings)
+        await reopened.load()
+        XCTAssertEqual(reopened.doneLimit, .unlimited)
+        XCTAssertEqual(reopened.visibleSnips.count, 14)
+    }
+
+    func testLimitFollowsListOriginAndSortWhileSearchBypassesIt() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let done = doneSnips()
+        let elsewhere = doneSnips(in: work.id)
+        let humans = (1...12).map { Snip(content: "Human \($0)", origin: .quickEntry, isDone: true) }
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: done + elsewhere + humans, lists: [.inbox, work]), defaults: displayDefaults()
+        )
+        await model.load()
+        model.originFilter = .agent
+        XCTAssertEqual(model.visibleSnips.map(\.id), done[2...].reversed().map(\.id))
+        XCTAssertEqual(model.visibleSnips(in: work.id).map(\.id), elsewhere[2...].reversed().map(\.id))
+        model.sortMode = .manual
+        XCTAssertEqual(model.visibleSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        model.sortMode = .oldestFirst
+        XCTAssertEqual(model.visibleSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        model.searchText = "Done"
+        XCTAssertEqual(model.visibleSnips.map(\.id), done.map(\.id))
+        model.completionFilter = .notDone
+        XCTAssertTrue(model.visibleSnips.isEmpty, "iOS keeps its existing completion filter during list search")
+        model.completionFilter = .done
+        XCTAssertEqual(model.visibleSnips.count, 12)
+        model.searchText = " \n "
+        XCTAssertEqual(model.visibleSnips.count, 12)
+        XCTAssertEqual(model.doneLimit, .ten)
+        model.completionFilter = .all
+        XCTAssertEqual(model.visibleSnips.count, 10)
+        XCTAssertFalse(model.canReorderVisibleSnips)
+    }
+
+    func testShrinkingLimitKeepsVisibleSelectionAcrossListsAndAnEditorMounted() async {
+        let done = doneSnips()
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let other = Snip(content: "Elsewhere", origin: .quickEntry, listID: work.id)
+        let model = IOSAppModel(
+            library: ModelTestLibrary(snips: done + [other], lists: [.inbox, work]), defaults: displayDefaults()
+        )
+        await model.load()
+        model.setDoneLimit(.unlimited)
+        model.selectSnips([done[0].id, done[11].id, other.id])
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.selectedSnipIDs, [done[11].id, other.id])
+        model.setDoneLimit(.unlimited)
+        XCTAssertTrue(model.beginInlineSnipEdit(done[0]))
+        let draft = model.snipEditorDraft
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.doneLimit, .unlimited)
+        XCTAssertTrue(model.snipEditorDraft === draft)
+        XCTAssertTrue(model.visibleSnips.contains { $0.id == done[0].id })
+    }
+
+    func testDoneStatusKeepsEveryMatchingDoneSnipSelectedUntilReturningToAll() async {
+        let done = doneSnips()
+        let settings = displayDefaults()
+        let model = IOSAppModel(library: ModelTestLibrary(snips: done), defaults: settings)
+        await model.load()
+        model.completionFilter = .done
+        XCTAssertEqual(model.visibleSnips.count, 12)
+        model.selectSnips([done[0].id, done[11].id])
+        model.sortMode = .oldestFirst
+        XCTAssertEqual(model.selectedSnipIDs, [done[0].id, done[11].id])
+        XCTAssertEqual(SnipDoneLimit.load(from: settings), .ten)
+        model.completionFilter = .all
+        XCTAssertEqual(model.selectedSnipIDs, [done[0].id])
+        XCTAssertEqual(model.visibleSnips.count, 10)
+    }
+
+    func testSortChangeRemovesOnlySelectionHiddenByTheDoneLimit() async {
+        let done = doneSnips()
+        let human = Snip(content: "Gathered human", origin: .quickEntry)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: done + [human]), defaults: displayDefaults())
+        await model.load()
+        model.selectSnips([done[11].id, done[5].id, human.id])
+        model.originFilter = .agent
+        model.sortMode = .manual
+        XCTAssertEqual(model.selectedSnipIDs, [done[5].id, human.id])
+        model.setDoneLimit(.unlimited)
+        XCTAssertEqual(model.selectedSnipIDs, [done[5].id, human.id])
+    }
+
+    func testDoneMutationAndReloadDropSelectionThatFallsPastTheLimit() async {
+        let done = doneSnips()
+        let pending = Snip(createdAt: Date(timeIntervalSince1970: 100), content: "Next Done", origin: .agent)
+        let library = ModelTestLibrary(snips: done + [pending])
+        let model = IOSAppModel(library: library, defaults: displayDefaults())
+        await model.load()
+        model.selectSnips([done[2].id, done[11].id])
+        let changed = await model.toggleDone(id: pending.id)
+        XCTAssertTrue(changed)
+        XCTAssertEqual(model.selectedSnipIDs, [done[11].id])
+        await model.load()
+        XCTAssertEqual(model.selectedSnipIDs, [done[11].id])
+    }
+    func testLiveDoneChangeKeepsEditorMountedUntilCancellation() async {
+        let done = doneSnips()
+        let pending = Snip(createdAt: Date(timeIntervalSince1970: 100), content: "Next Done", origin: .agent)
+        let model = IOSAppModel(library: ModelTestLibrary(snips: done + [pending]), defaults: displayDefaults())
+        await model.load()
+        XCTAssertTrue(model.beginInlineSnipEdit(done[2]))
+        let draft = model.snipEditorDraft
+        let changed = await model.toggleDone(id: pending.id)
+        XCTAssertTrue(changed)
+        XCTAssertTrue(model.snipEditorDraft === draft)
+        XCTAssertTrue(model.visibleSnips.contains { $0.id == done[2].id })
+        model.cancelInlineSnipEdit()
+        XCTAssertFalse(model.visibleSnips.contains { $0.id == done[2].id })
+        XCTAssertNil(model.selectedSnipID)
+    }
+
+    func testClearingSearchReappliesLimitToGatheredAndSingleSelection() async {
+        let done = doneSnips()
+        let model = IOSAppModel(library: ModelTestLibrary(snips: done), defaults: displayDefaults())
+        await model.load()
+        model.searchText = "Done"
+        model.selectSnips([done[0].id, done[11].id])
+        model.selectedSnipID = done[0].id
+        model.searchText = ""
+        XCTAssertEqual(model.selectedSnipIDs, [done[11].id])
+        XCTAssertNil(model.selectedSnipID)
+    }
+
+}

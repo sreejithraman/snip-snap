@@ -1,7 +1,108 @@
 import Foundation
 import SnipSnapCore
+import SwiftUI
+import UIKit
 
 #if DEBUG
+/// Samples native page layout while XCTest's synchronous drag owns the test process.
+struct PageLayoutUITestProbe: UIViewControllerRepresentable {
+    let name: String
+
+    func makeUIViewController(context: Context) -> Controller { Controller(name: name) }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.name = name
+        controller.view.accessibilityIdentifier = "page-layout-\(name)"
+    }
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.displayLink?.invalidate()
+    }
+
+    final class Controller: UIViewController {
+        var name: String
+        var displayLink: CADisplayLink?
+        private var samples: [[String: CGFloat]] = []
+
+        init(name: String) {
+            self.name = name
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func loadView() {
+            let probe = ProbeView()
+            probe.isAccessibilityElement = true
+            probe.accessibilityIdentifier = "page-layout-\(name)"
+            probe.read = { [weak self] in
+                guard let self, let data = try? JSONEncoder().encode(samples) else { return "[]" }
+                return String(decoding: data, as: UTF8.self)
+            }
+            view = probe
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            guard parent != nil, displayLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(sample))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 20, maximum: 30, preferred: 30)
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+
+        @objc private func sample() {
+            guard let navigationController, let window = view.window else { return }
+            func collection(in view: UIView) -> UICollectionView? {
+                (view as? UICollectionView) ?? view.subviews.lazy.compactMap { collection(in: $0) }.first
+            }
+            let pageFrame = navigationController.view.convert(navigationController.view.bounds, to: window)
+            guard pageFrame.intersection(window.bounds).width > 1,
+                  let list = collection(in: navigationController.view),
+                  let cell = list.visibleCells.min(by: { $0.frame.minY < $1.frame.minY }) else { return }
+            let toolbarCount = navigationController.topViewController?.navigationItem.trailingItemGroups
+                .reduce(0) { $0 + $1.barButtonItems.count } ?? 0
+            var hasVerticalBar = false
+            if #available(iOS 27.1, *), let scene = window.windowScene {
+                hasVerticalBar = scene.traitCollection.verticalBarEdge != .unspecified
+            }
+            var value: [String: CGFloat] = [
+                "pageX": pageFrame.minX,
+                "collectionWidth": list.bounds.width,
+                "viewportHeight": list.bounds.height,
+                "contentHeight": list.contentSize.height,
+                "snipWidth": cell.contentView.bounds.width,
+                "snipHeight": cell.contentView.bounds.height,
+                "contentOffsetY": list.contentOffset.y,
+                "navigationBarHeight": navigationController.navigationBar.bounds.height,
+                "toolbarSlotCount": CGFloat(toolbarCount),
+                "hasVerticalBar": hasVerticalBar ? 1 : 0
+            ]
+            func titleHeights(in view: UIView, clippedTo clip: CGRect) -> [CGFloat] {
+                guard !view.isHidden, view.alpha > 0.01 else { return [] }
+                let frame = view.convert(view.bounds, to: window)
+                let visibleClip = view.clipsToBounds ? clip.intersection(frame) : clip
+                let visible = frame.intersection(visibleClip)
+                let own = (view as? UILabel).flatMap {
+                    $0.text == name && !visible.isNull && !visible.isEmpty ? visible.height : nil
+                }
+                return (own.map { [$0] } ?? []) + view.subviews.flatMap { titleHeights(in: $0, clippedTo: visibleClip) }
+            }
+            if let height = titleHeights(in: navigationController.view, clippedTo: window.bounds).max() {
+                value["visibleTitleHeight"] = height
+            }
+            if samples.last != value { samples.append(value) }
+            if samples.count > 1000 { samples.removeFirst() }
+        }
+    }
+
+    final class ProbeView: UIView {
+        var read: (() -> String)?
+        override var accessibilityValue: String? {
+            get { read?() }
+            set {}
+        }
+    }
+}
+
 actor RecoveryUITestSnipLibrary: SnipLibrary {
     private let listID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     private let snipID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!

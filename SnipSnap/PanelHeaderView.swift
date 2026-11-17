@@ -5,6 +5,7 @@ struct PanelHeaderView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var accessibilityPermissions: AccessibilityPermissionController
     @FocusState.Binding var focusedTarget: PanelFocusTarget?
+    @Binding var showingViewOptions: Bool
     let closePanel: () -> Void
     let expandSearch: () -> Void
     let collapseSearch: () -> Void
@@ -47,7 +48,7 @@ struct PanelHeaderView: View {
                 }
 
                 if !model.isSearchExpanded {
-                    PanelViewOptionsButton(model: model)
+                    PanelViewOptionsButton(model: model, isPresented: $showingViewOptions)
                 }
 
                 PanelMoreButton(
@@ -82,7 +83,7 @@ struct PanelHeaderView: View {
 
                 TextField("Search", text: $model.query)
                     .textFieldStyle(.plain)
-                    .font(.body)
+                    .appFont(.body)
                     .foregroundStyle(SnipSnapColors.textPrimary)
                     .focused($focusedTarget, equals: .search)
                     .disabled(model.editingID != nil)

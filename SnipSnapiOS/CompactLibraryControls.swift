@@ -272,8 +272,8 @@ struct CompactLibraryControls: View {
             HStack {
                 pasteButton
                     .offset(x: -travel)
-                    .allowsHitTesting(!motion.isDragging)
-                    .accessibilityHidden(motion.isDragging)
+                    .allowsHitTesting(!frame.isMoving)
+                    .accessibilityHidden(frame.isMoving)
 
                 Spacer(minLength: 0)
 
@@ -285,8 +285,8 @@ struct CompactLibraryControls: View {
                 }
                 .accessibilityLabel("Search")
                 .offset(x: travel)
-                .allowsHitTesting(!motion.isDragging)
-                .accessibilityHidden(motion.isDragging)
+                .allowsHitTesting(!frame.isMoving)
+                .accessibilityHidden(frame.isMoving)
             }
             .opacity(1 - progress)
         }
@@ -309,12 +309,13 @@ struct CompactLibraryControls: View {
     private var pasteLabel: String { isClipboardSelected ? "Paste" : "Paste and Save" }
 
     private var isPasteDisabled: Bool {
-        motion.isDragging || (isClipboardSelected
+        isClipboardSelected
             ? clipboard.isPasting
-            : !showsComposer || storage.isSaving || storage.isStaging)
+            : !showsComposer || storage.isSaving || storage.isStaging
     }
 
     private func paste() {
+        guard !frame.isMoving else { return }
         if isClipboardSelected {
             let providers = UIPasteboard.general.itemProviders
             Task { await clipboard.capture(providers) }
@@ -401,7 +402,6 @@ struct CompactLibraryControls: View {
             }
         }
         .frame(height: composerHeight, alignment: .bottom)
-        .clipped()
     }
 
     private func composer(for list: SnipList, draft: ComposerDraft, isPreview: Bool) -> some View {
@@ -414,7 +414,7 @@ struct CompactLibraryControls: View {
                 ))
             }) {
                 Image(systemName: isPreview ? "plus" : (storage.isStaging ? "hourglass" : "plus"))
-                    .font(.title3.weight(.medium))
+                    .appFont(.title3, weight: .medium)
                     .frame(width: controlLength, height: controlLength)
                     .contentShape(Circle())
             }
@@ -986,7 +986,7 @@ private struct CompactDraftAttachment: View {
 
             Button(action: remove) {
                 Image(systemName: "xmark")
-                    .font(.caption2.weight(.bold))
+                    .appFont(.caption2, weight: .bold)
                     .foregroundStyle(.primary)
                     .frame(width: 22, height: 22)
                     .background(.thickMaterial, in: Circle())

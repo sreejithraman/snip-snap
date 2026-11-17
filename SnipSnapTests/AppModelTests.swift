@@ -55,7 +55,175 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
-    func testAgentSnipsOnlyComposesWithCompletionListAndSearch() async {
+    func testDoneLimitAppliesAfterListAndOriginFiltersWithoutChangingSortedOrder() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let elsewhere = (1...12).map { Snip(content: "Elsewhere \($0)", origin: .agent, listID: work.id, isDone: true) }
+        let human = (1...12).map { Snip(content: "Human \($0)", origin: .quickEntry, isDone: true) }
+        let pinned = Snip(content: "Pinned", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
+        let pending = Snip(content: "Not Done", origin: .agent)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: done + elsewhere + human + [pinned, pending], lists: [.inbox, work]),
+            defaults: defaults()
+        )
+        await model.waitForInitialLoad()
+        model.originFilter = .agent
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pinned.id, pending.id] + done[2...].reversed().map(\.id))
+        XCTAssertEqual(model.filteredSnips(in: work.id).count, 10)
+        model.query = "Done"
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pending.id] + done.reversed().map(\.id))
+    }
+
+    @MainActor
+    func testDoneStatusBrowsesAllDoneWhileKeepingTheAllStatusLimitAndOldestSort() async {
+        let settings = defaults()
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let model = AppModel(library: InMemorySnipLibrary(snips: done), defaults: settings)
+        await model.waitForInitialLoad()
+        model.setSortMode(.oldestFirst)
+        XCTAssertEqual(model.filteredSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        model.completionFilter = .done
+        XCTAssertEqual(model.filteredSnips.map(\.id), done.map(\.id))
+        model.selection = [done[11].id]
+        XCTAssertEqual(model.doneLimit, .ten)
+        XCTAssertEqual(SnipDoneLimit.load(from: settings), .ten)
+        model.completionFilter = .notDone
+        XCTAssertTrue(model.filteredSnips.isEmpty)
+        model.completionFilter = .all
+        XCTAssertEqual(model.filteredSnips.count, 10)
+        XCTAssertTrue(model.selection.isEmpty)
+    }
+
+    @MainActor
+    func testDoneLimitPersistsUnlimitedAndReconcilesSelectionWhenReduced() async {
+        let settings = defaults()
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let library = InMemorySnipLibrary(snips: done)
+        let model = AppModel(library: library, defaults: settings)
+        await model.waitForInitialLoad()
+        XCTAssertEqual(model.doneLimit, .ten)
+        model.setDoneLimit(.unlimited)
+        XCTAssertEqual(model.filteredSnips.count, 12)
+        let reopened = AppModel(library: library, defaults: settings)
+        await reopened.waitForInitialLoad()
+        XCTAssertEqual(reopened.doneLimit, .unlimited)
+        XCTAssertEqual(reopened.filteredSnips.count, 12)
+        model.selection = [done[0].id, done[11].id]
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.selection, [done[11].id])
+        XCTAssertFalse(model.canReorder(ids: [done[11].id]))
+        let before = model.snips
+        await model.moveSelectionNow(by: 1, ids: [done[11].id])
+        XCTAssertEqual(model.snips, before)
+        model.setDoneLimit(.unlimited)
+        XCTAssertTrue(model.canReorder(ids: [done[11].id]))
+    }
+
+    @MainActor
+    func testDoneLimitCannotUnmountAnEditorAndManualSortKeepsValidSelection() async {
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent,
+                 isDone: true, manualPosition: Int64($0))
+        }
+        let model = AppModel(library: InMemorySnipLibrary(snips: done), defaults: defaults())
+        await model.waitForInitialLoad()
+        model.setDoneLimit(.unlimited)
+        let opened = await model.beginEditing(done[0].id)
+        XCTAssertTrue(opened)
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.doneLimit, .unlimited)
+        XCTAssertEqual(model.editingID, done[0].id)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == done[0].id })
+        model.cancelEditing()
+        model.setDoneLimit(.ten)
+        model.selection = [done[11].id]
+        model.setSortMode(.manual)
+        XCTAssertEqual(model.filteredSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        XCTAssertTrue(model.selection.isEmpty)
+    }
+
+    @MainActor
+    func testCancellingCapDisplacedEditorClearsHiddenSelection() async throws {
+        try await checkClosingCapDisplacedEditor(save: false)
+    }
+
+    @MainActor
+    func testSavingCapDisplacedEditorClearsHiddenSelection() async throws {
+        try await checkClosingCapDisplacedEditor(save: true)
+    }
+
+    @MainActor
+    private func checkClosingCapDisplacedEditor(save: Bool) async throws {
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let newer = Snip(createdAt: Date(timeIntervalSince1970: 100), content: "Next Done", origin: .agent)
+        let model = AppModel(library: InMemorySnipLibrary(snips: done + [newer]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let edited = done[2]
+        XCTAssertEqual(model.filteredSnips.last?.id, edited.id)
+        model.selection = [edited.id]
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+        let sessionID = try XCTUnwrap(model.inlineEditSessionID)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-editor-displacement-\(UUID())"))
+
+        await model.toggleDoneNow(id: newer.id, to: pasteboard)
+        await model.reload()
+
+        XCTAssertEqual(model.snips.first { $0.id == newer.id }?.isDone, true)
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.inlineEditSessionID, sessionID)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+        XCTAssertEqual(model.selectionState, .init(selection: [edited.id], anchor: edited.id, focus: edited.id))
+
+        if save {
+            let saved = await model.saveInlineEdit(content: "Saved draft", in: sessionID)
+            XCTAssertTrue(saved)
+        } else {
+            model.cancelEditing()
+        }
+
+        XCTAssertNil(model.editingID)
+        XCTAssertFalse(model.filteredSnips.contains { $0.id == edited.id })
+        XCTAssertEqual(model.filteredSnips.count, 10)
+        XCTAssertEqual(model.selectionState, .init(selection: [], anchor: nil, focus: nil))
+        XCTAssertTrue(model.selectedSnips.isEmpty)
+        XCTAssertEqual(model.snips.count, 13)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.content, save ? "Saved draft" : edited.content)
+    }
+
+    @MainActor
+    func testReorderEligibilityUsesTheWholeSelectionAcrossListsAndPins() async {
+        let review = SnipList(id: UUID(), name: "Review", systemImage: "star", position: 1)
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let otherList = Snip(content: "Review", origin: .quickEntry, listID: review.id)
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date(timeIntervalSince1970: 400))
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [first, second, otherList, pinned], lists: [.inbox, review]),
+            defaults: defaults()
+        )
+        await model.waitForInitialLoad()
+
+        XCTAssertTrue(model.canReorder(ids: [first.id, second.id]))
+        XCTAssertTrue(model.canReorder(ids: [first.id]))
+        XCTAssertTrue(model.canReorder(ids: [second.id]))
+        XCTAssertTrue(model.canReorder(ids: [otherList.id]))
+        XCTAssertFalse(model.canReorder(ids: [first.id, otherList.id]))
+        XCTAssertFalse(model.canReorder(ids: [first.id, pinned.id]))
+        XCTAssertFalse(model.canReorder(ids: [pinned.id]))
+        XCTAssertFalse(model.canReorder(ids: []))
+    }
+
+    @MainActor
+    func testOriginFilterComposesWithCompletionListAndSearch() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let manual = Snip(content: "Review manual", origin: .quickEntry)
         let agent = Snip(content: "Review agent", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
@@ -66,11 +234,11 @@ final class AppModelTests: StoreBackedTestCase {
             defaults: defaults()
         )
         await model.waitForInitialLoad()
-        XCTAssertFalse(model.agentSnipsOnly)
+        XCTAssertEqual(model.originFilter, .all)
         let originalOrder = model.filteredSnips.map(\.id)
         model.selection = [manual.id, agent.id]
 
-        model.agentSnipsOnly = true
+        model.originFilter = .agent
 
         XCTAssertEqual(Set(model.filteredSnips.map(\.id)), [agent.id, done.id])
         XCTAssertEqual(model.selection, [agent.id])
@@ -83,28 +251,43 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(model.filteredSnips.map(\.id), [elsewhere.id])
         model.exitSearch()
         model.completionFilter = .all
-        model.agentSnipsOnly = false
+        model.originFilter = .human
+        XCTAssertEqual(model.filteredSnips.map(\.id), [manual.id])
+        model.selection = [manual.id]
+        model.originFilter = .agent
+        XCTAssertTrue(model.selection.isEmpty)
+        model.originFilter = .human
+        model.query = "Review"
+        XCTAssertEqual(model.filteredSnips.map(\.id), [manual.id])
+        model.exitSearch()
+        model.completionFilter = .done
+        XCTAssertTrue(model.filteredSnips.isEmpty)
+        model.completionFilter = .all
+        model.originFilter = .all
         XCTAssertEqual(model.filteredSnips.map(\.id), originalOrder)
     }
 
     @MainActor
-    func testAgentFilterCannotHideInlineEditorOrReorderFilteredSubset() async throws {
+    func testOriginFilterCannotHideInlineEditorOrReorderFilteredSubset() async throws {
         let manual = Snip(content: "Manual draft", origin: .quickEntry)
         let agent = Snip(content: "Agent", origin: .agent)
         let model = AppModel(library: InMemorySnipLibrary(snips: [manual, agent]), defaults: defaults())
         await model.waitForInitialLoad()
         let opened = await model.beginEditing(manual.id)
         XCTAssertTrue(opened)
-        model.agentSnipsOnly = true
-        XCTAssertFalse(model.agentSnipsOnly)
+        model.originFilter = .agent
+        model.originFilter = .human
+        XCTAssertEqual(model.originFilter, .all)
         XCTAssertTrue(model.filteredSnips.contains { $0.id == manual.id })
         model.cancelEditing()
         let before = model.snips
-        model.agentSnipsOnly = true
-        XCTAssertFalse(model.canReorder(ids: [agent.id]))
-        await model.moveSelectionNow(by: -1, ids: [agent.id])
-        XCTAssertEqual(model.snips, before)
-        XCTAssertEqual(model.sortMode, .chronological)
+        for filter in [SnipOriginFilter.agent, .human] {
+            model.originFilter = filter
+            XCTAssertFalse(model.canReorder(ids: [agent.id]))
+            await model.moveSelectionNow(by: -1, ids: [agent.id])
+            XCTAssertEqual(model.snips, before)
+            XCTAssertEqual(model.sortMode, .chronological)
+        }
     }
 
     @MainActor
@@ -2252,6 +2435,68 @@ final class AppModelTests: StoreBackedTestCase {
         model.presentError("Copy failed", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
         model.presentError("Copy failed", operation: "clipboard.write", diagnosticCode: "pasteboard.writeFailed")
         XCTAssertEqual(probe.events.count, 7, "Other operations record every presented failure.")
+    }
+
+    @MainActor
+    func testCopyMarksDoneAfterPersistedSourceNormalization() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: false)
+    }
+
+    @MainActor
+    func testCopyMarksDoneAfterUnobservedReordering() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: true)
+    }
+
+    @MainActor
+    func testDoneControlCopiesAndMarksDoneAfterUnobservedReordering() async throws {
+        try await checkCopyAndDoneAfterMetadataChange(reorder: true, useDoneControl: true)
+    }
+
+    @MainActor
+    private func checkCopyAndDoneAfterMetadataChange(reorder: Bool, useDoneControl: Bool = false) async throws {
+        let repository = try SwiftDataSnipLibrary(storeURL: storeURL().appendingPathExtension("store"))
+        let model = AppModel(library: repository, defaults: defaults())
+        await model.reload()
+        let added = await model.add(
+            content: "Copy me", origin: reorder ? .quickEntry : .agent,
+            source: reorder ? nil : SnipSource(applicationName: "Agent", windowTitle: "Older task")
+        )
+        XCTAssertTrue(added)
+        let snip = try XCTUnwrap(model.snips.first)
+        if reorder {
+            let otherAdded = await model.add(content: "Keep me", origin: .quickEntry)
+            XCTAssertTrue(otherAdded)
+            let other = try XCTUnwrap(model.snips.first { $0.id != snip.id })
+            _ = try await repository.perform(
+                .place(ids: [snip.id], in: snip.listID, before: other.id, basedOn: .manual),
+                sortedBy: .manual
+            )
+        }
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-metadata-copy-\(UUID())"))
+
+        if useDoneControl {
+            await model.setDoneNow(true, ids: [snip.id], to: pasteboard)
+        } else {
+            let copied = await model.copySnipsAndMarkDoneNow([snip], to: pasteboard)
+            XCTAssertTrue(copied, "Copy and Done must tolerate metadata changes: \(String(describing: model.latestFailure))")
+        }
+        XCTAssertNil(model.presentedError)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Copy me")
+        let saved = try await repository.checkedSnapshot(sortedBy: .manual)
+        XCTAssertTrue(try XCTUnwrap(saved.snips.first { $0.id == snip.id }).isDone)
+        if reorder {
+            let copied = try XCTUnwrap(saved.snips.first { $0.id == snip.id })
+            let other = try XCTUnwrap(saved.snips.first { $0.id != snip.id })
+            XCTAssertLessThan(copied.manualSortKey, other.manualSortKey)
+            XCTAssertFalse(other.isDone)
+        }
+
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDone)
+        await model.performToastActionNow(undo)
+        let restored = try await repository.checkedSnapshot(sortedBy: .manual)
+        XCTAssertFalse(try XCTUnwrap(restored.snips.first { $0.id == snip.id }).isDone)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Copy me")
     }
 
     @MainActor

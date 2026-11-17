@@ -1,11 +1,25 @@
 import Foundation
 
+public enum SnipOriginFilter: String, CaseIterable, Sendable {
+    case all
+    case agent
+    case human
+
+    public func includes(_ origin: SnipOrigin) -> Bool {
+        switch self {
+        case .all: true
+        case .agent: origin == .agent
+        case .human: origin != .agent
+        }
+    }
+}
+
 public enum SnipFilter {
     public static func apply(
         snips: [Snip],
         query: String,
         completionFilter: SnipCompletionFilter,
-        agentSnipsOnly: Bool = false,
+        originFilter: SnipOriginFilter = .all,
         listNames: [UUID: String] = [:],
         sourceLabel: (Snip) -> String = {
             guard let label = $0.source?.conciseLabel, !label.isEmpty else {
@@ -16,7 +30,7 @@ public enum SnipFilter {
     ) -> [Snip] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return snips.filter { snip in
-            guard !agentSnipsOnly || snip.origin == .agent else { return false }
+            guard originFilter.includes(snip.origin) else { return false }
             switch completionFilter {
             case .all:
                 break

@@ -79,9 +79,9 @@ struct PanelInlineFailureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
             Label(failure.title, systemImage: "exclamationmark.triangle")
-                .font(.subheadline.weight(.semibold))
+                .appFont(.subheadline, weight: .semibold)
             Text(failure.message)
-                .font(.caption)
+                .appFont(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -109,7 +109,7 @@ struct PanelConfirmationDialog: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
             Text(title)
-                .font(.headline)
+                .appFont(.headline)
             Text(message)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -180,6 +180,7 @@ final class PanelDialogPresenter {
 
         let hostingController = NSHostingController(
             rootView: PanelDialogSurface(content: content)
+                .appFont(.body)
         )
         let window = PanelDialogWindow(
             contentRect: .zero,

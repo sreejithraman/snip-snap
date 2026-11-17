@@ -447,7 +447,7 @@ struct GlassMenuActionStyle: ButtonStyle {
                 .labelStyle(.titleAndIcon)
             Spacer(minLength: 0)
         }
-        .font(.body)
+        .appFont(.body)
         .multilineTextAlignment(.leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

@@ -20,6 +20,22 @@ enum SnipCompletionLanguage {
 
 }
 
+extension SnipSortMode {
+    var title: String {
+        switch self {
+        case .chronological: String(localized: "Newest first")
+        case .oldestFirst: String(localized: "Oldest first")
+        case .manual: String(localized: "Manual")
+        }
+    }
+}
+
+extension SnipDoneLimit {
+    var title: String {
+        self == .unlimited ? String(localized: "Unlimited") : rawValue.formatted()
+    }
+}
+
 extension SnipCompletionFilter {
     var title: String {
         switch self {
@@ -34,6 +50,24 @@ extension SnipCompletionFilter {
         case .all: String(localized: "Nothing captured yet")
         case .done: String(localized: "No done snips")
         case .notDone: String(localized: "No unfinished snips")
+        }
+    }
+}
+
+extension SnipOriginFilter {
+    var title: String {
+        switch self {
+        case .all: String(localized: "All")
+        case .agent: String(localized: "Agent only")
+        case .human: String(localized: "Human only")
+        }
+    }
+
+    var emptyStateTitle: String {
+        switch self {
+        case .all: String(localized: "Nothing captured yet")
+        case .agent: String(localized: "No agent snips")
+        case .human: String(localized: "No human snips")
         }
     }
 }

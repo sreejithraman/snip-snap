@@ -86,7 +86,7 @@ struct SnipListTabBarView: View {
         Button(action: createList) {
             GlassEffectContainer {
                 Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
+                    .appFont(.body, weight: .semibold)
                     .frame(
                         width: PanelControlMetrics.floatingIconLength,
                         height: PanelControlMetrics.floatingIconLength

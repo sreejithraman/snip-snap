@@ -5,6 +5,37 @@ import XCTest
 @testable import SnipSnapPersistence
 
 final class SavedSnipsSessionTests: XCTestCase {
+  func testSwiftDataDoneAcceptsCopiedSnipsAfterSourceNormalizationAndCanBeUndone() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("snips.store"))
+    let session = SavedSnipsSession(library: library)
+    let sources: [(SnipOrigin, SnipSource?)] = [
+      (.quickEntry, nil),
+      (.selection, SnipSource(applicationName: "Example", windowTitle: "Document")),
+      (.agent, SnipSource(applicationName: "", agentContext: .init(sessionTitle: "Example task"))),
+      (.agent, SnipSource(applicationName: "Agent", windowTitle: "Legacy task")),
+    ]
+    for (origin, source) in sources {
+      let requestID = UUID()
+      let added = try await library.perform(
+        .add(content: "Copy me", origin: origin, source: source, listID: SnipList.inboxID,
+             attachmentURLs: [], requestID: requestID,
+             now: Date(timeIntervalSinceReferenceDate: 816_000_000.1234567)),
+        sortedBy: .manual
+      )
+      let snip = try XCTUnwrap(added.snapshot.snips.first { $0.requestID == requestID })
+      let changed = try await session.setDone(
+        ids: [snip.id], done: true,
+        expectation: .init(expectedCompletionSnips: [snip]), sortedBy: .manual
+      )
+      XCTAssertTrue(try XCTUnwrap(changed.update.snapshot.snips.first { $0.id == snip.id }).isDone)
+      let undo = try XCTUnwrap(changed.undo)
+      let restored = try await session.restoreDone(token: undo.id, sortedBy: .manual)
+      XCTAssertFalse(try XCTUnwrap(restored?.snapshot.snips.first { $0.id == snip.id }).isDone)
+    }
+  }
+
   func testDoneUndoOnlyReopensNewlyDoneUnpinnedSnips() async throws {
     let root = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -30,6 +61,124 @@ final class SavedSnipsSessionTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(snips.first { $0.id == done.id }).isDone)
     XCTAssertTrue(try XCTUnwrap(snips.first { $0.id == pinned.id }).isPinned)
     XCTAssertFalse(try XCTUnwrap(snips.first { $0.id == pinned.id }).isDone)
+  }
+
+  func testDoneAndNotDoneAllowReorderingBetweenTheReadAndGuardedWrite() async throws {
+    for done in [true, false] {
+      let (root, base, snips) = try await makeLibrary(contents: ["First", "Second"])
+      defer { try? FileManager.default.removeItem(at: root) }
+      _ = try await base.perform(.setDone(ids: [snips[0].id], done: !done), sortedBy: .manual)
+      let before = try await base.checkedSnapshot(sortedBy: .manual)
+      let expected = try XCTUnwrap(before.snips.first { $0.id == snips[0].id })
+      let library = ControlledDoneUndoLibrary(base: base)
+      let session = SavedSnipsSession(library: library)
+      await library.performBeforeNextCommand(
+        .place(ids: [expected.id], in: expected.listID, before: snips[1].id, basedOn: .manual)
+      )
+
+      let result = try await session.setDone(
+        ids: [expected.id], done: done,
+        expectation: .init(expectedCompletionSnips: [expected]), sortedBy: .manual
+      )
+
+      let changed = try XCTUnwrap(result.update.snapshot.snips.first { $0.id == expected.id })
+      let other = try XCTUnwrap(result.update.snapshot.snips.first { $0.id == snips[1].id })
+      XCTAssertEqual(changed.isDone, done)
+      XCTAssertLessThan(changed.manualSortKey, other.manualSortKey)
+      if done {
+        let undo = try XCTUnwrap(result.undo)
+        let restored = try await session.restoreDone(token: undo.id, sortedBy: .manual)
+        XCTAssertFalse(try XCTUnwrap(restored?.snapshot.snips.first { $0.id == expected.id }).isDone)
+      } else {
+        XCTAssertNil(result.undo)
+      }
+    }
+  }
+
+  func testCompletionGuardRejectsEditsPinsDeletionAndReplacementAtTheWrite() async throws {
+    for mutation in ["text", "attachments", "pin", "done", "delete", "replacement"] {
+      let (root, base, snips) = try await makeLibrary(contents: ["Original"])
+      defer { try? FileManager.default.removeItem(at: root) }
+      let original = snips[0]
+      let command: SnipLibraryCommand
+      switch mutation {
+      case "text":
+        command = .update(id: original.id, content: "Edited", attachmentURLs: nil,
+                          expectedUpdatedAt: nil, now: Date())
+      case "attachments":
+        let file = root.appendingPathComponent("new.txt")
+        try Data("New attachment".utf8).write(to: file)
+        command = .update(id: original.id, content: original.content, attachmentURLs: [file],
+                          expectedUpdatedAt: nil, now: Date())
+      case "pin": command = .setPinned(ids: [original.id], pinned: true)
+      case "done": command = .setDone(ids: [original.id], done: true)
+      case "delete": command = .delete(ids: [original.id])
+      default:
+        command = .replaceAll([Snip(id: original.id, content: original.content, origin: original.origin)])
+      }
+      let library = ControlledDoneUndoLibrary(base: base)
+      let session = SavedSnipsSession(library: library)
+      await library.performBeforeNextCommand(command)
+
+      do {
+        _ = try await session.setDone(
+          ids: [original.id], done: true,
+          expectation: .init(expectedCompletionSnips: [original]), sortedBy: .manual
+        )
+        XCTFail("A concurrent \(mutation) must reject completion.")
+      } catch {
+        XCTAssertEqual(error as? SnipLibraryError, .snipChanged, mutation)
+      }
+      let current = try await base.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(current.snips.first?.isDone, mutation == "delete" ? nil : mutation == "done")
+      if mutation == "text" { XCTAssertEqual(current.snips.first?.content, "Edited") }
+      if mutation == "attachments" { XCTAssertEqual(current.snips.first?.attachments.count, 1) }
+      if mutation == "pin" { XCTAssertEqual(current.snips.first?.isPinned, true) }
+    }
+  }
+
+  func testCompletionGuardRejectsChangedAttachmentOrderIdentityAndMetadata() async throws {
+    let (root, base, snips) = try await makeLibrary(contents: ["Original"])
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = ["first.txt", "second.txt"].map { root.appendingPathComponent($0) }
+    for file in files { try Data(file.lastPathComponent.utf8).write(to: file) }
+    let update = try await base.perform(
+      .update(id: snips[0].id, content: "Original", attachmentURLs: files,
+              expectedUpdatedAt: nil, now: Date()), sortedBy: .manual
+    )
+    let original = try XCTUnwrap(update.snapshot.snips.first)
+    let library = ControlledDoneUndoLibrary(base: base)
+    let session = SavedSnipsSession(library: library)
+    for mutation in ["order", "identity", "name", "path", "type", "bytes"] {
+      _ = try await base.perform(.replaceAll([original]), sortedBy: .manual)
+      var changed = original
+      switch mutation {
+      case "order": changed.attachments.reverse()
+      case "identity":
+        let attachment = changed.attachments[0]
+        changed.attachments[0] = SnipAttachment(
+          id: UUID(), fileName: attachment.fileName, relativePath: attachment.relativePath,
+          contentType: attachment.contentType, byteCount: attachment.byteCount
+        )
+      case "name": changed.attachments[0].fileName = "renamed.txt"
+      case "path": changed.attachments[0].relativePath = "other/first.txt"
+      case "type": changed.attachments[0].contentType = "application/octet-stream"
+      default: changed.attachments[0].byteCount += 1
+      }
+      await library.performBeforeNextCommand(.replaceAll([changed]))
+
+      do {
+        _ = try await session.setDone(
+          ids: [original.id], done: true,
+          expectation: .init(expectedCompletionSnips: [original]), sortedBy: .manual
+        )
+        XCTFail("Changed attachment \(mutation) must reject completion.")
+      } catch {
+        XCTAssertEqual(error as? SnipLibraryError, .snipChanged, mutation)
+      }
+      let current = try await base.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(current.snips, [changed])
+    }
   }
 
   func testOnlyLatestDoneActionCanBeUndoneAndItsTokenIsConsumedOnce() async throws {

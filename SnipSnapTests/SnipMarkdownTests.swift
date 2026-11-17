@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 import XCTest
 @testable import SnipSnap
@@ -14,12 +15,19 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertEqual(rendered.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }?.font, .body.monospaced())
     }
 
-    func testHeadingsStayBodySizedAndKeepSeparateLines() async {
+    func testHeadingsStayBodySizedAndKeepSeparateLines() async throws {
         let rendered = await SnipMarkdown.prepare("# Main\nBody\n\n###### Small\nMore").fullText
 
         XCTAssertEqual(String(rendered.characters), "Main\nBody\n\nSmall\nMore")
-        let headings = rendered.runs.filter { $0.font == .body.weight(.semibold) }
+        let headings = rendered.runs.filter { $0.font != nil }
         XCTAssertEqual(headings.map { String(rendered[$0.range].characters) }, ["Main", "Small"])
+        let context = EnvironmentValues().fontResolutionContext
+        let bodySize = Font.body.resolve(in: context).pointSize
+        for heading in headings {
+            let font = try XCTUnwrap(heading.font).resolve(in: context)
+            XCTAssertEqual(font.pointSize, bodySize, accuracy: 0.1)
+            XCTAssertEqual(CTFontCopyPostScriptName(font.ctFont) as String, "Allo-SemiBold")
+        }
     }
 
     func testListsKeepMarkersAndShallowNesting() async {
@@ -181,27 +189,43 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertTrue(documents.snapshot(for: source).isLoading)
     }
 
-    func testLargeFormattedPreparationKeepsTheMainActorResponsive() async throws {
+    func testLargeFormattedPreparationKeepsTheMainActorResponsive() async {
         let source = (0..<2_500).map {
             "**Prompt \($0):** write a detailed SwiftUI clipboard manager with `Snip` lists, search, sync, attachments, and recovery. Include code samples and edge cases."
         }.joined(separator: "\n")
         XCTAssertEqual(source.utf8.count, 391_389)
         let documents = SnipMarkdownDocuments()
         let document = documents.acquire(source)
-        let preparation = Task { await document.prepare() }
-        var largestGap: TimeInterval = 0
+        var previousHeartbeat = ContinuousClock.now
+        var largestGap: Duration = .zero
         var heartbeats = 0
-        while document.content.isLoading {
-            let start = Date()
-            try await Task.sleep(for: .milliseconds(1))
-            largestGap = max(largestGap, Date().timeIntervalSince(start))
-            heartbeats += 1
+        // Measure the main queue directly; Task.sleep also waits for the cooperative executor.
+        let heartbeat = DispatchSource.makeTimerSource(queue: .main)
+        heartbeat.schedule(deadline: .now(), repeating: .milliseconds(1))
+        heartbeat.setEventHandler {
+            MainActor.assumeIsolated {
+                let now = ContinuousClock.now
+                largestGap = max(largestGap, previousHeartbeat.duration(to: now))
+                previousHeartbeat = now
+                heartbeats += 1
+            }
         }
-        await preparation.value
+        heartbeat.resume()
+        defer { heartbeat.cancel() }
+
+        await document.prepare()
+        largestGap = max(largestGap, previousHeartbeat.duration(to: .now))
 
         XCTAssertGreaterThan(heartbeats, 1)
-        XCTAssertLessThan(largestGap, 0.25, "Main-actor heartbeat stalled while preparing formatted text")
+        XCTAssertLessThan(largestGap, .milliseconds(250), "Main-actor heartbeat stalled while preparing formatted text")
+        XCTAssertFalse(document.content.isLoading)
+        let expected = (0..<2_500).map {
+            "Prompt \($0): write a detailed SwiftUI clipboard manager with Snip lists, search, sync, attachments, and recovery. Include code samples and edge cases."
+        }.joined(separator: "\n")
+        XCTAssertEqual(document.content.accessibilityText, expected)
+        XCTAssertEqual(String(document.content.fullText.characters), expected)
         XCTAssertTrue(document.content.fullText.runs.contains { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true })
+        XCTAssertTrue(document.content.fullText.runs.contains { $0.font == .body.monospaced() })
     }
 
     private func assertRendered(_ source: String, equals expected: String, file: StaticString = #filePath, line: UInt = #line) async {

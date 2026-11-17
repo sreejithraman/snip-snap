@@ -183,7 +183,7 @@ struct GatheredSnipsDock: View {
         .background {
             if landedCount == 0 {
                 Label("Tap items to select", systemImage: "square.stack")
-                    .font(.subheadline)
+                    .appFont(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: minimumCardHeight)
                     .accessibilityIdentifier("gathering-instructions")
@@ -459,7 +459,7 @@ struct GatheredSnipsDock: View {
                 Image(systemName: "chevron.down")
                     .opacity(showsContents ? 1 : 0)
             }
-                .font(.system(size: 17, weight: .semibold))
+                .font(AppTypography.font(size: 17, weight: .semibold))
                 .frame(minWidth: 30, minHeight: 30)
         }
         .buttonStyle(.bordered)

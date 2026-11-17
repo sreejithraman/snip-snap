@@ -4,12 +4,13 @@ import SwiftUI
 final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
+        AppTypography.configureNavigationBar()
         guard let extensionContext else {
             showUnavailable()
             return
         }
         let model = ShareExtensionModel(extensionContext: extensionContext)
-        let host = UIHostingController(rootView: ShareExtensionView(model: model))
+        let host = UIHostingController(rootView: ShareExtensionView(model: model).appFont(.body))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
@@ -28,7 +29,7 @@ final class ShareViewController: UIViewController {
             systemImage: "externaldrive.badge.exclamationmark",
             description: Text("This build cannot access Snip Snap’s shared container.")
         )
-        let host = UIHostingController(rootView: unavailable)
+        let host = UIHostingController(rootView: unavailable.appFont(.body))
         addChild(host)
         host.view.frame = view.bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]

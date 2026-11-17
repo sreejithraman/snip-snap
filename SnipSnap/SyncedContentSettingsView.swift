@@ -60,7 +60,7 @@ struct SyncedContentSettingsView: View {
 
                 if let error = clipboard.syncError {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.subheadline)
+                        .appFont(.subheadline)
                         .foregroundStyle(.secondary)
                     Button("Try Again") {
                         isRetryingClipboardSync = true
@@ -108,7 +108,7 @@ struct SyncedContentSettingsView: View {
                 if diagnostics.notice != nil, diagnostics.notice != .saved, diagnostics.notice != .cleared {
                     VStack(alignment: .leading, spacing: 8) {
                         Label(diagnosticMessage, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
+                            .appFont(.caption)
                         switch diagnostics.notice {
                         case .preparationFailed, .deliveryFailed:
                             Button("Retry sharing diagnostic log") { diagnostics.share(deliver: diagnosticDelivery.deliver) }
@@ -223,7 +223,7 @@ struct SyncedContentSettingsView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.caption)
+            .appFont(.caption)
             .foregroundStyle(.secondary)
         }
     }

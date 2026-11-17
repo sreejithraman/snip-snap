@@ -22,8 +22,7 @@ struct SnipSnapiOSApp: App {
             .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
         )
         AppTerminationDiagnostics.startRecording()
-        UINavigationBar.appearance().titleTextAttributes = [.font: UIFont.rounded(size: 17, weight: .semibold)]
-        UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFont.rounded(size: 34, weight: .bold)]
+        AppTypography.configureNavigationBar()
         let startup = Self.makeLibrary()
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs
         seedsCopyShareFixtures = startup.seedsCopyShareFixtures
@@ -126,7 +125,7 @@ struct SnipSnapiOSApp: App {
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
                 shareProcessToken: shareProcessToken
             )
-            .fontDesign(.rounded)
+            .appFont(.body)
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let state: AppRuntimeTrace.State = switch phase {
@@ -371,12 +370,6 @@ struct SnipSnapiOSApp: App {
 }
 
 
-extension UIFont {
-    static func rounded(size: CGFloat, weight: UIFont.Weight) -> UIFont {
-        let font = UIFont.systemFont(ofSize: size, weight: weight)
-        return UIFont(descriptor: font.fontDescriptor.withDesign(.rounded) ?? font.fontDescriptor, size: size)
-    }
-}
 
 @MainActor
 final class IOSRuntimeTraceDelegate: NSObject, UIApplicationDelegate {

@@ -1,20 +1,21 @@
 import SwiftUI
 import UIKit
 
-private struct SuppliesPageToolbarKey: EnvironmentKey {
+private struct ShowsPageToolbarKey: EnvironmentKey {
     static let defaultValue = true
 }
 
 extension EnvironmentValues {
-    var suppliesPageToolbar: Bool {
-        get { self[SuppliesPageToolbarKey.self] }
-        set { self[SuppliesPageToolbarKey.self] = newValue }
+    var showsPageToolbar: Bool {
+        get { self[ShowsPageToolbarKey.self] }
+        set { self[ShowsPageToolbarKey.self] = newValue }
     }
 }
 
 struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View>: ViewModifier {
-    @Environment(\.suppliesPageToolbar) private var suppliesPageToolbar
+    @Environment(\.showsPageToolbar) private var showsPageToolbar
     @Environment(\.prefersSideButtons) private var prefersSideButtons
+    @ScaledMetric(relativeTo: .body) private var controlLength: CGFloat = 32
     let title: String
     var titleColor: Color = .primary
     var showsControls = true
@@ -23,22 +24,34 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
     let libraryActions: LibraryActions?
 
     private var controlTint: Color { recedesControls ? Color.secondary : SnipSnapTheme.controlTint }
-    private var sharedBackground: Visibility { recedesControls ? .hidden : .automatic }
+    private var sharedBackground: Visibility { recedesControls || !showsPageToolbar ? .hidden : .automatic }
+
+    // UIKit adopts menus as bar buttons, so hidden pages need an empty slot, not a hidden menu.
+    @ViewBuilder
+    private func controls<Controls: View>(_ controls: Controls) -> some View {
+        if showsPageToolbar {
+            controls.tint(controlTint)
+        } else {
+            Color.clear
+                .frame(width: controlLength, height: controlLength)
+                .accessibilityHidden(true)
+        }
+    }
 
     func body(content: Content) -> some View {
         content
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(title.isEmpty ? .inline : .large)
             .background {
-                RoundedNavigationTitle(color: UIColor(titleColor))
+                AppNavigationTitle(color: UIColor(titleColor))
                     .frame(width: 0, height: 0)
             }
             .toolbar {
-                if showsControls && suppliesPageToolbar {
+                if showsControls {
                     if prefersSideButtons {
                         // Fixed spacers keep each control in its own circle in the trailing column.
                         ToolbarItem(placement: .topBarTrailing) {
-                            trailingControls.tint(controlTint)
+                            controls(trailingControls)
                         }
                         .sharedBackgroundVisibility(sharedBackground)
                         .sideButton()
@@ -46,16 +59,16 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
                             ToolbarSpacer(.fixed, placement: .topBarTrailing)
                                 .sideButton()
                             ToolbarItem(placement: .topBarTrailing) {
-                                libraryActions.tint(controlTint)
+                                controls(libraryActions)
                             }
                             .sharedBackgroundVisibility(sharedBackground)
                             .sideButton()
                         }
                     } else {
                         ToolbarItemGroup(placement: .topBarTrailing) {
-                            trailingControls.tint(controlTint)
+                            controls(trailingControls)
                             if let libraryActions {
-                                libraryActions.tint(controlTint)
+                                controls(libraryActions)
                             }
                         }
                         .sharedBackgroundVisibility(sharedBackground)
@@ -66,7 +79,7 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
 }
 
 /// Style this screen's native title while keeping its scroll and accessibility behavior.
-private struct RoundedNavigationTitle: UIViewControllerRepresentable {
+private struct AppNavigationTitle: UIViewControllerRepresentable {
     let color: UIColor
 
     func makeUIViewController(context: Context) -> TitleController {
@@ -104,8 +117,8 @@ private struct RoundedNavigationTitle: UIViewControllerRepresentable {
             }
             func styled(_ source: UINavigationBarAppearance) -> UINavigationBarAppearance {
                 let appearance = source.copy() as! UINavigationBarAppearance
-                appearance.titleTextAttributes[.font] = UIFont.rounded(size: 17, weight: .semibold)
-                appearance.largeTitleTextAttributes[.font] = UIFont.rounded(size: 34, weight: .bold)
+                appearance.titleTextAttributes[.font] = AppTypography.preferredFont(.headline, compatibleWith: traitCollection)
+                appearance.largeTitleTextAttributes[.font] = AppTypography.preferredFont(.largeTitle, weight: .bold, compatibleWith: traitCollection)
                 appearance.titleTextAttributes[.foregroundColor] = titleColor
                 appearance.largeTitleTextAttributes[.foregroundColor] = titleColor
                 return appearance

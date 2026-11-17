@@ -4,6 +4,82 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Tue, 17 Nov 2026 07:28:35 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.281</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.281-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>281</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.281/Snip-Snap-0.6.1.zip" length="19481801" type="application/octet-stream" sparkle:edSignature="etBxYFKadi315TPKx4wPdkC9dUKRtzvxJFfS0MX7AZiGVtEyMf8rcKmEWreSdUT9TxPxzRuIh5C2O5yUH8avBw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 281 — Mac
+
+- Limit Done snips and simplify native view options
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
+            <pubDate>Tue, 17 Nov 2026 02:23:00 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.279</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.279-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>279</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.279/Snip-Snap-0.6.1.zip" length="19454871" type="application/octet-stream" sparkle:edSignature="2B1+/pQS6U0EtNGQdz5W2AJMblhCSf7nnEs8MsRnnZl6H9potEn8hLNG1Gk3Wo5bbRTq9COZ3IjJvHrXdcVQDw=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 279 — Mac
+
+- No Mac changes in this build.
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
+            <pubDate>Tue, 17 Nov 2026 00:12:48 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.277</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.277-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>277</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.277/Snip-Snap-0.6.1.zip" length="19454878" type="application/octet-stream" sparkle:edSignature="eyp5xV+vvNKkTKU7jejsIs/qVDhmsiy9mIrFM40KdQHZfwsyBA0tvb1+QiHJR/6ZT560ArEPQYZfvD1cm8eiAQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 277 — Mac
+
+- Allow copied snips to become Done after metadata refreshes
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
+            <pubDate>Mon, 16 Nov 2026 21:15:22 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.276</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.276-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>276</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.276/Snip-Snap-0.6.1.zip" length="19451753" type="application/octet-stream" sparkle:edSignature="+x7nqr94mv5/m3LF28aQlLmua3QPXqYm0+ys6vbAOPqDPAQUs3Kpyp3y4BzXYNODtaMw5oAUKM0QnBhKXAUyBg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 276 — Mac
+
+- Add human-only filtering alongside agent and all snips
+- Use Allo throughout the app interface
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
+            <pubDate>Mon, 16 Nov 2026 16:34:56 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.274</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.274-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>274</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.274/Snip-Snap-0.6.1.zip" length="18980841" type="application/octet-stream" sparkle:edSignature="xigSbbFsgbzmvWSlZCfKuot8GCoW5bCCsRpV4chJdNyRmR3sFgcjq/JFHk4fT8RC23yQ1oDg1BoprfqwSm7cAA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 274 — Mac
+
+- Filter for agent snips on Mac and iOS
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Mon, 16 Nov 2026 06:23:28 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.273</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.273-mac.txt</sparkle:fullReleaseNotesLink>

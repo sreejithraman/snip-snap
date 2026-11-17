@@ -329,13 +329,13 @@ struct AttachmentPreviewTile: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 Text(item.fileName)
-                    .font(.body)
+                    .appFont(.body)
                     .fontWeight(.medium)
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
                 Text(ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file))
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

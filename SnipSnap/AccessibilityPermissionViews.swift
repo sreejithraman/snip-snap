@@ -15,11 +15,11 @@ struct AccessibilitySetupCard: View {
         } main: {
             VStack(alignment: .leading, spacing: SnipSnapSpacing.relatedContent) {
                 Text(presentation.title)
-                    .font(.subheadline.weight(.semibold))
+                    .appFont(.subheadline, weight: .semibold)
                     .foregroundStyle(SnipSnapColors.textPrimary)
 
                 Text(presentation.message)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(SnipSnapColors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -51,7 +51,7 @@ struct AccessibilityRepairView: View {
         let presentation = controller.setupCardState.presentation
         VStack(alignment: .leading, spacing: SnipSnapSpacing.paneContentInset) {
             Label("Accessibility Access Needed", systemImage: "accessibility")
-                .font(.headline)
+                .appFont(.headline)
 
             Text(
                 "Capture Selection and global Shift shortcuts need Accessibility access. You can keep using other parts of Snip Snap without it."
@@ -61,7 +61,7 @@ struct AccessibilityRepairView: View {
 
             if presentation.showsRepairInstructions {
                 Text(AccessibilitySetupCardState.repairInstructions)
-                .font(.caption)
+                .appFont(.caption)
                 .foregroundStyle(SnipSnapColors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
