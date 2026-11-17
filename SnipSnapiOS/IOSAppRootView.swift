@@ -382,27 +382,25 @@ struct IOSAppRootView: View {
     private var appNavigation: some View {
         if usesCompactLayout {
             GeometryReader { proxy in
-                VStack(spacing: 0) {
-                    CompactLibraryPageStack(
-                        model: model,
-                        clipboard: session.clipboard,
-                        clipboardViewState: clipboardViewState,
-                        copyShare: copyShare,
-                        sheet: $sheet,
-                        editMode: collectionEditModeBinding,
-                        motionState: listPageMotionState,
-                        isComposerFocused: isCompactComposerFocused,
-                        dismissComposerKeyboard: { isCompactComposerFocused = false },
-                        cancelNewList: requestCancelNewList,
-                        libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: true)
-                    )
-                    .libraryToast(
-                        model: model,
-                        isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
-                        usesFixedExpiry: true
-                    )
-                    .frame(maxHeight: .infinity)
-
+                CompactLibraryPageStack(
+                    model: model,
+                    clipboard: session.clipboard,
+                    clipboardViewState: clipboardViewState,
+                    copyShare: copyShare,
+                    sheet: $sheet,
+                    editMode: collectionEditModeBinding,
+                    motionState: listPageMotionState,
+                    isComposerFocused: isCompactComposerFocused,
+                    dismissComposerKeyboard: { isCompactComposerFocused = false },
+                    cancelNewList: requestCancelNewList,
+                    libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: true)
+                )
+                .libraryToast(
+                    model: model,
+                    isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
+                    usesFixedExpiry: true
+                )
+                .safeAreaInset(edge: .bottom, spacing: 0) {
                     ListPageFrameReader(
                         state: listPageMotionState, pages: model.pages, selectedPage: model.selectedPage
                     ) { frame in

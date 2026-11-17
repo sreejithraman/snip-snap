@@ -289,10 +289,16 @@ private struct AppToastPresenter: ViewModifier {
     func body(content: Content) -> some View {
         Group {
             if reservesSpace {
+#if os(iOS)
+                content.safeAreaInset(edge: .bottom, spacing: 0) {
+                    presentedToast
+                }
+#else
                 VStack(spacing: 0) {
                     content
                     presentedToast
                 }
+#endif
             } else {
                 content.overlay(alignment: alignment) {
                     presentedToast

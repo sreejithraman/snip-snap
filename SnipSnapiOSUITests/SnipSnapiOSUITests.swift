@@ -332,18 +332,30 @@ final class SnipSnapiOSUITests: XCTestCase {
         try requireCompactSelector(in: app)
         createList("Snip Snap", in: app)
         createSnip("Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
-        for index in 1...3 {
-            createSnip("Fixture \(index): Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
-        }
         createList("Later", in: app)
-        // Start with saved pages, rather than the new-list editor's exit animation.
-        app.terminate()
-        app.launch()
-        waitForAppStartup(in: app)
-        revealCompactList(named: "Snip Snap", in: app, scrollLimit: 6)
-        tapVisibleSelectorTab(compactListTab(named: "Snip Snap", in: app), in: app)
-        XCTAssertTrue(app.navigationBars["Snip Snap"].waitForExistence(timeout: 3))
+        let maximumFixtureSnips = 12
+        for addedSnips in 0...maximumFixtureSnips {
+            // Measure saved pages after relaunch; content height can change after fixture entry.
+            app.terminate()
+            app.launch()
+            waitForAppStartup(in: app)
+            revealCompactList(named: "Snip Snap", in: app, scrollLimit: 6)
+            tapVisibleSelectorTab(compactListTab(named: "Snip Snap", in: app), in: app)
+            XCTAssertTrue(app.navigationBars["Snip Snap"].waitForExistence(timeout: 3))
+            let probe = app.otherElements["page-layout-Snip Snap"]
+            XCTAssertTrue(probe.waitForExistence(timeout: 5))
+            let sample = try XCTUnwrap(pageLayoutSamples(from: probe).last)
+            let contentHeight = try XCTUnwrap(sample["contentHeight"])
+            let viewportHeight = try XCTUnwrap(sample["viewportHeight"])
+            if contentHeight > viewportHeight || addedSnips == maximumFixtureSnips { break }
+            createSnip("Fixture \(addedSnips + 1): Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
+        }
         try assertStablePageLayout(in: app, source: "Snip Snap", neighbor: "Later", direction: -1, expectsScrollable: true)
+    }
+
+    private func pageLayoutSamples(from probe: XCUIElement) throws -> [[String: Double]] {
+        let value = try XCTUnwrap(probe.value as? String)
+        return try JSONDecoder().decode([[String: Double]].self, from: Data(value.utf8))
     }
 
     private func assertStablePageLayout(
@@ -352,11 +364,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     ) throws {
         let probe = app.otherElements["page-layout-\(source)"]
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
-        func samples() throws -> [[String: Double]] {
-            let value = try XCTUnwrap(probe.value as? String)
-            return try JSONDecoder().decode([[String: Double]].self, from: Data(value.utf8))
-        }
-        let baselineSamples = try samples()
+        let baselineSamples = try pageLayoutSamples(from: probe)
         let baseline = try XCTUnwrap(baselineSamples.last)
         if expectsScrollable {
             XCTAssertGreaterThan(try XCTUnwrap(baseline["contentHeight"]), try XCTUnwrap(baseline["viewportHeight"]))
@@ -395,7 +403,7 @@ final class SnipSnapiOSUITests: XCTestCase {
                    withVelocity: 80, thenHoldForDuration: 0.5)
         XCTAssertTrue(app.navigationBars[source].waitForExistence(timeout: 3))
         assertControlHome()
-        let measured = Array(try samples().dropFirst(max(0, baselineSamples.count - 1)))
+        let measured = Array(try pageLayoutSamples(from: probe).dropFirst(max(0, baselineSamples.count - 1)))
         let attachment = XCTAttachment(data: try JSONEncoder().encode(measured), uniformTypeIdentifier: "public.json")
         attachment.name = "Native page layout during canceled and completed slow swipes"
         attachment.lifetime = .keepAlways
@@ -798,6 +806,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["composer-text"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let newest = collectionRow(named: "Fixture 23", in: app)
+        let selector = app.descendants(matching: .any)["list-selector"]
+        XCTAssertGreaterThanOrEqual(
+            activeSnipViewport(in: app).frame.maxY, selector.frame.maxY,
+            "The list must extend behind the floating composer and list selector."
+        )
         XCTAssertTrue(hasVisibleTouchTarget(newest, within: activeSnipViewport(in: app), in: app))
         let edgeStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.70))
             .withOffset(CGVector(dx: 8, dy: 0))
@@ -2434,9 +2447,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testComposerPastesCopiedPhotoSnipAsAttachment() throws {
         continueAfterFailure = false
-        let app = launchApp(withCopyShareFixtures: true)
+        let storeName = "composer-photo-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withCopyShareFixtures: true)
         let source = row(named: "Copy mixed fixture", in: app)
         XCTAssertTrue(source.waitForExistence(timeout: 5))
+        let sourceID = source.identifier
         try visibleTouchCenter(of: source, in: app).press(forDuration: 1)
         app.buttons["copy-snip"].tap()
         let composer = app.descendants(matching: .any)["composer-text"]
@@ -2454,6 +2469,57 @@ final class SnipSnapiOSUITests: XCTestCase {
         proof.name = "Copied photo snip pasted into composer"
         proof.lifetime = .keepAlways
         add(proof)
+
+        try visibleTouchCenter(of: attachment, in: app).tap()
+        let preview = app.images["Image preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        keepScreenshot(of: app, named: "Composer photo draft preview")
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
+
+        try visibleTouchCenter(of: app.buttons["composer-remove-attachment-sample.png"], in: app).tap()
+        XCTAssertTrue(attachment.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Copy mixed fixture")
+        keepScreenshot(of: app, named: "Removing the composer photo preserves text")
+
+        try visibleTouchCenter(of: composer, in: app).tap()
+        try visibleTouchCenter(of: composer, in: app).press(forDuration: 1)
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+        let savedMarker = "Composer image acceptance"
+        composer.typeText(" — \(savedMarker)")
+        keepScreenshot(of: app, named: "Restored photo draft ready to send")
+        try visibleTouchCenter(of: app.buttons["composer-send"], in: app).tap()
+        XCTAssertTrue(attachment.waitForNonExistence(timeout: 5))
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", ""), object: composer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+        dismissComposerKeyboard(in: app)
+
+        let savedRows = activeSnipRows(in: app).matching(NSPredicate(format: "label CONTAINS %@", savedMarker))
+        let saved = savedRows.firstMatch
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        XCTAssertEqual(savedRows.count, 1)
+        let savedID = saved.identifier
+        XCTAssertNotEqual(savedID, sourceID)
+        XCTAssertTrue(saved.label.contains("Copy mixed fixture"))
+        XCTAssertTrue(saved.label.contains("sample.png"))
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        let persisted = activeSnipRows(in: app).matching(identifier: savedID).firstMatch
+        XCTAssertTrue(persisted.waitForExistence(timeout: 5))
+        XCTAssertTrue(persisted.label.contains(savedMarker))
+        let savedImage = persisted.buttons["compact-attachment-preview-sample.png"]
+        XCTAssertTrue(savedImage.waitForExistence(timeout: 5))
+        try visibleTouchCenter(of: savedImage, in: app).tap()
+        let persistedPreview = app.images["Image preview"]
+        XCTAssertTrue(persistedPreview.waitForExistence(timeout: 5))
+        keepScreenshot(of: app, named: "Sent composer photo opens after relaunch")
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(persistedPreview.waitForNonExistence(timeout: 3))
     }
 
     func testLeadingPasteSavesToSelectedListWithoutChangingDraft() throws {
