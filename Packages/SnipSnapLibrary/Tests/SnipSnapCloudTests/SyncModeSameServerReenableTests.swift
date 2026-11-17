@@ -643,14 +643,16 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(inbox.systemImage, "tray.fill", file: file, line: line)
         XCTAssertNil(inbox.color, file: file, line: line)
         XCTAssertEqual(inbox.sortKey.data, Data([128, 0, 0, 0, 0, 0, 0, 0, 1, 128]), file: file, line: line)
-        var expectedSnips = before.snips
-        let editedIndex = try XCTUnwrap(expectedSnips.firstIndex { $0.id == enabled.editedSnipID },
+        var expectedSourceSnips = before.snips
+        let editedIndex = try XCTUnwrap(expectedSourceSnips.firstIndex { $0.id == enabled.editedSnipID },
             file: file, line: line)
-        XCTAssertEqual(expectedSnips[editedIndex].content, "kept", file: file, line: line)
+        XCTAssertEqual(expectedSourceSnips[editedIndex].content, "kept", file: file, line: line)
         XCTAssertEqual(before.snips.filter { $0.id != enabled.editedSnipID }.map(\.content),
             ["also kept"], file: file, line: line)
-        expectedSnips[editedIndex].content = Self.sameServerEditedText
-        expectedSnips[editedIndex].updatedAt = before.snips[editedIndex].updatedAt.addingTimeInterval(10)
+        expectedSourceSnips[editedIndex].content = Self.sameServerEditedText
+        expectedSourceSnips[editedIndex].updatedAt = before.snips[editedIndex].updatedAt.addingTimeInterval(10)
+        var expectedSnips = expectedSourceSnips
+        expectedSnips[editedIndex].updatedAt = before.snips[editedIndex].updatedAt
         let snipPresence: [String: FailedEnablePresence] = [
             "createdAt": .value, "id": .value, "isDone": .value, "originRaw": .value,
             "pinnedAt": .value, "placement": .value, "requestID": .value,
@@ -661,11 +663,12 @@ extension ICloudSyncModeCoordinatorTests {
             "orderKey": .value, "systemImage": .value, "updatedAt": .value,
         ]
         var originalImages: [FailedEnableReference: FailedEnableImage] = [:]
-        var editedImages: [FailedEnableReference: FailedEnableImage] = [:]
+        var sourceImages: [FailedEnableReference: FailedEnableImage] = [:]
+        var mergedImages: [FailedEnableReference: FailedEnableImage] = [:]
         var originalQ: [FailedEnableReference: FailedEnablePreparedValue] = [:]
         var editedQ: [FailedEnableReference: FailedEnablePreparedValue] = [:]
         var expectedOverrides: [FailedEnableReference: FailedEnableImmutableOverrides] = [:]
-        for (original, edited) in zip(before.snips, expectedSnips) {
+        for (original, edited) in zip(before.snips, expectedSourceSnips) {
             XCTAssertEqual(original.origin, .quickEntry, file: file, line: line)
             XCTAssertNil(original.source, file: file, line: line)
             XCTAssertFalse(original.isDone, file: file, line: line)
@@ -676,7 +679,10 @@ extension ICloudSyncModeCoordinatorTests {
             let createdAt = try FailedEnableEncoding.date(original.createdAt)
             let updatedAt = try FailedEnableEncoding.date(original.updatedAt)
             originalImages[reference] = .snip(try FailedEnableSnipImage(original, attachmentData: [:]))
-            editedImages[reference] = .snip(try FailedEnableSnipImage(edited, attachmentData: [:]))
+            sourceImages[reference] = .snip(try FailedEnableSnipImage(edited, attachmentData: [:]))
+            let expectedMerged = try XCTUnwrap(expectedSnips.first { $0.id == original.id },
+                file: file, line: line)
+            mergedImages[reference] = .snip(try FailedEnableSnipImage(expectedMerged, attachmentData: [:]))
             let value = FailedEnableSnipValue(
                 id: FailedEnableEncoding.uuid(original.id), requestID: FailedEnableEncoding.uuid(original.requestID),
                 createdAt: createdAt, originRaw: SnipOrigin.quickEntry.rawValue, text: original.content,
@@ -687,7 +693,7 @@ extension ICloudSyncModeCoordinatorTests {
             originalQ[reference] = FailedEnablePreparedValue(fields: .snip(value), presence: snipPresence)
             var editedValue = value
             editedValue.text = original.id == enabled.editedSnipID ? Self.sameServerEditedText : "also kept"
-            editedValue.updatedAt = try FailedEnableEncoding.date(edited.updatedAt)
+            editedValue.updatedAt = try FailedEnableEncoding.date(expectedMerged.updatedAt)
             editedQ[reference] = FailedEnablePreparedValue(fields: .snip(editedValue), presence: snipPresence)
             expectedOverrides[reference] = FailedEnableImmutableOverrides(
                 requestID: FailedEnableEncoding.uuid(original.requestID), createdAt: createdAt,
@@ -696,7 +702,8 @@ extension ICloudSyncModeCoordinatorTests {
         }
         let inboxReference = FailedEnableReference(CloudEntityReference(kind: .list, domainID: inbox.id))
         originalImages[inboxReference] = .list(FailedEnableListImage(inbox))
-        editedImages[inboxReference] = .list(FailedEnableListImage(inbox))
+        sourceImages[inboxReference] = .list(FailedEnableListImage(inbox))
+        mergedImages[inboxReference] = .list(FailedEnableListImage(inbox))
         let inboxQ = FailedEnablePreparedValue(fields: .list(FailedEnableListValue(
             id: FailedEnableEncoding.uuid(inbox.id), desiredName: "Inbox", systemImage: "tray.fill",
             colorPreset: .init(nil), orderKey: inbox.sortKey.data, updatedAt: "0000000000000000"
@@ -874,12 +881,12 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(freshCapture.predecessors.contains(firstCapture.id), file: file, line: line)
         XCTAssertTrue(freshCapture.candidateDeletes.isEmpty, file: file, line: line)
         XCTAssertEqual(freshCapture.seenRequestIDs, firstCapture.seenRequestIDs, file: file, line: line)
-        XCTAssertEqual(Set(freshCapture.records.map(\.reference)), Set(editedImages.keys), file: file, line: line)
+        XCTAssertEqual(Set(freshCapture.records.map(\.reference)), Set(sourceImages.keys), file: file, line: line)
         XCTAssertEqual(freshCapture.records.count, 3, file: file, line: line)
         let editedReference = FailedEnableReference(CloudEntityReference(kind: .snip, domainID: enabled.editedSnipID))
         for record in freshCapture.records {
             XCTAssertEqual(record.sourceMembership, .present, file: file, line: line)
-            XCTAssertEqual(record.source.value, editedImages[record.reference], file: file, line: line)
+            XCTAssertEqual(record.source.value, sourceImages[record.reference], file: file, line: line)
             let expected = try XCTUnwrap(editedQ[record.reference], file: file, line: line)
             let original = try XCTUnwrap(originalQ[record.reference], file: file, line: line)
             XCTAssertEqual(record.preparation.value.value, expected, file: file, line: line)
@@ -907,7 +914,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(freshTransfer.sourceStoreID, evidence.sourceStoreID, file: file, line: line)
         XCTAssertEqual(freshTransfer.destinationStoreID, freshCapture.candidateStoreID, file: file, line: line)
         XCTAssertEqual(freshTransfer.namespace, group.binding, file: file, line: line)
-        XCTAssertEqual(freshTransfer.outputs, editedImages.values.sorted {
+        XCTAssertEqual(freshTransfer.outputs, mergedImages.values.sorted {
             $0.reference.sortKey < $1.reference.sortKey
         }, file: file, line: line)
         XCTAssertEqual(freshTransfer.dormantDigest, firstTransfer.dormantDigest, file: file, line: line)
