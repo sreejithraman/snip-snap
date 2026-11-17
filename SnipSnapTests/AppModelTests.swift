@@ -149,6 +149,80 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
+    func testCancellingCapDisplacedEditorClearsHiddenSelection() async throws {
+        try await checkClosingCapDisplacedEditor(save: false)
+    }
+
+    @MainActor
+    func testSavingCapDisplacedEditorClearsHiddenSelection() async throws {
+        try await checkClosingCapDisplacedEditor(save: true)
+    }
+
+    @MainActor
+    private func checkClosingCapDisplacedEditor(save: Bool) async throws {
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let newer = Snip(createdAt: Date(timeIntervalSince1970: 100), content: "Next Done", origin: .agent)
+        let model = AppModel(library: InMemorySnipLibrary(snips: done + [newer]), defaults: defaults())
+        await model.waitForInitialLoad()
+        let edited = done[2]
+        XCTAssertEqual(model.filteredSnips.last?.id, edited.id)
+        model.selection = [edited.id]
+        let opened = await model.beginEditing(edited.id)
+        XCTAssertTrue(opened)
+        let sessionID = try XCTUnwrap(model.inlineEditSessionID)
+        let pasteboard = NSPasteboard(name: .init("SnipSnapTests-editor-displacement-\(UUID())"))
+
+        await model.toggleDoneNow(id: newer.id, to: pasteboard)
+        await model.reload()
+
+        XCTAssertEqual(model.snips.first { $0.id == newer.id }?.isDone, true)
+        XCTAssertEqual(model.editingID, edited.id)
+        XCTAssertEqual(model.inlineEditSessionID, sessionID)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == edited.id })
+        XCTAssertEqual(model.selectionState, .init(selection: [edited.id], anchor: edited.id, focus: edited.id))
+
+        if save {
+            let saved = await model.saveInlineEdit(content: "Saved draft", in: sessionID)
+            XCTAssertTrue(saved)
+        } else {
+            model.cancelEditing()
+        }
+
+        XCTAssertNil(model.editingID)
+        XCTAssertFalse(model.filteredSnips.contains { $0.id == edited.id })
+        XCTAssertEqual(model.filteredSnips.count, 10)
+        XCTAssertEqual(model.selectionState, .init(selection: [], anchor: nil, focus: nil))
+        XCTAssertTrue(model.selectedSnips.isEmpty)
+        XCTAssertEqual(model.snips.count, 13)
+        XCTAssertEqual(model.snips.first { $0.id == edited.id }?.content, save ? "Saved draft" : edited.content)
+    }
+
+    @MainActor
+    func testReorderEligibilityUsesTheWholeSelectionAcrossListsAndPins() async {
+        let review = SnipList(id: UUID(), name: "Review", systemImage: "star", position: 1)
+        let first = Snip(content: "First", origin: .quickEntry)
+        let second = Snip(content: "Second", origin: .quickEntry)
+        let otherList = Snip(content: "Review", origin: .quickEntry, listID: review.id)
+        let pinned = Snip(content: "Pinned", origin: .quickEntry, pinnedAt: Date(timeIntervalSince1970: 400))
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: [first, second, otherList, pinned], lists: [.inbox, review]),
+            defaults: defaults()
+        )
+        await model.waitForInitialLoad()
+
+        XCTAssertTrue(model.canReorder(ids: [first.id, second.id]))
+        XCTAssertTrue(model.canReorder(ids: [first.id]))
+        XCTAssertTrue(model.canReorder(ids: [second.id]))
+        XCTAssertTrue(model.canReorder(ids: [otherList.id]))
+        XCTAssertFalse(model.canReorder(ids: [first.id, otherList.id]))
+        XCTAssertFalse(model.canReorder(ids: [first.id, pinned.id]))
+        XCTAssertFalse(model.canReorder(ids: [pinned.id]))
+        XCTAssertFalse(model.canReorder(ids: []))
+    }
+
+    @MainActor
     func testOriginFilterComposesWithCompletionListAndSearch() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let manual = Snip(content: "Review manual", origin: .quickEntry)

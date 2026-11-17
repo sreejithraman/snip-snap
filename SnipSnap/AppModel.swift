@@ -210,6 +210,7 @@ final class AppModel: ObservableObject {
         guard editingID != nil else { return }
         inlineEditor = .closed
         reconcileActiveList()
+        reconcileSelection()
     }
 
     @Published private var snackbarAndErrors = SnackbarAndErrorPresentation()
