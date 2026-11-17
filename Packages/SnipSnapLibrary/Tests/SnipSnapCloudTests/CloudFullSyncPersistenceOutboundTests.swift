@@ -1020,8 +1020,16 @@ extension CloudFullSyncPersistenceTests {
         attachmentID: attachmentID, snipID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
         position: 0, fileName: "old.txt", contentType: "text/plain", byteCount: 4,
         sha256: Data(repeating: 1, count: 32), payloadIdentity: payloadIdentity),
-        metadataIdentity: metadataIdentity, shadowData: Data(), systemFields: Data()),
-        .remoteMetadataDeleted(metadataIdentity: metadataIdentity)])
+        metadataIdentity: metadataIdentity, shadowData: Data(), systemFields: Data())])
+    let published = try await fixture.library.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+    XCTAssertTrue(published.publications.contains {
+      $0.metadata.attachmentID == attachmentID && $0.metadataIdentity == metadataIdentity
+        && $0.metadata.payloadIdentity == payloadIdentity && $0.metadataAccepted
+    })
+    try await fixture.library.commitCloudAttachmentTransitions(namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.remoteMetadataDeleted(metadataIdentity: metadataIdentity)])
+    let deleted = try await fixture.library.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+    XCTAssertEqual(deleted.cleanups.map(\.identity), [payloadIdentity])
     let pending = try await fixture.store.pendingChanges()
     let cleanupID = CloudAttachmentRecordCodec.recordID(payloadIdentity)
     XCTAssertTrue(pending.operations.contains { $0.id == cleanupID })
