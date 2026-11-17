@@ -402,9 +402,13 @@ extension SwiftDataSyncModePersistence {
       else { throw FailedEnableEvidenceError.reviewRequired }
       let input = FailedEnableReviewRead(source: source, candidate: candidate,
         transition: transition, evidence: prior, retainedTurnOff: retained)
-      let absent = try policy.validateTurnOffOutput(input, capture: capture, applied: true)
-      let conflicts = try policy.validateExposure(input, capture: capture, requiresAccepted: requiresAccepted)
-      if !conflicts.isEmpty {
+      let dispositions = try policy.validateExposure(input, capture: capture, requiresAccepted: requiresAccepted)
+      // Edited recoveries can exclude their original before send. Publication still
+      // requires the settled send and the policy's accepted output check.
+      let checkedRecords = capture.records.filter { dispositions.contains($0.reference) }
+      if requiresAccepted, checkedRecords.contains(where: {
+        $0.preparation.classification == .realConflict || !$0.offlineChanged.isEmpty
+      }) {
         guard !transition.awaitsAcceptedServerCapture, self.failedEnableSendInFlight == nil else {
           throw FailedEnableEvidenceError.reviewRequired
         }
@@ -413,7 +417,7 @@ extension SwiftDataSyncModePersistence {
       if let attempt {
         var preflight = self.manifest
         try preflight.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
-        let excluded = capture.records.filter { absent.contains($0.reference) }
+        let excluded = checkedRecords.filter { $0.preparation.classification == .deleteRecovery }
         guard !attempt.operations.contains(where: { operation in
           excluded.contains(where: { record in
             operation.reference == (try? record.reference.domain)
@@ -435,7 +439,7 @@ extension SwiftDataSyncModePersistence {
       }
       self.failedEnablePublicationInFlight = nil
       defer { self.failedEnablePublicationInFlight = transition.id }
-      return try publish(absent.union(conflicts))
+      return try publish(dispositions)
     }
   }
 
