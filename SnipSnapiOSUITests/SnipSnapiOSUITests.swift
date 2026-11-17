@@ -332,7 +332,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         try requireCompactSelector(in: app)
         createList("Snip Snap", in: app)
         createSnip("Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
-        for index in 1...3 {
+        let probe = app.otherElements["page-layout-Snip Snap"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 5))
+        for index in 1...12 {
+            let sample = try XCTUnwrap(pageLayoutSamples(from: probe).last)
+            let contentHeight = try XCTUnwrap(sample["contentHeight"])
+            let viewportHeight = try XCTUnwrap(sample["viewportHeight"])
+            if contentHeight > viewportHeight { break }
             createSnip("Fixture \(index): Keep the text wrapping steady while I slide between lists and return to the same page.", in: app)
         }
         createList("Later", in: app)
@@ -346,17 +352,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         try assertStablePageLayout(in: app, source: "Snip Snap", neighbor: "Later", direction: -1, expectsScrollable: true)
     }
 
+    private func pageLayoutSamples(from probe: XCUIElement) throws -> [[String: Double]] {
+        let value = try XCTUnwrap(probe.value as? String)
+        return try JSONDecoder().decode([[String: Double]].self, from: Data(value.utf8))
+    }
+
     private func assertStablePageLayout(
         in app: XCUIApplication, source: String, neighbor: String, direction: CGFloat,
         expectsScrollable: Bool = false
     ) throws {
         let probe = app.otherElements["page-layout-\(source)"]
         XCTAssertTrue(probe.waitForExistence(timeout: 5))
-        func samples() throws -> [[String: Double]] {
-            let value = try XCTUnwrap(probe.value as? String)
-            return try JSONDecoder().decode([[String: Double]].self, from: Data(value.utf8))
-        }
-        let baselineSamples = try samples()
+        let baselineSamples = try pageLayoutSamples(from: probe)
         let baseline = try XCTUnwrap(baselineSamples.last)
         if expectsScrollable {
             XCTAssertGreaterThan(try XCTUnwrap(baseline["contentHeight"]), try XCTUnwrap(baseline["viewportHeight"]))
@@ -395,7 +402,7 @@ final class SnipSnapiOSUITests: XCTestCase {
                    withVelocity: 80, thenHoldForDuration: 0.5)
         XCTAssertTrue(app.navigationBars[source].waitForExistence(timeout: 3))
         assertControlHome()
-        let measured = Array(try samples().dropFirst(max(0, baselineSamples.count - 1)))
+        let measured = Array(try pageLayoutSamples(from: probe).dropFirst(max(0, baselineSamples.count - 1)))
         let attachment = XCTAttachment(data: try JSONEncoder().encode(measured), uniformTypeIdentifier: "public.json")
         attachment.name = "Native page layout during canceled and completed slow swipes"
         attachment.lifetime = .keepAlways
