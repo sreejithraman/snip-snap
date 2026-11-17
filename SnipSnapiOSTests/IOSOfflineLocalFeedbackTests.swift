@@ -1299,11 +1299,13 @@ private final class CapturedCopyBoard: IOSPasteboardWriting {
     let name = UIPasteboard.Name("CapturedCopy.\(UUID())")
     let board: UIPasteboard
     let feedback: IOSHapticFeedback
+    let diagnosticStagingRoot: URL
     private let defaults: UserDefaults
     private let system: IOSSystemPasteboard
     private(set) var writes = 0
 
     init(root: URL) throws {
+        diagnosticStagingRoot = root.appendingPathComponent("copy-staging")
         defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         board = try XCTUnwrap(UIPasteboard(name: name, create: true))
         system = IOSSystemPasteboard(pasteboard: board, stagingRoot: root.appendingPathComponent("copy-staging"))
@@ -1312,9 +1314,20 @@ private final class CapturedCopyBoard: IOSPasteboardWriting {
     }
 
     func write(_ items: [IOSCopyItem]) -> Bool {
+        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-before",
+                                    context: "board=\(name.rawValue) writes=\(writes)")
         guard system.write(items) else { return false }
         writes += 1
+        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "write-after",
+                                    context: "board=\(name.rawValue) writes=\(writes)")
         return true
+    }
+
+    func diagnosticContext(for provider: NSItemProvider, index: Int, selectedType: String) -> String {
+        let context = "board=\(name.rawValue) index=\(index) object=\(ObjectIdentifier(provider)) class=\(String(reflecting: type(of: provider))) types=\(provider.registeredTypeIdentifiers) selected=\(selectedType) suggestedName=\(provider.suggestedName ?? "<nil>")"
+        NSLog("OFFLINE-COPY-DIAG phase=before-load %@", context)
+        CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot, phase: "before-load", context: context)
+        return context
     }
 
     func close() {
@@ -1329,10 +1342,92 @@ private final class CopiedFileBytes: @unchecked Sendable {
     private var stored: Data?
     var data: Data? { lock.withLock { stored } }
 
-    func read(_ url: URL?) {
-        let data = url.flatMap { try? Data(contentsOf: $0) }
+    func read(_ url: URL?, providerError: Error? = nil, diagnosticContext: String? = nil,
+              diagnosticStagingRoot: URL? = nil) {
+        var readError: NSError?
+        let data = url.flatMap {
+            do { return try Data(contentsOf: $0) }
+            catch { readError = error as NSError; return nil }
+        }
         lock.withLock { stored = data }
         loaded.fire()
+        guard let diagnosticContext, let diagnosticStagingRoot else { return }
+        NSLog("OFFLINE-COPY-DIAG phase=callback-after-read-and-loaded-signal %@ callbackURL=%@ providerError=%@ dataReadError=%@ readAttempted=%@ dataBytes=%@",
+              diagnosticContext, url?.absoluteString ?? "<nil>",
+              providerError.map { String(describing: $0 as NSError) } ?? "<nil>",
+              readError.map { String(describing: $0) } ?? "<nil>",
+              url == nil ? "no URL" : "yes", data.map { String($0.count) } ?? "<nil>")
+        Self.logFileState(stagingRoot: diagnosticStagingRoot, phase: "inside-callback-after-read",
+                          context: diagnosticContext, callbackURL: url)
+    }
+
+    static func logFileState(stagingRoot: URL, phase: String, context: String, callbackURL: URL? = nil) {
+        func logStat(_ url: URL, role: String) -> FileAttributeType? {
+            guard url.isFileURL else {
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ role=%@ url=%@ stat=not-attempted-nonfile",
+                      phase, context, role, url.absoluteString)
+                return nil
+            }
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                let type = attributes[.type] as? FileAttributeType
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ role=%@ url=%@ stat=ok type=%@ size=%@",
+                      phase, context, role, url.absoluteString, type?.rawValue ?? "<unavailable>",
+                      String(describing: attributes[.size] ?? "<unavailable>"))
+                return type
+            } catch {
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ role=%@ url=%@ stat-error=%@",
+                      phase, context, role, url.absoluteString, error as NSError)
+                return nil
+            }
+        }
+        if let callbackURL { _ = logStat(callbackURL, role: "actual-callback-url") }
+        guard logStat(stagingRoot, role: "owned-staging-root") == .typeDirectory else {
+            NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration=not-attempted-root-directory-unconfirmed", phase, context)
+            return
+        }
+        guard let entries = FileManager.default.enumerator(
+            at: stagingRoot, includingPropertiesForKeys: nil, options: [],
+            errorHandler: { url, error in
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration-error url=%@ error=%@",
+                      phase, context, url.absoluteString, error as NSError)
+                return false
+            }
+        ) else {
+            NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration=unavailable-completeness-unknown", phase, context)
+            return
+        }
+        let entryLimit = 24
+        let depthLimit = 3
+        let rootPath = stagingRoot.standardizedFileURL.path
+        var count = 0
+        var reachedEnd = false
+        while count < entryLimit {
+            guard let entry = entries.nextObject() else { reachedEnd = true; break }
+            count += 1
+            guard let url = entry as? URL else {
+                entries.skipDescendants()
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration-entry=unexpected-type %@", phase, context,
+                      String(reflecting: type(of: entry)))
+                continue
+            }
+            guard url.standardizedFileURL.path.hasPrefix(rootPath + "/") else {
+                entries.skipDescendants()
+                NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration-entry=outside-owned-root-skipped url=%@",
+                      phase, context, url.absoluteString)
+                continue
+            }
+            let type = logStat(url, role: "owned-staging-entry depth=\(entries.level)")
+            if type != .typeDirectory || entries.level >= depthLimit {
+                entries.skipDescendants()
+                if type == .typeDirectory {
+                    NSLog("OFFLINE-COPY-DIAG phase=%@ %@ depth-limit=%ld descendants-not-inspected url=%@",
+                          phase, context, depthLimit, url.absoluteString)
+                }
+            }
+        }
+        NSLog("OFFLINE-COPY-DIAG phase=%@ %@ enumeration-yielded=%ld limit=%ld ended=%@ completeness=not-guaranteed-errors-or-depth-skips-or-cap; snapshot-not-atomic",
+              phase, context, count, entryLimit, reachedEnd ? "yes" : "no-cap-reached")
     }
 }
 
@@ -1678,12 +1773,22 @@ extension IOSOfflineLocalFeedbackTests {
             XCTAssertNil(model.attachmentURL(for: secondID))
             if board.writes == 1 {
                 XCTAssertEqual(board.board.itemProviders.count, 3)
+                var diagnosticProviderIndex = 1
                 for (provider, expected) in zip(board.board.itemProviders.dropFirst(), [Data("old!".utf8), Data("two!".utf8)]) {
                     let type = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
                     let bytes = CopiedFileBytes()
-                    _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in bytes.read(url) }
+                    let diagnosticStagingRoot = board.diagnosticStagingRoot
+                    let diagnosticContext = board.diagnosticContext(for: provider, index: diagnosticProviderIndex,
+                                                                    selectedType: type)
+                    _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
+                        bytes.read(url, providerError: error, diagnosticContext: diagnosticContext,
+                                   diagnosticStagingRoot: diagnosticStagingRoot)
+                    }
                     guard await fixture.ready(bytes.loaded, "actual multi-copy file bytes loaded") else { return }
                     XCTAssertEqual(bytes.data, expected)
+                    CopiedFileBytes.logFileState(stagingRoot: diagnosticStagingRoot,
+                                                phase: "after-loaded-observed-and-byte-oracle", context: diagnosticContext)
+                    diagnosticProviderIndex += 1
                 }
             }
         } else {
