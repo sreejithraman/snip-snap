@@ -1829,6 +1829,8 @@ extension ICloudSyncModeCoordinatorTests {
                 sortedBy: .manual
             )
             let sourceStore = try await initial.snapshot().activeStore
+            let sourceStoreURL = root.appendingPathComponent(sourceStore.relativeRoot)
+                .appendingPathComponent("snips.store")
             let source = try await initial.libraryForTransition(storeID: sourceStore.id)
             let originalSource = try await source.transferSnapshot(revision: sourceStore.revision)
             let originalDormant = try await source.dormantCloudBases()
@@ -1943,6 +1945,13 @@ extension ICloudSyncModeCoordinatorTests {
             let capturedSnip = try XCTUnwrap(capture.records.first { $0.reference == reference })
             let expectedL = try FailedEnableSnipImage(expectedSource, attachmentData: expectedBytes)
             XCTAssertEqual(capturedSnip.source.value, .snip(expectedL))
+            XCTAssertEqual(capture.records.count, 1 + expectedLists.count)
+            for list in expectedLists {
+                let image = FailedEnableImage.list(FailedEnableListImage(list))
+                let capturedList = try XCTUnwrap(capture.records.first { $0.reference == image.reference })
+                XCTAssertEqual(capturedList.source.value, image)
+            }
+            XCTAssertEqual(capture.seenRequestIDs, [FailedEnableEncoding.uuid(requestID)])
             let attachmentHash = FailedEnableEncoding.digest(attachmentBytes)
             XCTAssertEqual(evidence.blobs[attachmentHash], attachmentBytes)
             let transfer = try XCTUnwrap(evidence.transfers.last { $0.sourceCaptureIDs == [capture.id] })
@@ -1989,6 +1998,16 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertEqual(reopenManifest.transition?.candidateStoreID, candidateStore.id)
             XCTAssertEqual(reopenManifest.transition?.phase, .sourceFrozen)
             XCTAssertEqual(reopenManifest.transition?.mergeIntent?.planDigest, replayPlanDigest)
+            guard FileManager.default.fileExists(atPath: sourceStoreURL.path) else {
+                return XCTFail("The frozen source must still exist before replay")
+            }
+            let frozenSource = try await reopened.libraryForTransition(storeID: sourceStore.id)
+            let frozenTransfer = try await frozenSource.transferSnapshot(revision: sourceStore.revision)
+            let frozenDormant = try await frozenSource.dormantCloudBases()
+            let frozenArchive = try await frozenSource.archive()
+            XCTAssertEqual(frozenTransfer, originalSource)
+            XCTAssertEqual(frozenDormant, originalDormant)
+            XCTAssertEqual(frozenArchive.seenRequestIDs, originalArchive.seenRequestIDs)
             let replayTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
             let resumed = ICloudSyncModeCoordinator(
                 persistence: reopened, namespace: namespace, textZone: zone,
@@ -2003,18 +2022,24 @@ extension ICloudSyncModeCoordinatorTests {
             let retainedGroup = try XCTUnwrap(retained.namespaces.first { $0.binding == group.binding })
             let retainedCapture = try XCTUnwrap(retainedGroup.captures.first { $0.id == capture.id })
             let retainedTransfer = try XCTUnwrap(retained.transfers.last { $0.sourceCaptureIDs == [capture.id] })
-            let retainedSource = try await source.transferSnapshot(revision: sourceStore.revision)
-            let retainedDormant = try await source.dormantCloudBases()
-            let retainedArchive = try await source.archive()
-            XCTAssertEqual(retainedSource, originalSource)
-            XCTAssertEqual(retainedDormant, originalDormant)
-            XCTAssertEqual(retainedArchive.seenRequestIDs, [requestID])
             XCTAssertEqual(retained.blobs[attachmentHash], attachmentBytes)
 
             if rewrite {
                 XCTAssertEqual(result.state, .needsAttention)
                 XCTAssertEqual(replayed.attentionReason, .enrollmentBlocked)
                 XCTAssertEqual(replayed.activeStore, sourceStore)
+                guard replayed.activeStore.id == sourceStore.id,
+                    FileManager.default.fileExists(atPath: sourceStoreURL.path)
+                else {
+                    return XCTFail("The refused replay must keep the original source active and on disk")
+                }
+                let refusedSource = try await reopened.libraryForTransition(storeID: sourceStore.id)
+                let refusedTransfer = try await refusedSource.transferSnapshot(revision: sourceStore.revision)
+                let refusedDormant = try await refusedSource.dormantCloudBases()
+                let refusedArchive = try await refusedSource.archive()
+                XCTAssertEqual(refusedTransfer, originalSource)
+                XCTAssertEqual(refusedDormant, originalDormant)
+                XCTAssertEqual(refusedArchive.seenRequestIDs, originalArchive.seenRequestIDs)
                 let refused = try XCTUnwrap(replayed.transition)
                 XCTAssertEqual(refused.id, transition.id)
                 XCTAssertEqual(refused.candidateStoreID, candidateStore.id)
@@ -2080,10 +2105,16 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertNil(replayed.transition)
             XCTAssertEqual(replayed.activeStore.id, candidateStore.id)
             XCTAssertEqual(replayed.activeStore.namespace, namespace.binding)
+            // Successful activation can retire the original root. The capture outlives it.
+            XCTAssertEqual(retainedCapture.freeze, capture.freeze)
+            XCTAssertEqual(retainedCapture.sourceDigest, capture.sourceDigest)
+            XCTAssertEqual(retainedCapture.seenRequestIDs, [FailedEnableEncoding.uuid(requestID)])
+            XCTAssertEqual(retainedCapture.records.map(\.reference), capture.records.map(\.reference))
             XCTAssertEqual(retainedCapture.records.map(\.source), capture.records.map(\.source))
             XCTAssertEqual(retainedCapture.records.map(\.preparation), capture.records.map(\.preparation))
             XCTAssertEqual(retainedTransfer.state, .checked)
             XCTAssertEqual(retainedTransfer.planDigest, transfer.planDigest)
+            XCTAssertEqual(retainedTransfer.dormantDigest, transfer.dormantDigest)
             XCTAssertEqual(retainedTransfer.outputs, transfer.outputs)
             XCTAssertTrue(retainedGroup.reviews.isEmpty)
             XCTAssertTrue(retainedGroup.alternatives.isEmpty)
@@ -2098,6 +2129,8 @@ extension ICloudSyncModeCoordinatorTests {
             let finalURL = try XCTUnwrap(final.attachmentURLs[attachment.id])
             XCTAssertEqual(try Data(contentsOf: finalURL), attachmentBytes)
             let active = try await reopened.libraryForTransition(storeID: candidateStore.id)
+            let activeArchive = try await active.archive()
+            XCTAssertEqual(activeArchive.seenRequestIDs, originalArchive.seenRequestIDs)
             let recovery = try await active.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
             XCTAssertTrue(recovery.isEmpty)
             XCTAssertFalse(FileManager.default.fileExists(atPath: planURL.path))
