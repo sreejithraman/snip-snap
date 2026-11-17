@@ -367,6 +367,107 @@ extension ICloudSyncModeCoordinatorTests {
             persistence = stranded.persistence
         case .relaunchEditThenTryAgain:
             stranded.disk.free()
+            let evidenceFiles = FailedEnableEvidenceFile(root: root)
+            let sourceID = stranded.transition.sourceStoreID
+            let activationURL = root.appendingPathComponent("activation.json")
+            let activationBytesBefore = try Data(contentsOf: activationURL)
+            let activationBefore = try JSONDecoder().decode(
+                SwiftDataSyncModePersistence.Manifest.self, from: activationBytesBefore
+            )
+            let manifestBefore = await stranded.persistence.manifest
+            let uncertainBefore = await stranded.persistence.failedEnableUncertainSources
+            let ownerBefore = await stranded.persistence.failedEnableOwnerNonce
+            let reopenBefore = await stranded.persistence.failedEnableReopenManifest
+            let activationDigestBefore = await stranded.persistence.failedEnableActivationDigest(
+                activationBefore
+            )
+            let frameBytesBefore = try Data(contentsOf: evidenceFiles.url(sourceID))
+            let evidenceBefore = try XCTUnwrap(evidenceFiles.read(sourceID), file: file, line: line)
+            let factsBefore = "[SM23-F5-FROZEN] before sequence=\(evidenceBefore.sequence) "
+                + "continuity=\(evidenceBefore.continuity) uncertain=\(uncertainBefore) "
+                + "owner=\(ownerBefore) activation=\(activationDigestBefore) "
+                + "frame=\(FailedEnableEncoding.digest(frameBytesBefore))"
+            let ticketBefore = try XCTUnwrap(
+                evidenceBefore.continuity.inFlight.value, factsBefore, file: file, line: line
+            )
+            let postimageBefore = try XCTUnwrap(
+                ticketBefore.manifestPostimageDigest.value, factsBefore, file: file, line: line
+            )
+            let sourceBefore = try XCTUnwrap(
+                manifestBefore.stores.first { $0.id == sourceID }, factsBefore, file: file, line: line
+            )
+            let freezeBefore = try XCTUnwrap(
+                stranded.transition.freezeToken, factsBefore, file: file, line: line
+            )
+            let namespaceBefore = try XCTUnwrap(
+                stranded.transition.namespace, factsBefore, file: file, line: line
+            )
+            let groupBefore = try XCTUnwrap(
+                evidenceBefore.namespaces.first { $0.binding == FailedEnableBinding(namespaceBefore) },
+                factsBefore, file: file, line: line
+            )
+            let captureBefore = try XCTUnwrap(
+                groupBefore.captures.last {
+                    $0.transitionID == FailedEnableEncoding.uuid(stranded.transition.id)
+                        && $0.candidateStoreID == FailedEnableEncoding.uuid(
+                            stranded.transition.candidateStoreID
+                        )
+                }, factsBefore, file: file, line: line
+            )
+            let expectedReferences = Set(stranded.originals.keys.map {
+                FailedEnableReference(CloudEntityReference(kind: .snip, domainID: $0))
+            }).union([FailedEnableReference(CloudEntityReference(kind: .list, domainID: SnipList.inbox.id))])
+            XCTAssertEqual(activationBefore, manifestBefore, factsBefore, file: file, line: line)
+            XCTAssertEqual(manifestBefore.transition, stranded.transition, factsBefore, file: file, line: line)
+            XCTAssertEqual(manifestBefore.activeStoreID, sourceID, factsBefore, file: file, line: line)
+            XCTAssertEqual(stranded.transition.phase, .firstSendComplete, factsBefore, file: file, line: line)
+            XCTAssertTrue(stranded.transition.freezesSource, factsBefore, file: file, line: line)
+            XCTAssertNil(manifestBefore.writeReservation, factsBefore, file: file, line: line)
+            XCTAssertNil(reopenBefore, factsBefore, file: file, line: line)
+            XCTAssertFalse(uncertainBefore.contains(sourceID), factsBefore, file: file, line: line)
+            XCTAssertEqual(evidenceBefore.continuity.state, .verified, factsBefore, file: file, line: line)
+            XCTAssertEqual(ticketBefore.kind, .manifest, factsBefore, file: file, line: line)
+            XCTAssertEqual(ticketBefore.ownerNonce, FailedEnableEncoding.uuid(ownerBefore), factsBefore, file: file, line: line)
+            XCTAssertEqual(ticketBefore.previousActivationDigest, evidenceBefore.continuity.activationDigest, factsBefore, file: file, line: line)
+            XCTAssertNotEqual(activationDigestBefore, "unavailable", factsBefore, file: file, line: line)
+            XCTAssertEqual(postimageBefore.count, 64, factsBefore, file: file, line: line)
+            XCTAssertTrue(postimageBefore.allSatisfy { "0123456789abcdef".contains($0) }, factsBefore, file: file, line: line)
+            XCTAssertNotEqual(postimageBefore, ticketBefore.previousActivationDigest, factsBefore, file: file, line: line)
+            XCTAssertTrue([ticketBefore.previousActivationDigest, postimageBefore].contains(activationDigestBefore), factsBefore, file: file, line: line)
+            XCTAssertNil(ticketBefore.reservedRevision.value, factsBefore, file: file, line: line)
+            XCTAssertEqual(ticketBefore.previousSourceRevision, String(sourceBefore.revision), factsBefore, file: file, line: line)
+            XCTAssertEqual(ticketBefore.previousSourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore, file: file, line: line)
+            XCTAssertEqual(evidenceBefore.continuity.sourceRevision, String(sourceBefore.revision), factsBefore, file: file, line: line)
+            XCTAssertEqual(captureBefore.freeze.id, FailedEnableEncoding.uuid(freezeBefore.id), factsBefore, file: file, line: line)
+            XCTAssertEqual(captureBefore.freeze.sourceRevision, String(freezeBefore.revision), factsBefore, file: file, line: line)
+            XCTAssertEqual(freezeBefore.revision, sourceBefore.revision, factsBefore, file: file, line: line)
+            XCTAssertEqual(freezeBefore.sourceStoreID, sourceID, factsBefore, file: file, line: line)
+            XCTAssertEqual(captureBefore.sourceDigest, evidenceBefore.continuity.sourceDigest, factsBefore, file: file, line: line)
+            XCTAssertTrue(captureBefore.armed, factsBefore, file: file, line: line)
+            XCTAssertEqual(Set(captureBefore.records.map(\.reference)), expectedReferences, factsBefore, file: file, line: line)
+            XCTAssertTrue(evidenceBefore.transfers.contains {
+                $0.kind == .candidate && $0.state == .checked
+                    && $0.sourceCaptureIDs == [captureBefore.id]
+                    && $0.sourceStoreID == FailedEnableEncoding.uuid(sourceID)
+                    && $0.destinationStoreID == captureBefore.candidateStoreID
+                    && $0.namespace == groupBefore.binding
+            }, factsBefore, file: file, line: line)
+            for record in captureBefore.records {
+                XCTAssertNotNil(record.source.value, factsBefore, file: file, line: line)
+                XCTAssertNotNil(record.preparation.value.value, factsBefore, file: file, line: line)
+                XCTAssertNotNil(record.observedAccepted.value, factsBefore, file: file, line: line)
+                XCTAssertEqual(record.observedAccepted.value?.candidateStoreID, captureBefore.candidateStoreID, factsBefore, file: file, line: line)
+                if case .snip(let image)? = record.source.value {
+                    let id = try FailedEnableEncoding.uuid(image.id)
+                    XCTAssertEqual(image.text, stranded.originals[id], factsBefore, file: file, line: line)
+                    XCTAssertFalse(image.isDone, factsBefore, file: file, line: line)
+                }
+            }
+            let stableManifestBefore = await stranded.persistence.manifest
+            XCTAssertEqual(stableManifestBefore, manifestBefore, factsBefore, file: file, line: line)
+            XCTAssertEqual(try Data(contentsOf: activationURL), activationBytesBefore, factsBefore, file: file, line: line)
+            XCTAssertEqual(try Data(contentsOf: evidenceFiles.url(sourceID)), frameBytesBefore, factsBefore, file: file, line: line)
+            print(factsBefore)
             do {
                 try await edit(
                     editedSnipID,
@@ -386,6 +487,46 @@ extension ICloudSyncModeCoordinatorTests {
                     line: line
                 )
             }
+            let activationBytesAfter = try Data(contentsOf: activationURL)
+            let activationAfter = try JSONDecoder().decode(
+                SwiftDataSyncModePersistence.Manifest.self, from: activationBytesAfter
+            )
+            let manifestAfter = await stranded.persistence.manifest
+            let uncertainAfter = await stranded.persistence.failedEnableUncertainSources
+            let ownerAfter = await stranded.persistence.failedEnableOwnerNonce
+            let activationDigestAfter = await stranded.persistence.failedEnableActivationDigest(
+                activationAfter
+            )
+            let frameBytesAfter = try Data(contentsOf: evidenceFiles.url(sourceID))
+            let evidenceAfter = try XCTUnwrap(evidenceFiles.read(sourceID), factsBefore, file: file, line: line)
+            let factsAfter = factsBefore + " after sequence=\(evidenceAfter.sequence) "
+                + "continuity=\(evidenceAfter.continuity) uncertain=\(uncertainAfter) "
+                + "owner=\(ownerAfter) activation=\(activationDigestAfter) "
+                + "frame=\(FailedEnableEncoding.digest(frameBytesAfter))"
+            XCTAssertEqual(activationAfter, manifestAfter, factsAfter, file: file, line: line)
+            XCTAssertEqual(manifestAfter, manifestBefore, factsAfter, file: file, line: line)
+            XCTAssertEqual(activationDigestAfter, activationDigestBefore, factsAfter, file: file, line: line)
+            XCTAssertEqual(ownerAfter, ownerBefore, factsAfter, file: file, line: line)
+            XCTAssertEqual(uncertainAfter, uncertainBefore, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.continuity.state, .verified, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.continuity.sourceRevision, evidenceBefore.continuity.sourceRevision, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.continuity.sourceDigest, evidenceBefore.continuity.sourceDigest, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.sourceStoreID, evidenceBefore.sourceStoreID, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.namespaces, evidenceBefore.namespaces, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.transfers, evidenceBefore.transfers, factsAfter, file: file, line: line)
+            XCTAssertEqual(evidenceAfter.blobs, evidenceBefore.blobs, factsAfter, file: file, line: line)
+            if let ticketAfter = evidenceAfter.continuity.inFlight.value {
+                XCTAssertEqual(ticketAfter, ticketBefore, factsAfter, file: file, line: line)
+                XCTAssertEqual(evidenceAfter.continuity.activationDigest, evidenceBefore.continuity.activationDigest, factsAfter, file: file, line: line)
+            } else {
+                XCTAssertEqual(postimageBefore, activationDigestAfter, factsAfter, file: file, line: line)
+                XCTAssertEqual(evidenceAfter.continuity.activationDigest, activationDigestAfter, factsAfter, file: file, line: line)
+            }
+            let stableManifestAfter = await stranded.persistence.manifest
+            XCTAssertEqual(stableManifestAfter, manifestAfter, factsAfter, file: file, line: line)
+            XCTAssertEqual(try Data(contentsOf: activationURL), activationBytesAfter, factsAfter, file: file, line: line)
+            XCTAssertEqual(try Data(contentsOf: evidenceFiles.url(sourceID)), frameBytesAfter, factsAfter, file: file, line: line)
+            print(factsAfter)
             try await removeCandidateFiles(of: stranded)
             persistence = try relaunch(stranded, root: root)
             let reopened = try await persistence.snapshot()
