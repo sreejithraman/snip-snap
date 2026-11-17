@@ -2439,9 +2439,11 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testComposerPastesCopiedPhotoSnipAsAttachment() throws {
         continueAfterFailure = false
-        let app = launchApp(withCopyShareFixtures: true)
+        let storeName = "composer-photo-\(UUID().uuidString)"
+        var app = launchApp(storeName: storeName, withCopyShareFixtures: true)
         let source = row(named: "Copy mixed fixture", in: app)
         XCTAssertTrue(source.waitForExistence(timeout: 5))
+        let sourceID = source.identifier
         try visibleTouchCenter(of: source, in: app).press(forDuration: 1)
         app.buttons["copy-snip"].tap()
         let composer = app.descendants(matching: .any)["composer-text"]
@@ -2459,6 +2461,57 @@ final class SnipSnapiOSUITests: XCTestCase {
         proof.name = "Copied photo snip pasted into composer"
         proof.lifetime = .keepAlways
         add(proof)
+
+        try visibleTouchCenter(of: attachment, in: app).tap()
+        let preview = app.images["Image preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        keepScreenshot(of: app, named: "Composer photo draft preview")
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 3))
+
+        try visibleTouchCenter(of: app.buttons["composer-remove-attachment-sample.png"], in: app).tap()
+        XCTAssertTrue(attachment.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "Copy mixed fixture")
+        keepScreenshot(of: app, named: "Removing the composer photo preserves text")
+
+        try visibleTouchCenter(of: composer, in: app).tap()
+        try visibleTouchCenter(of: composer, in: app).press(forDuration: 1)
+        XCTAssertTrue(paste.waitForExistence(timeout: 3))
+        paste.tap()
+        XCTAssertTrue(attachment.waitForExistence(timeout: 5))
+        let savedMarker = "Composer image acceptance"
+        composer.typeText(" — \(savedMarker)")
+        keepScreenshot(of: app, named: "Restored photo draft ready to send")
+        try visibleTouchCenter(of: app.buttons["composer-send"], in: app).tap()
+        XCTAssertTrue(attachment.waitForNonExistence(timeout: 5))
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", ""), object: composer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+        dismissComposerKeyboard(in: app)
+
+        let savedRows = activeSnipRows(in: app).matching(NSPredicate(format: "label CONTAINS %@", savedMarker))
+        let saved = savedRows.firstMatch
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        XCTAssertEqual(savedRows.count, 1)
+        let savedID = saved.identifier
+        XCTAssertNotEqual(savedID, sourceID)
+        XCTAssertTrue(saved.label.contains("Copy mixed fixture"))
+        XCTAssertTrue(saved.label.contains("sample.png"))
+
+        app.terminate()
+        app = launchApp(storeName: storeName)
+        let persisted = activeSnipRows(in: app).matching(identifier: savedID).firstMatch
+        XCTAssertTrue(persisted.waitForExistence(timeout: 5))
+        XCTAssertTrue(persisted.label.contains(savedMarker))
+        let savedImage = persisted.buttons["compact-attachment-preview-sample.png"]
+        XCTAssertTrue(savedImage.waitForExistence(timeout: 5))
+        try visibleTouchCenter(of: savedImage, in: app).tap()
+        let persistedPreview = app.images["Image preview"]
+        XCTAssertTrue(persistedPreview.waitForExistence(timeout: 5))
+        keepScreenshot(of: app, named: "Sent composer photo opens after relaunch")
+        app.buttons["dismiss-attachment-image"].tap()
+        XCTAssertTrue(persistedPreview.waitForNonExistence(timeout: 3))
     }
 
     func testLeadingPasteSavesToSelectedListWithoutChangingDraft() throws {
