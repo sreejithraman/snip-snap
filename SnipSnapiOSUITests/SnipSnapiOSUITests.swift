@@ -4293,16 +4293,105 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["clipboard-tab"].isSelected)
     }
 
+    private func openWorkflowSubmenu(_ title: String, in app: XCUIApplication) {
+        app.buttons["workflow-options"].tap()
+        XCTAssertFalse(app.buttons["reorder-snips"].exists)
+        XCTAssertFalse(app.buttons["Reorder Snips"].exists)
+        let submenu = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
+        XCTAssertTrue(submenu.waitForExistence(timeout: 3))
+        submenu.tap()
+    }
+
+    private func chooseWorkflowOption(_ option: String, under title: String, in app: XCUIApplication) {
+        openWorkflowSubmenu(title, in: app)
+        let choice = app.buttons.matching(NSPredicate(format: "label == %@", option)).firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 3))
+        choice.tap()
+        let presentedOption = assertWorkflowMenuRemainsOpen(afterChoosing: option, in: app)
+        dismissWorkflowOptions(in: app, waitingFor: presentedOption)
+    }
+
+    private func assertWorkflowMenuRemainsOpen(afterChoosing option: String, in app: XCUIApplication) -> XCUIElement {
+        let presentedOption = app.buttons.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR label == %@", "Show", option
+        )).firstMatch
+        XCTAssertTrue(presentedOption.waitForExistence(timeout: 3), "Choosing \(option) must leave View options open.")
+        return presentedOption
+    }
+
+    private func dismissWorkflowOptions(in app: XCUIApplication, waitingFor choice: XCUIElement) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5)).tap()
+        XCTAssertTrue(choice.waitForNonExistence(timeout: 3), "An outside tap must dismiss View options.")
+    }
+
+    func testWorkflowOptionsStayOpenUntilOutsideTap() throws {
+        continueAfterFailure = false
+        let app = launchApp(withAgentSnips: true)
+        let doneShown = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Done shown")).firstMatch
+        let done = app.buttons.matching(NSPredicate(format: "label == %@", "Done")).firstMatch
+        let notDone = app.buttons.matching(NSPredicate(format: "label == %@", "Not Done")).firstMatch
+
+        openWorkflowSubmenu("Show", in: app)
+        for status in ["All", "Done", "Not Done", "All"] {
+            app.buttons.matching(NSPredicate(format: "label == %@", status)).firstMatch.tap()
+            _ = assertWorkflowMenuRemainsOpen(afterChoosing: status, in: app)
+            if !notDone.exists {
+                app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Show")).firstMatch.tap()
+            }
+            XCTAssertTrue(notDone.waitForExistence(timeout: 3))
+            if status == "All" {
+                XCTAssertTrue(doneShown.waitForExistence(timeout: 3))
+            } else {
+                XCTAssertTrue(doneShown.waitForNonExistence(timeout: 3))
+            }
+        }
+
+        doneShown.tap()
+        let twentyFive = app.buttons.matching(NSPredicate(format: "label == %@", "25")).firstMatch
+        XCTAssertTrue(twentyFive.waitForExistence(timeout: 3))
+        twentyFive.tap()
+        let limitMenu = assertWorkflowMenuRemainsOpen(afterChoosing: "25", in: app)
+        dismissWorkflowOptions(in: app, waitingFor: limitMenu)
+        openWorkflowSubmenu("Show", in: app)
+        XCTAssertTrue(doneShown.label.contains("25"), "The saved limit must update its native menu summary.")
+        dismissWorkflowOptions(in: app, waitingFor: done)
+
+        openWorkflowSubmenu("Written by", in: app)
+        let human = app.buttons["Human only"]
+        human.tap()
+        let authorMenu = assertWorkflowMenuRemainsOpen(afterChoosing: "Human only", in: app)
+        dismissWorkflowOptions(in: app, waitingFor: authorMenu)
+
+        app.buttons["workflow-options"].tap()
+        let authorSummary = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Written by")).firstMatch
+        XCTAssertTrue(authorSummary.waitForExistence(timeout: 3))
+        XCTAssertTrue(authorSummary.label.contains("Human only"))
+        let sortSummary = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Sort")).firstMatch
+        sortSummary.tap()
+        let oldest = app.buttons["Oldest first"]
+        XCTAssertTrue(oldest.waitForExistence(timeout: 3))
+        oldest.tap()
+        let sortMenu = assertWorkflowMenuRemainsOpen(afterChoosing: "Oldest first", in: app)
+        dismissWorkflowOptions(in: app, waitingFor: sortMenu)
+
+        app.buttons["workflow-options"].tap()
+        XCTAssertTrue(sortSummary.waitForExistence(timeout: 3))
+        XCTAssertTrue(sortSummary.label.contains("Oldest first"))
+        dismissWorkflowOptions(in: app, waitingFor: sortSummary)
+    }
+
     func testOriginFilterCombinesWithCompletionAndSearch() throws {
         continueAfterFailure = false
         let app = launchApp(withAgentSnips: true)
         let manual = collectionRow(named: "Manual release note", in: app)
         XCTAssertTrue(manual.waitForExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Agent release note", in: app).exists)
-        app.buttons["workflow-options"].tap()
+        openWorkflowSubmenu("Written by", in: app)
         let agentFilter = app.buttons["Agent only"]
         XCTAssertTrue(agentFilter.waitForExistence(timeout: 3))
         agentFilter.tap()
+        let authorMenu = assertWorkflowMenuRemainsOpen(afterChoosing: "Agent only", in: app)
+        dismissWorkflowOptions(in: app, waitingFor: authorMenu)
         XCTAssertTrue(manual.waitForNonExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Agent release note", in: app).exists)
         XCTAssertTrue(collectionRow(named: "Agent archived note", in: app).exists)
@@ -4311,13 +4400,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         filteredProof.lifetime = .keepAlways
         add(filteredProof)
 
-        app.buttons["workflow-options"].tap()
-        XCTAssertFalse(app.buttons["reorder-snips"].isEnabled)
-        app.buttons["Done"].tap()
+        chooseWorkflowOption("Done", under: "Show", in: app)
         XCTAssertTrue(collectionRow(named: "Agent release note", in: app).waitForNonExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Agent archived note", in: app).exists)
-        app.buttons["workflow-options"].tap()
-        app.buttons.matching(identifier: "All").firstMatch.tap()
+        chooseWorkflowOption("All", under: "Show", in: app)
         let search = openSearch(in: app)
         search.typeText("release")
         let results = app.descendants(matching: .any)["global-search-results"]
@@ -4326,8 +4412,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(agentResult.waitForExistence(timeout: 3))
         XCTAssertFalse(manualResult.exists)
         closeSearch(in: app)
-        app.buttons["workflow-options"].tap()
-        app.buttons["Human only"].tap()
+        chooseWorkflowOption("Human only", under: "Written by", in: app)
         XCTAssertTrue(manual.waitForExistence(timeout: 3))
         XCTAssertFalse(collectionRow(named: "Agent release note", in: app).exists)
         XCTAssertFalse(collectionRow(named: "Agent archived note", in: app).exists)
@@ -4335,19 +4420,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         humanProof.name = "Human only"
         humanProof.lifetime = .keepAlways
         add(humanProof)
-        app.buttons["workflow-options"].tap()
-        XCTAssertFalse(app.buttons["reorder-snips"].isEnabled)
-        app.buttons["Done"].tap()
+        chooseWorkflowOption("Done", under: "Show", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["empty-snips"].waitForExistence(timeout: 3))
-        app.buttons["workflow-options"].tap()
-        app.buttons.matching(identifier: "All").firstMatch.tap()
+        chooseWorkflowOption("All", under: "Show", in: app)
         let humanSearch = openSearch(in: app)
         humanSearch.typeText("release")
         XCTAssertTrue(manualResult.waitForExistence(timeout: 3))
         XCTAssertFalse(agentResult.exists)
         closeSearch(in: app)
-        app.buttons["workflow-options"].tap()
-        app.buttons.matching(identifier: "All").element(boundBy: 1).tap()
+        chooseWorkflowOption("All", under: "Written by", in: app)
         XCTAssertTrue(manual.waitForExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Agent release note", in: app).exists)
         XCTAssertTrue(collectionRow(named: "Agent archived note", in: app).exists)
@@ -4399,12 +4480,16 @@ final class SnipSnapiOSUITests: XCTestCase {
             object: copied
         )
         XCTAssertEqual(XCTWaiter.wait(for: [becameDone], timeout: 3), .completed)
-        workflowOptions.tap()
+        let completionToast = app.descendants(matching: .any)["app-toast"]
+        XCTAssertTrue(completionToast.waitForExistence(timeout: 3))
+        XCTAssertTrue(completionToast.waitForNonExistence(timeout: 10),
+                      "Wait for the completion snackbar to finish before opening View options.")
+        openWorkflowSubmenu("Show", in: app)
         let doneFilter = app.buttons.matching(NSPredicate(format: "label == %@", "Done")).element
         XCTAssertTrue(doneFilter.waitForExistence(timeout: 3))
         doneFilter.tap()
-        XCTAssertTrue(doneFilter.waitForNonExistence(timeout: 3),
-                      "Choosing Done must dismiss the View options menu.")
+        let filterMenu = assertWorkflowMenuRemainsOpen(afterChoosing: "Done", in: app)
+        dismissWorkflowOptions(in: app, waitingFor: filterMenu)
         let filteredContents = selectedListContents(in: app)
         XCTAssertTrue(collectionRow(named: "Copy text fixture", in: filteredContents).waitForExistence(timeout: 3))
         XCTAssertFalse(collectionRow(named: "Copy mixed fixture", in: filteredContents).exists)
@@ -4521,13 +4606,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         try visibleTouchCenter(of: row(named: "Filter this selection", in: app), in: app).tap()
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
 
-        app.buttons["workflow-options"].tap()
-        app.buttons["Done"].tap()
+        chooseWorkflowOption("Done", under: "Show", in: app)
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
         XCTAssertEqual(app.buttons["gathered-stack"].value as? String, "1 item")
         XCTAssertTrue(app.buttons["finish-selecting"].exists)
-        app.buttons["workflow-options"].tap()
-        app.buttons.matching(identifier: "All").firstMatch.tap()
+        chooseWorkflowOption("All", under: "Show", in: app)
         XCTAssertFalse(collectionRow(named: "Filter this selection", in: app).exists)
         XCTAssertTrue(app.buttons["selection-actions"].isEnabled)
         try visibleTouchCenter(of: app.buttons["finish-selecting"], in: app).tap()
@@ -4930,8 +5013,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp(withGatheringFixtures: true)
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 10))
-        app.buttons["workflow-options"].tap()
-        app.buttons["Not Done"].tap()
+        chooseWorkflowOption("Not Done", under: "Show", in: app)
         enterSelection(in: app)
         try visibleTouchCenter(of: row(named: "Sketch a simpler selection flow", in: app), in: app).tap()
         try visibleTouchCenter(of: app.buttons["copy-selection"], in: app).tap()
@@ -4945,8 +5027,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(app.buttons["finish-selecting"].exists)
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).waitForExistence(timeout: 3))
-        app.buttons["workflow-options"].tap()
-        app.buttons.matching(identifier: "All").firstMatch.tap()
+        chooseWorkflowOption("All", under: "Show", in: app)
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
     }
 
@@ -5166,56 +5247,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
     }
 
-    func testDragReordersAndPersistsWithoutSelection() throws {
+    func testSelectsManyMovesThemAndPersists() throws {
         continueAfterFailure = false
-        let storeName = "reorder-\(UUID().uuidString)"
-        var app = launchApp(storeName: storeName)
-        createSnip("First drag sample", in: app)
-        createSnip("Second drag sample", in: app)
-        let first = row(named: "First drag sample", in: app)
-        let second = row(named: "Second drag sample", in: app)
-        XCTAssertFalse(app.buttons["selection-actions"].exists)
-        XCTAssertLessThan(second.frame.minY, first.frame.minY)
-
-        app.buttons["workflow-options"].tap()
-        app.buttons["reorder-snips"].tap()
-        XCTAssertFalse(app.buttons["selection-actions"].exists)
-        app.buttons["Reorder Second drag sample"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
-            forDuration: 0.3,
-            thenDragTo: app.buttons["Reorder First drag sample"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1))
-        )
-        let reordered = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in first.frame.minY < second.frame.minY },
-            object: nil
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [reordered], timeout: 5), .completed)
-        let proof = XCTAttachment(screenshot: app.screenshot())
-        proof.name = "Direct drag reordered snips"
-        proof.lifetime = .keepAlways
-        add(proof)
-
-        app.buttons["finish-reordering"].tap()
-        app.terminate()
-        app = launchApp(storeName: storeName)
-        let restoredFirst = row(named: "First drag sample", in: app)
-        let restoredSecond = row(named: "Second drag sample", in: app)
-        XCTAssertTrue(restoredFirst.waitForExistence(timeout: 3))
-        XCTAssertLessThan(restoredFirst.frame.minY, restoredSecond.frame.minY)
-        XCTAssertFalse(app.buttons["Reorder First drag sample"].exists)
-        XCTAssertTrue(restoredFirst.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "completion-")
-        ).firstMatch.exists)
-        try visibleTouchCenter(of: restoredFirst, in: app).press(forDuration: 1)
-        XCTAssertTrue(app.buttons["edit-snip"].waitForExistence(timeout: 3))
-        let menuProof = XCTAttachment(screenshot: app.screenshot())
-        menuProof.name = "Item menu after direct drag"
-        menuProof.lifetime = .keepAlways
-        add(menuProof)
-    }
-
-    func testSelectsManyMovesThemAndChangesManualOrder() throws {
-        continueAfterFailure = false
-        let storeName = "move-reorder-\(UUID().uuidString)"
+        let storeName = "move-persist-\(UUID().uuidString)"
         var app = launchApp(storeName: storeName)
         createList("Work", in: app)
         returnToLists(in: app)
@@ -5238,26 +5272,13 @@ final class SnipSnapiOSUITests: XCTestCase {
         let one = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "One")).firstMatch
         let two = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Two")).firstMatch
         XCTAssertLessThan(two.frame.minY, one.frame.minY)
-        app.buttons["workflow-options"].tap()
-        app.buttons["reorder-snips"].tap()
-        app.buttons["Reorder One"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(
-            forDuration: 0.3,
-            thenDragTo: app.buttons["Reorder Two"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-        )
-        let reordered = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in one.frame.minY < two.frame.minY },
-            object: nil
-        )
-        let reorderedResult = XCTWaiter.wait(for: [reordered], timeout: 5)
-        XCTAssertEqual(reorderedResult, .completed)
-        app.buttons["finish-reordering"].tap()
         app.terminate()
         app = launchApp(storeName: storeName)
         listControl(named: "Work", in: app).tap()
         let restoredOne = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "One")).firstMatch
         let restoredTwo = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Two")).firstMatch
         XCTAssertTrue(restoredOne.waitForExistence(timeout: 3))
-        XCTAssertLessThan(restoredOne.frame.minY, restoredTwo.frame.minY)
+        XCTAssertLessThan(restoredTwo.frame.minY, restoredOne.frame.minY)
     }
 
     func testSelectionPersistsAcrossLists() throws {

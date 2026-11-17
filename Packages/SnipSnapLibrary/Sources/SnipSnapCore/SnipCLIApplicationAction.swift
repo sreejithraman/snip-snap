@@ -14,7 +14,7 @@ public enum SnipCLIApplicationSetting: String, Codable, CaseIterable, Sendable {
   public func accepts(_ value: String) -> Bool {
     switch self {
     case .appearance: ["system", "light", "dark"].contains(value)
-    case .sort: ["chronological", "manual"].contains(value)
+    case .sort: SnipSortMode(rawValue: value) != nil
     case .originFilter: SnipOriginFilter(rawValue: value) != nil
     case .completionFilter: ["all", "done", "notDone"].contains(value)
     case .agentSnipsOnly, .clipboardOnlyPinned, .clipboardNewestFirst, .betaUpdates: ["on", "off"].contains(value)

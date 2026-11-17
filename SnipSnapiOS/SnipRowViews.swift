@@ -13,7 +13,6 @@ struct SnipRow: View {
     var showsStatusIcon = true
     var allowsTextExpansion = true
     var isGathering = false
-    var isReordering = false
     var sourceFrameChanged: ((CGRect) -> Void)? = nil
     @State private var isChangingCompletion = false
     var onPreviewAttachment: ((SnipAttachment) -> Void)? = nil
@@ -64,14 +63,13 @@ struct SnipRow: View {
                     text: text,
                     model: model,
                     isRecovered: isRecovered,
-                    allowsTextExpansion: allowsTextExpansion && !isReordering && !isGathering,
+                    allowsTextExpansion: allowsTextExpansion && !isGathering,
                     onPreviewAttachment: onPreviewAttachment,
                     showsPin: isGathering || !showsStatusIcon || onCopy == nil
                 )
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
-            // Give the native reorder handle the snip's name.
-            .accessibilityElement(children: isReordering ? .ignore : (onPreviewAttachment == nil ? .combine : .contain))
+            .accessibilityElement(children: onPreviewAttachment == nil ? .combine : .contain)
             .accessibilityLabel(SnipContentView.accessibilityLabel(for: snip, text: text))
             .accessibilityValue(
                 snip.isPinned ? String(localized: "Pinned") : SnipCompletionLanguage.stateTitle(isDone: snip.isDone)

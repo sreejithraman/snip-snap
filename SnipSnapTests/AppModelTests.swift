@@ -55,6 +55,100 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testDoneLimitAppliesAfterListAndOriginFiltersWithoutChangingSortedOrder() async {
+        let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let elsewhere = (1...12).map { Snip(content: "Elsewhere \($0)", origin: .agent, listID: work.id, isDone: true) }
+        let human = (1...12).map { Snip(content: "Human \($0)", origin: .quickEntry, isDone: true) }
+        let pinned = Snip(content: "Pinned", origin: .agent, pinnedAt: Date(timeIntervalSince1970: 1))
+        let pending = Snip(content: "Not Done", origin: .agent)
+        let model = AppModel(
+            library: InMemorySnipLibrary(snips: done + elsewhere + human + [pinned, pending], lists: [.inbox, work]),
+            defaults: defaults()
+        )
+        await model.waitForInitialLoad()
+        model.originFilter = .agent
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pinned.id, pending.id] + done[2...].reversed().map(\.id))
+        XCTAssertEqual(model.filteredSnips(in: work.id).count, 10)
+        model.query = "Done"
+        XCTAssertEqual(model.filteredSnips.map(\.id), [pending.id] + done.reversed().map(\.id))
+    }
+
+    @MainActor
+    func testDoneStatusBrowsesAllDoneWhileKeepingTheAllStatusLimitAndOldestSort() async {
+        let settings = defaults()
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let model = AppModel(library: InMemorySnipLibrary(snips: done), defaults: settings)
+        await model.waitForInitialLoad()
+        model.setSortMode(.oldestFirst)
+        XCTAssertEqual(model.filteredSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        model.completionFilter = .done
+        XCTAssertEqual(model.filteredSnips.map(\.id), done.map(\.id))
+        model.selection = [done[11].id]
+        XCTAssertEqual(model.doneLimit, .ten)
+        XCTAssertEqual(SnipDoneLimit.load(from: settings), .ten)
+        model.completionFilter = .notDone
+        XCTAssertTrue(model.filteredSnips.isEmpty)
+        model.completionFilter = .all
+        XCTAssertEqual(model.filteredSnips.count, 10)
+        XCTAssertTrue(model.selection.isEmpty)
+    }
+
+    @MainActor
+    func testDoneLimitPersistsUnlimitedAndReconcilesSelectionWhenReduced() async {
+        let settings = defaults()
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent, isDone: true)
+        }
+        let library = InMemorySnipLibrary(snips: done)
+        let model = AppModel(library: library, defaults: settings)
+        await model.waitForInitialLoad()
+        XCTAssertEqual(model.doneLimit, .ten)
+        model.setDoneLimit(.unlimited)
+        XCTAssertEqual(model.filteredSnips.count, 12)
+        let reopened = AppModel(library: library, defaults: settings)
+        await reopened.waitForInitialLoad()
+        XCTAssertEqual(reopened.doneLimit, .unlimited)
+        XCTAssertEqual(reopened.filteredSnips.count, 12)
+        model.selection = [done[0].id, done[11].id]
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.selection, [done[11].id])
+        XCTAssertFalse(model.canReorder(ids: [done[11].id]))
+        let before = model.snips
+        await model.moveSelectionNow(by: 1, ids: [done[11].id])
+        XCTAssertEqual(model.snips, before)
+        model.setDoneLimit(.unlimited)
+        XCTAssertTrue(model.canReorder(ids: [done[11].id]))
+    }
+
+    @MainActor
+    func testDoneLimitCannotUnmountAnEditorAndManualSortKeepsValidSelection() async {
+        let done = (1...12).map {
+            Snip(createdAt: Date(timeIntervalSince1970: Double($0)), content: "Done \($0)", origin: .agent,
+                 isDone: true, manualPosition: Int64($0))
+        }
+        let model = AppModel(library: InMemorySnipLibrary(snips: done), defaults: defaults())
+        await model.waitForInitialLoad()
+        model.setDoneLimit(.unlimited)
+        let opened = await model.beginEditing(done[0].id)
+        XCTAssertTrue(opened)
+        model.setDoneLimit(.ten)
+        XCTAssertEqual(model.doneLimit, .unlimited)
+        XCTAssertEqual(model.editingID, done[0].id)
+        XCTAssertTrue(model.filteredSnips.contains { $0.id == done[0].id })
+        model.cancelEditing()
+        model.setDoneLimit(.ten)
+        model.selection = [done[11].id]
+        model.setSortMode(.manual)
+        XCTAssertEqual(model.filteredSnips.map(\.id), Array(done.prefix(10)).map(\.id))
+        XCTAssertTrue(model.selection.isEmpty)
+    }
+
+    @MainActor
     func testOriginFilterComposesWithCompletionListAndSearch() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let manual = Snip(content: "Review manual", origin: .quickEntry)

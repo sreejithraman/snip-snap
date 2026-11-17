@@ -9,7 +9,7 @@ enum SnipCLILibraryParser {
   static var usage: String {
     """
       search [TEXT...] [--list NAME|UUID] [--completion all|done|not-done]
-        [--pinned on|off] [--sort chronological|manual] [--limit N]
+        [--pinned on|off] [--sort chronological|oldest|manual] [--limit N]
       snips list [same search options]
       snips done|not-done|pin|unpin ID... --if-snip-revision [ID:]REV (repeat per ID)
       snips move ID... --list LIST_UUID [--before SNIP_UUID|end]
@@ -93,7 +93,7 @@ enum SnipCLILibraryParser {
       default: throw invalid("Completion must be all, done, or not-done.")
       }
       let sortText = options["--sort"]?.first ?? "chronological"
-      guard let sort = SnipSortMode(rawValue: sortText) else { throw invalid("Sort must be chronological or manual.") }
+      guard let sort = SnipSortMode(rawValue: sortText) else { throw invalid("Sort must be chronological, oldest, or manual.") }
       let limit: Int?
       if let raw = options["--limit"]?.first {
         guard let parsed = Int(raw), parsed > 0 else { throw invalid("Limit must be a positive integer.") }

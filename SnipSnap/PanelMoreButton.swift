@@ -93,51 +93,11 @@ struct PanelMoreButton: View {
 
 struct PanelViewOptionsButton: View {
     @ObservedObject var model: AppModel
+    @Binding var isPresented: Bool
 
     var body: some View {
-        Menu {
-            if model.isShowingClipboard {
-                Section("Show") {
-                    Picker("Show", selection: $model.clipboardViewOptions.onlyPinned) {
-                        Text("All").tag(false)
-                        Text("Pinned").tag(true)
-                    }
-                    .pickerStyle(.inline)
-                }
-                Section("Sort") {
-                    Picker("Sort", selection: $model.clipboardViewOptions.newestFirst) {
-                        Text("Newest first").tag(true)
-                        Text("Oldest first").tag(false)
-                    }
-                    .pickerStyle(.inline)
-                }
-            } else {
-                Section("Show") {
-                    Picker("Show", selection: completionFilterBinding) {
-                        Text("All").tag(SnipCompletionFilter.all)
-                        Text(SnipCompletionLanguage.done).tag(SnipCompletionFilter.done)
-                        Text(SnipCompletionLanguage.notDone).tag(SnipCompletionFilter.notDone)
-                    }
-                    .pickerStyle(.inline)
-                }
-                Section("Origin") {
-                    Picker("Origin", selection: originFilterBinding) {
-                        ForEach(SnipOriginFilter.allCases, id: \.self) { filter in
-                            Text(filter.title)
-                                .tag(filter)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.inline)
-                }
-                Section("Sort") {
-                    Picker("Sort", selection: sortModeBinding) {
-                        Text("Newest first").tag(SnipSortMode.chronological)
-                        Text("Manual").tag(SnipSortMode.manual)
-                    }
-                    .pickerStyle(.inline)
-                }
-            }
+        Button {
+            isPresented.toggle()
         } label: {
             Image(systemName: "line.3.horizontal.decrease")
                 .font(.system(size: 13, weight: .semibold))
@@ -148,12 +108,85 @@ struct PanelViewOptionsButton: View {
                 )
                 .contentShape(Circle())
         }
-        .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .disabled(model.editingID != nil)
         .help("View options")
         .accessibilityLabel("View options")
         .accessibilityIdentifier("workflow-options")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            options
+                .onExitCommand { isPresented = false }
+        }
+        .onDisappear { isPresented = false }
+        .onChange(of: model.editingID) { _, editingID in
+            if editingID != nil { isPresented = false }
+        }
+        .onChange(of: model.isShowingClipboard) { _, _ in
+            isPresented = false
+        }
+    }
+
+    private var options: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("View options")
+                .appFont(.headline)
+            if model.isShowingClipboard {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Show")
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Show", selection: $model.clipboardViewOptions.onlyPinned) {
+                        Text("All").tag(false)
+                        Text("Pinned").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+                Divider()
+                Picker("Sort", selection: $model.clipboardViewOptions.newestFirst) {
+                    Text("Newest first").tag(true)
+                    Text("Oldest first").tag(false)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Show")
+                        .appFont(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Show", selection: completionFilterBinding) {
+                        ForEach(SnipCompletionFilter.allCases, id: \.self) { filter in
+                            Text(filter.title).tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    if model.completionFilter == .all {
+                        Picker("Done shown", selection: Binding(
+                            get: { model.doneLimit },
+                            set: { model.setDoneLimit($0) }
+                        )) {
+                            ForEach(SnipDoneLimit.allCases, id: \.self) { limit in
+                                Text(limit.title).tag(limit)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Picker("Written by", selection: originFilterBinding) {
+                    ForEach(SnipOriginFilter.allCases, id: \.self) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                Picker("Sort", selection: sortModeBinding) {
+                    ForEach(SnipSortMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+            }
+        }
+        .appFont(.body)
+        .padding(16)
+        .frame(width: PanelDialogMetrics.width)
+        .accessibilityIdentifier("workflow-options-popover")
     }
 
     private var sortModeBinding: Binding<SnipSortMode> {

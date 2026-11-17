@@ -246,6 +246,7 @@ final class AppModel: ObservableObject {
         return presented
     }
     @Published private(set) var latestAddedSnipID: UUID?
+    @Published private(set) var doneLimit: SnipDoneLimit
     @Published private(set) var sortMode: SnipSortMode
     @Published private(set) var appearance: AppAppearance
     @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
@@ -312,7 +313,9 @@ final class AppModel: ObservableObject {
               originFilter == .all,
               !ids.isEmpty,
               !snips.contains(where: { ids.contains($0.id) && $0.isPinned }) else { return false }
-        return Set(snips.filter { ids.contains($0.id) }.map(\.listID)).count == 1
+        let listIDs = Set(snips.filter { ids.contains($0.id) }.map(\.listID))
+        guard listIDs.count == 1, let listID = listIDs.first else { return false }
+        return filteredSnips(in: listID).count == snips.filter { $0.listID == listID }.count
     }
 
     let session: SavedSnipsSession
@@ -410,14 +413,15 @@ final class AppModel: ObservableObject {
     }
 
     func filteredSnips(in listID: UUID) -> [Snip] {
-        let matches = SnipFilter.apply(
-            snips: snips,
+        let filtered = SnipFilter.apply(
+            snips: hasActiveQuery ? snips : snips.filter { $0.listID == listID },
             query: query,
             completionFilter: hasActiveQuery ? .all : completionFilter,
             originFilter: originFilter,
             listNames: Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0.name) }),
             sourceLabel: { $0.displaySourceLabel }
         )
+        let matches = doneLimit.apply(to: filtered, completionFilter: completionFilter, query: query)
         let rendered: [Snip]
         if let editingID, let origin = inlineEditor.edit?.origin {
             let matchingIDs = Set(matches.map(\.id))
@@ -489,6 +493,7 @@ final class AppModel: ObservableObject {
         self.clipboardHistory = clipboardHistory ?? ClipboardHistory()
         activeListID = defaults.string(forKey: Self.activeListDefaultsKey)
             .flatMap(UUID.init(uuidString:)) ?? SnipList.inboxID
+        doneLimit = SnipDoneLimit.load(from: defaults)
         sortMode = SnipSortMode(
             rawValue: defaults.string(forKey: Self.sortModeDefaultsKey) ?? ""
         ) ?? .chronological
@@ -799,11 +804,19 @@ final class AppModel: ObservableObject {
         defaults.set(SnipList.inboxID.uuidString, forKey: Self.activeListDefaultsKey)
     }
 
+    func setDoneLimit(_ limit: SnipDoneLimit) {
+        guard editingID == nil else { return }
+        doneLimit = limit
+        limit.save(to: defaults)
+        reconcileSelection()
+    }
+
     func setSortMode(_ mode: SnipSortMode) {
         guard sortMode != mode else { return }
         sortMode = mode
         defaults.set(mode.rawValue, forKey: Self.sortModeDefaultsKey)
         snips = Snip.sorted(snips, by: mode)
+        reconcileSelection()
     }
 
     func setAppearance(_ appearance: AppAppearance) {

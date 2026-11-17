@@ -4,6 +4,16 @@ import Foundation
 import XCTest
 
 final class SnipCLILibraryParserTests: XCTestCase {
+  func testOldestSortParsesAndRoundTripsWithoutChangingChronological() throws {
+    let parsed = try XCTUnwrap(SnipCLILibraryParser.parse(["search", "--sort", "oldest"]))
+    XCTAssertEqual(parsed, .extended(.library(.query(.init(sort: .oldestFirst)))))
+    let request = SnipCLIRequest(action: parsed)
+    let decoded = try JSONDecoder().decode(SnipCLIRequest.self, from: JSONEncoder().encode(request))
+    XCTAssertEqual(decoded.action, request.action)
+    XCTAssertTrue(SnipCLIApplicationSetting.sort.accepts("oldest"))
+    XCTAssertTrue(SnipCLIApplicationSetting.sort.accepts("chronological"))
+  }
+
   func testBulkDoneBindsEverySnipToItsRevision() throws {
     let first = UUID(), second = UUID()
     let revision = String(repeating: "a", count: 64)

@@ -22,7 +22,6 @@ struct SnipCollectionView: View {
     var selectionDockFrameChanged: (CGRect) -> Void = { _ in }
     var dismissComposerKeyboard: () -> Void = {}
     var libraryActions: LibraryActionsMenu?
-    @State private var isReordering = false
     private var inlineEditDraft: SnipEditorDraft? { model.snipEditorDraft }
     @State private var previewURLs: [URL] = []
     @State private var selectedPreviewURL: URL?
@@ -133,17 +132,16 @@ struct SnipCollectionView: View {
         collectionScreen
         .onChange(of: isActivePage) { _, isActive in
             if !isActive {
-                isReordering = false
                 isInlineEditorFocused = false
                 cancelAttachmentPreview()
                 cancelTransfers()
             }
         }
-        .onChange(of: isReordering || inlineEditDraft != nil, initial: true) { _, blocked in
+        .onChange(of: inlineEditDraft != nil, initial: true) { _, blocked in
             blocksPageSwipe.wrappedValue = blocked
         }
         .onAppear {
-            blocksPageSwipe.wrappedValue = isReordering || inlineEditDraft != nil
+            blocksPageSwipe.wrappedValue = inlineEditDraft != nil
         }
         .onDisappear {
             previewTask?.cancel()
@@ -153,7 +151,6 @@ struct SnipCollectionView: View {
         }
         .onChange(of: model.lastSelectedListID) {
             guard isActivePage else { return }
-            isReordering = false
             isInlineEditorFocused = false
             cancelTransfers()
             gatheringFrames.rows = [:]
@@ -175,7 +172,6 @@ struct SnipCollectionView: View {
                     editMode = .inactive
                     return
                 }
-                isReordering = false
                 model.selectedSnipID = nil
             }
         }
@@ -189,7 +185,6 @@ struct SnipCollectionView: View {
             if isPresented {
                 cancelAttachmentPreview()
                 isInlineEditorFocused = false
-                isReordering = false
                 cancelTransfers()
             }
         }
@@ -306,7 +301,6 @@ struct SnipCollectionView: View {
                                 snip: snip,
                                 model: model,
                                 isRecovered: model.isRecoveredSnip(snip.id),
-                                isReordering: isReordering,
                                 sourceFrameChanged: { gatheringFrames.rows[snip.id] = $0 },
                                 onPreviewAttachment: previewAttachment,
                                 onCopy: { Task { await copyShare.copy(snips: [snip], model: model) } },
@@ -374,7 +368,8 @@ struct SnipCollectionView: View {
         .listStyle(.plain)
         .accessibilityIdentifier("snip-list-\(displayedListID.uuidString)")
         .environment(\.attachmentPreparationIsActive, isActivePage && !isSearching)
-        .environment(\.editMode, .constant(isReordering ? .active : .inactive))
+        // Gathering uses custom selection rather than native list editing.
+        .environment(\.editMode, .constant(.inactive))
         .scrollDismissesKeyboard(.interactively)
         .overlay {
             if snips.isEmpty {
@@ -406,30 +401,11 @@ struct SnipCollectionView: View {
             : model.completionFilter.emptyStateTitle
     }
 
-    private var showsLibraryActions: Bool { !isReordering && !isSelecting }
+    private var showsLibraryActions: Bool { !isSelecting }
 
-    @ViewBuilder
     private var collectionToolbar: some View {
-        Group {
-            if isReordering {
-                Button("Done") {
-                    model.haptics.invalidatePendingFeedback()
-                    isReordering = false
-                }
-                .accessibilityIdentifier("finish-reordering")
-            } else if isSelecting {
-                WorkflowOptionsMenu(model: model)
-            } else {
-                WorkflowOptionsMenu(model: model) {
-                    guard inlineEditDraft == nil else { return }
-                    model.haptics.invalidatePendingFeedback()
-                    dismissComposerKeyboard()
-                    isReordering = true
-                }
-                .disabled(inlineEditDraft?.canDismiss == false)
-            }
-        }
-        .disabled(model.isPerformingGatheredAction)
+        WorkflowOptionsMenu(model: model)
+            .disabled(inlineEditDraft?.canDismiss == false || model.isPerformingGatheredAction)
     }
 
     private var emptySystemImage: String { "text.page" }
@@ -448,7 +424,6 @@ struct SnipCollectionView: View {
     private func beginEditing(_ snip: Snip) {
         guard model.beginInlineSnipEdit(snip) else { return }
         dismissComposerKeyboard()
-        isReordering = false
         if isSelecting { endSelection() }
         let owner = LibraryPage.list(displayedListID)
         Task { @MainActor in
@@ -508,7 +483,6 @@ struct SnipCollectionView: View {
             guard inlineEditDraft == nil else { return }
             let sourceIsSelecting = isSelecting
             dismissComposerKeyboard()
-            isReordering = false
             editMode = .active
             gather(snip, sourceIsSelecting: sourceIsSelecting)
         }

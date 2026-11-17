@@ -20,6 +20,22 @@ enum SnipCompletionLanguage {
 
 }
 
+extension SnipSortMode {
+    var title: String {
+        switch self {
+        case .chronological: String(localized: "Newest first")
+        case .oldestFirst: String(localized: "Oldest first")
+        case .manual: String(localized: "Manual")
+        }
+    }
+}
+
+extension SnipDoneLimit {
+    var title: String {
+        self == .unlimited ? String(localized: "Unlimited") : rawValue.formatted()
+    }
+}
+
 extension SnipCompletionFilter {
     var title: String {
         switch self {

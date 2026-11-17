@@ -128,6 +128,7 @@ public struct SnipAttachment: Identifiable, Codable, Equatable, Sendable, Hashab
 
 public enum SnipSortMode: String, CaseIterable, Codable, Sendable, Hashable {
     case chronological
+    case oldestFirst = "oldest"
     case manual
 }
 
@@ -244,11 +245,14 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
                 return left > right
             }
             switch mode {
-            case .chronological:
+            case .chronological, .oldestFirst:
                 if lhs.isDone != rhs.isDone {
                     return !lhs.isDone
                 }
-                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                if lhs.createdAt != rhs.createdAt {
+                    return mode == .oldestFirst && !lhs.isPinned
+                        ? lhs.createdAt < rhs.createdAt : lhs.createdAt > rhs.createdAt
+                }
             case .manual:
                 if lhs.isDone != rhs.isDone {
                     return !lhs.isDone
