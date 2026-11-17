@@ -97,11 +97,11 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsOneCopyOfEachSnip(.relaunchEditThenTryAgain)
     }
 
-    // The SM23-F4 D3-path residual: Try Again aborts with no kept bases to merge the edit against.
-    func testFullRecordTryAgainAfterARelaunchWithoutKeptBasesKeepsTheEditAsARecoveredCopy()
+    // Retained qualified source evidence survives without dormant bases or the old candidate.
+    func testFullRecordTryAgainAfterARelaunchWithoutDormantBasesKeepsTheQualifiedEditOnItsOriginalID()
         async throws
     {
-        try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.relaunchEditThenTryAgain)
+        try await assertFreshEnableKeepsTheQualifiedEditOnItsOriginalID(.relaunchEditThenTryAgain)
     }
 
     func testFrozenImportRefusalPreservesPendingManifestContinuity() async throws {
@@ -599,11 +599,8 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Runs the fresh enable `retry` names on a disk where the restore keeps no bases, and checks
-    /// that it ends On through a new transition. The edited snip's original ID keeps the server's
-    /// text, and the edit lands in a recovered copy that the fresh transition derives, locally and
-    /// on the server.
-    private func assertFreshEnableKeepsTheEditAsARecoveredCopy(
+    /// Keeps the qualified edit on its original ID while retaining the first source and accepted bytes.
+    private func assertFreshEnableKeepsTheQualifiedEditOnItsOriginalID(
         _ retry: SameServerRetry,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -619,32 +616,400 @@ extension ICloudSyncModeCoordinatorTests {
         )
 
         try await assertEndedOnThroughAFreshTransition(enabled, file: file, line: line)
-        let fresh = try XCTUnwrap(
-            enabled.stranded.disk.transitionIDsAtSwap.last,
-            file: file,
-            line: line
+        let firstTransition = enabled.stranded.transition
+        let freshTransitionID = try XCTUnwrap(
+            enabled.stranded.disk.transitionIDsAtSwap.last, file: file, line: line
         )
-        var expected = enabled.stranded.originals
-        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
-            transitionID: fresh,
-            sourceID: enabled.editedSnipID
-        )
-        expected[recoveredID] = Self.sameServerEditedText
-        let active = try await enabled.persistence.activeLibrary()
-            .checkedSnapshot(sortedBy: .manual).snips
-        XCTAssertEqual(
-            Dictionary(active.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
-            expected,
-            "The original must keep the server's text and the edit a recovered copy.",
-            file: file,
-            line: line
-        )
-        let serverSnipRecords = await enabled.stranded.server
-            .storedRecordTypes(in: textZone(makeNamespace()))
-            .filter { $0 == "Snip" }
-        XCTAssertEqual(serverSnipRecords.count, 3, file: file, line: line)
-        let serverTexts = await enabled.stranded.server.storedTextValues()
-        XCTAssertEqual(serverTexts, expected.values.sorted(), file: file, line: line)
+        let before = enabled.stranded.originalSourceBeforeEnable
+        XCTAssertEqual(before.revision, 2, file: file, line: line)
+        XCTAssertEqual(before.snips.count, 2, file: file, line: line)
+        XCTAssertEqual(before.snips.map(\.content).sorted(), Self.sameServerTexts.sorted(), file: file, line: line)
+        XCTAssertEqual(before.lists, [.inbox], file: file, line: line)
+        XCTAssertTrue(before.attachmentData.isEmpty, file: file, line: line)
+        XCTAssertTrue(before.attachmentFileURLs.isEmpty, file: file, line: line)
+        XCTAssertTrue(before.attachmentFileDigests.isEmpty, file: file, line: line)
+        let originalDormant = try CloudDormantAcceptedBaseBundle.decode(before.opaqueSyncStatePayload)
+        XCTAssertTrue(originalDormant.entries.isEmpty, file: file, line: line)
+        XCTAssertEqual(before.opaqueSyncStateDigest,
+            FailedEnableEncoding.checksum(before.opaqueSyncStatePayload), file: file, line: line)
+        let originalIDs = Set(before.snips.map(\.id))
+        let requestIDs = Set(before.snips.map(\.requestID))
+        XCTAssertEqual(originalIDs.count, 2, file: file, line: line)
+        XCTAssertEqual(requestIDs.count, 2, file: file, line: line)
+        let inbox = try XCTUnwrap(before.lists.first, file: file, line: line)
+        XCTAssertEqual(inbox.id, SnipList.inbox.id, file: file, line: line)
+        XCTAssertEqual(inbox.desiredName, "Inbox", file: file, line: line)
+        XCTAssertEqual(inbox.resolvedName, "Inbox", file: file, line: line)
+        XCTAssertEqual(inbox.systemImage, "tray.fill", file: file, line: line)
+        XCTAssertNil(inbox.color, file: file, line: line)
+        XCTAssertEqual(inbox.sortKey.data, Data([128, 0, 0, 0, 0, 0, 0, 0, 1, 128]), file: file, line: line)
+        var expectedSnips = before.snips
+        let editedIndex = try XCTUnwrap(expectedSnips.firstIndex { $0.id == enabled.editedSnipID },
+            file: file, line: line)
+        XCTAssertEqual(expectedSnips[editedIndex].content, "kept", file: file, line: line)
+        XCTAssertEqual(before.snips.filter { $0.id != enabled.editedSnipID }.map(\.content),
+            ["also kept"], file: file, line: line)
+        expectedSnips[editedIndex].content = Self.sameServerEditedText
+        expectedSnips[editedIndex].updatedAt = before.snips[editedIndex].updatedAt.addingTimeInterval(10)
+        let snipPresence: [String: FailedEnablePresence] = [
+            "createdAt": .value, "id": .value, "isDone": .value, "originRaw": .value,
+            "pinnedAt": .value, "placement": .value, "requestID": .value,
+            "source": .value, "text": .value, "updatedAt": .value,
+        ]
+        let listPresence: [String: FailedEnablePresence] = [
+            "colorPreset": .value, "desiredName": .value, "id": .value,
+            "orderKey": .value, "systemImage": .value, "updatedAt": .value,
+        ]
+        var originalImages: [FailedEnableReference: FailedEnableImage] = [:]
+        var editedImages: [FailedEnableReference: FailedEnableImage] = [:]
+        var originalQ: [FailedEnableReference: FailedEnablePreparedValue] = [:]
+        var editedQ: [FailedEnableReference: FailedEnablePreparedValue] = [:]
+        var expectedOverrides: [FailedEnableReference: FailedEnableImmutableOverrides] = [:]
+        for (original, edited) in zip(before.snips, expectedSnips) {
+            XCTAssertEqual(original.origin, .quickEntry, file: file, line: line)
+            XCTAssertNil(original.source, file: file, line: line)
+            XCTAssertFalse(original.isDone, file: file, line: line)
+            XCTAssertNil(original.pinnedAt, file: file, line: line)
+            XCTAssertEqual(original.listID, SnipList.inbox.id, file: file, line: line)
+            XCTAssertTrue(original.attachments.isEmpty, file: file, line: line)
+            let reference = FailedEnableReference(CloudEntityReference(kind: .snip, domainID: original.id))
+            let createdAt = try FailedEnableEncoding.date(original.createdAt)
+            let updatedAt = try FailedEnableEncoding.date(original.updatedAt)
+            originalImages[reference] = .snip(try FailedEnableSnipImage(original, attachmentData: [:]))
+            editedImages[reference] = .snip(try FailedEnableSnipImage(edited, attachmentData: [:]))
+            let value = FailedEnableSnipValue(
+                id: FailedEnableEncoding.uuid(original.id), requestID: FailedEnableEncoding.uuid(original.requestID),
+                createdAt: createdAt, originRaw: SnipOrigin.quickEntry.rawValue, text: original.content,
+                source: .init(nil), isDone: false, pinnedAt: .init(nil),
+                placement: FailedEnablePlacement(listID: FailedEnableEncoding.uuid(inbox.id),
+                    orderKey: original.manualSortKey.data), updatedAt: updatedAt
+            )
+            originalQ[reference] = FailedEnablePreparedValue(fields: .snip(value), presence: snipPresence)
+            var editedValue = value
+            editedValue.text = original.id == enabled.editedSnipID ? Self.sameServerEditedText : "also kept"
+            editedValue.updatedAt = try FailedEnableEncoding.date(edited.updatedAt)
+            editedQ[reference] = FailedEnablePreparedValue(fields: .snip(editedValue), presence: snipPresence)
+            expectedOverrides[reference] = FailedEnableImmutableOverrides(
+                requestID: FailedEnableEncoding.uuid(original.requestID), createdAt: createdAt,
+                originRaw: SnipOrigin.quickEntry.rawValue
+            )
+        }
+        let inboxReference = FailedEnableReference(CloudEntityReference(kind: .list, domainID: inbox.id))
+        originalImages[inboxReference] = .list(FailedEnableListImage(inbox))
+        editedImages[inboxReference] = .list(FailedEnableListImage(inbox))
+        let inboxQ = FailedEnablePreparedValue(fields: .list(FailedEnableListValue(
+            id: FailedEnableEncoding.uuid(inbox.id), desiredName: "Inbox", systemImage: "tray.fill",
+            colorPreset: .init(nil), orderKey: inbox.sortKey.data, updatedAt: "0000000000000000"
+        )), presence: listPresence)
+        originalQ[inboxReference] = inboxQ
+        editedQ[inboxReference] = inboxQ
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let files = FailedEnableEvidenceFile(root: root)
+        let evidence = try XCTUnwrap(try files.read(firstTransition.sourceStoreID), file: file, line: line)
+        XCTAssertEqual(evidence.sourceStoreID, FailedEnableEncoding.uuid(firstTransition.sourceStoreID),
+            file: file, line: line)
+        XCTAssertEqual(evidence.purpose, .installedEvidence, file: file, line: line)
+        XCTAssertTrue(evidence.blobs.isEmpty, file: file, line: line)
+        let group = try XCTUnwrap(evidence.namespaces.first {
+            $0.binding == FailedEnableBinding(namespace.binding)
+        }, file: file, line: line)
+        XCTAssertTrue(group.alternatives.isEmpty, file: file, line: line)
+        XCTAssertTrue(group.reviews.isEmpty, file: file, line: line)
+        let firstCapture = try XCTUnwrap(group.captures.first {
+            $0.transitionID == FailedEnableEncoding.uuid(firstTransition.id)
+                && $0.candidateStoreID == FailedEnableEncoding.uuid(firstTransition.candidateStoreID)
+        }, file: file, line: line)
+        let firstFreeze = try XCTUnwrap(firstTransition.freezeToken, file: file, line: line)
+        XCTAssertEqual(firstFreeze.sourceStoreID, firstTransition.sourceStoreID, file: file, line: line)
+        XCTAssertEqual(firstFreeze.revision, before.revision, file: file, line: line)
+        XCTAssertEqual(firstCapture.freeze.id, FailedEnableEncoding.uuid(firstFreeze.id), file: file, line: line)
+        XCTAssertEqual(firstCapture.freeze.sourceRevision, String(before.revision), file: file, line: line)
+        XCTAssertEqual(firstCapture.syncProtocol, .fullRecordV1, file: file, line: line)
+        XCTAssertEqual(firstCapture.normalizer, 1, file: file, line: line)
+        XCTAssertTrue(firstCapture.armed, file: file, line: line)
+        XCTAssertTrue(firstCapture.predecessors.isEmpty, file: file, line: line)
+        XCTAssertTrue(firstCapture.candidateDeletes.isEmpty, file: file, line: line)
+        XCTAssertEqual(firstCapture.seenRequestIDs, requestIDs.map(FailedEnableEncoding.uuid).sorted(),
+            file: file, line: line)
+        XCTAssertEqual(Set(firstCapture.records.map(\.reference)), Set(originalImages.keys), file: file, line: line)
+        XCTAssertEqual(firstCapture.records.count, 3, file: file, line: line)
+        let firstTransfer = try XCTUnwrap(evidence.transfers.first {
+            $0.sourceCaptureIDs == [firstCapture.id]
+        }, file: file, line: line)
+        XCTAssertEqual(firstTransfer.kind, .candidate, file: file, line: line)
+        XCTAssertEqual(firstTransfer.state, .checked, file: file, line: line)
+        XCTAssertEqual(firstTransfer.sourceStoreID, evidence.sourceStoreID, file: file, line: line)
+        XCTAssertEqual(firstTransfer.destinationStoreID, firstCapture.candidateStoreID, file: file, line: line)
+        XCTAssertEqual(firstTransfer.namespace, group.binding, file: file, line: line)
+        XCTAssertEqual(firstTransfer.dormantDigest, FailedEnableEncoding.digest(before.opaqueSyncStatePayload),
+            file: file, line: line)
+        XCTAssertEqual(firstTransfer.outputs, originalImages.values.sorted {
+            $0.reference.sortKey < $1.reference.sortKey
+        }, file: file, line: line)
+        XCTAssertTrue(firstTransfer.conflicts.isEmpty, file: file, line: line)
+        XCTAssertTrue(firstTransfer.recoveryDescriptors.isEmpty, file: file, line: line)
+        let committed = enabled.stranded.committedCandidateBeforeDiscard
+        XCTAssertEqual(committed.readyEntities.count, 3, file: file, line: line)
+        XCTAssertTrue(committed.deferredEntities.isEmpty, file: file, line: line)
+        XCTAssertTrue(committed.conflicts.isEmpty, file: file, line: line)
+        XCTAssertTrue(committed.pendingDeletes.isEmpty, file: file, line: line)
+        XCTAssertTrue(committed.quarantines.isEmpty, file: file, line: line)
+        let committedInbox = try XCTUnwrap(committed.readyEntities.first {
+            $0.reference == CloudEntityReference(kind: .list, domainID: inbox.id)
+        }, file: file, line: line)
+        let committedInboxRecord = try CloudFullSyncPersistence.listRecord(committedInbox)
+        if case .missing = committedInboxRecord.updatedAt {
+            XCTFail("The real initial List save must contain its send timestamp.", file: file, line: line)
+        }
+        for record in firstCapture.records {
+            let reference = try record.reference.domain
+            XCTAssertEqual(record.sourceMembership, .present, file: file, line: line)
+            XCTAssertEqual(record.source.value, originalImages[record.reference], file: file, line: line)
+            XCTAssertFalse(record.originalAcceptedExists, file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizer, 1, file: file, line: line)
+            XCTAssertEqual(record.preparation.classification, .nonconflicting, file: file, line: line)
+            XCTAssertEqual(record.preparation.baseKind, .noBaseEnrollment, file: file, line: line)
+            XCTAssertNil(record.preparation.baseDigest.value, file: file, line: line)
+            XCTAssertNil(record.preparation.fetchedDigest.value, file: file, line: line)
+            XCTAssertNil(record.preparation.reason.value, file: file, line: line)
+            XCTAssertTrue(record.preparation.conflictFields.isEmpty, file: file, line: line)
+            XCTAssertTrue(record.preparation.recoveryIdentities.isEmpty, file: file, line: line)
+            let expected = try XCTUnwrap(originalQ[record.reference], file: file, line: line)
+            XCTAssertEqual(record.preparation.value.value, expected, file: file, line: line)
+            XCTAssertEqual(record.preparation.knownFields, expected.presence.keys.sorted(), file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizedLocal.acceptedPresence, expected.presence, file: file, line: line)
+            XCTAssertTrue(record.preparation.normalizedLocal.defaults.isEmpty, file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizedLocal.immutableOverrides.value,
+                expectedOverrides[record.reference], file: file, line: line)
+            XCTAssertNil(record.unqualifiedObservation.value, file: file, line: line)
+            let observation = try XCTUnwrap(record.observedAccepted.value, file: file, line: line)
+            let actual = try XCTUnwrap(committed.readyEntities.first { $0.reference == reference },
+                file: file, line: line)
+            let envelope = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: observation.entityBase64)
+            let identity = CloudTextStorageIdentity(zoneName: zone.name, ownerName: zone.ownerName,
+                recordName: "\(reference.kind == .snip ? "s" : "l")-\(reference.domainID.uuidString.lowercased())")
+            XCTAssertEqual(record.identity.domain, identity, file: file, line: line)
+            XCTAssertEqual(actual.identity, identity, file: file, line: line)
+            XCTAssertEqual(actual.schemaVersion, 3, file: file, line: line)
+            XCTAssertEqual(actual.dependencyListID, reference.kind == .snip ? inbox.id : nil,
+                file: file, line: line)
+            XCTAssertFalse(actual.isDeferred, file: file, line: line)
+            XCTAssertFalse(actual.wasMaterializedBeforeDeferral, file: file, line: line)
+            XCTAssertFalse(actual.hasUnresolvedLegacyAbsence, file: file, line: line)
+            XCTAssertNil(actual.graphRepair, file: file, line: line)
+            XCTAssertNil(actual.deferredLocalMutation, file: file, line: line)
+            XCTAssertEqual(observation.kind, .fullRecord, file: file, line: line)
+            XCTAssertEqual(observation.candidateStoreID, firstCapture.candidateStoreID, file: file, line: line)
+            let observedRevision = try FailedEnableEncoding.revision(observation.namespaceRevision)
+            XCTAssertLessThanOrEqual(observedRevision, committed.namespaceState.revision, file: file, line: line)
+            XCTAssertEqual(observation.localRevision, String(actual.localRevision), file: file, line: line)
+            XCTAssertFalse(observation.isDeferred, file: file, line: line)
+            XCTAssertFalse(observation.hasUnresolvedLegacyAbsence, file: file, line: line)
+            XCTAssertEqual(observation.dependencyListID.value,
+                actual.dependencyListID.map(FailedEnableEncoding.uuid), file: file, line: line)
+            XCTAssertEqual(envelope.reference, actual.reference, file: file, line: line)
+            XCTAssertEqual(envelope.identity, actual.identity, file: file, line: line)
+            XCTAssertEqual(envelope.schemaVersion, actual.schemaVersion, file: file, line: line)
+            XCTAssertEqual(envelope.acceptedData, actual.acceptedData, file: file, line: line)
+            XCTAssertEqual(envelope.presenceData, actual.presenceData, file: file, line: line)
+            XCTAssertEqual(envelope.shadowData, actual.shadowData, file: file, line: line)
+            XCTAssertEqual(envelope.systemFields, actual.systemFields, file: file, line: line)
+            XCTAssertEqual(envelope.dependencyListID, actual.dependencyListID, file: file, line: line)
+            if reference.kind == .snip {
+                let original = try XCTUnwrap(before.snips.first { $0.id == reference.domainID },
+                    file: file, line: line)
+                let accepted = try CloudFullSyncPersistence.snipRecord(actual)
+                XCTAssertEqual(accepted, try JSONDecoder().decode(CloudTypedSnipRecord.self, from: actual.acceptedData),
+                    file: file, line: line)
+                XCTAssertEqual(accepted, try JSONDecoder().decode(CloudTypedSnipRecord.self, from: actual.presenceData),
+                    file: file, line: line)
+                XCTAssertEqual(accepted.storageVersion, 1, file: file, line: line)
+                XCTAssertEqual(accepted.binding, .canonical, file: file, line: line)
+                XCTAssertEqual(accepted.id, .snip(original.id, in: zone), file: file, line: line)
+                XCTAssertEqual(accepted.domainID, original.id, file: file, line: line)
+                XCTAssertEqual(accepted.schemaVersion, 3, file: file, line: line)
+                XCTAssertEqual(accepted.requestID, .value(original.requestID), file: file, line: line)
+                XCTAssertEqual(accepted.createdAt, .value(original.createdAt), file: file, line: line)
+                XCTAssertEqual(accepted.updatedAt, .value(original.updatedAt), file: file, line: line)
+                XCTAssertEqual(accepted.origin, .value(SnipOrigin.quickEntry.rawValue), file: file, line: line)
+                XCTAssertEqual(accepted.text, .value(original.content), file: file, line: line)
+                XCTAssertEqual(accepted.source, .value(nil), file: file, line: line)
+                XCTAssertEqual(accepted.isDone, .value(false), file: file, line: line)
+                XCTAssertNil(accepted.pinnedAt, file: file, line: line)
+                XCTAssertEqual(accepted.placement, .value(CloudSnipPlacement(
+                    listID: inbox.id, orderKey: original.manualSortKey)), file: file, line: line)
+                XCTAssertEqual(accepted.shadow.data, actual.shadowData, file: file, line: line)
+                XCTAssertEqual(accepted.shadow.systemFields, actual.systemFields, file: file, line: line)
+            } else {
+                let accepted = try CloudFullSyncPersistence.listRecord(actual)
+                XCTAssertEqual(accepted, try JSONDecoder().decode(CloudTypedListRecord.self, from: actual.acceptedData),
+                    file: file, line: line)
+                XCTAssertEqual(accepted, try JSONDecoder().decode(CloudTypedListRecord.self, from: actual.presenceData),
+                    file: file, line: line)
+                XCTAssertEqual(accepted.storageVersion, 1, file: file, line: line)
+                XCTAssertEqual(accepted.binding, .canonical, file: file, line: line)
+                XCTAssertEqual(accepted.id, .list(inbox.id, in: zone), file: file, line: line)
+                XCTAssertEqual(accepted.domainID, inbox.id, file: file, line: line)
+                XCTAssertEqual(accepted.schemaVersion, 3, file: file, line: line)
+                XCTAssertEqual(accepted.desiredName, .value("Inbox"), file: file, line: line)
+                XCTAssertEqual(accepted.systemImage, .value("tray.fill"), file: file, line: line)
+                XCTAssertEqual(accepted.color, .some(.value(nil)), file: file, line: line)
+                XCTAssertEqual(accepted.orderKey, .value(inbox.sortKey), file: file, line: line)
+                XCTAssertEqual(accepted.updatedAt, committedInboxRecord.updatedAt, file: file, line: line)
+                XCTAssertEqual(accepted.shadow.data, actual.shadowData, file: file, line: line)
+                XCTAssertEqual(accepted.shadow.systemFields, actual.systemFields, file: file, line: line)
+            }
+        }
+        let freshCapture = try XCTUnwrap(group.captures.first {
+            $0.transitionID == FailedEnableEncoding.uuid(freshTransitionID)
+        }, file: file, line: line)
+        XCTAssertNotEqual(freshCapture.candidateStoreID, firstCapture.candidateStoreID, file: file, line: line)
+        XCTAssertEqual(freshCapture.syncProtocol, .fullRecordV1, file: file, line: line)
+        XCTAssertEqual(freshCapture.normalizer, 1, file: file, line: line)
+        XCTAssertTrue(freshCapture.armed, file: file, line: line)
+        XCTAssertEqual(freshCapture.freeze.sourceRevision, String(before.revision + 1), file: file, line: line)
+        XCTAssertNotEqual(freshCapture.freeze.id, firstCapture.freeze.id, file: file, line: line)
+        XCTAssertNotEqual(freshCapture.sourceDigest, firstCapture.sourceDigest, file: file, line: line)
+        XCTAssertTrue(freshCapture.predecessors.contains(firstCapture.id), file: file, line: line)
+        XCTAssertTrue(freshCapture.candidateDeletes.isEmpty, file: file, line: line)
+        XCTAssertEqual(freshCapture.seenRequestIDs, firstCapture.seenRequestIDs, file: file, line: line)
+        XCTAssertEqual(Set(freshCapture.records.map(\.reference)), Set(editedImages.keys), file: file, line: line)
+        XCTAssertEqual(freshCapture.records.count, 3, file: file, line: line)
+        let editedReference = FailedEnableReference(CloudEntityReference(kind: .snip, domainID: enabled.editedSnipID))
+        for record in freshCapture.records {
+            XCTAssertEqual(record.sourceMembership, .present, file: file, line: line)
+            XCTAssertEqual(record.source.value, editedImages[record.reference], file: file, line: line)
+            let expected = try XCTUnwrap(editedQ[record.reference], file: file, line: line)
+            let original = try XCTUnwrap(originalQ[record.reference], file: file, line: line)
+            XCTAssertEqual(record.preparation.value.value, expected, file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizer, 1, file: file, line: line)
+            XCTAssertEqual(record.preparation.knownFields, expected.presence.keys.sorted(), file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizedLocal.acceptedPresence, expected.presence, file: file, line: line)
+            XCTAssertTrue(record.preparation.normalizedLocal.defaults.isEmpty, file: file, line: line)
+            XCTAssertEqual(record.preparation.normalizedLocal.immutableOverrides.value,
+                expectedOverrides[record.reference], file: file, line: line)
+            XCTAssertEqual(record.preparation.baseKind, .sourceCapture, file: file, line: line)
+            XCTAssertEqual(record.preparation.baseDigest.value,
+                try FailedEnableEncoding.digest(original.fields), file: file, line: line)
+            XCTAssertNotNil(record.preparation.fetchedDigest.value, file: file, line: line)
+            XCTAssertEqual(record.preparation.classification,
+                record.reference == editedReference ? .nonconflicting : .equalFetched, file: file, line: line)
+            XCTAssertTrue(record.preparation.recoveryIdentities.isEmpty, file: file, line: line)
+            XCTAssertTrue(record.preparation.conflictFields.isEmpty, file: file, line: line)
+            XCTAssertNotNil(record.observedAccepted.value, file: file, line: line)
+        }
+        let freshTransfer = try XCTUnwrap(evidence.transfers.first {
+            $0.sourceCaptureIDs == [freshCapture.id]
+        }, file: file, line: line)
+        XCTAssertEqual(freshTransfer.kind, .candidate, file: file, line: line)
+        XCTAssertEqual(freshTransfer.state, .checked, file: file, line: line)
+        XCTAssertEqual(freshTransfer.sourceStoreID, evidence.sourceStoreID, file: file, line: line)
+        XCTAssertEqual(freshTransfer.destinationStoreID, freshCapture.candidateStoreID, file: file, line: line)
+        XCTAssertEqual(freshTransfer.namespace, group.binding, file: file, line: line)
+        XCTAssertEqual(freshTransfer.outputs, editedImages.values.sorted {
+            $0.reference.sortKey < $1.reference.sortKey
+        }, file: file, line: line)
+        XCTAssertEqual(freshTransfer.dormantDigest, firstTransfer.dormantDigest, file: file, line: line)
+        XCTAssertTrue(freshTransfer.conflicts.isEmpty, file: file, line: line)
+        XCTAssertTrue(freshTransfer.recoveryDescriptors.isEmpty, file: file, line: line)
+        var persistence = enabled.persistence
+        var coordinator = sameServerCoordinator(on: persistence, server: enabled.stranded.server)
+        for pass in 0..<3 {
+            if pass == 1 {
+                let repeated = try await coordinator.enableOrRetry()
+                XCTAssertEqual(repeated.state, .on, file: file, line: line)
+            } else if pass == 2 {
+                persistence = try relaunch(enabled.stranded, root: root)
+                coordinator = sameServerCoordinator(on: persistence, server: enabled.stranded.server)
+                let reopened = try await coordinator.enableOrRetry()
+                XCTAssertEqual(reopened.state, .on, file: file, line: line)
+            }
+            let storage = try await persistence.snapshot()
+            XCTAssertNil(storage.transition, file: file, line: line)
+            XCTAssertEqual(storage.activeStore.kind, .iCloudSync, file: file, line: line)
+            XCTAssertEqual(FailedEnableEncoding.uuid(storage.activeStore.id), freshCapture.candidateStoreID,
+                file: file, line: line)
+            XCTAssertEqual(enabled.stranded.disk.transitionIDsAtSwap,
+                [firstTransition.id, freshTransitionID], file: file, line: line)
+            let active = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
+            let final = try await active.transferSnapshot(revision: storage.activeStore.revision)
+            XCTAssertEqual(final.snips, expectedSnips, file: file, line: line)
+            XCTAssertEqual(Set(final.snips.map(\.id)), originalIDs, file: file, line: line)
+            XCTAssertEqual(Set(final.snips.map(\.requestID)), requestIDs, file: file, line: line)
+            XCTAssertEqual(final.snips.count, 2, file: file, line: line)
+            XCTAssertEqual(final.lists, before.lists, file: file, line: line)
+            XCTAssertEqual(final.attachmentData, before.attachmentData, file: file, line: line)
+            XCTAssertTrue(final.attachmentFileURLs.isEmpty, file: file, line: line)
+            XCTAssertTrue(final.attachmentFileDigests.isEmpty, file: file, line: line)
+            XCTAssertEqual(final.opaqueSyncStatePayload, before.opaqueSyncStatePayload, file: file, line: line)
+            XCTAssertEqual(final.opaqueSyncStateDigest, before.opaqueSyncStateDigest, file: file, line: line)
+            let archive = try await active.archive()
+            XCTAssertEqual(Set(archive.seenRequestIDs), requestIDs, file: file, line: line)
+            let currentStorage = try await active.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            XCTAssertTrue(currentStorage.deferredEntities.isEmpty, file: file, line: line)
+            XCTAssertTrue(currentStorage.conflicts.isEmpty, file: file, line: line)
+            XCTAssertTrue(currentStorage.pendingDeletes.isEmpty, file: file, line: line)
+            XCTAssertTrue(currentStorage.quarantines.isEmpty, file: file, line: line)
+            let recoveries = try await active.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
+            XCTAssertTrue(recoveries.isEmpty, file: file, line: line)
+            let serverRecords = await enabled.stranded.server.storedRecordTypes(in: zone)
+            XCTAssertEqual(serverRecords.sorted(), ["List", "Snip", "Snip"], file: file, line: line)
+            XCTAssertEqual(serverRecords.filter { $0 == "Snip" }.count, 2, file: file, line: line)
+            let serverTexts = await enabled.stranded.server.storedTextValues()
+            XCTAssertEqual(serverTexts, ["also kept", Self.sameServerEditedText].sorted(), file: file, line: line)
+            for snip in expectedSnips {
+                let remote = await enabled.stranded.server.fullSnapshot(for: .snip(snip.id, in: zone))
+                let serverSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(remote, file: file, line: line))
+                XCTAssertEqual(serverSnip.storageVersion, 1, file: file, line: line)
+                XCTAssertEqual(serverSnip.binding, .canonical, file: file, line: line)
+                XCTAssertEqual(serverSnip.id, .snip(snip.id, in: zone), file: file, line: line)
+                XCTAssertEqual(serverSnip.domainID, snip.id, file: file, line: line)
+                XCTAssertEqual(serverSnip.schemaVersion, 3, file: file, line: line)
+                XCTAssertEqual(serverSnip.requestID, .value(snip.requestID), file: file, line: line)
+                XCTAssertEqual(serverSnip.createdAt, .value(snip.createdAt), file: file, line: line)
+                XCTAssertEqual(serverSnip.updatedAt, .value(snip.updatedAt), file: file, line: line)
+                XCTAssertEqual(serverSnip.origin, .value(SnipOrigin.quickEntry.rawValue), file: file, line: line)
+                XCTAssertEqual(serverSnip.text, .value(snip.content), file: file, line: line)
+                XCTAssertEqual(serverSnip.source, .value(nil), file: file, line: line)
+                XCTAssertEqual(serverSnip.isDone, .value(false), file: file, line: line)
+                XCTAssertNil(serverSnip.pinnedAt, file: file, line: line)
+                XCTAssertEqual(serverSnip.placement, .value(CloudSnipPlacement(
+                    listID: inbox.id, orderKey: snip.manualSortKey)), file: file, line: line)
+                for transitionID in [firstTransition.id, freshTransitionID] {
+                    let recoveryID = SnipLibraryTransferPlanner.derivedUUID(
+                        transitionID: transitionID, sourceID: snip.id)
+                    XCTAssertFalse(originalIDs.contains(recoveryID), file: file, line: line)
+                    XCTAssertFalse(final.snips.contains { $0.id == recoveryID }, file: file, line: line)
+                    let unnecessary = await enabled.stranded.server.fullSnapshot(for: .snip(recoveryID, in: zone))
+                    XCTAssertNil(unnecessary, file: file, line: line)
+                }
+            }
+            let remoteInbox = await enabled.stranded.server.fullSnapshot(for: .list(inbox.id, in: zone))
+            let serverInbox = try CloudFullRecordCodec.list(from: XCTUnwrap(remoteInbox, file: file, line: line))
+            XCTAssertEqual(serverInbox.storageVersion, 1, file: file, line: line)
+            XCTAssertEqual(serverInbox.binding, .canonical, file: file, line: line)
+            XCTAssertEqual(serverInbox.id, .list(inbox.id, in: zone), file: file, line: line)
+            XCTAssertEqual(serverInbox.domainID, inbox.id, file: file, line: line)
+            XCTAssertEqual(serverInbox.schemaVersion, 3, file: file, line: line)
+            XCTAssertEqual(serverInbox.desiredName, .value("Inbox"), file: file, line: line)
+            XCTAssertEqual(serverInbox.systemImage, .value("tray.fill"), file: file, line: line)
+            XCTAssertEqual(serverInbox.color, .some(.value(nil)), file: file, line: line)
+            XCTAssertEqual(serverInbox.orderKey, .value(inbox.sortKey), file: file, line: line)
+            XCTAssertEqual(serverInbox.updatedAt, committedInboxRecord.updatedAt, file: file, line: line)
+            let retained = try XCTUnwrap(try files.read(firstTransition.sourceStoreID), file: file, line: line)
+            let retainedGroup = try XCTUnwrap(retained.namespaces.first { $0.binding == group.binding },
+                file: file, line: line)
+            XCTAssertEqual(retainedGroup.captures.first { $0.id == firstCapture.id }, firstCapture,
+                file: file, line: line)
+            XCTAssertEqual(retainedGroup.captures.first { $0.id == freshCapture.id }, freshCapture,
+                file: file, line: line)
+            XCTAssertTrue(retained.transfers.contains(firstTransfer), file: file, line: line)
+            XCTAssertTrue(retained.transfers.contains(freshTransfer), file: file, line: line)
+            XCTAssertTrue(retainedGroup.alternatives.isEmpty, file: file, line: line)
+            XCTAssertTrue(retainedGroup.reviews.isEmpty, file: file, line: line)
+            XCTAssertEqual(retained.blobs, evidence.blobs, file: file, line: line)
+        }
     }
 
     /// Runs the fresh enable `retry` names, and checks that it ends On through a new transition
@@ -970,6 +1335,16 @@ extension ICloudSyncModeCoordinatorTests {
         }
         let originals = try await persistence.activeLibrary()
             .checkedSnapshot(sortedBy: .manual).snips
+        let inputManifest = await persistence.manifest
+        let sourceStore = try XCTUnwrap(
+            inputManifest.stores.first { $0.id == inputManifest.activeStoreID },
+            file: file, line: line
+        )
+        let originalLibrary = try await persistence.libraryForTransition(storeID: sourceStore.id)
+        let originalSourceBeforeEnable = try await originalLibrary.transferSnapshot(
+            revision: sourceStore.revision
+        )
+        XCTAssertEqual(originalSourceBeforeEnable.snips, originals, file: file, line: line)
         disk.armAtPointerSwap()
         do {
             _ = try await sameServerCoordinator(on: persistence, server: server).enableOrRetry()
@@ -991,6 +1366,11 @@ extension ICloudSyncModeCoordinatorTests {
             file: file,
             line: line
         )
+        let candidateNamespace = try XCTUnwrap(transition.namespace, file: file, line: line)
+        let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
+        let committedCandidateBeforeDiscard = try await candidate.cloudFullStorageSnapshot(
+            namespaceKey: candidateNamespace.namespaceKey
+        )
         return SameServerStrandedEnable(
             persistence: persistence,
             server: server,
@@ -998,7 +1378,9 @@ extension ICloudSyncModeCoordinatorTests {
             probe: probe,
             transition: transition,
             keptSnipID: keptSnipID,
-            originals: Dictionary(uniqueKeysWithValues: originals.map { ($0.id, $0.content) })
+            originals: Dictionary(uniqueKeysWithValues: originals.map { ($0.id, $0.content) }),
+            originalSourceBeforeEnable: originalSourceBeforeEnable,
+            committedCandidateBeforeDiscard: committedCandidateBeforeDiscard
         )
     }
 
@@ -1134,6 +1516,8 @@ private struct SameServerStrandedEnable {
     let keptSnipID: UUID
     /// The source's snips when the stranded enable started.
     let originals: [UUID: String]
+    let originalSourceBeforeEnable: SnipLibraryTransferSnapshot
+    let committedCandidateBeforeDiscard: CloudFullStorageSnapshot
 }
 
 private struct SameServerFreshEnable {
