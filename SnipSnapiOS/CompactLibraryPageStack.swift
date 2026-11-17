@@ -139,6 +139,18 @@ struct CompactLibraryPageStack: View {
                     )
                 }
             }
+            #if DEBUG
+            .background {
+                if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_PAGE_LAYOUT"] == "1",
+                   case .list(let id) = page,
+                   let list = model.lists.first(where: { $0.id == id }) {
+                    PageLayoutUITestProbe(name: list.name)
+                        .frame(width: 1, height: 1)
+                        .opacity(0.01)
+                        .allowsHitTesting(false)
+                }
+            }
+            #endif
             .libraryToast(
                 model: model,
                 isHidden: !isActivePage || !model.isSearchPresented || sheet != nil
@@ -283,6 +295,19 @@ private struct MountedListPage<Content: View>: Identifiable {
     let content: Content
 }
 
+/// Page motion must not change the native navigation stack's safe-area layout.
+private struct ListPageTranslation: GeometryEffect {
+    var x: CGFloat
+    var animatableData: CGFloat {
+        get { x }
+        set { x = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: x, y: 0))
+    }
+}
+
 private struct ListPageMotionStage<PageContent: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
@@ -320,19 +345,19 @@ private struct ListPageMotionStage<PageContent: View>: View {
                 ForEach(content) { page in
                     let isRetained = frame.retainedPages.contains(page.id)
                     page.content
-                        .offset(x: isRetained ? frame.offset(
+                        .modifier(ListPageTranslation(x: isRetained ? frame.offset(
                             for: page.id, width: width,
                             layoutDirection: layoutDirection, reduceMotion: reduceMotion
-                        ) : width * 2)
+                        ) : width * 2).ignoredByLayout())
                         .opacity(isRetained ? frame.opacity(for: page.id, reduceMotion: reduceMotion) : 0)
-                        .accessibilityHidden(page.id != selectedPage)
-                        // System bar items ignore ancestor accessibility hiding, so inactive pages
-                        // drop theirs where the bars can reach into the horizontal safe area.
+                        .accessibilityHidden(frame.isMoving || page.id != selectedPage)
+                        // Native bars reach outside the page clip. Keep their slots mounted,
+                        // but hide the controls until the selected page has settled.
                         .environment(
-                            \.suppliesPageToolbar,
-                            page.id == selectedPage || (safeArea.leading == 0 && safeArea.trailing == 0)
+                            \.showsPageToolbar,
+                            !frame.isMoving && page.id == selectedPage
                         )
-                        .disabled(frame.isMoving || page.id != selectedPage)
+                        .disabled(!isRetained)
                         .allowsHitTesting(!frame.isMoving && page.id == selectedPage)
                         .zIndex(!reduceMotion && frame.edgeCancelProgress > 0 && page.id == cancelSource ? 1 : 0)
                 }
