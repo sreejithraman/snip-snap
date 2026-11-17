@@ -1,4 +1,5 @@
 import CryptoKit
+import SwiftData
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
@@ -2312,84 +2313,376 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let initial = try SwiftDataSyncModePersistence(rootURL: root)
         let initialLocal = try await initial.activeLibrary()
-        try await add("base", to: initialLocal)
+        let requestID = UUID()
+        let createdAt = Date(timeIntervalSince1970: 10)
+        let editedAt = Date(timeIntervalSince1970: 60)
+        let added = try await initialLocal.perform(
+            .add(content: "base", origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+                attachmentURLs: [], requestID: requestID, now: createdAt),
+            sortedBy: .manual
+        )
+        guard case .add(.added(let snipID)) = added.outcome else {
+            return XCTFail("Expected one managed snip")
+        }
+        let initialContents = try await initialLocal.checkedSnapshot(sortedBy: .manual)
+        let base = try XCTUnwrap(initialContents.snips.first)
+        XCTAssertEqual(initialContents.snips.count, 1)
+        XCTAssertEqual(initialContents.lists, [SnipList.inbox])
+        XCTAssertEqual(base.id, snipID)
+        XCTAssertEqual(base.requestID, requestID)
+        XCTAssertEqual(base.content, "base")
+        XCTAssertEqual(base.createdAt, createdAt)
+        XCTAssertEqual(base.updatedAt, createdAt)
+        XCTAssertEqual(base.origin, .quickEntry)
+        XCTAssertEqual(base.listID, SnipList.inboxID)
+        XCTAssertFalse(base.isDone)
+        XCTAssertNil(base.source)
+        XCTAssertNil(base.pinnedAt)
+        XCTAssertTrue(base.attachments.isEmpty)
+
         let namespace = makeNamespace()
         let zone = textZone(namespace)
         let server = FakeCloudServer()
         let first = ICloudSyncModeCoordinator(
-            persistence: initial,
-            namespace: namespace,
-            textZone: zone,
+            persistence: initial, namespace: namespace, textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        _ = try await first.enableOrRetry()
-        _ = try await first.optOut(.useCurrentCacheAfterStaleDataWarning)
+        let enabled = try await first.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let disabled = try await first.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(disabled.state, .off)
         let local = try await initial.activeLibrary()
-        let before = await local.snapshot(sortedBy: .manual)
-        let base = try XCTUnwrap(before.snips.first)
+        let off = try await local.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(off.snips, [base])
+        let inputURL = root.appendingPathComponent("receipt-boundary.txt")
+        let bytes = Data("receipt mismatch attachment\n".utf8)
+        try bytes.write(to: inputURL)
         _ = try await local.perform(
-            .update(
-                id: base.id,
-                content: "offline edit",
-                attachmentURLs: nil,
-                expectedUpdatedAt: base.updatedAt,
-                now: Date(timeIntervalSince1970: 60)
-            ),
-            sortedBy: .manual
+            .update(id: snipID, content: "offline edit", attachmentURLs: [inputURL],
+                expectedUpdatedAt: createdAt, now: editedAt), sortedBy: .manual
         )
+        try FileManager.default.removeItem(at: inputURL)
+        let sourceStore = try await initial.snapshot().activeStore
+        let source = try await initial.libraryForTransition(storeID: sourceStore.id)
+        let sourceBefore = try await source.transferSnapshot(revision: sourceStore.revision)
+        let dormantBefore = try await source.dormantCloudBases()
+        let sourceArchive = try await source.archive()
+        XCTAssertEqual(sourceArchive.seenRequestIDs, [requestID])
+        let edited = try XCTUnwrap(sourceBefore.snips.first)
+        let attachment = try XCTUnwrap(edited.attachments.first)
+        XCTAssertEqual(edited.attachments.count, 1)
+        XCTAssertEqual(attachment.fileName, "receipt-boundary.txt")
+        XCTAssertEqual(attachment.byteCount, Int64(bytes.count))
+        let expectedBytes = [attachment.id: bytes]
+        var expectedSource = base
+        expectedSource.content = "offline edit"
+        expectedSource.updatedAt = editedAt
+        expectedSource.attachments = [attachment]
+        XCTAssertEqual(sourceBefore.snips, [expectedSource])
+        XCTAssertEqual(sourceBefore.lists, [SnipList.inbox])
+        XCTAssertEqual(sourceBefore.attachmentData, expectedBytes)
+        var expectedOutput = expectedSource
+        expectedOutput.updatedAt = createdAt
+        let snipRecordID = CloudRecordID.snip(snipID, in: zone)
+        let serverBefore = await server.fullSnapshot(for: snipRecordID)
+        let originalRecord = try CloudFullRecordCodec.snip(from: try XCTUnwrap(serverBefore))
+        XCTAssertEqual(originalRecord.text, .value("base"))
+        XCTAssertEqual(originalRecord.requestID, .value(requestID))
+        XCTAssertEqual(originalRecord.updatedAt, .value(createdAt))
+        let serverTypesBefore = await server.storedRecordTypes(in: zone)
+        let snipSavesBefore = await server.acceptedOperationCount(for: snipRecordID)
+        let deletesBefore = await server.acceptedDeletionCount()
+
         let crash = CrashInjector(point: .afterCandidateMergeDurability)
         let crashing = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
         let interrupted = ICloudSyncModeCoordinator(
-            persistence: crashing,
-            namespace: namespace,
-            textZone: zone,
+            persistence: crashing, namespace: namespace, textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
         do {
             _ = try await interrupted.enableOrRetry()
-            XCTFail("Expected post-apply crash")
+            return XCTFail("Expected the crash after the private apply and typed receipt commit")
         } catch CrashInjector.Failure.injected {}
         let crashed = try await crashing.snapshot()
-        let oldCandidateID = try XCTUnwrap(crashed.transition?.candidateStoreID)
+        let transition = try XCTUnwrap(crashed.transition)
+        let intent = try XCTUnwrap(transition.mergeIntent)
+        let token = try XCTUnwrap(transition.freezeToken)
+        XCTAssertEqual(crashed.activeStore, sourceStore)
+        XCTAssertEqual(transition.phase, .sourceFrozen)
+        XCTAssertEqual(transition.namespace, namespace.binding)
+        XCTAssertEqual(intent.sourceRevision, sourceStore.revision)
+        XCTAssertEqual(intent.fullReenablePlanID, transition.id)
+        XCTAssertNil(transition.sendAttempt)
+        let manifest = await crashing.manifest
+        let candidateStore = try XCTUnwrap(manifest.stores.first { $0.id == transition.candidateStoreID })
+        let candidate = try await crashing.libraryForTransition(storeID: candidateStore.id)
+        let candidateBefore = try await candidate.transferSnapshot(revision: candidateStore.revision)
+        let acceptedBefore = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(candidateBefore.snips, [expectedOutput])
+        XCTAssertEqual(candidateBefore.lists, [SnipList.inbox])
+        XCTAssertEqual(candidateBefore.attachmentData, expectedBytes)
 
         let manifestURL = root.appendingPathComponent("activation.json")
-        var manifest = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
-        )
-        var transition = try XCTUnwrap(manifest["transition"] as? [String: Any])
-        var intent = try XCTUnwrap(transition["mergeIntent"] as? [String: Any])
-        intent["planDigest"] = Data(repeating: 0xEE, count: 32).base64EncodedString()
-        transition["mergeIntent"] = intent
-        manifest["transition"] = transition
-        try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
-            .write(to: manifestURL, options: .atomic)
+        let manifestBefore = try Data(contentsOf: manifestURL)
+        let candidateRoot = root.appendingPathComponent(candidateStore.relativeRoot, isDirectory: true)
+        let candidateURL = candidateRoot.appendingPathComponent("snips.store")
+        let stagedRoot = candidateRoot.appendingPathComponent("full-reenable-v1", isDirectory: true)
+            .appendingPathComponent(transition.id.uuidString.lowercased(), isDirectory: true)
+        let planURL = stagedRoot.appendingPathComponent("plan.json")
+        let planBefore = try Data(contentsOf: planURL)
+        let staged = try JSONDecoder().decode(CloudFullReenableStagedPlan.self, from: planBefore)
+        let restored = try staged.restore(from: stagedRoot)
+        XCTAssertNil(restored.acceptedLegacyDigest)
+        XCTAssertEqual(restored.plan.planDigest, intent.planDigest)
+        XCTAssertEqual(restored.plan.transitionID, transition.id)
+        XCTAssertEqual(restored.plan.namespaceKey, namespace.namespaceKey.rawValue)
+        XCTAssertEqual(restored.plan.targetRevision, candidateStore.revision)
+        XCTAssertEqual(restored.plan.attachmentData, expectedBytes)
+        let file = try XCTUnwrap(staged.attachmentFiles.first)
+        XCTAssertEqual(staged.attachmentFiles.count, 1)
+        XCTAssertEqual(file.id, attachment.id)
+        let stagedAttachmentURL = stagedRoot.appendingPathComponent(file.relativePath)
+        XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), bytes)
+        let files = FailedEnableEvidenceFile(root: root)
+        let evidenceURL = files.url(sourceStore.id)
+        let evidenceBytes = try Data(contentsOf: evidenceURL)
+        let evidence = try XCTUnwrap(try files.read(sourceStore.id))
+        let preparationValue = try await crashing.failedEnablePreparedRead(
+            transition: transition, digest: intent.planDigest, token: token)
+        let preparation = try XCTUnwrap(preparationValue)
+        XCTAssertFalse(preparation.requiresTurnOffAbsence)
+        XCTAssertEqual(preparation.transfer.state, .prepared)
+        XCTAssertEqual(preparation.transfer.planDigest, FailedEnableEncoding.hex(intent.planDigest))
+        XCTAssertFalse(preparation.capture.armed)
+        XCTAssertEqual(preparation.capture.seenRequestIDs, [FailedEnableEncoding.uuid(requestID)])
+        let expectedImage = try FailedEnableSnipImage(expectedSource, attachmentData: expectedBytes)
+        XCTAssertTrue(preparation.capture.records.contains { $0.source.value == .snip(expectedImage) })
+        let blobHash = FailedEnableEncoding.digest(bytes)
+        XCTAssertEqual(evidence.blobs[blobHash], bytes)
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let namespaceKey = namespace.namespaceKey.rawValue
+        let operation = CloudFullReceiptOperation.reenableTransition(transition.id)
+        let modernKey = operation.storageKey(namespaceKey: namespaceKey)
+        let ambiguousKey = CloudFullReceiptOperation.committedBatch(transition.id).storageKey(namespaceKey: namespaceKey)
+        let corruptedDigest = Data(repeating: 0xEE, count: 32)
+        XCTAssertNotEqual(intent.planDigest, corruptedDigest)
+        let originalReceipt = try await candidate.failedEnableReenableReceipts(
+            namespaceKey: namespaceKey, transitionID: transition.id)
+        XCTAssertEqual(originalReceipt.modern, intent.planDigest)
+        XCTAssertNil(originalReceipt.ambiguous)
+
+        let recognized = try await candidate.recognizesFailedEnablePrepared(
+            preparation, digest: intent.planDigest, evidenceRoot: root)
+        XCTAssertTrue(recognized)
+
+        // Edit the existing row in the disposable current-schema store under its real file lock.
         do {
-            try await reopened.reconcileFullReenableIntent()
-            XCTFail("Expected receipt digest mismatch")
-        } catch {
-            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
-        }
-        let reset = try await reopened.snapshot()
-        XCTAssertNil(reset.transition)
-        XCTAssertEqual(reset.attentionReason, .storageFailure)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(
-                "stores/iCloudSync-\(oldCandidateID.uuidString.lowercased())"
-            ).path
-        ))
+            guard FileManager.default.fileExists(atPath: candidateURL.path) else {
+                return XCTFail("The committed candidate must exist before receipt injection")
+            }
+            let lock = try SnipStoreFileLock(url: candidateURL.appendingPathExtension("lock"))
+            defer { withExtendedLifetime(lock) {} }
+            let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
+            let configuration = ModelConfiguration("SnipSnapLocal", schema: schema, url: candidateURL,
+                cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = SwiftDataSnipLibrary.makeContext(container: container)
+            let descriptor = FetchDescriptor<StoredCloudFullBatchReceipt>()
+            let rows = try context.fetch(descriptor)
+            XCTAssertEqual(rows.filter { $0.id == modernKey }.count, 1)
+            XCTAssertFalse(rows.contains { $0.id == ambiguousKey })
+            let row = try XCTUnwrap(rows.first { $0.id == modernKey })
+            XCTAssertTrue(operation.matches(row, namespaceKey: namespaceKey))
+            XCTAssertEqual(row.namespaceKey, namespaceKey)
+            XCTAssertEqual(row.batchID, transition.id)
+            guard row.digest == intent.planDigest, row.digest != corruptedDigest else {
+                return XCTFail("Fault injection requires the original committed plan digest")
+            }
+            let identity = row.persistentModelID
+            let originalCreatedAt = row.createdAt
+            let digests = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.digest) })
 
+            row.digest = corruptedDigest
+            try lock.check()
+            try context.save()
+
+            let readback = try SwiftDataSnipLibrary.makeContext(container: container).fetch(descriptor)
+            let persisted = try XCTUnwrap(readback.first { $0.id == modernKey })
+            XCTAssertEqual(persisted.persistentModelID, identity)
+            XCTAssertTrue(operation.matches(persisted, namespaceKey: namespaceKey))
+            XCTAssertEqual(persisted.batchID, transition.id)
+            XCTAssertEqual(persisted.createdAt, originalCreatedAt)
+            XCTAssertEqual(persisted.digest, corruptedDigest)
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues: readback.map { ($0.id, $0.digest) }),
+                digests.merging([modernKey: corruptedDigest]) { _, changed in changed })
+        }
+
+        XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBefore)
+        XCTAssertEqual(try Data(contentsOf: evidenceURL), evidenceBytes)
+        XCTAssertEqual(try Data(contentsOf: planURL), planBefore)
+        XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), bytes)
+        let candidateAfterInjection = try await candidate.transferSnapshot(revision: candidateStore.revision)
+        let acceptedAfterInjection = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(candidateAfterInjection, candidateBefore)
+        XCTAssertEqual(acceptedAfterInjection, acceptedBefore)
+        let mutatedReceipt = try await candidate.failedEnableReenableReceipts(
+            namespaceKey: namespaceKey, transitionID: transition.id)
+        XCTAssertEqual(mutatedReceipt.modern, corruptedDigest)
+        XCTAssertNil(mutatedReceipt.ambiguous)
+        do {
+            _ = try await candidate.recognizesFailedEnablePrepared(
+                preparation, digest: intent.planDigest, evidenceRoot: root)
+            return XCTFail("A valid preparation with the altered typed receipt must be rejected")
+        } catch CloudFullStorageError.invalidBatchReplay {}
+
+        let reopened = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            crashHook: { point in
+                if point == .beforePointerSwap {
+                    XCTFail("The rejected receipt must not reach pointer swap")
+                    throw CrashInjector.Failure.injected
+                }
+            },
+            writeHook: { point in
+                if point == .beforeFullReenablePlanApply {
+                    XCTFail("The rejected receipt must not enter private apply")
+                    throw CrashInjector.Failure.injected
+                }
+            }
+        )
+        let reopenedManifest = await reopened.manifest
+        XCTAssertEqual(reopenedManifest, manifest)
+        let rejectingTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let rejecting = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: zone,
+            makeTransport: { rejectingTransport }
+        )
+        do {
+            _ = try await rejecting.enableOrRetry()
+            return XCTFail("Expected the matching coordinator to report the receipt failure")
+        } catch let error as SyncModePersistenceError {
+            XCTAssertEqual(error, .storageFailure)
+        }
+        let refused = try await reopened.snapshot()
+        XCTAssertEqual(refused.activeStore, sourceStore)
+        XCTAssertFalse(refused.transition?.freezesSource ?? false)
+        XCTAssertEqual(refused.attentionReason, .storageFailure)
+        let events = await rejectingTransport.events()
+        let serverAfter = await server.fullSnapshot(for: snipRecordID)
+        let serverTypesAfter = await server.storedRecordTypes(in: zone)
+        let snipSavesAfter = await server.acceptedOperationCount(for: snipRecordID)
+        let deletesAfter = await server.acceptedDeletionCount()
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(serverAfter, serverBefore)
+        XCTAssertEqual(serverTypesAfter, serverTypesBefore)
+        XCTAssertEqual(snipSavesAfter, snipSavesBefore)
+        XCTAssertEqual(deletesAfter, deletesBefore)
+        guard refused.activeStore.id == sourceStore.id,
+            FileManager.default.fileExists(atPath: root.appendingPathComponent(sourceStore.relativeRoot)
+                .appendingPathComponent("snips.store").path)
+        else {
+            return XCTFail("Receipt refusal must preserve the original active source on disk")
+        }
+        let refusedSource = try await reopened.libraryForTransition(storeID: sourceStore.id)
+        let refusedTransfer = try await refusedSource.transferSnapshot(revision: sourceStore.revision)
+        let refusedDormant = try await refusedSource.dormantCloudBases()
+        let refusedArchive = try await refusedSource.archive()
+        XCTAssertEqual(refusedTransfer, sourceBefore)
+        XCTAssertEqual(refusedDormant, dormantBefore)
+        XCTAssertEqual(refusedArchive.seenRequestIDs, [requestID])
+        let retained = try XCTUnwrap(try files.read(sourceStore.id))
+        XCTAssertEqual(retained.namespaces, evidence.namespaces)
+        XCTAssertEqual(retained.transfers, evidence.transfers)
+        XCTAssertEqual(retained.blobs, evidence.blobs)
+        XCTAssertEqual(retained.blobs[blobHash], bytes)
+        XCTAssertEqual(try Data(contentsOf: planURL), planBefore)
+        XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), bytes)
+        guard FileManager.default.fileExists(atPath: candidateURL.path) else {
+            return XCTFail("Receipt refusal lost the still-prepared candidate and its actual receipt")
+        }
+        // The old candidate handle permits observation even if the owner has marked the root deleting.
+        let refusedCandidate = try await candidate.transferSnapshot(revision: candidateStore.revision)
+        let refusedAccepted = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        let refusedReceipt = try await candidate.failedEnableReenableReceipts(
+            namespaceKey: namespaceKey, transitionID: transition.id)
+        XCTAssertEqual(refusedCandidate, candidateBefore)
+        XCTAssertEqual(refusedAccepted, acceptedBefore)
+        XCTAssertEqual(refusedReceipt.modern, corruptedDigest)
+        XCTAssertNil(refusedReceipt.ambiguous)
+
+        let retryOwner = try SwiftDataSyncModePersistence(rootURL: root)
         let retry = ICloudSyncModeCoordinator(
-            persistence: reopened,
-            namespace: namespace,
-            textZone: zone,
+            persistence: retryOwner, namespace: namespace, textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
+        let comparison = try await retry.enableOrRetry()
+        XCTAssertEqual(comparison.state, .needsAttention)
+        let beforeChoice = try await retryOwner.snapshot()
+        XCTAssertEqual(beforeChoice.activeStore, sourceStore)
+        XCTAssertNotEqual(beforeChoice.transition?.candidateStoreID, candidateStore.id)
+        let review = SnipSyncModeStore(retryOwner).failedEnableReview
+        let reviews = try await review.snapshot()
+        XCTAssertEqual(reviews.sourceStoreID, sourceStore.id)
+        XCTAssertEqual(reviews.issues.map(\.entityID), [.snip(snipID)])
+        let issue = try XCTUnwrap(reviews.issues.first { $0.entityID == .snip(snipID) },
+            "The retained unqualified edit must be available in a fresh comparison")
+        XCTAssertEqual(issue.reason, .unknownOutcome)
+        XCTAssertEqual(issue.serverState, .value)
+        XCTAssertEqual(issue.allowedChoices, [.useDevice])
+        XCTAssertTrue(issue.earlierLocalVersions.isEmpty)
+        guard case .snip(let localVersion)? = issue.localVersionAtReview,
+            case .snip(let serverVersion)? = issue.serverFieldsAtReview
+        else {
+            return XCTFail("Expected the actual local edit and fetched server preimage")
+        }
+        XCTAssertEqual(localVersion, expectedSource)
+        XCTAssertEqual(serverVersion, base)
+        let selected = try await review.choose(issue.id, selection: .useDevice, expecting: issue.expectation)
+        XCTAssertEqual(selected.issueID, issue.id)
+        XCTAssertEqual(selected.selection, .useDevice)
+        XCTAssertTrue(selected.outputs.isEmpty)
+        let afterChoice = try await retryOwner.snapshot()
+        XCTAssertEqual(afterChoice, beforeChoice)
+        let serverAfterChoice = await server.fullSnapshot(for: snipRecordID)
+        XCTAssertEqual(serverAfterChoice, serverBefore)
+
         let result = try await retry.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
-        let final = try await reopened.activeLibrary().snapshot(sortedBy: .manual)
-        XCTAssertEqual(final.snips.first?.content, "offline edit")
+        let completed = try await retryOwner.snapshot()
+        XCTAssertEqual(result.state, .on, "Retry attention: \(String(describing: result.attentionReason))")
+        XCTAssertNil(completed.transition)
+        XCTAssertNotEqual(completed.activeStore.id, candidateStore.id)
+        XCTAssertEqual(completed.activeStore.namespace, namespace.binding)
+        let final = try await retryOwner.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips, [expectedSource])
+        XCTAssertEqual(final.lists, [SnipList.inbox])
+        XCTAssertEqual(Set(final.attachmentURLs.keys), [attachment.id])
+        let finalURL = try XCTUnwrap(final.attachmentURLs[attachment.id])
+        XCTAssertEqual(try Data(contentsOf: finalURL), bytes)
+        let finalRemote = await server.fullSnapshot(for: snipRecordID)
+        let remote = try CloudFullRecordCodec.snip(from: try XCTUnwrap(finalRemote))
+        XCTAssertEqual(remote.id, snipRecordID)
+        XCTAssertEqual(remote.requestID, .value(requestID))
+        XCTAssertEqual(remote.text, .value("offline edit"))
+        XCTAssertEqual(remote.createdAt, .value(createdAt))
+        XCTAssertEqual(remote.updatedAt, .value(editedAt))
+        XCTAssertEqual(remote.origin, .value(SnipOrigin.quickEntry.rawValue))
+        XCTAssertEqual(remote.isDone, .value(false))
+        XCTAssertEqual(remote.source, .value(nil))
+        XCTAssertNil(remote.pinnedAt)
+        XCTAssertEqual(remote.placement, .value(CloudSnipPlacement(
+            listID: SnipList.inboxID, orderKey: base.manualSortKey)))
+        let finalTexts = await server.storedTextValues()
+        let finalTypes = await server.storedRecordTypes(in: zone)
+        XCTAssertEqual(finalTexts, ["offline edit"])
+        XCTAssertEqual(finalTypes, ["List", "Snip"])
+        let afterRetry = try XCTUnwrap(try files.read(sourceStore.id))
+        let retainedGroup = try XCTUnwrap(afterRetry.namespaces.first { $0.binding == preparation.transfer.namespace })
+        XCTAssertEqual(retainedGroup.captures.first { $0.id == preparation.capture.id }, preparation.capture)
+        XCTAssertTrue(afterRetry.transfers.contains(preparation.transfer))
+        XCTAssertEqual(afterRetry.blobs[blobHash], bytes)
+        XCTAssertEqual(try Data(contentsOf: planURL), planBefore)
+        XCTAssertEqual(try Data(contentsOf: stagedAttachmentURL), bytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: candidateURL.path))
     }
 
     func testFullReenableRemoteDeleteDropsUnchangedSnipWithoutRecovery() async throws {
