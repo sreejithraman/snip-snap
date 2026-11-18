@@ -5129,13 +5129,31 @@ extension CloudAttachmentTransferTests {
   }
 
   func testAttachmentReorderSurvivesConcurrentRenameAfterLostAcknowledgement() async throws {
-    enum Interruption: Error { case beforeCommit }
+    try await assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: false)
+  }
+
+  func testAttachmentReorderSurvivesQueuedRenameAfterLostAcknowledgement() async throws {
+    try await assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: true)
+  }
+
+  private func assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: Bool) async throws {
+    enum Interruption: Error { case beforeSend, beforeCommit }
 
     let pair = try await makeDownloadedAttachmentPair()
     defer { try? FileManager.default.removeItem(at: pair.root) }
     try await pair.sender.fetchRemote()
     let renamed = "renamed-first.txt"
     try await renameAttachment(ofSnip: pair.snipID, to: renamed, in: pair.senderLibrary)
+    if queueRename {
+      let metadataID = CloudAttachmentRecordCodec.recordID(pair.first.metadataIdentity)
+      do {
+        try await pair.sender.sendPending(beforeSend: { outbound in
+          XCTAssertEqual(outbound.operations.map(\.id), [metadataID])
+          throw Interruption.beforeSend
+        })
+        XCTFail("Expected the rename to stay queued.")
+      } catch Interruption.beforeSend {}
+    }
     try await editDownloadedAttachments(pair, keeping: [pair.second.id, pair.first.id])
 
     // Simulate the reordering client exiting after the server save and before staging the result.

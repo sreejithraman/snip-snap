@@ -516,14 +516,14 @@ private extension SwiftDataSnipLibrary {
     for (snipID, references) in referencesBySnip {
       let publications = publicationsBySnip[snipID] ?? []
       let rows = Dictionary(uniqueKeysWithValues: publications.map { ($0.attachmentID, $0) })
-      let publishedOrder = publications.compactMap { row -> (UUID, Int)? in
+      let publishedMetadata = publications.compactMap { row -> (UUID, CloudAttachmentMetadataValue)? in
         guard row.lifecycle.isPayloadAccepted,
           case .fetched(let base?)? = resolveMetadata(row.metadataIdentity, row.metadataShadowData, nil),
           base.namesSamePayload(as: row.metadata)
         else { return nil }
-        return (row.attachmentID, base.position)
+        return (row.attachmentID, base)
       }
-      let previous = Dictionary(uniqueKeysWithValues: publishedOrder)
+      let previous = Dictionary(uniqueKeysWithValues: publishedMetadata)
       guard !legacyOrderSnips.contains(snipID), previous.count == publications.count,
         references.allSatisfy({ previous[$0.attachmentID] != nil })
       else {
@@ -540,19 +540,24 @@ private extension SwiftDataSnipLibrary {
         }
         continue
       }
-      var remote = previous
+      var remote = previous.mapValues(\.position)
       for id in previous.keys {
         if let metadata = fetchedMetadata[id] { remote[id] = metadata.position }
       }
       let complete = Set(remote.values) == Set(0..<remote.count)
-      let localOrderChanged = references.contains { previous[$0.attachmentID] != $0.position }
+      let localOrderChanged = references.contains { previous[$0.attachmentID]?.position != $0.position }
       let ownerKeepsOrder = references.contains { reference in
         let id = reference.attachmentID
-        guard let row = rows[id], row.lifecycle.localSourceRelativePath != nil else {
+        guard let row = rows[id], row.lifecycle.localSourceRelativePath != nil,
+          let base = previous[id]
+        else {
           return false
         }
-        return !complete || previous[id] != reference.position
-          || (!row.lifecycle.isMetadataAccepted && remote[id] != reference.position)
+        if !complete || base.position != reference.position { return true }
+        // A pending row that matches the old rank may be undoing an unacknowledged reorder.
+        let queuedRename = row.position == base.position && row.fileName != base.fileName
+          && row.contentType == base.contentType
+        return !row.lifecycle.isMetadataAccepted && !queuedRename && remote[id] != reference.position
       }
       // Keep the existing cache behavior for a partial fetch with no overlapping local order.
       guard !ownerKeepsOrder, complete || !localOrderChanged else { continue }
