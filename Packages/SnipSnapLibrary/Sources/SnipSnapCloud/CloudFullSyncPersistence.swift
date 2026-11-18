@@ -699,7 +699,8 @@ extension CloudFullSyncPersistence {
         for: sent,
         outbound: outbound,
         commit: batch,
-        dataZone: dataZone
+        dataZone: dataZone,
+        payloadZone: payloadZone
       )
       if !results.isEmpty { try await recordSetupRetryResults(results) }
     }

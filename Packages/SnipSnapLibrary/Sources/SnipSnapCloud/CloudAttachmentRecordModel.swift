@@ -58,10 +58,27 @@ package enum CloudAttachmentRecordCodec {
   ) throws -> CloudAttachmentMetadataValue {
     guard snapshot.completeness == .full else { throw CloudRecordError.projectedSnapshot }
     guard snapshot.recordType == metadataRecordType else { throw CloudRecordError.wrongRecordType }
-    if let metadataZone, snapshot.id.zone != metadataZone {
+    return try metadata(id: snapshot.id, fields: snapshot.encryptedFields, metadataZone: metadataZone, payloadZone: payloadZone)
+  }
+
+  static func metadata(
+    from draft: CloudRecordDraft,
+    metadataZone: CloudZoneID,
+    payloadZone: CloudZoneID
+  ) throws -> CloudAttachmentMetadataValue {
+    guard draft.recordType == metadataRecordType else { throw CloudRecordError.wrongRecordType }
+    return try metadata(id: draft.id, fields: draft.encryptedFields, metadataZone: metadataZone, payloadZone: payloadZone)
+  }
+
+  private static func metadata(
+    id: CloudRecordID,
+    fields: [String: CloudFieldValue],
+    metadataZone: CloudZoneID?,
+    payloadZone: CloudZoneID?
+  ) throws -> CloudAttachmentMetadataValue {
+    if let metadataZone, id.zone != metadataZone {
       throw CloudAttachmentStorageError.invalidMetadata
     }
-    let fields = snapshot.encryptedFields
     let metadata = CloudAttachmentMetadataValue(
       attachmentID: try uuid(fields, "attachmentID"),
       snipID: try uuid(fields, "snipID"),

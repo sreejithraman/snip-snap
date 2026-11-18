@@ -234,6 +234,15 @@ extension CloudFullSyncPersistence {
     let acceptedValues = stored.readyEntities + stored.deferredEntities
     let accepted = Dictionary(uniqueKeysWithValues: acceptedValues.map { ($0.reference, $0) })
     let targetSnips = Dictionary(uniqueKeysWithValues: target.snips.map { ($0.id, $0) })
+    let removedOfferedAttachmentIDs: [UUID: Set<UUID>]
+    if let retryEvidence, payloadZone != nil {
+      let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+      removedOfferedAttachmentIDs = CloudSetupRetryCapture.removedOfferedAttachmentIDsBySnip(
+        source: source, publications: attachments.publications, evidence: retryEvidence
+      )
+    } else {
+      removedOfferedAttachmentIDs = [:]
+    }
     let sourceSnipIDs = Set(source.snips.map(\.id))
     var adjustedLists = source.lists
     var adjustedSnips = source.snips
@@ -403,6 +412,7 @@ extension CloudFullSyncPersistence {
       if basis.dormant == nil {
         let sourceAttachmentIDs = Set(attachments.map(\.id))
           .union(basis.fields?.local.setupSourceAttachmentIDs ?? [])
+          .union(removedOfferedAttachmentIDs[local.id] ?? [])
         for attachment in targetSnips[local.id]?.attachments ?? []
           where !sourceAttachmentIDs.contains(attachment.id)
         {
@@ -494,7 +504,8 @@ extension CloudFullSyncPersistence {
       target: target,
       transitionID: transitionID,
       replacingTargetSnipIDs: replacingSnips,
-      replacingTargetListIDs: replacingLists
+      replacingTargetListIDs: replacingLists,
+      removingTargetAttachmentIDsBySnip: removedOfferedAttachmentIDs
     )
     let remainingListIDs = Set(transfer.lists.map(\.id))
     let snips = try transfer.snips.map { snip in

@@ -4,6 +4,26 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 enum CloudSetupRetryCapture {
+  static func removedOfferedAttachmentIDsBySnip(
+    source: SnipLibraryTransferSnapshot,
+    publications: [CloudAttachmentPublication],
+    evidence: CloudSetupRetryEvidence
+  ) -> [UUID: Set<UUID>] {
+    let sourceIDs = Dictionary(uniqueKeysWithValues: source.snips.map { ($0.id, Set($0.attachments.map(\.id))) })
+    let decoder = JSONDecoder()
+    return publications.reduce(into: [:]) { removed, publication in
+      let metadata = publication.metadata
+      guard publication.metadataAccepted, publication.isLocallyPresent,
+        let currentIDs = sourceIDs[metadata.snipID], !currentIDs.contains(metadata.attachmentID),
+        let key = attachmentKey(metadata, identity: publication.metadataIdentity),
+        !evidence.requiresRecovery(for: key), let proof = evidence.baseline(for: key),
+        let acknowledged = try? decoder.decode(CloudAttachmentMetadataValue.self, from: proof.serverFields),
+        acknowledged == metadata
+      else { return }
+      removed[metadata.snipID, default: []].insert(metadata.attachmentID)
+    }
+  }
+
   static func removedAttachmentIDsBySnip(
     source: SnipLibraryTransferSnapshot,
     accepted: [CloudAcceptedEntity],
@@ -40,15 +60,29 @@ enum CloudSetupRetryCapture {
   static func offers(
     for outbound: CloudOutboundBatch,
     source: SnipLibrarySnapshot,
-    dataZone: CloudZoneID
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID? = nil
   ) throws -> [CloudSetupRetryOffer] {
     let snips = Dictionary(uniqueKeysWithValues: source.snips.map { ($0.id, $0) })
     let lists = Dictionary(uniqueKeysWithValues: source.lists.map { ($0.id, $0) })
     let encoder = fieldEncoder()
     return try outbound.operations.compactMap { operation in
-      guard case .save(let draft) = operation, let key = key(for: draft, in: dataZone) else {
-        return nil
+      guard case .save(let draft) = operation else { return nil }
+      if let payloadZone,
+        let pointer = try? CloudAttachmentRecordCodec.metadata(from: draft, metadataZone: dataZone, payloadZone: payloadZone),
+        let key = attachmentKey(pointer, identity: CloudFullSyncPersistence.storageIdentity(draft.id)),
+        let parent = snips[pointer.snipID],
+        let attachment = parent.attachments.first(where: { $0.id == pointer.attachmentID }),
+        attachment.byteCount == pointer.byteCount,
+        let url = source.attachmentURLs[attachment.id],
+        (try? AttachmentFileIO.digest(at: url)) == pointer.sha256
+      {
+        return CloudSetupRetryOffer(
+          key: key, sourceFields: try encoder.encode(pointer),
+          operationDigest: operationDigest(try CloudFullSyncPersistence.outboundBinding(operation))
+        )
       }
+      guard let key = key(for: draft, in: dataZone) else { return nil }
       let sourceFields: Data
       switch key.reference.kind {
       case .snip:
@@ -77,7 +111,8 @@ enum CloudSetupRetryCapture {
     for sent: CloudSentBatch,
     outbound: CloudOutboundBatch,
     commit: CloudFullBatchCommit,
-    dataZone: CloudZoneID
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID? = nil
   ) -> [CloudSetupRetryResult] {
     let byID = Dictionary(uniqueKeysWithValues: sent.items.map { ($0.id, $0) })
     let bindings = Dictionary(uniqueKeysWithValues: commit.outboundBindings.map { ($0.identity, $0) })
@@ -88,18 +123,33 @@ enum CloudSetupRetryCapture {
     let encoder = fieldEncoder()
     return outbound.operations.compactMap { operation in
       guard case .save(let draft) = operation,
-        let key = key(for: draft, in: dataZone),
-        let binding = bindings[key.identity], binding.action == .save,
+        let binding = bindings[CloudFullSyncPersistence.storageIdentity(draft.id)], binding.action == .save,
         let result = byID[draft.id]
       else { return nil }
+      let pointer = payloadZone.flatMap {
+        try? CloudAttachmentRecordCodec.metadata(from: draft, metadataZone: dataZone, payloadZone: $0)
+      }
+      let pointerKey = pointer.flatMap { attachmentKey($0, identity: binding.identity) }
+      guard let key = pointerKey ?? key(for: draft, in: dataZone) else { return nil }
 
       let serverFields: Data?
       switch result {
       case .saved(let snapshot):
-        guard upserts.contains(key),
-          let fields = try? savedFields(snapshot, for: draft, key: key, encoder: encoder)
-        else { return nil }
-        serverFields = fields
+        if let pointer, let payloadZone {
+          guard snapshot.id == draft.id,
+            let saved = try? CloudAttachmentRecordCodec.metadata(from: snapshot, metadataZone: dataZone, payloadZone: payloadZone),
+            saved == pointer, commit.attachmentTransitions.contains(where: { transition in
+              guard case .metadataAccepted(let id, _, let shadow, _) = transition else { return false }
+              return id == pointer.attachmentID && shadow == snapshot.shadow.data
+            }), let fields = try? encoder.encode(saved)
+          else { return nil }
+          serverFields = fields
+        } else {
+          guard upserts.contains(key),
+            let fields = try? savedFields(snapshot, for: draft, key: key, encoder: encoder)
+          else { return nil }
+          serverFields = fields
+        }
       case .conflict(_, let server) where server.id == draft.id && server.recordType == draft.recordType:
         serverFields = nil
       case .unknownItem:
@@ -115,6 +165,16 @@ enum CloudSetupRetryCapture {
         serverFields: serverFields
       )
     }
+  }
+
+  private static func attachmentKey(
+    _ metadata: CloudAttachmentMetadataValue,
+    identity: CloudTextStorageIdentity
+  ) -> CloudSetupRetryRecordKey? {
+    let key = CloudSetupRetryRecordKey(
+      reference: CloudEntityReference(kind: .snip, domainID: metadata.snipID), identity: identity
+    )
+    return key.attachmentID == metadata.attachmentID ? key : nil
   }
 
   private static func key(for draft: CloudRecordDraft, in dataZone: CloudZoneID) -> CloudSetupRetryRecordKey? {

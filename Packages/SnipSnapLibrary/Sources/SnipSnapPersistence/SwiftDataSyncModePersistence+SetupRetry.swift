@@ -100,12 +100,13 @@ extension SwiftDataSyncModePersistence.Manifest {
       return
     }
     if let offers {
-      let saves = Set(attempt.operations.compactMap { operation -> CloudSetupRetryRecordKey? in
-        guard operation.kind == .save, let reference = operation.reference else { return nil }
-        return CloudSetupRetryRecordKey(reference: reference, identity: operation.recordIdentity)
-      })
+      let saves = Dictionary(grouping: attempt.operations.filter { $0.kind == .save }, by: \.recordIdentity)
       let offeredKeys = Set(offers.map(\.key))
-      guard offeredKeys.count == offers.count, offeredKeys.isSubset(of: saves) else {
+      guard offeredKeys.count == offers.count, offeredKeys.allSatisfy({ key in
+        saves[key.identity]?.contains { save in
+          save.reference == key.reference || (save.reference == nil && key.attachmentID != nil)
+        } == true
+      }) else {
         throw SyncModePersistenceError.invalidManifest
       }
       stores[index].setupRetryHistory?.update(namespace: attempt.namespace) {

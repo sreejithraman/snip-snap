@@ -1,12 +1,21 @@
 import Foundation
 
 package struct CloudSetupRetryRecordKey: Codable, Hashable, Sendable {
+  /// An attachment pointer's reference identifies its parent snip.
   package let reference: CloudEntityReference
   package let identity: CloudTextStorageIdentity
 
   package init(reference: CloudEntityReference, identity: CloudTextStorageIdentity) {
     self.reference = reference
     self.identity = identity
+  }
+
+  package var attachmentID: UUID? {
+    guard reference.kind == .snip, identity.recordName.hasPrefix("a-"),
+      let id = UUID(uuidString: String(identity.recordName.dropFirst(2))),
+      identity.recordName == "a-\(id.uuidString.lowercased())"
+    else { return nil }
+    return id
   }
 }
 

@@ -202,7 +202,11 @@ extension ICloudSyncModeCoordinatorTests {
             namespace: namespace,
             textZone: metadataZone,
             payloadZone: payloadZone,
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+            makeTransport: {
+                FakeCloudRecordTransport(
+                    server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
+                )
+            }
         )
         do {
             _ = try await coordinator.enableOrRetry()
@@ -211,25 +215,13 @@ extension ICloudSyncModeCoordinatorTests {
         let storage = try await persistence.snapshot()
         XCTAssertEqual(storage.activeStore.kind, .localOnly)
         let transition = try XCTUnwrap(storage.transition)
+        XCTAssertEqual(transition.phase, .candidateReady)
         let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
         let publications = try await candidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
         let removedPublication = try XCTUnwrap(publications.publications.first {
             $0.metadata.attachmentID == removed.id
         })
         let removedPointerID = CloudAttachmentRecordCodec.recordID(removedPublication.metadataIdentity)
-        let remotePointer = await server.fullSnapshot(for: removedPointerID)
-        XCTAssertNotNil(remotePointer)
-
-        // The retry may have only the remote pointer when the previous candidate copy is lost.
-        try await candidate.quarantineCloudNamespaceState(namespaceKey: namespace.namespaceKey)
-        let removeAttachment = SnipLibraryCommand.editAttachments(
-            snipID: snip.id,
-            content: snip.content,
-            edits: [.existing(attachmentID: kept.id)],
-            expectedUpdatedAt: nil,
-            now: snip.updatedAt.addingTimeInterval(1)
-        )
-        _ = try await candidate.perform(removeAttachment, sortedBy: .manual)
         let removedPayloadID = CloudAttachmentRecordCodec.recordID(removedPublication.metadata.payloadIdentity)
         let remotePayload = await server.fullSnapshot(for: removedPayloadID)
         let payload = try XCTUnwrap(remotePayload)
@@ -238,12 +230,53 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let unavailablePayload = await server.fullSnapshot(for: removedPayloadID)
         XCTAssertNil(unavailablePayload)
+        let remotePointer = await server.fullSnapshot(for: removedPointerID)
+        XCTAssertNotNil(remotePointer)
 
-        _ = try await local.perform(removeAttachment, sortedBy: .manual)
-        let result = try await coordinator.enableOrRetry()
+        let listedCandidate = await persistence.store(id: transition.candidateStoreID)
+        let candidateStore = try XCTUnwrap(listedCandidate)
+        let candidateRoot = await persistence.storeURL(candidateStore)
+        try FileManager.default.removeItem(at: candidateRoot)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let beforeRetry = try await reopened.snapshot()
+        XCTAssertEqual(beforeRetry.activeStore.id, transition.sourceStoreID)
+        XCTAssertEqual(beforeRetry.transition?.phase, .candidateReady)
+        let retryEvidence = await reopened.setupRetryEvidence(namespace: namespace.binding)
+        let snipKey = CloudSetupRetryRecordKey(
+            reference: CloudEntityReference(kind: .snip, domainID: snip.id),
+            identity: CloudFullSyncPersistence.storageIdentity(.snip(snip.id, in: metadataZone))
+        )
+        let baseline = try XCTUnwrap(retryEvidence?.baseline(for: snipKey))
+        let frozen = try JSONDecoder().decode(CloudSnipMergeFields.self, from: baseline.sourceFields)
+        XCTAssertEqual(frozen.setupSourceAttachmentIDs, [removed.id, kept.id])
+
+        let source = try await reopened.activeLibrary()
+        let edited = try await source.perform(
+            .editAttachments(
+                snipID: snip.id,
+                content: snip.content,
+                edits: [.existing(attachmentID: kept.id)],
+                expectedUpdatedAt: nil,
+                now: snip.updatedAt.addingTimeInterval(1)
+            ),
+            sortedBy: .manual
+        )
+        XCTAssertEqual(edited.snapshot.snips.first?.attachments.map(\.id), [kept.id])
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: metadataZone,
+            payloadZone: payloadZone,
+            makeTransport: {
+                FakeCloudRecordTransport(
+                    server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
+                )
+            }
+        )
+        let result = try await retry.enableOrRetry()
 
         XCTAssertEqual(result.state, .on, "\(result)")
-        let active = try await persistence.activeLibrary()
+        let active = try await reopened.activeLibrary()
         let final = try await active.checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [snip.id])
         XCTAssertEqual(final.snips.first?.attachments.map(\.id), [kept.id])
@@ -251,6 +284,132 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try Data(contentsOf: copiedURL), keptBytes)
         let deletedPointer = await server.fullSnapshot(for: removedPointerID)
         XCTAssertNil(deletedPointer)
+    }
+
+    func testFullSetupRetryKeepsRemovalOfSeparatelyAcknowledgedAttachment() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let metadataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private", accountLineage: "account", generation: UUID(),
+            zones: [metadataZone, payloadZone]
+        )
+        let server = FakeCloudServer()
+        func makeTransport() -> FakeCloudRecordTransport {
+            FakeCloudRecordTransport(
+                server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
+            )
+        }
+        func coordinator(
+            _ persistence: SwiftDataSyncModePersistence, transport: FakeCloudRecordTransport
+        ) -> ICloudSyncModeCoordinator {
+            ICloudSyncModeCoordinator(
+                persistence: persistence, namespace: namespace, textZone: metadataZone,
+                payloadZone: payloadZone, makeTransport: { transport }
+            )
+        }
+        func pointerID(_ attachmentID: UUID) -> CloudRecordID {
+            CloudRecordID(zone: metadataZone, name: "a-\(attachmentID.uuidString.lowercased())")
+        }
+
+        let localRoot = root.appendingPathComponent("local")
+        let crash = CrashInjector(point: .beforePointerSwap)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: localRoot, crashHook: crash.hit)
+        let local = try await persistence.activeLibrary()
+        try await add("acknowledged snip", to: local)
+        try await add("interrupted seed", to: local)
+        let initial = try await local.checkedSnapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(initial.snips.first { $0.content == "acknowledged snip" })
+        let interrupted = try XCTUnwrap(initial.snips.first { $0.content == "interrupted seed" })
+        let snipRecordID = CloudRecordID.snip(snip.id, in: metadataZone)
+        let firstTransport = makeTransport()
+        await firstTransport.failNextSentItem(.snip(interrupted.id, in: metadataZone), failure: .retryable)
+        let first = try await coordinator(persistence, transport: firstTransport).enableOrRetry()
+        XCTAssertEqual(first.state, .settingUp)
+        let acknowledged = await server.fullSnapshot(for: snipRecordID)
+        XCTAssertNotNil(acknowledged)
+
+        let localFile = root.appendingPathComponent("remove.txt")
+        try Data("local attachment to remove".utf8).write(to: localFile)
+        let added = try await local.perform(
+            .editAttachments(
+                snipID: snip.id, content: snip.content, edits: [.added(sourceURL: localFile)],
+                expectedUpdatedAt: snip.updatedAt, now: snip.updatedAt.addingTimeInterval(1)
+            ),
+            sortedBy: .manual
+        )
+        let removed = try XCTUnwrap(added.snapshot.snips.first { $0.id == snip.id }?.attachments.first)
+
+        let peer = try SwiftDataSyncModePersistence(rootURL: root.appendingPathComponent("peer"))
+        let peerCoordinator = coordinator(peer, transport: makeTransport())
+        let peerEnabled = try await peerCoordinator.enableOrRetry()
+        XCTAssertEqual(peerEnabled.state, .on)
+        let peerLibrary = try await peer.activeLibrary()
+        let remoteBytes = [Data("peer first attachment".utf8), Data("peer second attachment".utf8)]
+        let remoteFiles = try remoteBytes.enumerated().map { index, bytes in
+            let url = root.appendingPathComponent("peer-\(index).txt")
+            try bytes.write(to: url)
+            return url
+        }
+        let peerEdited = try await peerLibrary.perform(
+            .editAttachments(
+                snipID: snip.id, content: snip.content,
+                edits: remoteFiles.map { .added(sourceURL: $0) },
+                expectedUpdatedAt: nil, now: snip.updatedAt.addingTimeInterval(2)
+            ),
+            sortedBy: .manual
+        )
+        let remoteIDs = try XCTUnwrap(peerEdited.snapshot.snips.first?.attachments.map(\.id))
+        XCTAssertEqual(remoteIDs.count, remoteBytes.count)
+        let peerSynced = try await peerCoordinator.syncActive()
+        XCTAssertEqual(peerSynced.state, .on)
+
+        let secondTransport = makeTransport()
+        do {
+            _ = try await coordinator(persistence, transport: secondTransport).enableOrRetry()
+            XCTFail("Expected the second setup attempt to stop before activation")
+        } catch CrashInjector.Failure.injected {}
+        let secondSends = await secondTransport.events().flatMap { event -> [CloudRecordID] in
+            if case .sent(let ids) = event { return ids }
+            return []
+        }
+        XCTAssertTrue(secondSends.contains(pointerID(removed.id)))
+        XCTAssertFalse(secondSends.contains(snipRecordID))
+        let sentPointer = await server.fullSnapshot(for: pointerID(removed.id))
+        XCTAssertNotNil(sentPointer)
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: localRoot)
+        let source = try await reopened.activeLibrary()
+        _ = try await source.perform(
+            .editAttachments(
+                snipID: snip.id, content: snip.content, edits: [], expectedUpdatedAt: nil,
+                now: snip.updatedAt.addingTimeInterval(3)
+            ),
+            sortedBy: .manual
+        )
+        let result = try await coordinator(reopened, transport: makeTransport()).enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let active = try await reopened.activeLibrary()
+        let final = try await active.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(final.snips.map(\.id)), [snip.id, interrupted.id])
+        let merged = try XCTUnwrap(final.snips.first { $0.id == snip.id })
+        XCTAssertEqual(Set(merged.attachments.map(\.id)), Set(remoteIDs))
+        XCTAssertNil(final.attachmentURLs[removed.id])
+        let removedPointer = await server.fullSnapshot(for: pointerID(removed.id))
+        XCTAssertNil(removedPointer)
+        for (id, bytes) in zip(remoteIDs, remoteBytes) {
+            let localURL = try XCTUnwrap(final.attachmentURLs[id])
+            XCTAssertEqual(try Data(contentsOf: localURL), bytes)
+            let pointer = await server.fullSnapshot(for: pointerID(id))
+            let metadata = try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(pointer))
+            let asset = await server.asset(
+                for: CloudAttachmentRecordCodec.recordID(metadata.payloadIdentity),
+                field: CloudAttachmentRecordCodec.assetField
+            )
+            XCTAssertEqual(try Data(contentsOf: XCTUnwrap(asset)), bytes)
+        }
     }
 
     func testFullReenableUsesLocalAttachmentCopyWhenRemoteDownloadIsNotCached() async throws {

@@ -791,12 +791,17 @@ package actor ICloudSyncModeCoordinator {
         )
         if let setupRetry {
             let accepted = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            let removedFromSnipOffers = try CloudSetupRetryCapture.removedAttachmentIDsBySnip(
+                source: setupRetry.source, accepted: accepted.readyEntities,
+                evidence: setupRetry.evidence, namespace: namespace, dataZone: textZone
+            )
+            let removedFromPointerOffers = CloudSetupRetryCapture.removedOfferedAttachmentIDsBySnip(
+                source: setupRetry.source, publications: attachments.publications, evidence: setupRetry.evidence
+            )
             return try await coordinator.preserveAllAttachmentsForLocalCopy(
                 excluding: Set(setupRetry.source.attachmentData.keys),
-                removedAttachmentIDsBySnip: CloudSetupRetryCapture.removedAttachmentIDsBySnip(
-                    source: setupRetry.source, accepted: accepted.readyEntities,
-                    evidence: setupRetry.evidence, namespace: namespace, dataZone: textZone
-                )
+                removedAttachmentIDsBySnip: removedFromSnipOffers.merging(removedFromPointerOffers) { $0.union($1) }
             )
         }
         return try await coordinator.preserveAllAttachmentsForLocalCopy()
@@ -855,7 +860,7 @@ package actor ICloudSyncModeCoordinator {
         let candidateStoreID = transition.candidateStoreID
         let capturesSetupRetry = transition.syncProtocol == .fullRecordV1
         for _ in 0..<8 {
-            try await adapter.sendPending { [persistence, namespace, textZone] outbound in
+            try await adapter.sendPending { [persistence, namespace, textZone, payloadZone] outbound in
                 try await self.requireMatchingAccount()
                 let attempt = try await adapter.modeSendAttempt(
                     for: outbound,
@@ -869,7 +874,8 @@ package actor ICloudSyncModeCoordinator {
                     let offers = try CloudSetupRetryCapture.offers(
                         for: outbound,
                         source: source,
-                        dataZone: textZone
+                        dataZone: textZone,
+                        payloadZone: payloadZone
                     )
                     try await self.requireMatchingAccount()
                     try await persistence.recordSendAttempt(
