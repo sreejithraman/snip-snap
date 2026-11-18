@@ -104,6 +104,46 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertSameServerSnips(stranded.server, texts: expected, doneSnipID: editedID)
     }
 
+    func testFullRecordTryAgainAfterReopeningKeepsTextChangedBackToOriginal() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root,
+            fullDisk: .manifestAndStore,
+            history: .turnedOffThenEditedLocally
+        )
+        let snipID = stranded.keptSnipID
+        let original = Self.sameServerOriginalText
+        let firstEdit = Self.sameServerFirstEditText
+        XCTAssertEqual(stranded.originals, [snipID: firstEdit])
+
+        stranded.disk.free()
+        let reopened = try relaunch(stranded, root: root)
+        let beforeRetry = try await reopened.snapshot()
+        XCTAssertEqual(beforeRetry.activeStore.id, stranded.transition.sourceStoreID)
+        XCTAssertEqual(beforeRetry.transition?.candidateStoreID, stranded.transition.candidateStoreID)
+        try await edit(snipID, to: original, in: reopened)
+
+        let localBeforeRetry = try await reopened.activeLibrary()
+            .checkedSnapshot(sortedBy: .manual).snips
+        XCTAssertEqual(localBeforeRetry.map(\.id), [snipID])
+        XCTAssertEqual(localBeforeRetry.map(\.content), [original])
+        try await assertSameServerSnips(stranded.server, texts: [snipID: firstEdit])
+
+        let status = try await sameServerCoordinator(on: reopened, server: stranded.server)
+            .enableOrRetry()
+
+        XCTAssertEqual(status.state, .on)
+        let afterRetry = try await reopened.snapshot()
+        XCTAssertEqual(afterRetry.activeStore.kind, .iCloudSync)
+        XCTAssertNil(afterRetry.transition)
+        let localAfterRetry = try await reopened.activeLibrary()
+            .checkedSnapshot(sortedBy: .manual).snips
+        XCTAssertEqual(localAfterRetry.map(\.id), [snipID])
+        XCTAssertEqual(localAfterRetry.map(\.content), [original])
+        try await assertSameServerSnips(stranded.server, texts: [snipID: original])
+    }
+
     // Cancel setup only aborts, so the bases a turn-off kept stay the common ancestor, and the
     // next merge keeps both devices' changes. Writing the aborted re-enable's sent records over
     // them would silently revert the other device's change (SM23-F4 review, F1).
@@ -134,7 +174,7 @@ extension ICloudSyncModeCoordinatorTests {
     private func assertSameServerSnips(
         _ server: FakeCloudServer,
         texts: [UUID: String],
-        doneSnipID: UUID,
+        doneSnipID: UUID? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
@@ -207,6 +247,8 @@ extension ICloudSyncModeCoordinatorTests {
     private static let sameServerTexts = ["kept", "also kept"]
     private static let sameServerEditedText = "kept, edited before the fresh enable"
     private static let sameServerTextEditedWhileOff = "kept, edited while sync was off"
+    private static let sameServerOriginalText = "original"
+    private static let sameServerFirstEditText = "first edit"
 
     /// Checks that `snipID` keeps both changes `.turnedOffThenEditedOnBothSides` made: this
     /// device's text and the other device's done mark, locally and on `server`.
@@ -446,19 +488,40 @@ extension ICloudSyncModeCoordinatorTests {
             afterMutationBeforeSave: disk.checkStoreSave,
             diagnostics: probe.recorder
         )
-        for text in Self.sameServerTexts {
+        let texts = history == .turnedOffThenEditedLocally
+            ? [Self.sameServerOriginalText]
+            : Self.sameServerTexts
+        for text in texts {
             try await add(text, to: persistence.activeLibrary())
         }
         let added = try await persistence.activeLibrary()
             .checkedSnapshot(sortedBy: .manual).snips
         let keptSnipID = try XCTUnwrap(
-            added.first(where: { $0.content == Self.sameServerTexts[0] })?.id,
+            added.first(where: { $0.content == texts[0] })?.id,
             file: file,
             line: line
         )
         let server = FakeCloudServer()
-        if history == .turnedOffThenEditedOnBothSides {
-            try await turnOffThenEditOnBothSides(
+        if history != .localOnly {
+            let coordinator = sameServerCoordinator(on: persistence, server: server)
+            let enabled = try await coordinator.enableOrRetry()
+            XCTAssertEqual(enabled.state, .on, file: file, line: line)
+            let turnedOff = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+            XCTAssertEqual(turnedOff.state, .off, file: file, line: line)
+        }
+        switch history {
+        case .localOnly:
+            break
+        case .turnedOffThenEditedLocally:
+            try await assertSameServerSnips(
+                server,
+                texts: [keptSnipID: Self.sameServerOriginalText],
+                file: file,
+                line: line
+            )
+            try await edit(keptSnipID, to: Self.sameServerFirstEditText, in: persistence)
+        case .turnedOffThenEditedOnBothSides:
+            try await editOnBothSides(
                 keptSnipID,
                 in: persistence,
                 server: server,
@@ -495,21 +558,14 @@ extension ICloudSyncModeCoordinatorTests {
         )
     }
 
-    /// Syncs the snips and turns sync off, which keeps their bases. Then another device marks
-    /// `snipID` done, and this device edits its text.
-    private func turnOffThenEditOnBothSides(
+    /// With sync off, another device marks `snipID` done and this device edits its text.
+    private func editOnBothSides(
         _ snipID: UUID,
         in persistence: SwiftDataSyncModePersistence,
         server: FakeCloudServer,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        let coordinator = sameServerCoordinator(on: persistence, server: server)
-        let enabled = try await coordinator.enableOrRetry()
-        XCTAssertEqual(enabled.state, .on, file: file, line: line)
-        let turnedOff = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
-        XCTAssertEqual(turnedOff.state, .off, file: file, line: line)
-
         let local = try await persistence.activeLibrary()
             .checkedSnapshot(sortedBy: .manual).snips
         let snip = try XCTUnwrap(local.first(where: { $0.id == snipID }), file: file, line: line)
@@ -612,6 +668,8 @@ private enum SameServerRetry: Equatable {
 private enum SameServerHistory: Equatable {
     /// The snips were only ever local.
     case localOnly
+    /// A single synced snip was edited locally after turning sync off.
+    case turnedOffThenEditedLocally
     /// The snips were synced, then sync was turned off, which kept their bases. Another device
     /// then marked the "kept" snip done, and this device edited its text.
     case turnedOffThenEditedOnBothSides
