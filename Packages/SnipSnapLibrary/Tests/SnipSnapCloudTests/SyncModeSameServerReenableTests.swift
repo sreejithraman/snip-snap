@@ -99,7 +99,14 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(storage.activeStore.kind, .localOnly, file: file, line: line)
         XCTAssertEqual(storage.transition?.phase, .candidateReady, file: file, line: line)
         _ = try await source.perform(.delete(ids: [deletedID]), sortedBy: .manual)
-        try await edit(keptID, to: "kept with a new local edit", in: editable)
+        let keptText: String
+        if scenario == .missingAcknowledgement {
+            // A local edit with no baseline exercises the separate recovered-snip path.
+            keptText = try XCTUnwrap(stranded.originals[keptID], file: file, line: line)
+        } else {
+            keptText = "kept with a new local edit"
+            try await edit(keptID, to: keptText, in: editable)
+        }
 
         let namespace = makeNamespace()
         let zone = textZone(namespace)
@@ -109,7 +116,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(accepted.domainID, deletedID, file: file, line: line)
         XCTAssertEqual(accepted.text, .value(deleted.content), file: file, line: line)
 
-        var expected = [keptID: "kept with a new local edit"]
+        var expected = [keptID: keptText]
         switch scenario {
         case .acknowledged:
             break
@@ -143,7 +150,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(reopenedStorage.activeStore.id, storage.activeStore.id, file: file, line: line)
         let durable = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(durable.snips.map(\.id), [keptID], file: file, line: line)
-        XCTAssertEqual(durable.snips.map(\.content), ["kept with a new local edit"], file: file, line: line)
+        XCTAssertEqual(durable.snips.map(\.content), [keptText], file: file, line: line)
         let key = CloudSetupRetryRecordKey(
             reference: CloudEntityReference(kind: .snip, domainID: deletedID),
             identity: CloudFullSyncPersistence.storageIdentity(recordID)
