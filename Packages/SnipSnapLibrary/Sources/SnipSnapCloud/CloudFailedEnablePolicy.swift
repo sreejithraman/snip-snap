@@ -756,7 +756,7 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
             record.preparation.baseDigest.value == FailedEnableEncoding.digest(entry.payload),
             record.preparation.normalizedLocal.immutableOverrides.value == FailedEnableImmutableOverrides(
               requestID: FailedEnableEncoding.uuid(moved.requestID),
-              createdAt: FailedEnableEncoding.date(moved.createdAt), originRaw: moved.origin.rawValue)
+              createdAt: try FailedEnableEncoding.date(moved.createdAt), originRaw: moved.origin.rawValue)
           else { throw FailedEnableEvidenceError.reviewRequired }
         } else if !record.offlineChanged.isEmpty {
           throw FailedEnableEvidenceError.reviewRequired
