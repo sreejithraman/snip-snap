@@ -3972,7 +3972,66 @@ extension ICloudSyncModeCoordinatorTests {
     func testFullReenableDeletedListMovesOfflinePlacementToInboxWithEvidence() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let activationURL = root.appendingPathComponent("activation.json")
+        let stages = AsyncStream.makeStream(of: (SyncModeTransition, CloudFullReenableApplyPlan).self)
+        let transports = AsyncStream.makeStream(of: Optional<FakeCloudRecordTransport>.self)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: { point in
+            switch point {
+            case .beforeCandidateMergeDurability, .afterCandidateMergeDurability, .afterEnrollmentApproval,
+                .afterFirstSendStarted, .beforeSendAttemptManifest, .afterFirstSendComplete,
+                .beforePointerSwap, .afterPointerSwap:
+                do {
+                    let manifest = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+                        from: Data(contentsOf: activationURL))
+                    print("[F5 deleted-list] hook=\(point) active=\(manifest.activeStoreID) "
+                        + "transition=\(String(describing: manifest.transition?.id)) "
+                        + "phase=\(String(describing: manifest.transition?.phase))")
+                } catch {
+                    print("[F5 deleted-list] hook=\(point) activation unavailable: \(error)")
+                }
+            default: break
+            }
+        }, writeHook: { point in
+            guard point == .beforeFullReenablePlanApply else { return }
+            do {
+                let current = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
+                    from: Data(contentsOf: activationURL))
+                let transition = try XCTUnwrap(current.transition)
+                let intent = try XCTUnwrap(transition.mergeIntent)
+                let candidate = try XCTUnwrap(current.stores.first { $0.id == transition.candidateStoreID })
+                let stagedRoot = root.appendingPathComponent(candidate.relativeRoot)
+                    .appendingPathComponent("full-reenable-v1")
+                    .appendingPathComponent(transition.id.uuidString.lowercased())
+                let diskPlan = try JSONDecoder().decode(CloudFullReenableStagedPlan.self,
+                    from: Data(contentsOf: stagedRoot.appendingPathComponent("plan.json")))
+                let restored = try diskPlan.restore(from: stagedRoot)
+                XCTAssertNil(restored.acceptedLegacyDigest)
+                XCTAssertEqual(restored.plan.planDigest, intent.planDigest)
+                XCTAssertEqual(current.activeStoreID, transition.sourceStoreID)
+                XCTAssertEqual(transition.phase, .sourceFrozen)
+                stages.continuation.yield((transition, restored.plan))
+            } catch {
+                XCTFail("Deleted-list staged plan unavailable: \(error)")
+            }
+        })
+        func readStore<Value>(_ store: SyncModeStore, _ read: (ModelContext) throws -> Value) throws -> Value {
+            let url = root.appendingPathComponent(store.relativeRoot).appendingPathComponent("snips.store")
+            let lockURL = url.appendingPathExtension("lock")
+            _ = try XCTUnwrap(FileManager.default.fileExists(atPath: url.path)
+                && FileManager.default.fileExists(atPath: lockURL.path) ? url : nil,
+                "Manifest-named store or its existing lock is unavailable")
+            let lock = try SnipStoreFileLock(url: lockURL)
+            defer { withExtendedLifetime(lock) {} }
+            let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
+            let config = ModelConfiguration("SnipSnapLocal", schema: schema, url: url,
+                allowsSave: false, cloudKitDatabase: .none)
+            let context = SwiftDataSnipLibrary.makeContext(
+                container: try ModelContainer(for: schema, configurations: [config]))
+            let value = try read(context)
+            XCTAssertFalse(context.hasChanges)
+            try lock.check()
+            return value
+        }
         let source = try await persistence.activeLibrary()
         let list = try await createList("Later deleted", systemImage: "folder", in: source)
         try await add("move me", to: source)
@@ -3985,10 +4044,20 @@ extension ICloudSyncModeCoordinatorTests {
             persistence: persistence,
             namespace: namespace,
             textZone: zone,
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+            makeTransport: {
+                let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+                transports.continuation.yield(transport)
+                return transport
+            }
         )
-        _ = try await coordinator.enableOrRetry()
-        _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        let cloudID = await persistence.manifest.activeStoreID
+        let turnedOff = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        XCTAssertEqual(turnedOff.state, .off)
+        let off = await persistence.manifest
+        XCTAssertNil(off.transition)
+        XCTAssertNotEqual(off.activeStoreID, cloudID)
         let local = try await persistence.activeLibrary()
         _ = try await local.perform(
             .moveChronologically(ids: [snip.id], to: list.id),
@@ -4001,12 +4070,324 @@ extension ICloudSyncModeCoordinatorTests {
         let recordID = CloudRecordID.list(list.id, in: zone)
         let storedValue = await server.fullSnapshot(for: recordID)
         let stored = try XCTUnwrap(storedValue)
+        let snipRecordID = CloudRecordID.snip(snip.id, in: zone)
+        let preSendSnip = await server.fullSnapshot(for: snipRecordID)
+        let preSendInbox = await server.fullSnapshot(for: .list(SnipList.inbox.id, in: zone))
+        let edited = await persistence.manifest
+        XCTAssertEqual(edited.activeStoreID, off.activeStoreID)
+        XCTAssertNil(edited.transition)
+        var renamed = list
+        renamed.name = "Offline rename"
+        renamed.systemImage = "star"
+        var moved = snip
+        moved.listID = list.id
+        moved.manualSortKey = SnipOrderKey(rawDigits: [128]) // The only snip in an empty destination.
+        var inInbox = moved
+        inInbox.listID = SnipList.inbox.id
+        let namespaceKey = namespace.namespaceKey.rawValue
+        let binding = FailedEnableBinding(namespace.binding)
+        let files = FailedEnableEvidenceFile(root: root)
+        let listRef = CloudEntityReference(kind: .list, domainID: list.id)
+        let snipRef = CloudEntityReference(kind: .snip, domainID: snip.id)
+        let inboxRef = CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)
+        var sourceBefore: (snips: [Snip], lists: [SnipList], requests: Set<UUID>, opaque: Data)?
+        var frameBefore: FailedEnableInstalledEvidence?
+        var recoveredListTime: Date?
+        do {
+            let active = try XCTUnwrap(edited.stores.first { $0.id == off.activeStoreID })
+            XCTAssertEqual(active.kind, .localOnly)
+            let typed = try CloudFullRecordCodec.list(from: stored)
+            XCTAssertEqual(typed.desiredName, .value("Later deleted"))
+            XCTAssertEqual(typed.systemImage, .value("folder"))
+            if case .value(let time) = typed.updatedAt { recoveredListTime = time }
+            XCTAssertNotNil(recoveredListTime)
+            let baseSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(preSendSnip))
+            XCTAssertEqual(baseSnip.requestID, .value(snip.requestID))
+            XCTAssertEqual(baseSnip.text, .value("move me"))
+            XCTAssertEqual(baseSnip.placement, .value(CloudSnipPlacement(listID: SnipList.inbox.id,
+                orderKey: snip.manualSortKey)))
+            let frame = try XCTUnwrap(files.read(active.id))
+            frameBefore = frame
+            let turnOff = try XCTUnwrap(frame.transfers.first { $0.kind == .turnOff && $0.namespace == binding })
+            XCTAssertEqual(turnOff.state, .checked)
+            XCTAssertEqual(turnOff.sourceStoreID, FailedEnableEncoding.uuid(cloudID))
+            XCTAssertEqual(turnOff.destinationStoreID, FailedEnableEncoding.uuid(active.id))
+            let initialImages: [FailedEnableImage] = [
+                .snip(try FailedEnableSnipImage(snip, attachmentData: [:])),
+                .list(FailedEnableListImage(.inbox)), .list(FailedEnableListImage(list)),
+            ]
+            XCTAssertEqual(turnOff.outputs, initialImages.sorted { $0.reference.sortKey < $1.reference.sortKey })
+            try readStore(active) { context in
+                let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+                let opaque = try SwiftDataSnipLibrary.transferMetadata(context: context).opaqueSyncStatePayload
+                sourceBefore = (state.snips, state.allLists(), state.seenRequestIDs, opaque)
+                XCTAssertEqual(state.snips, [moved])
+                XCTAssertEqual(state.allLists(), [.inbox, renamed])
+                XCTAssertEqual(turnOff.dormantDigest, FailedEnableEncoding.digest(opaque))
+                let entries = try CloudDormantAcceptedBaseBundle.decode(opaque).entries
+                XCTAssertEqual(Set(entries.map(\.reference)), [inboxRef, listRef, snipRef])
+                for (reference, snapshot) in [(listRef, Optional(stored)), (snipRef, preSendSnip), (inboxRef, preSendInbox)] {
+                    let actual = try XCTUnwrap(snapshot)
+                    let row = try XCTUnwrap(entries.first { $0.reference == reference && $0.namespaceKey == namespaceKey })
+                    let accepted = try JSONDecoder().decode(CloudAcceptedEntityInput.self, from: row.payload)
+                    XCTAssertEqual(accepted.reference, reference)
+                    XCTAssertEqual(accepted.identity, row.identity)
+                    XCTAssertEqual(accepted.identity, CloudTextStorageIdentity(
+                        zoneName: zone.name, ownerName: zone.ownerName, recordName: actual.id.name))
+                    XCTAssertEqual(accepted.dependencyListID, reference == snipRef ? SnipList.inbox.id : nil)
+                    XCTAssertEqual(accepted.shadowData, actual.shadow.data)
+                    XCTAssertEqual(accepted.systemFields, actual.shadow.systemFields)
+                    if reference == snipRef {
+                        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: accepted.acceptedData), baseSnip)
+                        XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: accepted.presenceData), baseSnip)
+                    } else {
+                        let listValue = try CloudFullRecordCodec.list(from: actual)
+                        XCTAssertEqual(try JSONDecoder().decode(CloudTypedListRecord.self, from: accepted.acceptedData), listValue)
+                        XCTAssertEqual(try JSONDecoder().decode(CloudTypedListRecord.self, from: accepted.presenceData), listValue)
+                    }
+                }
+            }
+        } catch {
+            XCTFail("Checked turn-off or edited source read unavailable: \(error)")
+        }
         let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
-        _ = try await writer.send(CloudOutboundBatch(operations: [
+        let deletesBefore = await server.acceptedDeletionCount()
+        let deleted = try await writer.send(CloudOutboundBatch(operations: [
             .delete(recordID, base: stored.shadow)
         ]))
+        if case .deleted(let id)? = deleted.items.first {
+            XCTAssertEqual(id, recordID)
+        } else {
+            XCTFail("The scoped server list deletion was not accepted")
+        }
+        XCTAssertEqual(deleted.items.count, 1)
+        let absence = await server.fullSnapshot(for: recordID)
+        let deletes = await server.acceptedDeletionCount()
+        let listOperations = await server.acceptedOperationCount(for: recordID)
+        let snipOperations = await server.acceptedOperationCount(for: snipRecordID)
+        XCTAssertNil(absence)
+        XCTAssertEqual(deletes, deletesBefore + 1)
 
+        transports.continuation.yield(nil)
         let result = try await coordinator.enableOrRetry()
+        transports.continuation.finish()
+        stages.continuation.finish()
+        let current = await persistence.manifest
+        print("[F5 deleted-list] result=\(result.state) source=\(off.activeStoreID) active=\(current.activeStoreID) "
+            + "transition=\(String(describing: current.transition?.id)) phase=\(String(describing: current.transition?.phase)) "
+            + "attention=\(String(describing: current.attentionReason)) attempt=\(current.transition?.sendAttempt != nil) "
+            + "roots=\(current.stores.map { "\($0.id):\($0.lifecycle)" })")
+        var stage: (SyncModeTransition, CloudFullReenableApplyPlan)?
+        for await item in stages.stream where item.0.sourceStoreID == off.activeStoreID {
+            XCTAssertNil(stage, "More than one staged attempt for this edited source")
+            stage = item
+        }
+        var collectingRetry = false
+        var events: [FakeCloudTransportEvent] = []
+        for await item in transports.stream {
+            if let transport = item {
+                if collectingRetry { events += await transport.events() }
+            } else {
+                collectingRetry = true
+            }
+        }
+        let sent = events.compactMap { event -> [CloudRecordID]? in
+            if case .sent(let ids) = event { return ids }
+            return nil
+        }
+        let listAfter = await server.fullSnapshot(for: recordID)
+        let snipAfter = await server.fullSnapshot(for: snipRecordID)
+        let listOperationsAfter = await server.acceptedOperationCount(for: recordID)
+        let snipOperationsAfter = await server.acceptedOperationCount(for: snipRecordID)
+        let deletesAfter = await server.acceptedDeletionCount()
+        let remoteTypes = await server.storedRecordTypes(in: zone)
+        print("[F5 deleted-list] staged=\(stage != nil) fetch=\(events.contains(.fetched)) "
+            + "sendBatches=\(sent.map { $0.map(\.name) }) snipOperations=\(snipOperations)->\(snipOperationsAfter) "
+            + (sent.isEmpty ? "no outbound attempt" : "outbound attempt observed"))
+        XCTAssertFalse(sent.joined().contains(recordID))
+        XCTAssertNil(listAfter)
+        XCTAssertEqual(listOperationsAfter, listOperations)
+        XCTAssertEqual(deletesAfter, deletes)
+        XCTAssertEqual(remoteTypes.sorted(), ["List", "Snip"])
+        if !sent.joined().contains(snipRecordID) {
+            XCTAssertEqual(snipAfter, preSendSnip)
+            XCTAssertEqual(snipOperationsAfter, snipOperations)
+        }
+        do {
+            let serverSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(snipAfter))
+            XCTAssertEqual(serverSnip.domainID, snip.id)
+            XCTAssertEqual(serverSnip.requestID, .value(snip.requestID))
+            XCTAssertEqual(serverSnip.text, .value("move me"))
+            XCTAssertEqual(serverSnip.placement, .value(CloudSnipPlacement(listID: inInbox.listID,
+                orderKey: inInbox.manualSortKey)))
+            let frame = try files.read(off.activeStoreID)
+            XCTAssertNotNil(frame, "Retained source evidence unavailable")
+            if let earlier = frameBefore {
+                XCTAssertTrue(earlier.transfers.allSatisfy { frame?.transfers.contains($0) == true })
+                XCTAssertTrue(earlier.blobs.allSatisfy { frame?.blobs[$0.key] == $0.value })
+                for group in earlier.namespaces {
+                    let retained = frame?.namespaces.first { $0.binding == group.binding }
+                    XCTAssertTrue(group.alternatives.allSatisfy { retained?.alternatives.contains($0) == true })
+                    XCTAssertTrue(group.reviews.allSatisfy { retained?.reviews.contains($0) == true })
+                }
+            }
+            if let attempt = stage?.0 ?? current.transition, attempt.sourceStoreID == off.activeStoreID {
+                XCTAssertEqual(attempt.namespace, namespace.binding)
+                let plan = stage?.1
+                let capture = frame?.namespaces.first { $0.binding == binding }?.captures.last {
+                    $0.transitionID == FailedEnableEncoding.uuid(attempt.id)
+                        && $0.candidateStoreID == FailedEnableEncoding.uuid(attempt.candidateStoreID)
+                }
+                let transfer = capture.flatMap { captured in
+                    frame?.transfers.last { $0.kind == .candidate && $0.namespace == binding
+                        && $0.sourceCaptureIDs == [captured.id]
+                        && $0.sourceStoreID == FailedEnableEncoding.uuid(off.activeStoreID)
+                        && $0.destinationStoreID == captured.candidateStoreID }
+                }
+                if let plan {
+                    XCTAssertNotNil(capture)
+                    XCTAssertNotNil(transfer)
+                    XCTAssertEqual(plan.transitionID, attempt.id)
+                    XCTAssertEqual(plan.namespaceKey, namespaceKey)
+                    XCTAssertEqual(plan.snips, [inInbox])
+                    XCTAssertEqual(plan.lists, [.inbox])
+                    XCTAssertTrue(plan.attachmentData.isEmpty)
+                    XCTAssertTrue(plan.result.recoveredSourceSnipIDs.isEmpty)
+                    XCTAssertEqual(Set(plan.acceptedCAS.map(\.accepted.reference)), [inboxRef, snipRef])
+                    let acceptedSnip = plan.acceptedCAS.first { $0.accepted.reference == snipRef }?.accepted
+                    XCTAssertEqual(acceptedSnip?.shadowData, preSendSnip?.shadow.data)
+                    XCTAssertEqual(acceptedSnip?.systemFields, preSendSnip?.shadow.systemFields)
+                    XCTAssertEqual(acceptedSnip?.dependencyListID, SnipList.inbox.id)
+                    XCTAssertEqual(plan.recoveryInputs.count, 2)
+                    XCTAssertEqual(transfer?.planDigest, FailedEnableEncoding.hex(plan.planDigest))
+                    XCTAssertEqual(transfer?.recoveryDescriptors, try plan.recoveryInputs.map(FailedEnableEncoding.json))
+                    if let capture {
+                        XCTAssertEqual(capture.freeze.id, attempt.freezeToken.map { FailedEnableEncoding.uuid($0.id) })
+                        XCTAssertEqual(capture.freeze.sourceRevision, attempt.freezeToken.map { String($0.revision) })
+                        XCTAssertEqual(capture.freeze.sourceRevision, edited.stores
+                            .first { $0.id == off.activeStoreID }.map { String($0.revision) })
+                        let listMember = capture.records.first { $0.reference == FailedEnableReference(listRef) }
+                        let snipMember = capture.records.first { $0.reference == FailedEnableReference(snipRef) }
+                        XCTAssertEqual(listMember?.source.value, .list(FailedEnableListImage(renamed)))
+                        XCTAssertEqual(snipMember?.source.value, .snip(try FailedEnableSnipImage(moved, attachmentData: [:])))
+                        XCTAssertEqual(listMember?.preparation.value.value?.fields, .absent)
+                        XCTAssertNil(listMember?.observedAccepted.value)
+                        if case .snip(let prepared)? = snipMember?.preparation.value.value?.fields {
+                            XCTAssertEqual(prepared.id, FailedEnableEncoding.uuid(snip.id))
+                            XCTAssertEqual(prepared.requestID, FailedEnableEncoding.uuid(snip.requestID))
+                            XCTAssertEqual(prepared.placement, FailedEnablePlacement(listID:
+                                FailedEnableEncoding.uuid(SnipList.inbox.id), orderKey: inInbox.manualSortKey.data))
+                        } else {
+                            XCTFail("Checked placement for the original snip is unavailable")
+                        }
+                    }
+                }
+                let candidate = try XCTUnwrap(current.stores.first { $0.id == attempt.candidateStoreID },
+                    "Attempt's candidate is absent from the current manifest")
+                try readStore(candidate) { context in
+                    let receipt = try SwiftDataCloudFullOperationReceipts.digest(
+                        for: .reenableTransition(attempt.id), namespaceKey: namespaceKey, context: context)
+                    let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+                    let rows = try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
+                        .filter { $0.namespaceKey == namespaceKey }
+                    let accepted = try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
+                        .filter { $0.namespaceKey == namespaceKey }
+                    let snipRow = accepted.first { $0.reference == snipRef }
+                    let listPresent = accepted.contains { $0.reference == listRef
+                        || ($0.recordName == recordID.name && $0.zoneName == zone.name && $0.ownerName == zone.ownerName) }
+                    print("[F5 deleted-list] candidate=\(candidate.id) capture=\(capture != nil) "
+                        + "armed=\(String(describing: capture?.armed)) transfer=\(String(describing: transfer?.state)) "
+                        + "receipt=\(receipt != nil) keys=\(rows.map(\.eventKey).sorted()) "
+                        + "acceptedList=\(listPresent) acceptedSnip=\(snipRow != nil) "
+                        + "published=\(current.activeStoreID == candidate.id)")
+                    if let plan, let receipt { XCTAssertEqual(receipt, plan.planDigest) }
+                    let applied = receipt != nil || transfer?.state == .checked || current.activeStoreID == candidate.id
+                    if applied {
+                        XCTAssertFalse(listPresent)
+                        XCTAssertEqual(state.snips, [inInbox])
+                        XCTAssertEqual(state.allLists(), [.inbox])
+                    }
+                    if current.activeStoreID == candidate.id {
+                        XCTAssertNil(current.transition)
+                        let row = try XCTUnwrap(snipRow)
+                        XCTAssertFalse(row.isDeferred)
+                        XCTAssertEqual(row.dependencyListID, SnipList.inbox.id)
+                        XCTAssertEqual(row.shadowData, snipAfter?.shadow.data)
+                        XCTAssertEqual(row.systemFields, snipAfter?.shadow.systemFields)
+                        for archive in [row.acceptedData, row.presenceData] {
+                            XCTAssertEqual(try JSONDecoder().decode(CloudTypedSnipRecord.self, from: archive), serverSnip)
+                        }
+                    }
+                    let recoveries: [(CloudFullRecoveryKind, UUID, String)] = [
+                        (.modeDeletedListPlacement, snip.id, "22222222-2222-5222-8222-222222222222"),
+                        (.modeRecoveredList, list.id, "33333333-3333-5333-8333-333333333333"),
+                    ]
+                    for (kind, sourceID, salt) in recoveries {
+                        let batch = SnipLibraryTransferPlanner.derivedUUID(transitionID:
+                            SnipLibraryTransferPlanner.derivedUUID(transitionID: attempt.id,
+                                sourceID: try XCTUnwrap(UUID(uuidString: salt))), sourceID: sourceID)
+                        let key = "full-recovery-\(batch.uuidString.lowercased())"
+                        let staged = plan?.recoveryInputs.first { $0.kind == kind }
+                        let row = rows.first { $0.eventKey == key }
+                        if plan != nil { XCTAssertNotNil(staged, "Stage omitted \(kind)") }
+                        if applied { XCTAssertNotNil(row, "Applied candidate omitted \(kind)") }
+                        var committed: CloudFullRecoveryInput?
+                        if let row {
+                            XCTAssertEqual(row.id, "\(namespaceKey)|\(key)")
+                            print("[F5 deleted-list] committed \(key) payloadSHA=\(FailedEnableEncoding.digest(row.payload))")
+                            let envelope = try XCTUnwrap(CloudWirePayloadEnvelope.decode(row.payload))
+                            XCTAssertEqual(envelope.format, .fullRecordV1)
+                            committed = try JSONDecoder().decode(CloudFullRecoveryInput.self, from: envelope.payload)
+                            let encoder = JSONEncoder()
+                            encoder.outputFormatting = [.sortedKeys]
+                            XCTAssertEqual(row.payload, try CloudWirePayloadEnvelope(format: .fullRecordV1,
+                                payload: encoder.encode(XCTUnwrap(staged ?? committed))).encoded())
+                        }
+                        if let link = staged ?? committed {
+                            XCTAssertEqual(link.batchID, batch)
+                            XCTAssertEqual(link.namespaceKey, namespaceKey)
+                            XCTAssertEqual(link.kind, kind)
+                            XCTAssertEqual(link.storageVersion, 1)
+                            XCTAssertTrue(link.outboundData.isEmpty)
+                            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: link.resultData) as? [String: Any])
+                            XCTAssertEqual(body["sourceID"] as? String, sourceID.uuidString)
+                            XCTAssertEqual(body["deletedListID"] as? String, list.id.uuidString)
+                            XCTAssertEqual(body["storageVersion"] as? Int, 1)
+                            XCTAssertNil(body["recoveredID"])
+                            if kind == .modeRecoveredList {
+                                let fields = try JSONSerialization.data(withJSONObject: XCTUnwrap(body["recoveredList"]))
+                                XCTAssertEqual(try JSONDecoder().decode(CloudListMergeFields.self, from: fields),
+                                    CloudListMergeFields(id: list.id, desiredName: "Offline rename", systemImage: "star",
+                                        color: list.color, orderKey: list.sortKey, updatedAt: try XCTUnwrap(recoveredListTime)))
+                            } else {
+                                XCTAssertNil(body["recoveredList"])
+                            }
+                        }
+                    }
+                }
+            } else {
+                print("[F5 deleted-list] no manifest-bound attempt; committed recovery unavailable")
+            }
+        } catch {
+            XCTFail("Deleted-list attempt evidence unavailable: \(error)")
+        }
+        if current.activeStoreID == off.activeStoreID {
+            do {
+                let active = try XCTUnwrap(current.stores.first { $0.id == off.activeStoreID })
+                let before = try XCTUnwrap(sourceBefore)
+                XCTAssertEqual(active.revision, edited.stores.first { $0.id == active.id }?.revision)
+                try readStore(active) { context in
+                    let state = try SwiftDataSnipLibrary.load(context: context, seenRequestIDs: []).state
+                    XCTAssertEqual(state.snips, before.snips)
+                    XCTAssertEqual(state.allLists(), before.lists)
+                    XCTAssertEqual(state.seenRequestIDs, before.requests)
+                    XCTAssertEqual(try SwiftDataSnipLibrary.transferMetadata(context: context).opaqueSyncStatePayload,
+                        before.opaque)
+                }
+            } catch {
+                XCTFail("Still-active edited source unavailable: \(error)")
+            }
+        }
         XCTAssertEqual(result.state, .needsAttention)
         let active = try await persistence.activeLibrary()
         let final = await active.snapshot(sortedBy: .manual)
