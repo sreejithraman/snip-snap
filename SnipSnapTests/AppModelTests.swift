@@ -55,6 +55,67 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
 
 final class AppModelTests: StoreBackedTestCase {
     @MainActor
+    func testCopyDoneAndSendFinishWhileAttachmentStatusIsHeld() async throws {
+        for action in ["Copy", "Done", "Send"] {
+            let store = try storeURL()
+            let bytes = [Data([0, 1, 255]), Data("Second captured file".utf8)]
+            let files = [store.deletingLastPathComponent().appendingPathComponent("first.bin"),
+                         store.deletingLastPathComponent().appendingPathComponent("second.txt")]
+            for (file, data) in zip(files, bytes) { try data.write(to: file) }
+            let repository = try JSONSnipLibrary(fileURL: store)
+            let added = try await repository.add(content: "Captured text", origin: .quickEntry, attachmentURLs: files)
+            let snip = try XCTUnwrap(added)
+            let handler = MacHeldAttachmentStatusHandler()
+            let model = AppModel(library: repository, defaults: defaults(), cloudSyncHandler: handler)
+            await model.waitForInitialLoad()
+            let reading = Task { try await handler.syncedAttachmentStates() }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while await !handler.isReadHeld, ContinuousClock.now < deadline { await Task.yield() }
+            let held = await handler.isReadHeld
+            XCTAssertTrue(held)
+            let pasteboard = NSPasteboard(name: .init("SnipSnapTests-held-status-\(UUID())"))
+            let finished = expectation(description: "\(action) finishes before status is released")
+            let performing = Task {
+                switch action {
+                case "Copy":
+                    let copied = await model.copySnipsAndMarkDoneNow([snip], to: pasteboard)
+                    XCTAssertTrue(copied)
+                case "Done": await model.toggleDoneNow(id: snip.id, to: pasteboard)
+                default:
+                    let sent = await model.saveComposerDraft(content: "Send locally", listID: SnipList.inboxID)
+                    XCTAssertTrue(sent)
+                }
+                finished.fulfill()
+            }
+            await fulfillment(of: [finished], timeout: 2)
+            let persisted = try await JSONSnipLibrary(fileURL: store).checkedSnapshot(sortedBy: .manual)
+            if action == "Send" {
+                XCTAssertTrue(persisted.snips.contains { $0.content == "Send locally" })
+                XCTAssertTrue(model.snips.contains { $0.content == "Send locally" })
+                XCTAssertEqual(model.composerDraft(for: SnipList.inboxID).text, "")
+            } else {
+                XCTAssertEqual(persisted.snips.first?.isDone, true)
+                XCTAssertEqual(model.toast?.action, .undoDone)
+                XCTAssertEqual(pasteboard.string(forType: .string), "Captured text")
+                let copiedFiles = pasteboard.pasteboardItems?.compactMap {
+                    $0.string(forType: .fileURL).flatMap(URL.init(string:))
+                }.filter { ["first.bin", "second.txt"].contains($0.lastPathComponent) } ?? []
+                XCTAssertEqual(try copiedFiles.map { try Data(contentsOf: $0) }, bytes)
+                let undo = try XCTUnwrap(model.toast)
+                await model.performToastActionNow(undo)
+                let restored = try await repository.checkedSnapshot(sortedBy: .manual)
+                XCTAssertEqual(restored.snips.first?.isDone, false)
+            }
+            XCTAssertNil(model.presentedError)
+            await handler.releaseRead()
+            _ = try await reading.value
+            await performing.value
+            let explicitSyncs = await handler.explicitSyncs
+            XCTAssertEqual(explicitSyncs, 0)
+        }
+    }
+
+    @MainActor
     func testDoneLimitAppliesAfterListAndOriginFiltersWithoutChangingSortedOrder() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let done = (1...12).map {

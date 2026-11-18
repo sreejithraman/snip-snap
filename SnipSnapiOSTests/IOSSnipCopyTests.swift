@@ -11,6 +11,424 @@ import XCTest
 
 @MainActor
 final class IOSSnipCopyTests: IOSModelTestCase {
+    func testSecondCopyUsesLocalBytesWhileEarlierStatusReadsAreHeld() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("local.txt")
+        try Data("Locally readable bytes".utf8).write(to: file)
+        let attachment = try testAttachment(id: UUID(), fileName: "local.txt")
+        let first = Snip(content: "First copy", origin: .quickEntry)
+        let second = Snip(content: "Second copy", origin: .quickEntry, attachments: [attachment])
+        let library = ModelTestLibrary(snips: [first, second], attachmentURLs: [attachment.id: file])
+        let handler = HeldAttachmentStatusHandler()
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        await handler.holdNextRead(queuesActiveReads: true)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        var firstResult: Bool?
+        let firstCopy = Task { firstResult = await coordinator.copy(snips: [first], model: model) }
+        let held = await TestReadiness.wait(timeout: 2) { await handler.isReadHeld }
+        XCTAssertTrue(held)
+        let firstFinished = await TestReadiness.wait(timeout: 2) { firstResult != nil }
+        XCTAssertTrue(firstFinished)
+        guard firstFinished else {
+            await handler.releaseRead()
+            await firstCopy.value
+            return
+        }
+        XCTAssertEqual(firstResult, true)
+        var sent: Bool?
+        let sending = Task { sent = await model.createSnip(content: "Another local action", in: SnipList.inboxID) }
+        let sendFinished = await TestReadiness.wait(timeout: 2) { sent != nil }
+        XCTAssertTrue(sendFinished)
+        guard sendFinished else {
+            await handler.releaseRead()
+            await sending.value
+            return
+        }
+        XCTAssertEqual(sent, true)
+        let queued = await TestReadiness.wait(timeout: 2) { await handler.isActiveReadHeld }
+        XCTAssertTrue(queued)
+        var result: Bool?
+        let copying = Task { result = await coordinator.copy(snips: [second], model: model) }
+        let finished = await TestReadiness.wait(timeout: 2) { result != nil }
+        XCTAssertTrue(finished, "Same-owner local files must not wait behind presentation reads")
+        XCTAssertEqual(result, true)
+        let prepares = await handler.prepareCount
+        XCTAssertEqual(prepares, 0, "Already trusted local files need no cloud file operation")
+        XCTAssertEqual(pasteboard.writes.last, [.text("Second copy"), .file(file)])
+        await handler.releaseRead()
+        await copying.value
+    }
+
+    func testMultiAttachmentCopyAllowsOrdinarySameSourceDeletionOnly() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstFile = root.appendingPathComponent("first.txt")
+        let secondFile = root.appendingPathComponent("second.txt")
+        try Data("old!".utf8).write(to: firstFile)
+        try Data("two!".utf8).write(to: secondFile)
+        let store = root.appendingPathComponent("snips.json")
+        let library = try JSONSnipLibrary(fileURL: store)
+        _ = try await library.perform(.add(content: "Original captured text", origin: .quickEntry, source: nil,
+            listID: SnipList.inboxID, attachmentURLs: [firstFile, secondFile], requestID: UUID(), now: Date()),
+            sortedBy: .manual)
+        let initial = try await library.checkedSnapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(initial.snips.first)
+        let attachments = snip.attachments
+        let handler = IOSCloudSyncHandlerProbe(states: Dictionary(uniqueKeysWithValues:
+            attachments.map { ($0.id, .waiting) }))
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        let name = UIPasteboard.Name("SnipSnap-two-file-\(UUID())")
+        let pasteboard = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        let writer = IOSSystemPasteboard(pasteboard: pasteboard, stagingRoot: root.appendingPathComponent("Clipboard"))
+        let coordinator = IOSCopyShareCoordinator(pasteboard: writer)
+        let copying = Task { await coordinator.copy(snips: [snip], model: model) }
+        let firstStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 1 }
+        XCTAssertTrue(firstStarted)
+        await handler.finishPrepare(with: .success(firstFile))
+        let secondStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 2 }
+        XCTAssertTrue(secondStarted)
+        let deleted = await model.deleteSnip(id: snip.id)
+        XCTAssertTrue(deleted)
+        let undo = try XCTUnwrap(model.toast)
+        XCTAssertEqual(undo.action, .undoDelete)
+        await handler.finishPrepare(with: .success(secondFile))
+        let copied = await copying.value
+        XCTAssertTrue(copied)
+        XCTAssertEqual(pasteboard.string, "Original captured text")
+        XCTAssertEqual(pasteboard.itemProviders.count, 3)
+        var received: [Data?] = []
+        for provider in pasteboard.itemProviders.dropFirst() {
+            let type = try XCTUnwrap(provider.registeredTypeIdentifiers.first)
+            let loaded: (Data?, String?) = await withCheckedContinuation { continuation in
+                provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
+                    do {
+                        let data = try url.map { try Data(contentsOf: $0) }
+                        continuation.resume(returning: (data, error.map { String(describing: $0) }))
+                    } catch {
+                        continuation.resume(returning: (nil, String(describing: error)))
+                    }
+                }
+            }
+            XCTAssertNil(loaded.1, "Provider \(type) failed: \(loaded.1 ?? "none")")
+            received.append(loaded.0)
+        }
+        XCTAssertEqual(received, [Data("old!".utf8), Data("two!".utf8)])
+        XCTAssertEqual(model.toast?.id, undo.id)
+        XCTAssertEqual(model.toast?.action, .undoDelete)
+        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertTrue(model.attachmentURLs.isEmpty)
+        for attachment in attachments {
+            XCTAssertNil(model.attachmentURL(for: attachment.id))
+            XCTAssertEqual(model.attachmentTransferState(for: attachment.id), .waiting)
+        }
+        let saved = try await JSONSnipLibrary(fileURL: store).checkedSnapshot(sortedBy: .manual)
+        XCTAssertTrue(saved.snips.isEmpty)
+        XCTAssertTrue(saved.attachmentURLs.isEmpty)
+    }
+
+    func testDeletedSnipDoesNotRegisterItsNextCapturedPreparation() async throws {
+        for use in [SyncedAttachmentUse.copy, .export] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let files = [root.appendingPathComponent("first.txt"), root.appendingPathComponent("second.txt")]
+            let bytes = [Data("old!".utf8), Data("two!".utf8)]
+            for (file, data) in zip(files, bytes) { try data.write(to: file) }
+            let attachments = try [testAttachment(id: UUID(), fileName: "first.txt", byteCount: 4),
+                                   testAttachment(id: UUID(), fileName: "second.txt", byteCount: 4)]
+            let snip = Snip(content: "Captured text", origin: .quickEntry, attachments: attachments)
+            let library = ModelTestLibrary(snips: [snip])
+            let handler = IOSCloudSyncHandlerProbe(states: Dictionary(uniqueKeysWithValues:
+                attachments.map { ($0.id, .waiting) }))
+            let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+            await model.load()
+            let pasteboard = RecordingPasteboard()
+            let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+            let preparing = Task {
+                if use == .copy { return await coordinator.copy(snips: [snip], model: model) }
+                await coordinator.share(snips: [snip], model: model)
+                return coordinator.shareRequest != nil
+            }
+            let firstStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 1 }
+            XCTAssertTrue(firstStarted)
+            let deleted = await model.deleteSnip(id: snip.id)
+            XCTAssertTrue(deleted)
+            let undo = try XCTUnwrap(model.toast)
+            await handler.finishPrepare(with: .success(files[0]))
+            if use == .copy {
+                let secondStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 2 }
+                XCTAssertTrue(secondStarted)
+                XCTAssertTrue(model.attachmentURLs.isEmpty)
+                XCTAssertEqual(model.attachmentTransferState(for: attachments[1].id), .waiting)
+                await handler.finishPrepare(with: .success(files[1]))
+            }
+            let published = await preparing.value
+            XCTAssertEqual(published, use == .copy)
+            XCTAssertTrue(model.snips.isEmpty)
+            XCTAssertTrue(model.attachmentURLs.isEmpty)
+            XCTAssertEqual(model.toast?.id, undo.id)
+            for attachment in attachments {
+                XCTAssertNil(model.attachmentURL(for: attachment.id))
+                XCTAssertEqual(model.attachmentTransferState(for: attachment.id), .waiting)
+            }
+            if use == .copy {
+                let copied = try XCTUnwrap(pasteboard.writes.first)
+                let copiedFiles = copied.compactMap { item -> URL? in
+                    if case .file(let url) = item { return url }; return nil
+                }
+                XCTAssertEqual(try copiedFiles.map { try Data(contentsOf: $0) }, bytes)
+            } else {
+                XCTAssertTrue(pasteboard.writes.isEmpty)
+                XCTAssertNil(coordinator.shareRequest)
+            }
+        }
+    }
+
+    func testReplacementKeepsNewSourcePreparationDuringStatusRefresh() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("New source file".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attachment = try testAttachment(id: UUID(), fileName: "new.txt")
+        let current = Snip(content: "New source", origin: .quickEntry, attachments: [attachment])
+        let handler = HeldAttachmentStatusHandler(states: [attachment.id: .waiting], urls: [attachment.id: file])
+        let model = IOSAppModel(library: ModelTestLibrary(), cloudSyncHandler: handler)
+        await model.load()
+        await handler.holdNextRead()
+        let replacing = Task { await model.replaceLibrary(ModelTestLibrary(snips: [current]), recoveryScope: nil) }
+        let held = await TestReadiness.wait(timeout: 2) { await handler.isReadHeld }
+        XCTAssertTrue(held)
+        XCTAssertEqual(model.snips.first?.id, current.id)
+        let prepared = await model.prepareAttachment(attachment.id, for: .copy)
+        XCTAssertEqual(prepared, file)
+        await handler.releaseRead()
+        await replacing.value
+        XCTAssertEqual(model.usableAttachmentURL(for: attachment.id), file)
+        XCTAssertEqual(model.attachmentTransferState(for: attachment.id), .waiting,
+                       "A prepared local file does not mean its upload settled")
+    }
+
+    func testMultiAttachmentShareRejectsOrdinaryDeletionWhilePreparing() async throws {
+        try await assertMultiAttachmentPreparationRejects(use: .export, mutation: .deleted)
+    }
+
+    func testMultiAttachmentCopyRejectsChangedOrRemovedAttachmentWhilePreparing() async throws {
+        for mutation in [PreparedSnipMutation.changedAttachment, .removedAttachment, .changedThenDeleted] {
+            try await assertMultiAttachmentPreparationRejects(use: .copy, mutation: mutation)
+        }
+    }
+
+    private enum PreparedSnipMutation {
+        case deleted
+        case changedAttachment
+        case removedAttachment
+        case changedThenDeleted
+    }
+
+    private func assertMultiAttachmentPreparationRejects(
+        use: SyncedAttachmentUse, mutation: PreparedSnipMutation
+    ) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstFile = root.appendingPathComponent("first.txt")
+        let secondFile = root.appendingPathComponent("second.txt")
+        try Data("old!".utf8).write(to: firstFile)
+        try Data("two!".utf8).write(to: secondFile)
+        let attachments = try [testAttachment(id: UUID(), fileName: "first.txt", byteCount: 4),
+                               testAttachment(id: UUID(), fileName: "second.txt", byteCount: 4)]
+        let snip = Snip(content: "Captured text", origin: .quickEntry, attachments: attachments)
+        let library = ModelTestLibrary(snips: [snip])
+        let handler = IOSCloudSyncHandlerProbe(states: Dictionary(uniqueKeysWithValues:
+            attachments.map { ($0.id, .waiting) }))
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        let preparing = Task {
+            if use == .copy { return await coordinator.copy(snips: [snip], model: model) }
+            await coordinator.share(snips: [snip], model: model)
+            return coordinator.shareRequest != nil
+        }
+        let firstStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 1 }
+        XCTAssertTrue(firstStarted)
+        await handler.finishPrepare(with: .success(firstFile))
+        let secondStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 2 }
+        XCTAssertTrue(secondStarted)
+        switch mutation {
+        case .deleted:
+            let deleted = await model.deleteSnip(id: snip.id)
+            XCTAssertTrue(deleted)
+        case .changedAttachment, .removedAttachment, .changedThenDeleted:
+            let retained: [SnipAttachment]
+            if mutation == .changedAttachment || mutation == .changedThenDeleted {
+                let changed = try testAttachment(id: attachments[0].id, fileName: "changed.txt", byteCount: 4)
+                retained = [changed, attachments[1]]
+            } else {
+                retained = [attachments[1]]
+            }
+            await library.replaceAttachments(retained, on: snip.id)
+            await model.load()
+            if mutation == .changedThenDeleted {
+                let deleted = await model.deleteSnip(id: snip.id)
+                XCTAssertTrue(deleted)
+            }
+        }
+        await handler.finishPrepare(with: .success(secondFile))
+        let published = await preparing.value
+        XCTAssertFalse(published)
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertNil(coordinator.shareRequest)
+        if mutation == .deleted || mutation == .changedThenDeleted {
+            XCTAssertTrue(model.snips.isEmpty)
+            XCTAssertTrue(model.attachmentURLs.isEmpty)
+            XCTAssertEqual(model.toast?.action, .undoDelete)
+            XCTAssertEqual(model.attachmentTransferState(for: attachments[1].id), .waiting)
+        } else {
+            XCTAssertEqual(model.snips.first?.isDone, false)
+            let saved = await library.snapshot(sortedBy: .manual)
+            XCTAssertEqual(saved.snips.first?.isDone, false)
+        }
+    }
+
+    func testCopyDuringLibraryReplacementCannotCapturePreviousSnapshotBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("previous.txt")
+        try Data("Previous source bytes".utf8).write(to: file)
+        let attachment = try testAttachment(id: UUID(), fileName: "previous.txt")
+        let snip = Snip(content: "Previous snapshot", origin: .quickEntry, attachments: [attachment])
+        let handler = IOSCloudSyncHandlerProbe(states: [attachment.id: .waiting])
+        let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
+        await model.load()
+        // Keep matching IDs and versions so a source check must distinguish the replacement.
+        let replacement = ModelTestLibrary(snips: [snip])
+        await replacement.suspendNextSnapshot()
+        let replacing = Task { await model.replaceLibrary(replacement, recoveryScope: nil) }
+        await replacement.waitUntilSnapshotStarts()
+        XCTAssertEqual(model.snips.first?.id, snip.id)
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        var result: Bool?
+        let copying = Task { result = await coordinator.copy(snips: [snip], model: model) }
+        let finished = await TestReadiness.wait(timeout: 2) { result != nil }
+        XCTAssertTrue(finished, "An unavailable source must reject attachment work during replacement")
+        XCTAssertEqual(result, false)
+        let prepares = await handler.prepareCount()
+        XCTAssertEqual(prepares, 0)
+        await replacement.resumeSnapshot()
+        await replacing.value
+        if prepares > 0 { await handler.finishPrepare(with: .success(file)) }
+        await copying.value
+        XCTAssertTrue(pasteboard.writes.isEmpty)
+        XCTAssertEqual(model.snips.first?.isDone, false)
+        XCTAssertNil(model.attachmentURL(for: attachment.id))
+        let saved = await replacement.snapshot(sortedBy: .manual)
+        XCTAssertEqual(saved.snips.first?.isDone, false)
+    }
+
+    func testMultiAttachmentCopyRejectsReplacementAndCancellation() async throws {
+        for replacesSource in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let file = root.appendingPathComponent("prepared.txt")
+            try Data("Captured bytes".utf8).write(to: file)
+            let attachments = try [testAttachment(id: UUID(), fileName: "first.txt"),
+                                   testAttachment(id: UUID(), fileName: "second.txt")]
+            let snip = Snip(content: "Retired copy", origin: .quickEntry, attachments: attachments)
+            let handler = IOSCloudSyncHandlerProbe(states: Dictionary(uniqueKeysWithValues:
+                attachments.map { ($0.id, .waiting) }))
+            let model = IOSAppModel(library: ModelTestLibrary(snips: [snip]), cloudSyncHandler: handler)
+            await model.load()
+            let pasteboard = RecordingPasteboard()
+            let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+            let copying = Task { await coordinator.copy(snips: [snip], model: model) }
+            let firstStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 1 }
+            XCTAssertTrue(firstStarted)
+            await handler.finishPrepare(with: .success(file))
+            let secondStarted = await TestReadiness.wait(timeout: 2) { await handler.prepareCount() == 2 }
+            XCTAssertTrue(secondStarted)
+            if replacesSource {
+                // Even a reset retaining the same snip IDs and versions retires captured bytes.
+                await model.replaceLibrary(ModelTestLibrary(snips: [snip]), recoveryScope: nil)
+            } else {
+                copying.cancel()
+            }
+            await handler.finishPrepare(with: .success(file))
+            let copied = await copying.value
+            XCTAssertFalse(copied)
+            XCTAssertTrue(pasteboard.writes.isEmpty)
+            XCTAssertEqual(model.snips.first?.isDone, false)
+            XCTAssertNil(model.toast)
+        }
+    }
+
+    func testCopyFinishesBeforeAttachmentStatusReadIsReleased() async throws {
+        try await assertLocalCopyFinishesBeforeStatus(markingDone: false)
+    }
+
+    func testDoneFinishesBeforeAttachmentStatusReadIsReleased() async throws {
+        try await assertLocalCopyFinishesBeforeStatus(markingDone: true)
+    }
+
+    private func assertLocalCopyFinishesBeforeStatus(markingDone: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = [Data([0, 1, 255]), Data("Second captured file".utf8)]
+        let files = [root.appendingPathComponent("first.bin"), root.appendingPathComponent("second.txt")]
+        for (file, data) in zip(files, bytes) { try data.write(to: file) }
+        let library = try JSONSnipLibrary(fileURL: root.appendingPathComponent("snips.json"))
+        _ = try await library.perform(.add(content: "Captured text", origin: .quickEntry, source: nil,
+            listID: SnipList.inboxID, attachmentURLs: files, requestID: UUID(), now: Date()), sortedBy: .manual)
+        let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(snapshot.snips.first)
+        let handler = HeldAttachmentStatusHandler()
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        await handler.holdNextRead()
+        let pasteboard = RecordingPasteboard()
+        let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
+        var result: Bool?
+        let action = Task {
+            result = if markingDone { await coordinator.markDone(snips: [snip], model: model) }
+                else { await coordinator.copy(snips: [snip], model: model) }
+        }
+        let held = await TestReadiness.wait(timeout: 2) { await handler.isReadHeld }
+        XCTAssertTrue(held, "The action must reach the held attachment-status read")
+        let finished = await TestReadiness.wait(timeout: 2) { result != nil }
+        XCTAssertTrue(finished, "Local Copy/Done must finish before status is released")
+        XCTAssertEqual(result, true)
+        XCTAssertEqual(model.snips.first?.isDone, true)
+        XCTAssertEqual(model.toast?.action, .undoDone)
+        let saved = try await JSONSnipLibrary(fileURL: root.appendingPathComponent("snips.json"))
+            .checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(saved.snips.first?.isDone, true)
+        let copied = try XCTUnwrap(pasteboard.writes.first)
+        XCTAssertEqual(copied.first, .text("Captured text"))
+        let copiedFiles = copied.compactMap { item -> URL? in
+            if case .file(let url) = item { return url }; return nil
+        }
+        XCTAssertEqual(try copiedFiles.map { try Data(contentsOf: $0) }, bytes)
+        await handler.releaseRead()
+        await action.value
+        let undo = try XCTUnwrap(model.toast)
+        await model.performToastActionNow(undo)
+        XCTAssertEqual(model.snips.first?.isDone, false)
+        let restored = try await library.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(restored.snips.first?.isDone, false)
+        let explicitSyncs = await handler.explicitSyncs
+        XCTAssertEqual(explicitSyncs, 0)
+    }
+
     func testCopySharePayloadsCoverTextFileMixedMultiAndUnavailableCases() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapCopyPayload-\(UUID().uuidString)", isDirectory: true)
