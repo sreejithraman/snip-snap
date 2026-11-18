@@ -20,11 +20,9 @@ extension CloudFullSyncPersistence {
     switch raw.batch {
     case .fetched:
       return { identity, priorShadow, _ in
-        guard let priorShadow,
-          let base = Self.attachmentMetadata(
-            from: priorShadow, id: Self.recordID(identity), dataZone: dataZone, payloadZone: payloadZone
-          )
-        else { return nil }
+        let base = priorShadow.flatMap {
+          Self.attachmentMetadata(from: $0, id: Self.recordID(identity), dataZone: dataZone, payloadZone: payloadZone)
+        }
         return .fetched(base: base)
       }
     case .sent(let sent):
@@ -38,9 +36,9 @@ extension CloudFullSyncPersistence {
         let operations = try? Self.uniqueOperations(outbound.operations)
       else { return nil }
       let servers = Dictionary(conflicts, uniquingKeysWith: { first, _ in first })
-      return { identity, _, incomingShadow in
+      return { identity, priorShadow, incomingShadow in
         let id = Self.recordID(identity)
-        guard let server = servers[id], server.shadow.data == incomingShadow,
+        guard let incomingShadow, let server = servers[id], server.shadow.data == incomingShadow,
           case .save(let draft)? = operations[id], let shadow = draft.base,
           let base = Self.attachmentMetadata(
             from: shadow.data, id: id, dataZone: dataZone, payloadZone: payloadZone
@@ -52,7 +50,10 @@ extension CloudFullSyncPersistence {
             from: server, metadataZone: dataZone, payloadZone: payloadZone
           )
         else { return nil }
-        return .conflict(base: base, sent: sent, server: remote)
+        let prior = priorShadow.flatMap {
+          Self.attachmentMetadata(from: $0, id: id, dataZone: dataZone, payloadZone: payloadZone)
+        }
+        return .conflict(base: base, prior: prior, sent: sent, server: remote)
       }
     }
   }

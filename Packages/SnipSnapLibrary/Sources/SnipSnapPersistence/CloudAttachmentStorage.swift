@@ -33,15 +33,17 @@ package struct CloudAttachmentMetadataValue: Codable, Equatable, Sendable {
 }
 
 package enum CloudAttachmentMetadataRebase: Sendable {
-  case fetched(base: CloudAttachmentMetadataValue)
+  case fetched(base: CloudAttachmentMetadataValue?)
   case conflict(
     base: CloudAttachmentMetadataValue,
+    prior: CloudAttachmentMetadataValue?,
     sent: CloudAttachmentMetadataValue,
     server: CloudAttachmentMetadataValue
   )
 
+  // Order selection can read a prior shadow before applying any incoming records.
   package typealias Resolve = @Sendable (
-    _ identity: CloudTextStorageIdentity, _ priorShadow: Data?, _ incomingShadow: Data
+    _ identity: CloudTextStorageIdentity, _ priorShadow: Data?, _ incomingShadow: Data?
   ) -> CloudAttachmentMetadataRebase?
 }
 

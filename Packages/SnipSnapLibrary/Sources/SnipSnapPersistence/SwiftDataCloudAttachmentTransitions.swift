@@ -26,10 +26,28 @@ extension SwiftDataSnipLibrary {
       context: context
     )
     var materializedAttachmentIDs: Set<UUID> = []
+    var fetchedOrderSnips: Set<UUID> = []
+    var fetchedMetadata: [UUID: CloudAttachmentMetadataValue] = [:]
+    var fetchedDeletions: Set<UUID> = []
+    var legacyOrderSnips: Set<UUID> = []
     for transition in transitions {
       switch transition {
-      case .remoteMetadataAccepted(let metadata, _, _, _) where resolveMetadata != nil:
+      case .remoteMetadataAccepted(let metadata, let identity, let shadow, _) where resolveMetadata != nil:
         materializedAttachmentIDs.insert(metadata.attachmentID)
+        let row = byAttachment[metadata.attachmentID]
+        guard case .fetched(let base)? = resolveMetadata?(identity, row?.metadataShadowData, shadow) else {
+          continue
+        }
+        fetchedMetadata[metadata.attachmentID] = metadata
+        if let row, let base,
+          row.lifecycle.isPayloadAccepted,
+          row.metadata.namesSamePayload(as: metadata), base.namesSamePayload(as: metadata)
+        {
+          if base.position != metadata.position { fetchedOrderSnips.insert(metadata.snipID) }
+        } else {
+          legacyOrderSnips.insert(metadata.snipID)
+          if let row { legacyOrderSnips.insert(row.snipID) }
+        }
       case .metadataConflict(let attachmentID, _, _, _) where resolveMetadata != nil:
         materializedAttachmentIDs.insert(attachmentID)
       case .metadataUnknown(let attachmentID, _, let replacementAttachmentID, _):
@@ -38,12 +56,17 @@ extension SwiftDataSnipLibrary {
       case .remoteMetadataDeleted(let metadataIdentity):
         if let row = byMetadataIdentity[metadataIdentity] {
           materializedAttachmentIDs.insert(row.attachmentID)
+          if case .fetched? = resolveMetadata?(metadataIdentity, row.metadataShadowData, nil) {
+            fetchedOrderSnips.insert(row.snipID)
+            fetchedDeletions.insert(row.attachmentID)
+          }
         }
       default:
         break
       }
     }
     let materializedIDs = Array(materializedAttachmentIDs)
+    let orderSnipIDs = Array(fetchedOrderSnips.union(legacyOrderSnips))
     let storedAttachmentRows: [StoredAttachmentRecord]
     let storedReferenceRows: [StoredSnipAttachmentReference]
     if materializedIDs.isEmpty {
@@ -55,9 +78,20 @@ extension SwiftDataSnipLibrary {
       ))
       storedReferenceRows = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>(
         predicate: #Predicate<StoredSnipAttachmentReference> {
-          materializedIDs.contains($0.attachmentID)
+          materializedIDs.contains($0.attachmentID) || orderSnipIDs.contains($0.snipID)
         }
       ))
+    }
+    if let resolveMetadata, !orderSnipIDs.isEmpty {
+      applyFetchedAttachmentOrder(
+        snipIDs: Set(orderSnipIDs),
+        publications: publications,
+        references: storedReferenceRows,
+        fetchedMetadata: fetchedMetadata,
+        deletedAttachmentIDs: fetchedDeletions,
+        legacyOrderSnips: legacyOrderSnips,
+        resolveMetadata: resolveMetadata
+      )
     }
     var storedAttachments = Dictionary(grouping:
       storedAttachmentRows,
@@ -137,16 +171,20 @@ extension SwiftDataSnipLibrary {
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
-          if case .fetched(let base)? = resolveMetadata?(metadataIdentity, row.metadataShadowData, shadow),
+          if case .fetched(let base?)? = resolveMetadata?(metadataIdentity, row.metadataShadowData, shadow),
             row.lifecycle.isPayloadAccepted,
             row.metadata.namesSamePayload(as: metadata), base.namesSamePayload(as: metadata)
           {
             if let (attachment, reference) = liveAttachment(for: row) {
               let ownsSource = row.lifecycle.localSourceRelativePath != nil
-              row.rebaseMetadata(
-                base: base, server: metadata, attachment: attachment, reference: reference,
-                preferLocalOnTie: ownsSource
-              )
+              // A pending local-source row can be undoing a save whose result was lost.
+              let preservesLocalName = ownsSource
+                && (!row.lifecycle.isMetadataAccepted || attachment.fileName != base.fileName)
+              if !preservesLocalName, attachment.fileName == base.fileName || metadata.fileName != base.fileName {
+                attachment.fileName = metadata.fileName
+              }
+              row.fileName = attachment.fileName
+              row.position = reference.position
               if !ownsSource, metadata.contentType != base.contentType {
                 attachment.contentType = metadata.contentType
               }
@@ -220,24 +258,30 @@ extension SwiftDataSnipLibrary {
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
         }
+        let priorShadow = row.metadataShadowData
         try row.lifecycle.recordMetadataConflict(
           CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
           expectedRevision: expected
         )
         // This transition also advances the shadow for an acknowledged save superseded locally.
         // Only an actual server conflict rebases live fields.
-        if case .conflict(let base, let sent, let server)? = resolveMetadata?(
-          row.metadataIdentity, nil, shadow
+        if case .conflict(let base, let prior, let sent, let server)? = resolveMetadata?(
+          row.metadataIdentity, priorShadow, shadow
         ),
           row.lifecycle.isPayloadAccepted,
           row.metadata.namesSamePayload(as: server), base.namesSamePayload(as: server),
           sent.namesSamePayload(as: server),
           let (attachment, reference) = liveAttachment(for: row)
         {
-          row.rebaseMetadata(
-            base: base, server: server, sent: sent, attachment: attachment, reference: reference,
-            preferLocalOnTie: true
-          )
+          let priorName = prior.flatMap { $0.namesSamePayload(as: server) ? $0.fileName : nil } ?? base.fileName
+          // A newer shadow can explain a live name that differs from the frozen draft.
+          if attachment.fileName == priorName,
+            attachment.fileName == sent.fileName || priorName != base.fileName
+          {
+            attachment.fileName = server.fileName
+          }
+          row.fileName = attachment.fileName
+          row.position = reference.position
         }
       case .payloadCollision(let attachmentID, let expected, let replacementIdentity):
         guard let row = byAttachment[attachmentID] else {
@@ -453,23 +497,69 @@ private extension CloudAttachmentMetadataValue {
   }
 }
 
-private extension StoredCloudAttachmentPublication {
-  func rebaseMetadata(
-    base: CloudAttachmentMetadataValue,
-    server: CloudAttachmentMetadataValue,
-    sent: CloudAttachmentMetadataValue? = nil,
-    attachment: StoredAttachmentRecord,
-    reference: StoredSnipAttachmentReference,
-    preferLocalOnTie: Bool
+private extension SwiftDataSnipLibrary {
+  func applyFetchedAttachmentOrder(
+    snipIDs: Set<UUID>,
+    publications: [StoredCloudAttachmentPublication],
+    references: [StoredSnipAttachmentReference],
+    fetchedMetadata: [UUID: CloudAttachmentMetadataValue],
+    deletedAttachmentIDs: Set<UUID>,
+    legacyOrderSnips: Set<UUID>,
+    resolveMetadata: CloudAttachmentMetadataRebase.Resolve
   ) {
-    func rebase<Value: Equatable>(_ live: Value, base: Value, server: Value, sent: Value?) -> Value {
-      // A local edit since the send can deliberately restore the old base value.
-      if let sent, live != sent { return live }
-      return live == base || (!preferLocalOnTie && server != base) ? server : live
+    let publicationsBySnip = Dictionary(grouping: publications.filter {
+      snipIDs.contains($0.snipID) && !deletedAttachmentIDs.contains($0.attachmentID)
+    }, by: \.snipID)
+    let referencesBySnip = Dictionary(grouping: references.filter {
+      snipIDs.contains($0.snipID) && !deletedAttachmentIDs.contains($0.attachmentID)
+    }, by: \.snipID)
+    for (snipID, references) in referencesBySnip {
+      let publications = publicationsBySnip[snipID] ?? []
+      let rows = Dictionary(uniqueKeysWithValues: publications.map { ($0.attachmentID, $0) })
+      let publishedOrder = publications.compactMap { row -> (UUID, Int)? in
+        guard row.lifecycle.isPayloadAccepted,
+          case .fetched(let base?)? = resolveMetadata(row.metadataIdentity, row.metadataShadowData, nil),
+          base.namesSamePayload(as: row.metadata)
+        else { return nil }
+        return (row.attachmentID, base.position)
+      }
+      let previous = Dictionary(uniqueKeysWithValues: publishedOrder)
+      guard !legacyOrderSnips.contains(snipID), previous.count == publications.count,
+        references.allSatisfy({ previous[$0.attachmentID] != nil })
+      else {
+        // New or replaced payloads still use the existing cached order rules.
+        for reference in references {
+          guard let row = rows[reference.attachmentID], row.lifecycle.localSourceRelativePath == nil else {
+            continue
+          }
+          if let metadata = fetchedMetadata[reference.attachmentID], metadata.snipID == snipID {
+            reference.update(position: metadata.position)
+          } else if row.lifecycle.materializesFromCloud {
+            reference.update(position: row.position)
+          }
+        }
+        continue
+      }
+      var remote = previous
+      for id in previous.keys {
+        if let metadata = fetchedMetadata[id] { remote[id] = metadata.position }
+      }
+      let complete = Set(remote.values) == Set(0..<remote.count)
+      let localOrderChanged = references.contains { previous[$0.attachmentID] != $0.position }
+      let ownerKeepsOrder = references.contains { reference in
+        let id = reference.attachmentID
+        guard let row = rows[id], row.lifecycle.localSourceRelativePath != nil else {
+          return false
+        }
+        return !complete || previous[id] != reference.position
+          || (!row.lifecycle.isMetadataAccepted && remote[id] != reference.position)
+      }
+      // Keep the existing cache behavior for a partial fetch with no overlapping local order.
+      guard !ownerKeepsOrder, complete || !localOrderChanged else { continue }
+      for reference in references {
+        guard let position = remote[reference.attachmentID] else { continue }
+        reference.update(position: position)
+      }
     }
-    fileName = rebase(attachment.fileName, base: base.fileName, server: server.fileName, sent: sent?.fileName)
-    position = rebase(reference.position, base: base.position, server: server.position, sent: sent?.position)
-    attachment.fileName = fileName
-    reference.update(position: position)
   }
 }

@@ -3102,14 +3102,17 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let synced = try await snapshot(pair.receiverLibrary, pair.namespace)
     XCTAssertTrue(synced.publications.allSatisfy { $0.metadataAccepted && $0.lastFailure == nil })
     try await pair.sender.fetchRemote()
-    // Client 1 holds the local files; its publications record the order it fetched.
-    // Its own snip still reverts the order on its next reconcile (SM33 item 8).
     let arrived = try await snapshot(pair.senderLibrary, pair.namespace)
     let arrivedSecond = try publication(of: second.id, in: arrived)
     let arrivedFirst = try publication(of: first.id, in: arrived)
     XCTAssertEqual(arrivedSecond.metadata.position, 0)
     XCTAssertEqual(arrivedFirst.metadata.position, 1)
     XCTAssertTrue(arrived.publications.allSatisfy { $0.metadataAccepted && $0.lastFailure == nil })
+    let senderLocal = try await pair.senderLibrary.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(
+      senderLocal.snips.first(where: { $0.id == pair.snipID })?.attachments.map(\.id),
+      [second.id, first.id]
+    )
   }
 
   // 7a through a removal: removing the first of two downloaded attachments moves the second to
@@ -4985,6 +4988,146 @@ final class CloudAttachmentTransferTests: XCTestCase {
 // MARK: Concurrent attachment edits
 
 extension CloudAttachmentTransferTests {
+  func testCompletedPeerReorderReplacesTheCachedOrderAndKeepsAnIndependentRename() async throws {
+    let owner = try await makeAttachmentClient(fileNames: ["a", "b", "c"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    try await owner.sync.sync()
+    let original = try await owner.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(original.snips.first(where: { $0.id == owner.snipID }))
+    let idsByName = Dictionary(uniqueKeysWithValues: snip.attachments.map { ($0.fileName, $0.id) })
+    let first = try XCTUnwrap(idsByName["a.txt"])
+    let second = try XCTUnwrap(idsByName["b.txt"])
+    let third = try XCTUnwrap(idsByName["c.txt"])
+    XCTAssertEqual(snip.attachments.map(\.id), [first, second, third])
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
+    )
+    try await peer.sync.fetchRemote()
+    try await keepAttachments([second, first, third], ofSnip: owner.snipID, in: peer.library)
+    try await renameAttachment(ofSnip: owner.snipID, to: "local-b.txt", in: peer.library)
+    try await keepAttachments([first, third, second], ofSnip: owner.snipID, in: owner.library)
+    try await renameAttachment(ofSnip: owner.snipID, to: "remote-a.txt", in: owner.library)
+    try await owner.sync.sendPendingUntilSettled()
+
+    let expectedOrder = [first, third, second]
+    let published = try await snapshot(owner.library, owner.namespace)
+    for (position, id) in expectedOrder.enumerated() {
+      let attachment = try publication(of: id, in: published)
+      let recordID = CloudAttachmentRecordCodec.recordID(attachment.metadataIdentity)
+      let server = try await serverAttachmentMetadata(recordID, on: owner.server)
+      XCTAssertEqual(server.position, position, "The peer must fetch a complete remote order.")
+    }
+    try await peer.sync.fetchRemote()
+
+    let fetched = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    let fetchedSnip = try XCTUnwrap(fetched.snips.first(where: { $0.id == owner.snipID }))
+    XCTAssertEqual(fetchedSnip.attachments.map(\.id), expectedOrder)
+    XCTAssertEqual(fetchedSnip.attachments.map(\.fileName), ["remote-a.txt", "c.txt", "local-b.txt"])
+    let fetchedStorage = try await snapshot(peer.library, owner.namespace)
+    for (position, id) in expectedOrder.enumerated() {
+      XCTAssertEqual(try publication(of: id, in: fetchedStorage).metadata.position, position)
+    }
+    try await peer.sync.sendPendingUntilSettled()
+    for (position, id) in expectedOrder.enumerated() {
+      let attachment = try publication(of: id, in: published)
+      let recordID = CloudAttachmentRecordCodec.recordID(attachment.metadataIdentity)
+      let server = try await serverAttachmentMetadata(recordID, on: owner.server)
+      XCTAssertEqual(server.position, position)
+      if id == second { XCTAssertEqual(server.fileName, "local-b.txt") }
+    }
+  }
+
+  func testLocalSourceRenameUndoSurvivesLosingTheSaveResultBeforeStaging() async throws {
+    enum Interruption: Error { case beforeStaging }
+
+    let owner = try await makeAttachmentClient(fileNames: ["a"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    try await owner.sync.sync()
+    let original = try await owner.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(original.snips.first(where: { $0.id == owner.snipID }))
+    let attachment = try XCTUnwrap(snip.attachments.first)
+    let published = try await snapshot(owner.library, owner.namespace)
+    let row = try publication(of: attachment.id, in: published)
+    let recordID = CloudAttachmentRecordCodec.recordID(row.metadataIdentity)
+    XCTAssertTrue(row.metadataAccepted)
+    XCTAssertNotNil(row.localSourceURL)
+    try await renameAttachment(ofSnip: owner.snipID, to: "b.txt", in: owner.library)
+    do {
+      try await owner.sync.sendPending(beforeApply: { throw Interruption.beforeStaging })
+      XCTFail("Expected the save result to be lost before staging.")
+    } catch Interruption.beforeStaging {}
+    let staged = try await owner.store.stagedBatches()
+    XCTAssertTrue(staged.isEmpty)
+    let saved = try await serverAttachmentMetadata(recordID, on: owner.server)
+    XCTAssertEqual(saved.fileName, "b.txt")
+
+    try await restoreSnip(snip, in: owner.library)
+    let relaunched = try reopened(owner)
+    try await relaunched.sync.fetchRemote()
+
+    let fetched = try await relaunched.library.checkedSnapshot(sortedBy: .manual)
+    let restored = try XCTUnwrap(fetched.snips.first(where: { $0.id == owner.snipID }))
+    XCTAssertEqual(restored.attachments.map(\.fileName), ["a.txt"])
+    try await relaunched.sync.sendPendingUntilSettled()
+    let server = try await serverAttachmentMetadata(recordID, on: owner.server)
+    XCTAssertEqual(server.fileName, "a.txt")
+    XCTAssertEqual(server.payloadIdentity, row.metadata.payloadIdentity)
+  }
+
+  func testFrozenAttachmentReorderDoesNotResendAnEarlierPeerRename() async throws {
+    try await assertFrozenAttachmentConflict(laterName: nil)
+  }
+
+  func testStaleAttachmentConflictReplanKeepsALaterLocalRename() async throws {
+    try await assertFrozenAttachmentConflict(laterName: "later-local-name.txt")
+  }
+
+  private func assertFrozenAttachmentConflict(laterName: String?) async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await pair.sender.fetchRemote()
+    try await editDownloadedAttachments(pair, keeping: [pair.second.id, pair.first.id])
+    let frozen = try await pair.receiverStore.pendingChanges()
+    XCTAssertTrue(plansMetadataSave(for: pair.first, in: frozen))
+    try await renameAttachment(ofSnip: pair.snipID, to: "earlier-peer-name.txt", in: pair.senderLibrary)
+    try await pair.sender.sendPending()
+    try await pair.receiver.fetchRemote()
+
+    let received = try await pair.receiverLibrary.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(received.snips.first(where: { $0.id == pair.snipID }))
+    XCTAssertEqual(snip.attachments.map(\.id), [pair.second.id, pair.first.id])
+    XCTAssertEqual(snip.attachments.map(\.fileName), [pair.second.fileName, "earlier-peer-name.txt"])
+    let peerName = "latest-peer-name.txt"
+    try await renameAttachment(ofSnip: pair.snipID, to: peerName, in: pair.senderLibrary)
+    try await pair.sender.sendPending()
+    let sent = try await pair.receiverTransport.send(frozen)
+    let recordID = CloudAttachmentRecordCodec.recordID(pair.first.metadataIdentity)
+    XCTAssertTrue(sent.items.contains { item in
+      guard case .conflict(let id, _) = item else { return false }
+      return id == recordID
+    })
+    try await pair.receiverStore.stage(.sent(sent), outbound: frozen)
+    if let laterName {
+      var renamed = snip
+      renamed.attachments[1].fileName = laterName
+      try await restoreSnip(renamed, in: pair.receiverLibrary)
+      _ = try await pair.receiverStore.pendingChanges()
+    }
+    try await pair.receiverStore.applyStaged(sent.id)
+    try await pair.receiverTransport.confirmApplied(sent.id)
+    try await pair.receiver.sendPendingUntilSettled()
+    let server = try await serverAttachmentMetadata(recordID, on: pair.server)
+    XCTAssertEqual(server.fileName, laterName ?? peerName)
+    XCTAssertEqual(server.position, 1)
+    XCTAssertEqual(server.payloadIdentity, pair.first.payloadIdentity)
+  }
+
   func testAttachmentReorderSurvivesConcurrentRenameAfterLostAcknowledgement() async throws {
     enum Interruption: Error { case beforeCommit }
 
