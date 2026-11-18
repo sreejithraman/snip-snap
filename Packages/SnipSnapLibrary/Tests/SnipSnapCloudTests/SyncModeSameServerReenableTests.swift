@@ -59,6 +59,51 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.relaunchEditThenTryAgain)
     }
 
+    func testFullRecordTryAgainAfterReopeningKeepsBothDevicesEdits() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root,
+            fullDisk: .manifestAndStore,
+            history: .turnedOffThenEditedOnBothSides
+        )
+        let expected = stranded.originals
+        let editedID = stranded.keptSnipID
+        XCTAssertEqual(expected[editedID], Self.sameServerTextEditedWhileOff)
+        XCTAssertEqual(
+            expected.values.sorted(),
+            [Self.sameServerTexts[1], Self.sameServerTextEditedWhileOff]
+        )
+        try await assertSameServerSnips(stranded.server, texts: expected, doneSnipID: editedID)
+
+        stranded.disk.free()
+        let reopened = try relaunch(stranded, root: root)
+        let beforeRetry = try await reopened.snapshot()
+        XCTAssertEqual(beforeRetry.activeStore.id, stranded.transition.sourceStoreID)
+        XCTAssertEqual(beforeRetry.transition?.candidateStoreID, stranded.transition.candidateStoreID)
+
+        let status = try await sameServerCoordinator(on: reopened, server: stranded.server)
+            .enableOrRetry()
+
+        XCTAssertEqual(status.state, .on)
+        let afterRetry = try await reopened.snapshot()
+        XCTAssertEqual(afterRetry.activeStore.kind, .iCloudSync)
+        XCTAssertNil(afterRetry.transition)
+        XCTAssertEqual(stranded.probe.count(.missing(operation: "sync.setup")), 0)
+        let active = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual).snips
+        XCTAssertEqual(active.count, expected.count)
+        XCTAssertEqual(
+            Dictionary(active.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected
+        )
+        XCTAssertEqual(
+            active.filter(\.isDone).map(\.id),
+            [editedID],
+            "Try Again must preserve the other device's Done mark in the active library."
+        )
+        try await assertSameServerSnips(stranded.server, texts: expected, doneSnipID: editedID)
+    }
+
     // Cancel setup only aborts, so the bases a turn-off kept stay the common ancestor, and the
     // next merge keeps both devices' changes. Writing the aborted re-enable's sent records over
     // them would silently revert the other device's change (SM23-F4 review, F1).
@@ -84,6 +129,33 @@ extension ICloudSyncModeCoordinatorTests {
             in: enabled.persistence,
             server: enabled.stranded.server
         )
+    }
+
+    private func assertSameServerSnips(
+        _ server: FakeCloudServer,
+        texts: [UUID: String],
+        doneSnipID: UUID,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let zone = textZone(makeNamespace())
+        let snipRecords = await server.storedRecordTypes(in: zone).filter { $0 == "Snip" }
+        XCTAssertEqual(snipRecords.count, texts.count, file: file, line: line)
+        for (id, text) in texts {
+            let recordID = CloudRecordID.snip(id, in: zone)
+            let stored = await server.fullSnapshot(for: recordID)
+            let record = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored, file: file, line: line))
+            XCTAssertEqual(record.id, recordID, file: file, line: line)
+            XCTAssertEqual(record.domainID, id, file: file, line: line)
+            XCTAssertEqual(record.text, .value(text), file: file, line: line)
+            XCTAssertEqual(
+                record.isDone,
+                .value(id == doneSnipID),
+                "Unexpected Done mark on server record \(recordID.name).",
+                file: file,
+                line: line
+            )
+        }
     }
 
     /// Checks that `persistence`'s active library holds exactly `expected`, by ID and content,
