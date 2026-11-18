@@ -5128,6 +5128,73 @@ extension CloudAttachmentTransferTests {
     XCTAssertEqual(server.payloadIdentity, pair.first.payloadIdentity)
   }
 
+  func testFrozenAttachmentRenameRetryKeepsACompletedPeerReorder() async throws {
+    try await assertFrozenAttachmentRenameAfterPeerReorder(laterName: nil)
+  }
+
+  func testStagedAttachmentRenameConflictKeepsANewerRenameAndACompletedPeerReorder() async throws {
+    try await assertFrozenAttachmentRenameAfterPeerReorder(laterName: "later-local-name.txt")
+  }
+
+  private func assertFrozenAttachmentRenameAfterPeerReorder(laterName: String?) async throws {
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await pair.sender.fetchRemote()
+    let firstID = CloudAttachmentRecordCodec.recordID(pair.first.metadataIdentity)
+    let secondID = CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
+    for (position, id) in [firstID, secondID].enumerated() {
+      let initial = try await serverAttachmentMetadata(id, on: pair.server)
+      XCTAssertEqual(initial.position, position, "Initial server order")
+    }
+
+    let renamed = "renamed-first.txt"
+    try await renameAttachment(ofSnip: pair.snipID, to: renamed, in: pair.receiverLibrary)
+    let frozen = try await pair.receiverStore.pendingChanges()
+    XCTAssertEqual(frozen.operations.map(\.id), [firstID])
+    guard case .save(let draft)? = frozen.operations.first else {
+      return XCTFail("Expected a frozen attachment metadata save.")
+    }
+    let proposed = try CloudAttachmentRecordCodec.metadata(
+      from: draft,
+      metadataZone: firstID.zone,
+      payloadZone: CloudAttachmentRecordCodec.recordID(pair.first.payloadIdentity).zone
+    )
+    XCTAssertEqual(proposed.fileName, renamed)
+    XCTAssertEqual(proposed.position, 0)
+
+    try await keepAttachments([pair.second.id, pair.first.id], ofSnip: pair.snipID, in: pair.senderLibrary)
+    try await pair.sender.sendPendingUntilSettled()
+    let reversedIDs = [secondID, firstID]
+    for (position, id) in reversedIDs.enumerated() {
+      let published = try await serverAttachmentMetadata(id, on: pair.server)
+      XCTAssertEqual(published.position, position, "Server order before submitting the frozen rename")
+    }
+
+    let sent = try await pair.receiverTransport.send(frozen)
+    XCTAssertEqual(sent.items.map(\.id), [firstID])
+    guard case .conflict(_, let current)? = sent.items.first else {
+      return XCTFail("Expected the frozen rename to conflict with the published reorder.")
+    }
+    let conflicted = try CloudAttachmentRecordCodec.metadata(from: current)
+    XCTAssertEqual(conflicted.position, 1)
+    try await pair.receiverStore.stage(.sent(sent), outbound: frozen)
+    if let laterName {
+      try await renameAttachment(ofSnip: pair.snipID, to: laterName, in: pair.receiverLibrary)
+      _ = try await pair.receiverStore.pendingChanges()
+    }
+    try await pair.receiverStore.applyStaged(sent.id)
+    try await pair.receiverTransport.confirmApplied(sent.id)
+
+    try await pair.receiver.sendPendingUntilSettled()
+    for (position, id) in reversedIDs.enumerated() {
+      let retried = try await serverAttachmentMetadata(id, on: pair.server)
+      XCTAssertEqual(retried.position, position, "Server order immediately after retry")
+    }
+    try await pair.sender.fetchRemote()
+    try await pair.receiver.fetchRemote()
+    try await assertMergedAttachmentEdits(pair, renamedTo: laterName ?? renamed, receiver: pair.receiverLibrary)
+  }
+
   func testAttachmentReorderSurvivesConcurrentRenameAfterLostAcknowledgement() async throws {
     try await assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: false)
   }
