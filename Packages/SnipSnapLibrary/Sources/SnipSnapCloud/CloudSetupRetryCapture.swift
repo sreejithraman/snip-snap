@@ -18,10 +18,20 @@ enum CloudSetupRetryCapture {
         let key = attachmentKey(metadata, identity: publication.metadataIdentity),
         !evidence.requiresRecovery(for: key), let proof = evidence.baseline(for: key),
         let acknowledged = try? decoder.decode(CloudAttachmentMetadataValue.self, from: proof.serverFields),
-        acknowledged == metadata
+        sameAttachmentIgnoringPosition(acknowledged, metadata)
       else { return }
       removed[metadata.snipID, default: []].insert(metadata.attachmentID)
     }
+  }
+
+  private static func sameAttachmentIgnoringPosition(
+    _ lhs: CloudAttachmentMetadataValue,
+    _ rhs: CloudAttachmentMetadataValue
+  ) -> Bool {
+    lhs.attachmentID == rhs.attachmentID && lhs.snipID == rhs.snipID
+      && lhs.fileName == rhs.fileName && lhs.contentType == rhs.contentType
+      && lhs.byteCount == rhs.byteCount && lhs.sha256 == rhs.sha256
+      && lhs.payloadIdentity == rhs.payloadIdentity
   }
 
   static func removedAttachmentIDsBySnip(

@@ -377,14 +377,36 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(secondSends.contains(pointerID(removed.id)))
         XCTAssertFalse(secondSends.contains(snipRecordID))
         let sentPointer = await server.fullSnapshot(for: pointerID(removed.id))
-        XCTAssertNotNil(sentPointer)
+        let beforeReorder = try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(sentPointer))
+
+        let peerRefreshed = try await peerCoordinator.syncActive()
+        XCTAssertEqual(peerRefreshed.state, .on)
+        _ = try await peerLibrary.perform(
+            .editAttachments(
+                snipID: snip.id, content: snip.content,
+                edits: (remoteIDs + [removed.id]).map { .existing(attachmentID: $0) },
+                expectedUpdatedAt: nil, now: snip.updatedAt.addingTimeInterval(3)
+            ),
+            sortedBy: .manual
+        )
+        let peerReordered = try await peerCoordinator.syncActive()
+        XCTAssertEqual(peerReordered.state, .on)
+        let reorderedPointer = await server.fullSnapshot(for: pointerID(removed.id))
+        XCTAssertEqual(reorderedPointer?.id, sentPointer?.id)
+        let afterReorder = try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(reorderedPointer))
+        XCTAssertNotEqual(afterReorder.position, beforeReorder.position)
+        XCTAssertEqual(afterReorder.attachmentID, beforeReorder.attachmentID)
+        XCTAssertEqual(afterReorder.snipID, beforeReorder.snipID)
+        XCTAssertEqual(afterReorder.payloadIdentity, beforeReorder.payloadIdentity)
+        XCTAssertEqual(afterReorder.sha256, beforeReorder.sha256)
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: localRoot)
+        try await reopened.cancelPendingICloudEnable()
         let source = try await reopened.activeLibrary()
         _ = try await source.perform(
             .editAttachments(
                 snipID: snip.id, content: snip.content, edits: [], expectedUpdatedAt: nil,
-                now: snip.updatedAt.addingTimeInterval(3)
+                now: snip.updatedAt.addingTimeInterval(4)
             ),
             sortedBy: .manual
         )
