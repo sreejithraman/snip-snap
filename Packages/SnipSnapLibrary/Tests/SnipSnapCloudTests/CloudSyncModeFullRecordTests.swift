@@ -2058,6 +2058,70 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(remoteTexts, ["edited after hard reopen", "retry full item"])
     }
 
+    func testFullRecordSetupRetryDoesNotRestoreDeletedUnsentSnip() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("delete after failed save", to: source)
+        try await add("keep after failed save", to: source)
+        let before = try await source.checkedSnapshot(sortedBy: .manual)
+        let deleted = try XCTUnwrap(before.snips.first { $0.content == "delete after failed save" })
+        let kept = try XCTUnwrap(before.snips.first { $0.content == "keep after failed save" })
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let deletedRecordID = CloudRecordID.snip(deleted.id, in: zone)
+        let keptRecordID = CloudRecordID.snip(kept.id, in: zone)
+        let server = FakeCloudServer()
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let existing = Snip(content: "already on server", origin: .quickEntry)
+        let remoteWrite = try await writer.send(CloudOutboundBatch(
+            operations: [.save(CloudFullRecordCodec.snipDraft(existing, in: zone))],
+            zonesToSave: [zone]
+        ))
+        try await writer.confirmApplied(remoteWrite.id)
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.failNextSentItem(deletedRecordID, failure: .retryable)
+        await transport.failNextSentItem(keptRecordID, failure: .retryable)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { transport }
+        )
+
+        let interrupted = try await coordinator.enableOrRetry()
+        XCTAssertEqual(interrupted.state, .settingUp)
+        let beforeRetry = await server.storedTextValues()
+        XCTAssertEqual(beforeRetry, [existing.content])
+        _ = try await source.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let result = try await retry.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        let expected = [kept.id: kept.content, existing.id: existing.content]
+        XCTAssertEqual(final.snips.count, expected.count)
+        XCTAssertEqual(
+            Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected
+        )
+        let deletedRemote = await server.fullSnapshot(for: deletedRecordID)
+        XCTAssertNil(deletedRemote)
+        for (id, content) in expected {
+            let stored = await server.fullSnapshot(for: .snip(id, in: zone))
+            let remoteSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored))
+            XCTAssertEqual(remoteSnip.text, .value(content))
+        }
+    }
+
     func testFullPartialFirstSendRetryThreeWayMergesListAndSnipFields() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

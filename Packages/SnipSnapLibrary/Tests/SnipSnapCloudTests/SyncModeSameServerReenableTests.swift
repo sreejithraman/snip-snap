@@ -205,6 +205,49 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertSameServerSnips(stranded.server, texts: expected)
     }
 
+    func testFullRecordFreshEnableKeepsAnAcceptedRecoveredSnip() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root,
+            fullDisk: .manifestAndStore
+        )
+        stranded.disk.free()
+        try stripSetupRetryEvidence(of: stranded, root: root)
+        let persistence = try relaunch(stranded, root: root)
+        try await persistence.cancelPendingICloudEnable()
+        try await edit(stranded.keptSnipID, to: Self.sameServerEditedText, in: persistence)
+
+        let coordinator = sameServerCoordinator(on: persistence, server: stranded.server)
+        stranded.disk.armAtPointerSwap()
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("The setup that uploaded the recovered snip must stop before activation.")
+        } catch SameServerFullDisk.Failure.injected {}
+        let interrupted = try await persistence.snapshot()
+        let transition = try XCTUnwrap(interrupted.transition)
+        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
+            transitionID: transition.id,
+            sourceID: stranded.keptSnipID
+        )
+        var expected = stranded.originals
+        expected[recoveredID] = Self.sameServerEditedText
+        try await assertSameServerSnips(stranded.server, texts: expected)
+
+        stranded.disk.free()
+        try await persistence.cancelPendingICloudEnable()
+        let result = try await coordinator.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let active = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(active.snips.count, expected.count)
+        XCTAssertEqual(
+            Dictionary(active.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected
+        )
+        try await assertSameServerSnips(stranded.server, texts: expected)
+    }
+
     // Cancelling the re-enable must preserve the other device's Done mark on the next enable.
     func testFullRecordEnableAfterCancelSetupKeepsAServerChangeMadeWhileSyncWasOff() async throws {
         let root = temporaryDirectory()

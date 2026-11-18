@@ -165,9 +165,10 @@ extension SyncModeTransition {
     return false
   }
 
-  var mayHaveUnidentifiedSetupSend: Bool {
-    phase == .firstSendStarted || phase == .firstSendComplete || awaitsAcceptedServerCapture
-      || !seeds.supersededApprovedSnipIDs.isEmpty || !seeds.serverAcceptedSnipIDs.isEmpty
+  var mayHaveLegacySetupSend: Bool {
+    // Older retries returned to candidateReady after clearing the send attempt. A list-only
+    // send could leave no snip settlement IDs, and the retry could advance from there.
+    phase != .candidateDeclared
   }
 
   func awaitsMerge(using token: SyncModeFreezeToken) -> Bool {

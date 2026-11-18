@@ -14,6 +14,17 @@ package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
   package var pinnedAt: Date?
   package var placement: CloudSnipPlacement
   package var updatedAt: Date
+  private var sortedSetupSourceAttachmentIDs: [UUID]?
+
+  package var setupSourceAttachmentIDs: Set<UUID>? {
+    get { sortedSetupSourceAttachmentIDs.map(Set.init) }
+    set { sortedSetupSourceAttachmentIDs = newValue?.sorted { $0.uuidString < $1.uuidString } }
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, requestID, createdAt, originRaw, text, source, isDone, pinnedAt, placement, updatedAt
+    case sortedSetupSourceAttachmentIDs = "setupSourceAttachmentIDs"
+  }
 
   package init(
     id: UUID,

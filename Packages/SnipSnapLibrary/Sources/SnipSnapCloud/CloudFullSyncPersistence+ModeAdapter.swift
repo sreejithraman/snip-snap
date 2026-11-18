@@ -208,6 +208,7 @@ extension CloudFullSyncPersistence {
     source: SnipLibraryTransferSnapshot,
     transitionID: UUID,
     targetRevision: UInt64,
+    priorSeedProvenance: [SyncModeSeedProvenance] = [],
     retryEvidence: CloudSetupRetryEvidence? = nil
   ) async throws -> CloudFullReenableApplyPlan? {
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
@@ -246,6 +247,11 @@ extension CloudFullSyncPersistence {
     let retryVersion = Data("snipsnap-setup-retry|\(transitionID.uuidString)".utf8)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
+
+    for seed in priorSeedProvenance where !sourceSnipIDs.contains(seed.sourceSnipID) {
+      let reference = CloudEntityReference(kind: .snip, domainID: seed.candidateSnipID)
+      if accepted[reference] == nil { replacingSnips.insert(seed.candidateSnipID) }
+    }
 
     for index in adjustedLists.indices.reversed() {
       let local = adjustedLists[index]
@@ -367,12 +373,10 @@ extension CloudFullSyncPersistence {
           : nil
         let recoveredID = priorRecovery?.id
           ?? SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: local.id)
-        let recovered = Self.recovered(local, id: recoveredID, listID: SnipList.inbox.id)
-        if priorRecovery != nil, sourceSnipIDs.contains(recoveredID) {
+        if priorRecovery != nil {
           adjustedSnips.remove(at: index)
         } else {
-          adjustedSnips[index] = recovered
-          if priorRecovery != nil { replacingSnips.insert(recoveredID) }
+          adjustedSnips[index] = Self.recovered(local, id: recoveredID, listID: SnipList.inbox.id)
         }
         recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
@@ -397,9 +401,10 @@ extension CloudFullSyncPersistence {
       }
       var attachments = local.attachments
       if basis.dormant == nil {
-        let localAttachmentIDs = Set(attachments.map(\.id))
+        let sourceAttachmentIDs = Set(attachments.map(\.id))
+          .union(basis.fields?.local.setupSourceAttachmentIDs ?? [])
         for attachment in targetSnips[local.id]?.attachments ?? []
-          where !localAttachmentIDs.contains(attachment.id)
+          where !sourceAttachmentIDs.contains(attachment.id)
         {
           attachments.append(attachment)
           if attachmentData[attachment.id] == nil {
@@ -416,11 +421,12 @@ extension CloudFullSyncPersistence {
         let priorRecovery = Self.acceptedRecovery(
           for: local, listID: listID, target: target.snips, accepted: accepted
         )
-        let recoveredID = priorRecovery?.id
-          ?? SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: local.id)
-        if priorRecovery == nil || !sourceSnipIDs.contains(recoveredID) {
+        if priorRecovery == nil {
+          let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
+            transitionID: transitionID,
+            sourceID: local.id
+          )
           adjustedSnips.append(Self.recovered(local, id: recoveredID, listID: listID))
-          if priorRecovery != nil { replacingSnips.insert(recoveredID) }
         }
         recoveredSourceIDs.insert(local.id)
       }

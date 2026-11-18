@@ -71,9 +71,11 @@ extension SwiftDataSyncModePersistence.Manifest {
       stores[index].setupRetryHistory?.trackedCandidateStoreID != transition.candidateStoreID
     else { return }
     var history = stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
-    if let attempt = transition.sendAttempt, attempt.namespace == namespace {
+    if let attempt = transition.sendAttempt, attempt.namespace == namespace,
+      !attempt.operations.isEmpty
+    {
       history.update(namespace: namespace) { $0.recordLegacySend(attempt.operations) }
-    } else if transition.mayHaveUnidentifiedSetupSend {
+    } else if transition.mayHaveLegacySetupSend {
       history.update(namespace: namespace) { $0.recordUnidentifiedLegacySend() }
     }
     history.trackedCandidateStoreID = transition.candidateStoreID

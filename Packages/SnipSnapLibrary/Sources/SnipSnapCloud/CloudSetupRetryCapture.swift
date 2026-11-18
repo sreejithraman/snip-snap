@@ -4,6 +4,39 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 enum CloudSetupRetryCapture {
+  static func removedAttachmentIDsBySnip(
+    source: SnipLibraryTransferSnapshot,
+    accepted: [CloudAcceptedEntity],
+    evidence: CloudSetupRetryEvidence,
+    namespace: CloudSyncNamespace,
+    dataZone: CloudZoneID
+  ) throws -> [UUID: Set<UUID>] {
+    let acceptedByReference = Dictionary(uniqueKeysWithValues: accepted.map { ($0.reference, $0.identity) })
+    let dormant = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
+    let dormantByReference = Dictionary(uniqueKeysWithValues: dormant.entries
+      .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
+      .map { ($0.reference, $0.identity) })
+    let decoder = JSONDecoder()
+    return source.snips.reduce(into: [:]) { removedBySnip, snip in
+      let reference = CloudEntityReference(kind: .snip, domainID: snip.id)
+      let identity = CloudFullSyncPersistence.storageIdentity(.snip(snip.id, in: dataZone))
+      let key = CloudSetupRetryRecordKey(reference: reference, identity: identity)
+      guard acceptedByReference[reference] == identity,
+        !evidence.requiresRecovery(for: key),
+        let baseline = evidence.baseline(for: key),
+        let local = try? decoder.decode(CloudSnipMergeFields.self, from: baseline.sourceFields),
+        let server = try? decoder.decode(CloudSnipMergeFields.self, from: baseline.serverFields),
+        local.id == snip.id, server.id == snip.id,
+        let prior = local.setupSourceAttachmentIDs
+      else { return }
+      if let dormantIdentity = dormantByReference[reference],
+        evidence.requiresRecovery(for: CloudSetupRetryRecordKey(reference: reference, identity: dormantIdentity))
+      { return }
+      let removed = prior.subtracting(snip.attachments.map(\.id))
+      if !removed.isEmpty { removedBySnip[snip.id] = removed }
+    }
+  }
+
   static func offers(
     for outbound: CloudOutboundBatch,
     source: SnipLibrarySnapshot,
@@ -24,7 +57,9 @@ enum CloudSetupRetryCapture {
         guard sameSnipIdentity(draft.encryptedFields, sourceDraft.encryptedFields) else {
           return nil
         }
-        sourceFields = try encoder.encode(CloudFullSyncPersistence.snipFields(snip, accepted: nil))
+        var fields = CloudFullSyncPersistence.snipFields(snip, accepted: nil)
+        fields.setupSourceAttachmentIDs = Set(snip.attachments.map(\.id))
+        sourceFields = try encoder.encode(fields)
       case .list:
         guard let list = lists[key.reference.domainID] else { return nil }
         sourceFields = try encoder.encode(CloudFullSyncPersistence.listFields(list, updatedAt: .distantPast))

@@ -310,6 +310,45 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     )
   }
 
+  func testLegacyReadyCandidateWithoutSendIDsPreservesRetryEvidenceThroughCancel() async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: Self.binding)
+
+    let tracked = try SwiftDataSyncModePersistence(rootURL: root)
+    let trackedEvidence = await tracked.setupRetryEvidence(namespace: Self.binding)
+    XCTAssertNil(trackedEvidence)
+
+    // A legacy list-only send could return to candidateReady with no send attempt or snip IDs.
+    let manifestURL = root.appendingPathComponent("activation.json")
+    var legacy = try JSONDecoder().decode(
+      SwiftDataSyncModePersistence.Manifest.self,
+      from: Data(contentsOf: manifestURL)
+    )
+    let sourceIndex = try XCTUnwrap(legacy.stores.firstIndex { $0.id == legacy.activeStoreID })
+    legacy.stores[sourceIndex].setupRetryHistory = nil
+    try JSONEncoder().encode(legacy).write(to: manifestURL, options: .atomic)
+
+    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+    try await reopened.cancelPendingICloudEnable()
+    let evidence = await reopened.setupRetryEvidence(namespace: Self.binding)
+    let list = CloudSetupRetryRecordKey(
+      reference: try XCTUnwrap(Self.listOperation.reference),
+      identity: Self.listOperation.recordIdentity
+    )
+    XCTAssertTrue(try XCTUnwrap(evidence).requiresRecovery(for: list))
+
+    let otherGeneration = ICloudSyncNamespaceBinding(
+      scope: Self.binding.scope,
+      accountLineage: Self.binding.accountLineage,
+      generation: UUID(),
+      zones: Self.binding.zones
+    )
+    let otherEvidence = await reopened.setupRetryEvidence(namespace: otherGeneration)
+    XCTAssertNil(otherEvidence)
+  }
+
   func testReopenAtSourceFrozenAwaitsCaptureUntilTheRetryFetchSettles() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }

@@ -24,6 +24,7 @@ private protocol ICloudSyncAdapter: Sendable {
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
         retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation
     func clearRetryableEvents(_ keys: Set<String>) async throws
@@ -93,6 +94,7 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
         retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation {
         return .legacy(acceptedTextBySnipID: try await raw.acceptedSnipTextValues())
@@ -210,12 +212,14 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
         targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
         retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation {
         if let plan = try await raw.makeReenableApplyPlan(
             source: source,
             transitionID: transitionID,
             targetRevision: targetRevision,
+            priorSeedProvenance: priorSeedProvenance,
             retryEvidence: retryEvidence
         ) {
             return .fullRecord(plan)
@@ -535,10 +539,18 @@ package actor ICloudSyncModeCoordinator {
                 } else {
                     retryEvidence = nil
                 }
+                if payloadZone != nil, let retryEvidence, !retryEvidence.isEmpty {
+                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
+                        storeID: transition.candidateStoreID,
+                        setupRetry: (source, retryEvidence)
+                    )
+                    try await requireMatchingAccount()
+                }
                 switch try await bridge.prepareModeMerge(
                     source: source,
                     transitionID: transition.id,
                     targetRevision: targetRevision,
+                    priorSeedProvenance: transition.seedProvenance,
                     retryEvidence: retryEvidence
                 ) {
                 case .fullRecord(let plan):
@@ -764,7 +776,10 @@ package actor ICloudSyncModeCoordinator {
         }
     }
 
-    private func preserveIsolatedAttachmentsForLocalCopy(storeID: UUID) async throws -> Bool {
+    private func preserveIsolatedAttachmentsForLocalCopy(
+        storeID: UUID,
+        setupRetry: (source: SnipLibraryTransferSnapshot, evidence: CloudSetupRetryEvidence)? = nil
+    ) async throws -> Bool {
         guard let payloadZone else { return false }
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let coordinator = CloudAttachmentTransferCoordinator(
@@ -774,6 +789,16 @@ package actor ICloudSyncModeCoordinator {
             transport: makeTransport(),
             maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
         )
+        if let setupRetry {
+            let accepted = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            return try await coordinator.preserveAllAttachmentsForLocalCopy(
+                excluding: Set(setupRetry.source.attachmentData.keys),
+                removedAttachmentIDsBySnip: CloudSetupRetryCapture.removedAttachmentIDsBySnip(
+                    source: setupRetry.source, accepted: accepted.readyEntities,
+                    evidence: setupRetry.evidence, namespace: namespace, dataZone: textZone
+                )
+            )
+        }
         return try await coordinator.preserveAllAttachmentsForLocalCopy()
     }
 
