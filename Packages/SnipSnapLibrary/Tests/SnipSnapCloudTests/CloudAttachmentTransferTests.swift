@@ -1505,6 +1505,75 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
   }
 
+  func testUnknownMetadataSavePreservesAnAlreadyQueuedPayload() async throws {
+    let owner = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    try await owner.sync.sync()
+    let published = try await snapshot(owner.library, owner.namespace)
+    let original = try XCTUnwrap(published.publications.first)
+    let durableSource = try XCTUnwrap(original.localSourceURL)
+    let oldMetadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let oldPayload = original.metadata.payloadIdentity
+
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
+    )
+    try await peer.sync.fetchRemote()
+    try await keepAttachments([], ofSnip: peer.snipID, in: peer.library)
+    try await peer.sync.sendPending()
+    let peerStorage = try await snapshot(peer.library, peer.namespace)
+    XCTAssertEqual(peerStorage.cleanups.map(\.identity), [oldPayload])
+
+    try await renameAttachment(ofSnip: owner.snipID, to: "renamed.txt", in: owner.library)
+    let frozen = try await owner.store.pendingChanges()
+    XCTAssertTrue(frozen.operations.contains { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.id == oldMetadataID && draft.base != nil
+    })
+    let sent = try await owner.transport.send(frozen)
+    XCTAssertTrue(sent.items.contains(.unknownItem(oldMetadataID)))
+
+    let bytes = Data("new bytes while the rename is in flight".utf8)
+    try bytes.write(to: durableSource)
+    _ = try await owner.store.pendingChanges()
+    let beforeRemap = try await snapshot(owner.library, owner.namespace)
+    let queued = try publication(of: original.metadata.attachmentID, in: beforeRemap)
+    let queuedPayload = queued.metadata.payloadIdentity
+    let queuedSource = try XCTUnwrap(queued.sourceURL)
+    XCTAssertNotEqual(queuedPayload, oldPayload)
+    XCTAssertFalse(queued.payloadAccepted)
+    XCTAssertEqual(try Data(contentsOf: queuedSource), bytes)
+
+    try await owner.store.stage(.sent(sent), outbound: frozen)
+    try await owner.store.applyStaged(sent.id)
+    try await owner.transport.confirmApplied(sent.id)
+
+    let remapped = try await snapshot(owner.library, owner.namespace)
+    let replacement = try XCTUnwrap(remapped.publications.first)
+    XCTAssertNotEqual(replacement.metadata.attachmentID, original.metadata.attachmentID)
+    XCTAssertEqual(replacement.metadata.payloadIdentity, queuedPayload)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertEqual(replacement.sourceURL, queuedSource)
+    XCTAssertEqual(try Data(contentsOf: queuedSource), bytes)
+    XCTAssertEqual(replacement.localSourceURL, durableSource)
+    XCTAssertEqual(try Data(contentsOf: durableSource), bytes)
+    let cleanup = try XCTUnwrap(remapped.cleanups.first(where: { $0.identity == oldPayload }))
+    XCTAssertEqual(cleanup.blockedByAttachmentID, replacement.metadata.attachmentID)
+
+    try await owner.sync.sendPending()
+
+    let queuedID = CloudAttachmentRecordCodec.recordID(queuedPayload)
+    let serverAsset = await owner.server.asset(for: queuedID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(serverAsset)), bytes)
+    let oldPayloadRecord = await owner.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(oldPayload))
+    XCTAssertNotNil(oldPayloadRecord, "Old payload cleanup must wait for the replacement metadata.")
+  }
+
   func testRemovingARemappedAttachmentStillCleansUpBothOldPayloads() async throws {
     let client = try await makeAttachmentClient(fileNames: ["original"])
     defer { try? FileManager.default.removeItem(at: client.root) }
