@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 282
+
+## Mac
+
+- Let Copy, Done, and Send finish during attachment status refresh
+
+## iOS
+
+- Let Copy, Done, and Send finish during attachment status refresh
