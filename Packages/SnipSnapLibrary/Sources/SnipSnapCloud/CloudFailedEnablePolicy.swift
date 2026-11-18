@@ -591,6 +591,15 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
   ) throws -> Set<FailedEnableReference> {
     guard let evidence = input.evidence else { throw FailedEnableEvidenceError.reviewRequired }
     if capture.records.contains(where: {
+      $0.reference.kind == .list && $0.preparation.classification == .deleteRecovery
+        && $0.preparation.baseKind == .checkedTurnOff && !$0.offlineChanged.isEmpty
+    }) {
+      try validateExposure(capture: capture, candidate: input.candidate,
+        evidence: evidence, requiresAccepted: requiresAccepted)
+      return [try validateDeletedListExposure(input, capture: capture, evidence: evidence,
+        requiresAccepted: requiresAccepted)]
+    }
+    if capture.records.contains(where: {
       $0.preparation.classification == .deleteRecovery && $0.preparation.baseKind == .checkedTurnOff
         && !$0.offlineChanged.isEmpty
     }) {
@@ -606,6 +615,198 @@ struct CloudFailedEnablePolicy: FailedEnableSemantics {
       $0.preparation.classification == .realConflict && $0.preparation.baseKind == .checkedTurnOff
     }) else { return absent }
     return absent.union([try validateSameFieldConflictPublication(input, capture: capture, evidence: evidence)])
+  }
+
+  /// The original snip returns to its already accepted Inbox value, so no operation is admitted.
+  private func validateDeletedListExposure(_ input: FailedEnableReviewRead,
+    capture: FailedEnableCapture, evidence: FailedEnableInstalledEvidence, requiresAccepted: Bool
+  ) throws -> FailedEnableReference {
+    let transition = input.transition
+    let source = input.source
+    let candidate = input.candidate
+    let sourceID = FailedEnableEncoding.uuid(transition.sourceStoreID)
+    let candidateID = FailedEnableEncoding.uuid(transition.candidateStoreID)
+    let binding = FailedEnableBinding(namespace.binding)
+    let namespaceKey = namespace.namespaceKey.rawValue
+    let inbox = CloudEntityReference(kind: .list, domainID: SnipList.inboxID)
+    let state = candidate.storage.namespaceState
+    // At firstSendStarted the caller is admitting an actual outbound batch. Reject
+    // that whole batch before arming, including saves/deletes of the list by either identity.
+    guard transition.phase == (requiresAccepted ? .firstSendComplete : .enrollmentApproved),
+      !capture.armed, transition.sendAttempt == nil,
+      transition.namespace == namespace.binding, transition.targetKind == .iCloudSync,
+      transition.syncProtocol == .fullRecordV1,
+      let freeze = transition.freezeToken, freeze.sourceStoreID == transition.sourceStoreID,
+      freeze.revision == source.snapshot.revision,
+      capture.syncProtocol == .fullRecordV1, capture.predecessors.isEmpty,
+      capture.transitionID == FailedEnableEncoding.uuid(transition.id), capture.candidateStoreID == candidateID,
+      capture.freeze.id == FailedEnableEncoding.uuid(freeze.id),
+      capture.freeze.sourceRevision == String(freeze.revision),
+      try capture.sourceDigest == source.sourceDigest(sourceID: transition.sourceStoreID),
+      evidence.purpose == .installedEvidence, evidence.sourceStoreID == sourceID,
+      evidence.namespaces.count == 1, let group = evidence.namespaces.first,
+      group.binding == binding, group.captures == [capture], group.alternatives.isEmpty, group.reviews.isEmpty,
+      evidence.blobs.isEmpty, source.snapshot.attachmentData.isEmpty, candidate.snapshot.attachmentData.isEmpty,
+      evidence.transfers.count == 2, let off = evidence.transfers.first(where: { $0.kind == .turnOff }),
+      off.state == .checked, off.namespace == binding, off.destinationStoreID == sourceID,
+      off.sourceStoreID != sourceID, off.sourceStoreID != candidateID, off.sourceCaptureIDs.isEmpty,
+      off.conflicts.isEmpty, off.recoveryDescriptors.isEmpty,
+      off.dormantDigest == FailedEnableEncoding.digest(source.snapshot.opaqueSyncStatePayload),
+      try off.planDigest == FailedEnableEncoding.digest(off.outputs),
+      let transfer = evidence.transfers.first(where: { $0.kind == .candidate }),
+      transfer.state == .checked, transfer.namespace == binding, transfer.sourceStoreID == sourceID,
+      transfer.destinationStoreID == candidateID, transfer.sourceCaptureIDs == [capture.id],
+      let receipt = candidate.reenableReceiptDigest, FailedEnableEncoding.hex(receipt) == transfer.planDigest,
+      transfer.dormantDigest == FailedEnableEncoding.digest(candidate.snapshot.opaqueSyncStatePayload),
+      candidate.snapshot.opaqueSyncStatePayload == source.snapshot.opaqueSyncStatePayload,
+      try candidate.images() == transfer.outputs,
+      transfer.conflicts.isEmpty, candidate.storage.conflicts.isEmpty, candidate.storage.pendingDeletes.isEmpty,
+      !candidate.hasPendingBatches, state.storageVersion == 1, state.phase == .active, !state.zoneCreationPending,
+      let inventory = state.initialFetchInventory, inventory.canProveAbsence,
+      let data = candidate.engineState,
+      let engine = try? JSONDecoder().decode(CloudEngineStateEnvelope.self, from: data),
+      engine.namespace == namespace, !engine.requiresInitialFetch,
+      let deleted = capture.records.first(where: { $0.preparation.classification == .deleteRecovery }),
+      deleted.preparation.baseKind == .checkedTurnOff, !deleted.offlineChanged.isEmpty,
+      case .list(let listImage)? = deleted.source.value,
+      source.snapshot.snips.count == 1, let moved = source.snapshot.snips.first, moved.attachments.isEmpty
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    let list = try listImage.domain
+    let listReference = CloudEntityReference(kind: .list, domainID: list.id)
+    let listIdentity = Self.identity(listReference, zone: dataZone)
+    let snipReference = CloudEntityReference(kind: .snip, domainID: moved.id)
+    let survivors: Set<CloudEntityReference> = [inbox, snipReference]
+    let references = survivors.union([listReference])
+    let sourceImages = try source.images()
+    var inInbox = moved
+    inInbox.listID = inbox.domainID
+    let inboxImage = FailedEnableImage.list(FailedEnableListImage(.inbox))
+    let snipImage = FailedEnableImage.snip(try FailedEnableSnipImage(inInbox, attachmentData: [:]))
+    guard listReference != inbox, try deleted.reference.domain == listReference,
+      deleted.identity.domain == listIdentity, moved.listID == list.id,
+      source.snapshot.lists.count == 2, source.snapshot.lists.contains(.inbox), source.snapshot.lists.contains(list),
+      candidate.snapshot.lists == [.inbox], candidate.snapshot.snips == [inInbox],
+      capture.records.count == 3, try Set(capture.records.map { try $0.reference.domain }) == references,
+      capture.records.compactMap({ $0.source.value }) == sourceImages,
+      off.outputs.count == 3, off.outputs.contains(inboxImage), off.outputs.contains(snipImage),
+      let priorListImage = off.outputs.first(where: { $0.reference == deleted.reference }),
+      inventory.observed == Set(survivors.map({ Self.identity($0, zone: dataZone) })),
+      Set(candidate.storage.readyEntities.map(\.reference)) == survivors,
+      transition.approvedSnipIDs.isSubset(of: [moved.id]),
+      candidate.storage.enrolledEntities == Set(transition.approvedSnipIDs.map {
+        CloudEntityReference(kind: .snip, domainID: $0)
+      }).union([inbox]), state.revision > 0
+    else { throw FailedEnableEvidenceError.reviewRequired }
+
+    let entries = try CloudDormantAcceptedBaseBundle.decode(source.snapshot.opaqueSyncStatePayload).entries
+    guard entries.count == 3, Set(entries.map(\.reference)) == references,
+      entries.allSatisfy({ $0.namespaceKey == namespaceKey }) else { throw FailedEnableEvidenceError.reviewRequired }
+    let decoder = JSONDecoder()
+    let fetchedRevision = state.revision - 1  // Apply does not advance enrollment; approval does once.
+    for record in capture.records {
+      let reference = try record.reference.domain
+      let identity = Self.identity(reference, zone: dataZone)
+      guard record.identity.domain == identity, record.sourceMembership == .present, record.originalAcceptedExists,
+        record.preparation.knownFields == Self.keys(reference.kind), record.preparation.reason.value == nil,
+        record.preparation.conflictFields.isEmpty, record.preparation.recoveryIdentities.isEmpty,
+        record.unqualifiedObservation.value == nil,
+        let entry = entries.first(where: { $0.reference == reference }), entry.identity == identity
+      else { throw FailedEnableEvidenceError.reviewRequired }
+      let envelope = try decoder.decode(CloudAcceptedEntityInput.self, from: entry.payload)
+      let ancestor = Self.entity(envelope)
+      let fields = try Self.fields(ancestor, namespace: namespace.binding)
+      let presence = try Self.presence(ancestor)
+      guard envelope.reference == reference, envelope.identity == identity,
+        presence.keys.sorted() == Self.keys(reference.kind), presence.values.allSatisfy({ $0 == .value }),
+        record.preparation.normalizedLocal.acceptedPresence == presence,
+        record.preparation.normalizedLocal.defaults.isEmpty
+      else { throw FailedEnableEvidenceError.reviewRequired }
+      if reference == listReference {
+        guard record.preparation.baseDigest.value == FailedEnableEncoding.digest(entry.payload),
+          record.preparation.fetchedDigest.value == nil, record.observedAccepted.value == nil,
+          record.preparation.normalizedLocal.immutableOverrides.value == nil,
+          record.preparation.value.value?.fields == .absent,
+          record.preparation.value.value?.presence.isEmpty == true,
+          try Self.same(fields, Self.unbasedSource(priorListImage)),
+          try Self.changedFields(base: fields, local: Self.unbasedSource(.list(listImage))) == record.offlineChanged
+        else { throw FailedEnableEvidenceError.reviewRequired }
+        let prior = try CloudFullSyncPersistence.listFields(CloudFullSyncPersistence.listRecord(ancestor))
+        let recovered = CloudFullSyncPersistence.listFields(list, updatedAt: prior.updatedAt)
+        try validateDeletedListRows(candidate, transfer: transfer, transitionID: transition.id,
+          movedSnipID: moved.id, recoveredList: recovered)
+      } else {
+        let image = reference == inbox ? inboxImage : snipImage
+        guard record.preparation.classification == .equalFetched,
+          record.preparation.baseKind == (reference == inbox ? .equalFetched : .checkedTurnOff),
+          let observation = record.observedAccepted.value,
+          let row = candidate.storage.readyEntities.first(where: { $0.reference == reference }),
+          row.identity == identity, row.schemaVersion == envelope.schemaVersion,
+          row.dependencyListID == envelope.dependencyListID,
+          row.shadowData == envelope.shadowData, row.systemFields == envelope.systemFields,
+          try Self.fields(row, namespace: namespace.binding) == fields, try Self.presence(row) == presence,
+          try Self.same(fields, Self.unbasedSource(image)),
+          record.preparation.value.value?.fields == fields, record.preparation.value.value?.presence == presence,
+          try qualifies(record, observation: observation, candidate: candidate),
+          try matchesConflictObservation(observation, row: row, candidateID: candidateID, revision: fetchedRevision),
+          try record.preparation.fetchedDigest.value == Self.acceptedRevisionDigest(row, namespaceRevision: fetchedRevision)
+        else { throw FailedEnableEvidenceError.reviewRequired }
+        if reference == snipReference {
+          guard record.offlineChanged == ["placement"],
+            record.preparation.baseDigest.value == FailedEnableEncoding.digest(entry.payload),
+            record.preparation.normalizedLocal.immutableOverrides.value == FailedEnableImmutableOverrides(
+              requestID: FailedEnableEncoding.uuid(moved.requestID),
+              createdAt: FailedEnableEncoding.date(moved.createdAt), originRaw: moved.origin.rawValue)
+          else { throw FailedEnableEvidenceError.reviewRequired }
+        } else if !record.offlineChanged.isEmpty {
+          throw FailedEnableEvidenceError.reviewRequired
+        }
+      }
+    }
+    return deleted.reference
+  }
+
+  private func validateDeletedListRows(_ candidate: FailedEnableStoreRead, transfer: FailedEnableTransfer,
+    transitionID: UUID, movedSnipID: UUID, recoveredList: CloudListMergeFields
+  ) throws {
+    guard candidate.recoveryRows.count == 2, transfer.recoveryDescriptors.count == 2 else {
+      throw FailedEnableEvidenceError.reviewRequired
+    }
+    let decoder = JSONDecoder()
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let namespaceKey = namespace.namespaceKey.rawValue
+    let links = try transfer.recoveryDescriptors.map { try decoder.decode(CloudFullRecoveryInput.self, from: $0) }
+    let expected: [(CloudFullRecoveryKind, UUID, UUID)] = [
+      (.modeDeletedListPlacement, movedSnipID, UUID(uuidString: "22222222-2222-5222-8222-222222222222")!),
+      (.modeRecoveredList, recoveredList.id, UUID(uuidString: "33333333-3333-5333-8333-333333333333")!),
+    ]
+    for (kind, sourceID, salt) in expected {
+      let batchID = SnipLibraryTransferPlanner.derivedUUID(
+        transitionID: SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: salt),
+        sourceID: sourceID)
+      let key = "full-recovery-\(batchID.uuidString.lowercased())"
+      guard let link = links.first(where: { $0.kind == kind }), link.storageVersion == 1,
+        link.batchID == batchID, link.namespaceKey == namespaceKey, link.outboundData.isEmpty,
+        let row = candidate.recoveryRows.first(where: { $0.eventKey == key }), row.id == "\(namespaceKey)|\(key)",
+        try transfer.recoveryDescriptors.contains(FailedEnableEncoding.json(link)),
+        try row.payload == CloudWirePayloadEnvelope(format: .fullRecordV1, payload: encoder.encode(link)).encoded(),
+        let body = try JSONSerialization.jsonObject(with: link.resultData) as? [String: Any],
+        body["storageVersion"] as? Int == 1, body["sourceID"] as? String == sourceID.uuidString,
+        body["deletedListID"] as? String == recoveredList.id.uuidString
+      else { throw FailedEnableEvidenceError.reviewRequired }
+      var keys: Set<String> = ["storageVersion", "sourceID", "deletedListID"]
+      if kind == .modeRecoveredList {
+        keys.insert("recoveredList")
+        var metadataKeys: Set<String> = ["id", "desiredName", "systemImage", "orderKey", "updatedAt"]
+        if recoveredList.color != nil { metadataKeys.insert("colorPreset") }
+        guard let metadata = body["recoveredList"] as? [String: Any],
+          Set(metadata.keys) == metadataKeys,
+          try decoder.decode(CloudListMergeFields.self, from: JSONSerialization.data(withJSONObject: metadata)) == recoveredList
+        else { throw FailedEnableEvidenceError.reviewRequired }
+      }
+      guard Set(body.keys) == keys else { throw FailedEnableEvidenceError.reviewRequired }
+    }
   }
 
   /// A checked turn-off whose edited snip is already copied into ordinary Inbox recovery.
