@@ -1727,3 +1727,317 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     case injected
   }
 }
+
+extension SnipLibraryBehaviorTests {
+  func testReplacementWhileSelectedRawReadEntersItsFileLockRejectsOldApplication() async throws {
+    let fixture = try await CheckedPublicationFixture.make()
+    let gate = CheckedPublicationGate("selected raw checked read requested file protection")
+    let reader = CheckedPublicationWork {
+      try await SnipStoreBackgroundActivity.$runner.withValue(gate.pauseOnSecondAccess) {
+        try await fixture.prepare()
+      }
+    }
+    var replacement: CheckedPublicationWork<SyncModeStore>?
+    let next = Snip(id: UUID(), content: "Replacement store content", origin: .quickEntry)
+    let namespace = ICloudSyncNamespaceBinding(scope: "private", accountLineage: "checked-read-race",
+      generation: UUID(), zones: [.init(name: "race-metadata", ownerName: "owner")])
+    do {
+      try await gate.waitUntilEntered()
+      let writer = CheckedPublicationWork {
+        let selected = try await fixture.persistence.activateEmptyCollection(namespace: namespace, returningTarget: ())
+        let newLibrary = fixture.persistence.library(boundTo: selected)
+        _ = try await newLibrary.perform(.restore(snips: [next]), sortedBy: .manual)
+        return selected
+      }
+      replacement = writer
+      let selected = try await writer.value("replacement commit and new durable content while the raw read is held")
+      XCTAssertNotEqual(selected.id, fixture.selected.id)
+      XCTAssertEqual(selected.namespace, namespace)
+
+      gate.release()
+      let stale = try await reader.value("original selected-store read returned")
+      fixture.assertRead(stale.read, store: fixture.selected, snip: fixture.target)
+      try fixture.assertRejected(stale)
+      try await fixture.assertOriginalCommandOwner()
+      let retired = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
+      let oldDurable = try await retired.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(oldDurable.snips.map(\.id), [fixture.target.id])
+      XCTAssertEqual(oldDurable.snips.map(\.content), ["Selected store content"])
+      try await fixture.installFreshAndVerifyDurableCommand(store: selected, snip: next)
+    } catch {
+      gate.release()
+      let deadline = Date().addingTimeInterval(30)
+      reader.cancel()
+      replacement?.cancel()
+      await reader.join(until: deadline)
+      await replacement?.join(until: deadline)
+      throw error
+    }
+  }
+
+  func testRawOpenRepairHookRejectsPreparedApplicationBeforeAnExpiredSave() async throws {
+    let fixture = try await CheckedPublicationFixture.make()
+    let stale = try await fixture.prepareForMetadataRepair()
+    let publication = try XCTUnwrap(stale.read.publication)
+    let gate = CheckedPublicationGate("raw open repair invoked its pre-save hook under the file lock")
+    let activity = TestStoreActivity()
+    let repair = CheckedPublicationWork {
+      try SnipStoreBackgroundActivity.$runner.withValue(activity.runner) {
+        try SwiftDataSnipLibrary(storeURL: fixture.storeURL, beforeOpenRepairSave: {
+          publication.revoke()
+          gate.hold()
+          activity.expire()
+        })
+      }
+    }
+    do {
+      try await gate.waitUntilEntered()
+      try fixture.assertRejected(stale)
+      await fixture.assertOriginalUndo()
+      gate.release()
+      do {
+        _ = try await repair.value("expired raw open exited without saving")
+        XCTFail("The activity expires before the constructor can save the repair")
+      } catch is CancellationError {}
+      let savedDespiteExpiry = try await checkedRepairHasMetadata(for: fixture.target.id, in: fixture.raw)
+      XCTAssertFalse(savedDespiteExpiry, "The pre-save callback ran before any durable backfill")
+      try await fixture.assertOriginalCommandOwner()
+
+      let reopened = try await fixture.persistence.libraryForTransition(storeID: fixture.selected.id)
+      let repaired = try await checkedRepairHasMetadata(for: fixture.target.id, in: reopened)
+      XCTAssertTrue(repaired)
+      try await fixture.installFreshAndVerifyDurableCommand(store: fixture.selected, snip: fixture.target)
+    } catch {
+      gate.release()
+      repair.cancel()
+      await repair.join(until: Date().addingTimeInterval(30))
+      throw error
+    }
+  }
+
+  func testManagedOpenRepairRevokesPreparedApplicationAndFreshReadInstalls() async throws {
+    let fixture = try await CheckedPublicationFixture.make()
+    let stale = try await fixture.prepareForMetadataRepair()
+
+    let reopened = try await fixture.persistence.libraryForTransition(storeID: fixture.selected.id)
+
+    let repaired = try await checkedRepairHasMetadata(for: fixture.target.id, in: reopened)
+    XCTAssertTrue(repaired, "The managed factory repaired the selected store")
+    try fixture.assertRejected(stale)
+    try await fixture.assertOriginalCommandOwner()
+    try await fixture.installFreshAndVerifyDurableCommand(store: fixture.selected, snip: fixture.target)
+  }
+}
+
+private struct CheckedPublicationFixture: Sendable {
+  let displayedURL: URL
+  let storeURL: URL
+  let persistence: SwiftDataSyncModePersistence
+  let managed: any SnipLibrary
+  let raw: SwiftDataSnipLibrary
+  let selected: SyncModeStore
+  let displayed: Snip
+  let target: Snip
+  let session: SavedSnipsSession
+  let undo: SavedSnipsDoneUndo
+
+  static func make() async throws -> Self {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CheckedPublication-\(UUID())")
+    print("OFFLINE-CHECKED-APPLICATION retained unique root: \(root.path)")
+    let displayedURL = root.appendingPathComponent("displayed.store")
+    let displayed = Snip(id: UUID(), content: "Displayed original content", origin: .quickEntry)
+    let original = try SwiftDataSnipLibrary(storeURL: displayedURL)
+    _ = try await original.perform(.restore(snips: [displayed]), sortedBy: .manual)
+    let session = SavedSnipsSession(library: original)
+    let done = try await session.setDone(ids: [displayed.id], done: true, sortedBy: .manual)
+    let undo = try XCTUnwrap(done.undo)
+
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root.appendingPathComponent("mode"))
+    let selected = try await persistence.snapshot().activeStore
+    let managed = try await persistence.activeLibrary()
+    let target = Snip(id: UUID(), content: "Selected store content", origin: .quickEntry)
+    _ = try await managed.perform(.restore(snips: [target]), sortedBy: .manual)
+    let raw = try await persistence.libraryForTransition(storeID: selected.id)
+    let storeURL = await persistence.storeFileURL(selected)
+    return Self(displayedURL: displayedURL, storeURL: storeURL, persistence: persistence,
+      managed: managed, raw: raw, selected: selected, displayed: displayed, target: target,
+      session: session, undo: undo)
+  }
+
+  func prepare() async throws -> SavedSnipsSession.PreparedApplication {
+    try await session.prepareLibraryApplication(managed, recoveryScope: nil, replacing: true, sortedBy: .manual)
+  }
+
+  func prepareForMetadataRepair() async throws -> SavedSnipsSession.PreparedApplication {
+    let prepared = try await prepare()
+    assertRead(prepared.read, store: selected, snip: target)
+    let removed = try await checkedRepairHasMetadata(for: target.id, in: raw, removing: true)
+    XCTAssertTrue(removed)
+    let missing = try await checkedRepairHasMetadata(for: target.id, in: raw)
+    XCTAssertFalse(missing)
+    // The fixture edit leaves the original capability live until the open path owns revocation.
+    try XCTUnwrap(prepared.read.publication).beginApplication().finish()
+    return prepared
+  }
+
+  func assertRead(_ read: SnipLibraryReadObservation, store: SyncModeStore, snip: Snip) {
+    XCTAssertEqual(read.source?.storeID, store.id)
+    XCTAssertEqual(read.source?.storageMode, store.kind == .localOnly ? .localOnly : .iCloudSync)
+    XCTAssertEqual(read.source?.namespaceKey, store.namespace?.namespaceKey.rawValue)
+    XCTAssertEqual(read.snapshot.snips.map(\.id), [snip.id])
+    XCTAssertEqual(read.snapshot.snips.map(\.content), [snip.content])
+  }
+
+  func assertRejected(_ prepared: SavedSnipsSession.PreparedApplication) throws {
+    let publication = try XCTUnwrap(prepared.read.publication, "The original selection really had publication authority")
+    do {
+      let closing = try publication.beginApplication()
+      defer { closing.finish() }
+      XCTFail("The stale observation still grants a publication close")
+      try prepared.install(within: closing)
+    } catch SnipLibraryReadPublicationError.revoked { return }
+    XCTFail("The stale preparation installed its command owner")
+    throw CheckedPublicationFailure.staleApplicationInstalled
+  }
+
+  func assertOriginalUndo() async {
+    let retained = await session.retainsUndo(token: undo.id)
+    XCTAssertTrue(retained)
+  }
+
+  func assertOriginalCommandOwner() async throws {
+    await assertOriginalUndo()
+    let original = try await session.checkedRead(sortedBy: .manual)
+    XCTAssertNil(original.source)
+    XCTAssertEqual(original.snapshot.snips.map(\.id), [displayed.id])
+    XCTAssertTrue(try XCTUnwrap(original.snapshot.snips.first).isDone)
+    _ = try await session.performUserCommand(.add(content: "Command on displayed original", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    try await assertOriginalDurable()
+  }
+
+  func installFreshAndVerifyDurableCommand(store: SyncModeStore, snip: Snip) async throws {
+    let fresh = try await session.replaceLibraryChecked(managed,
+      recoveryScope: store.namespace.map { SnipRecoveryScope($0.namespaceKey.rawValue) }, sortedBy: .manual)
+    assertRead(fresh.read, store: store, snip: snip)
+    let installed = try await session.checkedRead(sortedBy: .manual)
+    assertRead(installed, store: store, snip: snip)
+    _ = try await session.performUserCommand(.add(content: "Command after fresh checked install", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let url = await persistence.storeFileURL(store)
+    let reopened = try SwiftDataSnipLibrary(storeURL: url)
+    let durable = try await reopened.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(durable.snips.map(\.content)), [snip.content, "Command after fresh checked install"])
+    XCTAssertEqual(durable.snips.first { $0.id == snip.id }?.content, snip.content)
+    try await assertOriginalDurable()
+  }
+
+  private func assertOriginalDurable() async throws {
+    let reopened = try SwiftDataSnipLibrary(storeURL: displayedURL)
+    let durable = try await reopened.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(Set(durable.snips.map(\.content)), ["Displayed original content", "Command on displayed original"])
+    XCTAssertEqual(durable.snips.first { $0.id == displayed.id }?.isDone, true)
+  }
+}
+
+private func checkedRepairHasMetadata(for snipID: UUID, in library: isolated SwiftDataSnipLibrary,
+                                      removing: Bool = false) throws -> Bool {
+  let lock = try SnipStoreFileLock(url: library.lockURL)
+  defer { withExtendedLifetime(lock) {} }
+  let context = SwiftDataSnipLibrary.makeContext(container: try XCTUnwrap(library.container))
+  let metadataID = StoredLibraryMetadataRecord.identifier(kind: .snip, domainID: snipID)
+  guard let row = try context.fetch(FetchDescriptor<StoredLibraryMetadataRecord>(
+    predicate: #Predicate<StoredLibraryMetadataRecord> { $0.id == metadataID }
+  )).first else { return false }
+  if removing {
+    context.delete(row)
+    try lock.check()
+    try context.save()
+  }
+  return true
+}
+
+private enum CheckedPublicationFailure: Error {
+  case deadline, staleApplicationInstalled
+}
+
+private final class CheckedPublicationGate: @unchecked Sendable {
+  private let entered: XCTestExpectation
+  private let condition = NSCondition()
+  private var heldOnce = false
+  private var released = false
+  private var accesses = 0
+
+  init(_ label: String) { entered = XCTestExpectation(description: label) }
+
+  var pauseOnSecondAccess: SnipStoreBackgroundActivity.Runner {
+    { [self] _ in
+      condition.lock()
+      accesses += 1
+      let shouldHold = accesses == 2
+      condition.unlock()
+      // The first access opens the selected library. The second enters its checkedSnapshot lock.
+      if shouldHold { hold() }
+      return {}
+    }
+  }
+
+  func hold() {
+    condition.lock()
+    defer { condition.unlock() }
+    guard !heldOnce else { return }
+    heldOnce = true
+    entered.fulfill()
+    while !released { condition.wait() }
+  }
+
+  func waitUntilEntered() async throws {
+    guard await XCTWaiter.fulfillment(of: [entered], timeout: 30) == .completed else {
+      XCTFail("Never reached \(entered.description)")
+      throw CheckedPublicationFailure.deadline
+    }
+  }
+
+  func release() {
+    condition.lock()
+    defer { condition.unlock() }
+    guard !released else { return }
+    released = true
+    condition.broadcast()
+  }
+}
+
+private struct CheckedPublicationWork<Output: Sendable> {
+  private let task: Task<Output, any Error>
+  private let completed: XCTestExpectation
+  private let joined: XCTestExpectation
+
+  init(_ operation: @escaping @Sendable () async throws -> Output) {
+    let completed = XCTestExpectation(description: "publication-race worker completed")
+    let joined = XCTestExpectation(description: "publication-race cleanup can join worker")
+    self.completed = completed
+    self.joined = joined
+    task = Task.detached {
+      defer { completed.fulfill(); joined.fulfill() }
+      return try await operation()
+    }
+  }
+
+  func value(_ phase: String) async throws -> Output {
+    guard await XCTWaiter.fulfillment(of: [completed], timeout: 30) == .completed else {
+      XCTFail("Publication-race operation did not complete: \(phase)")
+      throw CheckedPublicationFailure.deadline
+    }
+    return try await task.value
+  }
+
+  func cancel() { task.cancel() }
+
+  func join(until deadline: Date) async {
+    guard await XCTWaiter.fulfillment(of: [joined], timeout: max(0, deadline.timeIntervalSinceNow)) == .completed else {
+      XCTFail("Publication-race cleanup could not join worker. Its captured resources and root are retained.")
+      return
+    }
+    _ = await task.result
+  }
+}
