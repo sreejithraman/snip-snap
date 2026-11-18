@@ -3,11 +3,13 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  package func applyCloudAttachmentTransitions(
+  func applyCloudAttachmentTransitions(
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
+    resolveMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
     context: ModelContext
-  ) throws {
+  ) throws -> Set<UUID> {
+    guard !transitions.isEmpty else { return [] }
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
@@ -26,6 +28,10 @@ extension SwiftDataSnipLibrary {
     var materializedAttachmentIDs: Set<UUID> = []
     for transition in transitions {
       switch transition {
+      case .remoteMetadataAccepted(let metadata, _, _, _) where resolveMetadata != nil:
+        materializedAttachmentIDs.insert(metadata.attachmentID)
+      case .metadataConflict(let attachmentID, _, _, _) where resolveMetadata != nil:
+        materializedAttachmentIDs.insert(attachmentID)
       case .metadataUnknown(let attachmentID, _, let replacementAttachmentID, _):
         materializedAttachmentIDs.insert(attachmentID)
         materializedAttachmentIDs.insert(replacementAttachmentID)
@@ -72,6 +78,23 @@ extension SwiftDataSnipLibrary {
     ).mapValues { rows in
       rows.map(\.attachmentID).sorted { $0.uuidString < $1.uuidString }
     }
+    var refreshedAttachmentIDs: Set<UUID> = []
+
+    func liveAttachment(
+      for row: StoredCloudAttachmentPublication
+    ) -> (StoredAttachmentRecord, StoredSnipAttachmentReference)? {
+      guard let attachment = storedAttachments[row.attachmentID]?.first,
+        let reference = storedReferences[row.attachmentID]?.first(where: { $0.snipID == row.snipID }),
+        attachment.byteCount == row.byteCount
+      else { return nil }
+      if let source = row.lifecycle.localSourceRelativePath {
+        guard attachment.relativePath == source else { return nil }
+      } else {
+        guard attachment.relativePath.hasPrefix("CloudDownloads/") else { return nil }
+      }
+      return (attachment, reference)
+    }
+
     func removeCache(for attachmentID: UUID) {
       for row in cacheByAttachment.removeValue(forKey: attachmentID) ?? [] {
         context.delete(row)
@@ -114,6 +137,32 @@ extension SwiftDataSnipLibrary {
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
+          if case .fetched(let base)? = resolveMetadata?(metadataIdentity, row.metadataShadowData, shadow),
+            row.lifecycle.isPayloadAccepted,
+            row.metadata.namesSamePayload(as: metadata), base.namesSamePayload(as: metadata)
+          {
+            if let (attachment, reference) = liveAttachment(for: row) {
+              let ownsSource = row.lifecycle.localSourceRelativePath != nil
+              row.rebaseMetadata(
+                base: base, server: metadata, attachment: attachment, reference: reference,
+                preferLocalOnTie: ownsSource
+              )
+              if !ownsSource, metadata.contentType != base.contentType {
+                attachment.contentType = metadata.contentType
+              }
+              row.contentType = attachment.contentType
+            } else {
+              row.position = metadata.position
+              row.fileName = metadata.fileName
+              row.contentType = metadata.contentType
+            }
+            row.lifecycle.acceptRemoteMetadata(
+              payloadIdentity: metadata.payloadIdentity,
+              metadataRecord: metadataRecord
+            )
+            if row.metadata != metadata { row.lifecycle.editMetadataLocally() }
+            continue
+          }
           if row.payloadIdentity != metadata.payloadIdentity {
             removeCache(for: metadata.attachmentID)
           }
@@ -127,6 +176,7 @@ extension SwiftDataSnipLibrary {
             payloadIdentity: metadata.payloadIdentity,
             metadataRecord: metadataRecord
           )
+          refreshedAttachmentIDs.insert(metadata.attachmentID)
         } else {
           let row = StoredCloudAttachmentPublication(
             namespaceKey: namespaceKey,
@@ -146,6 +196,7 @@ extension SwiftDataSnipLibrary {
             metadataRecord: metadataRecord
           )
           context.insert(row)
+          refreshedAttachmentIDs.insert(metadata.attachmentID)
         }
       case .payloadAccepted(let attachmentID, let expected, let shadow, let systemFields):
         guard let row = byAttachment[attachmentID] else {
@@ -173,6 +224,21 @@ extension SwiftDataSnipLibrary {
           CloudAttachmentAcceptedRecord(shadowData: shadow, systemFields: systemFields),
           expectedRevision: expected
         )
+        // This transition also advances the shadow for an acknowledged save superseded locally.
+        // Only an actual server conflict rebases live fields.
+        if case .conflict(let base, let sent, let server)? = resolveMetadata?(
+          row.metadataIdentity, nil, shadow
+        ),
+          row.lifecycle.isPayloadAccepted,
+          row.metadata.namesSamePayload(as: server), base.namesSamePayload(as: server),
+          sent.namesSamePayload(as: server),
+          let (attachment, reference) = liveAttachment(for: row)
+        {
+          row.rebaseMetadata(
+            base: base, server: server, sent: sent, attachment: attachment, reference: reference,
+            preferLocalOnTie: true
+          )
+        }
       case .payloadCollision(let attachmentID, let expected, let replacementIdentity):
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
@@ -322,6 +388,7 @@ extension SwiftDataSnipLibrary {
         try cleanupQueue.recordFailure(failure, for: identity, expectedRevision: expected)
       }
     }
+    return refreshedAttachmentIDs
   }
 
   package func commitCloudAttachmentTransitions(
@@ -356,12 +423,16 @@ extension SwiftDataSnipLibrary {
       transitions: transitions,
       context: context
     )
-    try applyCloudAttachmentTransitions(
+    let refreshedAttachmentIDs = try applyCloudAttachmentTransitions(
       namespaceKey: namespaceKey,
       transitions: transitions,
       context: context
     )
-    try materializeCloudAttachments(namespaceKey: namespaceKey, context: context)
+    try materializeCloudAttachments(
+      namespaceKey: namespaceKey,
+      refreshedAttachmentIDs: refreshedAttachmentIDs,
+      context: context
+    )
     try afterMutationBeforeSave()
     try lock.check()
     try context.save()
@@ -372,4 +443,33 @@ extension SwiftDataSnipLibrary {
     }
   }
 
+}
+
+private extension CloudAttachmentMetadataValue {
+  func namesSamePayload(as other: Self) -> Bool {
+    attachmentID == other.attachmentID && snipID == other.snipID
+      && payloadIdentity == other.payloadIdentity && byteCount == other.byteCount
+      && sha256 == other.sha256
+  }
+}
+
+private extension StoredCloudAttachmentPublication {
+  func rebaseMetadata(
+    base: CloudAttachmentMetadataValue,
+    server: CloudAttachmentMetadataValue,
+    sent: CloudAttachmentMetadataValue? = nil,
+    attachment: StoredAttachmentRecord,
+    reference: StoredSnipAttachmentReference,
+    preferLocalOnTie: Bool
+  ) {
+    func rebase<Value: Equatable>(_ live: Value, base: Value, server: Value, sent: Value?) -> Value {
+      // A local edit since the send can deliberately restore the old base value.
+      if let sent, live != sent { return live }
+      return live == base || (!preferLocalOnTie && server != base) ? server : live
+    }
+    fileName = rebase(attachment.fileName, base: base.fileName, server: server.fileName, sent: sent?.fileName)
+    position = rebase(reference.position, base: base.position, server: server.position, sent: sent?.position)
+    attachment.fileName = fileName
+    reference.update(position: position)
+  }
 }

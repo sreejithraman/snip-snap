@@ -32,6 +32,19 @@ package struct CloudAttachmentMetadataValue: Codable, Equatable, Sendable {
   }
 }
 
+package enum CloudAttachmentMetadataRebase: Sendable {
+  case fetched(base: CloudAttachmentMetadataValue)
+  case conflict(
+    base: CloudAttachmentMetadataValue,
+    sent: CloudAttachmentMetadataValue,
+    server: CloudAttachmentMetadataValue
+  )
+
+  package typealias Resolve = @Sendable (
+    _ identity: CloudTextStorageIdentity, _ priorShadow: Data?, _ incomingShadow: Data
+  ) -> CloudAttachmentMetadataRebase?
+}
+
 package struct CloudAttachmentPublication: Equatable, Sendable {
   package let metadata: CloudAttachmentMetadataValue
   package let metadataIdentity: CloudTextStorageIdentity

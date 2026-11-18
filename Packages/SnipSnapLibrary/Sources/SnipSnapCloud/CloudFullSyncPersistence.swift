@@ -663,7 +663,7 @@ extension CloudFullSyncPersistence {
       observedDestructiveReset = reason
     }
     do {
-      _ = try await library.commitCloudFullBatch(batch)
+      try await commitStagedBatch(batch)
       try await finishCommittedBatch(batch)
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
@@ -683,7 +683,7 @@ extension CloudFullSyncPersistence {
         rawBatchData: rawData
       )
       try await library.replaceStagedCloudFullBatch(replacement)
-      _ = try await library.commitCloudFullBatch(replacement)
+      try await commitStagedBatch(replacement)
       try await finishCommittedBatch(replacement)
     }
   }

@@ -3,15 +3,22 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  package func materializeCloudAttachments(
+  func materializeCloudAttachments(
     namespaceKey: String,
+    refreshedAttachmentIDs: Set<UUID>,
+    newSnipIDs: Set<UUID> = [],
     context: ModelContext
   ) throws {
+    // Existing snips can hold edits that outbound planning has yet to see.
+    guard !refreshedAttachmentIDs.isEmpty || !newSnipIDs.isEmpty else { return }
     let publications = try Self.cloudAttachmentPublications(
       namespaceKey: namespaceKey,
       context: context
     )
-      .filter { $0.lifecycle.materializesFromCloud }
+      .filter {
+        $0.lifecycle.materializesFromCloud
+          && (refreshedAttachmentIDs.contains($0.attachmentID) || newSnipIDs.contains($0.snipID))
+      }
     guard !publications.isEmpty else { return }
     let snipIDs = Array(Set(publications.map(\.snipID)))
     let attachmentIDs = Array(Set(publications.map(\.attachmentID)))
