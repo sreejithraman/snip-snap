@@ -465,7 +465,6 @@ extension SwiftDataSnipLibrary {
     ).first
     {
       attachment.relativePath = domainRelativePath
-      attachment.fileName = publication.fileName
       attachment.contentType = publication.contentType
       attachment.byteCount = publication.byteCount
     }

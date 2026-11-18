@@ -7,6 +7,7 @@ import SwiftData
 extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
+    resolveAttachmentMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
@@ -242,6 +243,7 @@ extension SwiftDataSnipLibrary {
       }
     }
     do {
+      var newSnipIDs: Set<UUID> = []
       for change in batch.recoveryChanges {
         try lock.check()
         try Self.applyFullRecoveryChange(change, namespaceKey: batch.namespaceKey, context: context)
@@ -365,6 +367,9 @@ extension SwiftDataSnipLibrary {
         }
         if !deferred {
           try Self.applyLocalMutation(item.localMutation, context: context)
+          if case .upsertSnip(let snip) = item.localMutation, item.localPrecondition == .requireMissing {
+            newSnipIDs.insert(snip.snipID)
+          }
         }
       }
       if !movedSnips.isEmpty {
@@ -438,6 +443,7 @@ extension SwiftDataSnipLibrary {
           context: context
         )
         try Self.applyLocalMutation(.upsertSnip(repaired), context: context)
+        if repairPrecondition == .requireMissing { newSnipIDs.insert(snipID) }
         record.isDeferred = false
         record.deferredMutationData = try JSONEncoder().encode(CloudDeferredLocalMutation(
           precondition: .exactSnip(repaired),
@@ -449,13 +455,19 @@ extension SwiftDataSnipLibrary {
       // Dependency availability is not permission to replay cached intent.
       // Only explicit planner items or checked graph repairs release a snip.
       try lock.check()
-      try applyCloudAttachmentTransitions(
+      let refreshedAttachmentIDs = try applyCloudAttachmentTransitions(
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
+        resolveMetadata: resolveAttachmentMetadata,
         context: context
       )
       try lock.check()
-      try materializeCloudAttachments(namespaceKey: batch.namespaceKey, context: context)
+      try materializeCloudAttachments(
+        namespaceKey: batch.namespaceKey,
+        refreshedAttachmentIDs: refreshedAttachmentIDs,
+        newSnipIDs: newSnipIDs,
+        context: context
+      )
       try lock.check()
       try Self.resolveStoredListNames(context: context)
       try lock.check()

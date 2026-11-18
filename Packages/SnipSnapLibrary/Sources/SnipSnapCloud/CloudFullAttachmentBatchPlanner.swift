@@ -174,7 +174,7 @@ struct CloudFullAttachmentBatchPlanner {
     }
     if let local = publicationByMetadataIdentity[identity] {
       switch operation {
-      case .save:
+      case .save(let draft):
         if case .unknownItem? = sentItemResults[id] {
           if !local.isLocallyPresent {
             return .handled(.metadataDeleteAccepted(
@@ -184,7 +184,12 @@ struct CloudFullAttachmentBatchPlanner {
           }
           return .handled(metadataUnknown(local))
         }
-        guard local.isLocallyPresent, local.payloadAccepted, !local.metadataAccepted else {
+        guard local.isLocallyPresent, local.payloadAccepted, !local.metadataAccepted,
+          let payloadZone,
+          let sent = try? CloudAttachmentRecordCodec.metadata(
+            from: draft, metadataZone: dataZone, payloadZone: payloadZone
+          ), sent == local.metadata
+        else {
           return .handled(nil)
         }
       case .delete:
