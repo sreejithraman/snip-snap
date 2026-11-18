@@ -23,7 +23,9 @@ private protocol ICloudSyncAdapter: Sendable {
     func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
-        targetRevision: UInt64
+        targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
+        retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation
     func clearRetryableEvents(_ keys: Set<String>) async throws
     func currentModeSeedSettlement(
@@ -91,9 +93,10 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
     func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
-        targetRevision: UInt64
+        targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
+        retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation {
-        _ = (source, transitionID, targetRevision)
         return .legacy(acceptedTextBySnipID: try await raw.acceptedSnipTextValues())
     }
 
@@ -131,10 +134,16 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
 private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     private let raw: CloudFullSyncPersistence
     private let syncDriver: CloudFullSyncCoordinator
+    private let beforeApply: CloudFullSyncPersistence.ApplyHook
     private var pendingIssue: SyncedContentSyncIssue?
 
-    init(raw: CloudFullSyncPersistence, transport: any CloudRecordTransport) {
+    init(
+        raw: CloudFullSyncPersistence,
+        transport: any CloudRecordTransport,
+        beforeApply: @escaping CloudFullSyncPersistence.ApplyHook
+    ) {
         self.raw = raw
+        self.beforeApply = beforeApply
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
@@ -153,7 +162,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     func sendPending(
         beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
     ) async throws {
-        let outcome = try await syncDriver.sendPending(beforeSend: beforeSend)
+        let outcome = try await syncDriver.sendPending(beforeApply: beforeApply, beforeSend: beforeSend)
         try reportCompletedSyncIssue(outcome)
     }
 
@@ -202,12 +211,16 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     func prepareModeMerge(
         source: SnipLibraryTransferSnapshot,
         transitionID: UUID,
-        targetRevision: UInt64
+        targetRevision: UInt64,
+        priorSeedProvenance: [SyncModeSeedProvenance],
+        retryEvidence: CloudSetupRetryEvidence?
     ) async throws -> ICloudModeMergePreparation {
         if let plan = try await raw.makeReenableApplyPlan(
             source: source,
             transitionID: transitionID,
-            targetRevision: targetRevision
+            targetRevision: targetRevision,
+            priorSeedProvenance: priorSeedProvenance,
+            retryEvidence: retryEvidence
         ) {
             return .fullRecord(plan)
         }
@@ -239,7 +252,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         try await commitSettlement()
         // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
         _ = snipIDs
-        try await syncDriver.prepareManualRetry()
+        try await syncDriver.prepareManualRetry(beforeApply: beforeApply, beforeStateSave: beforeApply)
     }
 
     func prepareFailureRecovery(snipIDs: Set<UUID>) async throws {
@@ -456,7 +469,7 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let bridge = try await adapter(storeID: transition.candidateStoreID)
+        let bridge = try await adapter(storeID: transition.candidateStoreID, captureSetupRetry: true)
 
         if transition.phase == .candidateReady {
             do {
@@ -519,10 +532,26 @@ package actor ICloudSyncModeCoordinator {
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
                 )
+                let retryEvidence: CloudSetupRetryEvidence?
+                if transition.syncProtocol == .fullRecordV1 {
+                    retryEvidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+                    if retryEvidence != nil { try await requireMatchingAccount() }
+                } else {
+                    retryEvidence = nil
+                }
+                if payloadZone != nil, let retryEvidence, !retryEvidence.isEmpty {
+                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
+                        storeID: transition.candidateStoreID,
+                        setupRetry: (source, retryEvidence)
+                    )
+                    try await requireMatchingAccount()
+                }
                 switch try await bridge.prepareModeMerge(
                     source: source,
                     transitionID: transition.id,
-                    targetRevision: targetRevision
+                    targetRevision: targetRevision,
+                    priorSeedProvenance: transition.seedProvenance,
+                    retryEvidence: retryEvidence
                 ) {
                 case .fullRecord(let plan):
                     _ = try await persistence.mergeFullReenableSnapshot(
@@ -560,7 +589,7 @@ package actor ICloudSyncModeCoordinator {
             }
 
             if transition.phase == .firstSendStarted {
-                try await sendUntilSettled(adapter: bridge)
+                try await sendUntilSettled(adapter: bridge, transition: transition)
                 try await persistence.recordFirstSendComplete()
                 transition = try await currentTransition()
             }
@@ -704,7 +733,10 @@ package actor ICloudSyncModeCoordinator {
         return try await statusUnchecked()
     }
 
-    private func adapter(storeID: UUID) async throws -> any ICloudSyncAdapter {
+    private func adapter(
+        storeID: UUID,
+        captureSetupRetry: Bool = false
+    ) async throws -> any ICloudSyncAdapter {
         let storage = try await persistence.snapshot()
         let isActive = storage.activeStore.id == storeID
         let isCandidate = storage.transition?.candidateStoreID == storeID
@@ -718,8 +750,21 @@ package actor ICloudSyncModeCoordinator {
             let raw = try await rawBridge(storeID: storeID)
             return LegacyTextSyncAdapter(raw: raw, transport: makeTransport())
         case .fullRecordV1:
-            let raw = try await fullBridge(storeID: storeID)
-            return FullRecordSyncAdapter(raw: raw, transport: makeTransport())
+            let validateSetupAccount: CloudFullSyncPersistence.ApplyHook?
+            if captureSetupRetry && isCandidate && !isActive {
+                validateSetupAccount = { try await self.requireMatchingAccount() }
+            } else {
+                validateSetupAccount = nil
+            }
+            let raw = try await fullBridge(
+                storeID: storeID,
+                validateSetupAccount: validateSetupAccount
+            )
+            return FullRecordSyncAdapter(
+                raw: raw,
+                transport: makeTransport(),
+                beforeApply: validateSetupAccount ?? {}
+            )
         }
     }
 
@@ -731,7 +776,10 @@ package actor ICloudSyncModeCoordinator {
         }
     }
 
-    private func preserveIsolatedAttachmentsForLocalCopy(storeID: UUID) async throws -> Bool {
+    private func preserveIsolatedAttachmentsForLocalCopy(
+        storeID: UUID,
+        setupRetry: (source: SnipLibraryTransferSnapshot, evidence: CloudSetupRetryEvidence)? = nil
+    ) async throws -> Bool {
         guard let payloadZone else { return false }
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let coordinator = CloudAttachmentTransferCoordinator(
@@ -741,6 +789,21 @@ package actor ICloudSyncModeCoordinator {
             transport: makeTransport(),
             maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
         )
+        if let setupRetry {
+            let accepted = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            let removedFromSnipOffers = try CloudSetupRetryCapture.removedAttachmentIDsBySnip(
+                source: setupRetry.source, accepted: accepted.readyEntities,
+                evidence: setupRetry.evidence, namespace: namespace, dataZone: textZone
+            )
+            let removedFromPointerOffers = CloudSetupRetryCapture.removedOfferedAttachmentIDsBySnip(
+                source: setupRetry.source, publications: attachments.publications, evidence: setupRetry.evidence
+            )
+            return try await coordinator.preserveAllAttachmentsForLocalCopy(
+                excluding: Set(setupRetry.source.attachmentData.keys),
+                removedAttachmentIDsBySnip: removedFromSnipOffers.merging(removedFromPointerOffers) { $0.union($1) }
+            )
+        }
         return try await coordinator.preserveAllAttachmentsForLocalCopy()
     }
 
@@ -755,14 +818,31 @@ package actor ICloudSyncModeCoordinator {
     }
 
 
-    private func fullBridge(storeID: UUID) async throws -> CloudFullSyncPersistence {
+    private func fullBridge(
+        storeID: UUID,
+        validateSetupAccount: CloudFullSyncPersistence.ApplyHook?
+    ) async throws -> CloudFullSyncPersistence {
         let library = try await persistence.libraryForTransition(storeID: storeID)
+        let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
+        if let validateSetupAccount {
+            recordResults = { [persistence, namespace] results in
+                try await validateSetupAccount()
+                try await persistence.recordSetupRetryResults(
+                    results,
+                    candidateStoreID: storeID,
+                    namespace: namespace.binding
+                )
+            }
+        } else {
+            recordResults = nil
+        }
         return CloudFullSyncPersistence(
             library: library,
             namespace: namespace,
             dataZone: textZone,
             payloadZone: payloadZone,
-            attachmentPolicy: attachmentPolicy
+            attachmentPolicy: attachmentPolicy,
+            recordSetupRetryResults: recordResults
         )
     }
 
@@ -774,16 +854,38 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func sendUntilSettled(
-        adapter: any ICloudSyncAdapter
+        adapter: any ICloudSyncAdapter,
+        transition: SyncModeTransition
     ) async throws {
+        let candidateStoreID = transition.candidateStoreID
+        let capturesSetupRetry = transition.syncProtocol == .fullRecordV1
         for _ in 0..<8 {
-            try await adapter.sendPending { [persistence, namespace] outbound in
+            try await adapter.sendPending { [persistence, namespace, textZone, payloadZone] outbound in
                 try await self.requireMatchingAccount()
                 let attempt = try await adapter.modeSendAttempt(
                     for: outbound,
                     namespace: namespace.binding
                 )
-                try await persistence.recordSendAttempt(attempt)
+                if capturesSetupRetry {
+                    guard let freezeToken = transition.freezeToken else {
+                        throw SyncModePersistenceError.invalidFreezeToken
+                    }
+                    let source = try await persistence.setupRetryFrozenSnapshot(candidateStoreID: candidateStoreID)
+                    let offers = try CloudSetupRetryCapture.offers(
+                        for: outbound,
+                        source: source,
+                        dataZone: textZone,
+                        payloadZone: payloadZone
+                    )
+                    try await self.requireMatchingAccount()
+                    try await persistence.recordSendAttempt(
+                        attempt,
+                        setupRetryOffers: offers,
+                        expectedSetupFreezeToken: freezeToken
+                    )
+                } else {
+                    try await persistence.recordSendAttempt(attempt)
+                }
             }
             let issue = await adapter.takeSyncIssue()
             let evidence = try await adapter.enrollmentEvidence()

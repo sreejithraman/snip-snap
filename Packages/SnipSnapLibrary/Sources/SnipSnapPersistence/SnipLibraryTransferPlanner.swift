@@ -54,6 +54,7 @@ package enum SnipLibraryTransferPlanner {
     transitionID: UUID,
     replacingTargetSnipIDs: Set<UUID> = [],
     replacingTargetListIDs: Set<UUID> = [],
+    removingTargetAttachmentIDsBySnip: [UUID: Set<UUID>] = [:],
     acceptedTargetSnipIDs: Set<UUID> = [],
     acceptedTargetTextBySnipID: [UUID: String] = [:],
     priorSeedProvenance: [SyncModeSeedProvenance] = [],
@@ -74,7 +75,13 @@ package enum SnipLibraryTransferPlanner {
       priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs
     )
     let replacingTargetSnipIDs = replacingTargetSnipIDs.union(retry.replacingTargetSnipIDs)
-    let retainedTargetSnips = target.snips.filter { !replacingTargetSnipIDs.contains($0.id) }
+    let retainedTargetSnips = target.snips.compactMap { snip -> Snip? in
+      guard !replacingTargetSnipIDs.contains(snip.id) else { return nil }
+      guard let removed = removingTargetAttachmentIDsBySnip[snip.id] else { return snip }
+      var retained = snip
+      retained.attachments.removeAll { removed.contains($0.id) }
+      return retained
+    }
     let retainedAttachmentIDs = Set(retainedTargetSnips.flatMap(\.attachments).map(\.id))
     let target = SnipLibraryTransferSnapshot(
       revision: target.revision,

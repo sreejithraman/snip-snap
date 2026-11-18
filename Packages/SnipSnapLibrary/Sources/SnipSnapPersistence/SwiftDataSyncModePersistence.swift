@@ -433,8 +433,8 @@ package actor SwiftDataSyncModePersistence {
         fullReenableMergeInFlight != transition.id,
         !hasStoreFile(id: transition.candidateStoreID)
       {
-        // Before the swap, the source still holds the library, so a fresh candidate loses
-        // nothing.
+        // Before the swap the source still holds the library. Keep its send history
+        // before replacing the missing candidate.
         try abortUnactivatedCandidate(reason: nil)
         let operation: StaticString = transition.targetKind == .iCloudSync
           ? "sync.setup" : "sync.disable"
@@ -481,6 +481,7 @@ package actor SwiftDataSyncModePersistence {
     var declared = manifest
     declared.stores.append(candidate)
     declared.transition = transition
+    declared.migrateSetupRetryHistory()
     declared.attentionReason = nil
     try commit(declared)
     try crashHook(.afterCandidateManifest)
@@ -538,7 +539,9 @@ package actor SwiftDataSyncModePersistence {
     }
     try crashHook(.beforePointerSwap)
     next.activeStoreID = transition.candidateStoreID
-    next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
+    let sourceIndex = try storeIndex(id: transition.sourceStoreID)
+    next.stores[sourceIndex].lifecycle = .retired
+    next.stores[sourceIndex].setupRetryHistory = nil
     try commit(next)
     try crashHook(.afterPointerSwap)
   }
@@ -644,7 +647,9 @@ package actor SwiftDataSyncModePersistence {
       candidate.lifecycle = .ready
       var activated = manifest
       activated.stores[try storeIndex(id: candidate.id)] = candidate
-      activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
+      let sourceIndex = try storeIndex(id: current.id)
+      activated.stores[sourceIndex].lifecycle = .recovery
+      activated.stores[sourceIndex].setupRetryHistory = nil
       activated.activeStoreID = candidate.id
       try commit(activated)
       do {
@@ -799,6 +804,7 @@ package actor SwiftDataSyncModePersistence {
     if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
       next.stores[index].lifecycle = .deleting
     }
+    next.stopTrackingSetupRetryCandidate()
     next.transition = nil
     next.attentionReason = reason
     // Commit before removing any files. A candidate whose files are gone but whose manifest

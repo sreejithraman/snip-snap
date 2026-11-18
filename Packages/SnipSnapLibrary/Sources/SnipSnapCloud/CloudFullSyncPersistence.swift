@@ -539,6 +539,7 @@ package actor CloudFullSyncCoordinator {
 
 package actor CloudFullSyncPersistence: CloudFullSyncStore {
   package typealias ApplyHook = @Sendable () async throws -> Void
+  package typealias SetupRetryResultHook = @Sendable ([CloudSetupRetryResult]) async throws -> Void
 
   struct RawStagedBatch: Codable, Equatable, Sendable {
     let storageVersion: Int
@@ -563,6 +564,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
+  private let recordSetupRetryResults: SetupRetryResultHook?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -573,6 +575,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+    recordSetupRetryResults: SetupRetryResultHook? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -585,6 +588,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.diagnostics = diagnostics
+    self.recordSetupRetryResults = recordSetupRetryResults
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }
@@ -660,8 +664,7 @@ extension CloudFullSyncPersistence {
     }
     do {
       _ = try await library.commitCloudFullBatch(batch)
-      try await clearRecoveredFailure(in: batch)
-      try await afterCommitHook()
+      try await finishCommittedBatch(batch)
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
       || (error as? CloudAttachmentStorageError) == .staleTransition
@@ -681,9 +684,28 @@ extension CloudFullSyncPersistence {
       )
       try await library.replaceStagedCloudFullBatch(replacement)
       _ = try await library.commitCloudFullBatch(replacement)
-      try await clearRecoveredFailure(in: replacement)
-      try await afterCommitHook()
+      try await finishCommittedBatch(replacement)
     }
+  }
+
+  private func finishCommittedBatch(_ batch: CloudFullBatchCommit) async throws {
+    if let recordSetupRetryResults, let rawData = batch.rawBatchData,
+      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
+      raw.storageVersion == 1, raw.batch.id == batch.batchID,
+      case .sent(let sent) = raw.batch, let outbound = raw.outbound,
+      Self.destructiveResetReason(raw.batch) == nil
+    {
+      let results = CloudSetupRetryCapture.results(
+        for: sent,
+        outbound: outbound,
+        commit: batch,
+        dataZone: dataZone,
+        payloadZone: payloadZone
+      )
+      if !results.isEmpty { try await recordSetupRetryResults(results) }
+    }
+    try await clearRecoveredFailure(in: batch)
+    try await afterCommitHook()
   }
 
   private func clearRecoveredFailure(in batch: CloudFullBatchCommit) async throws {

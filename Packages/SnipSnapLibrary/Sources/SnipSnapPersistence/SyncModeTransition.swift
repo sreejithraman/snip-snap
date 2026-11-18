@@ -165,6 +165,12 @@ extension SyncModeTransition {
     return false
   }
 
+  var mayHaveLegacySetupSend: Bool {
+    // Older retries returned to candidateReady after clearing the send attempt. A list-only
+    // send could leave no snip settlement IDs, and the retry could advance from there.
+    phase != .candidateDeclared
+  }
+
   func awaitsMerge(using token: SyncModeFreezeToken) -> Bool {
     stage == .sourceFrozen(token, .taken)
   }

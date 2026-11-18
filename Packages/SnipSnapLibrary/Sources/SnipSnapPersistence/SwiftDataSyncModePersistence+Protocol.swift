@@ -16,9 +16,22 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func recordSendAttempt(_ attempt: SyncModeSendAttempt) throws {
+  package func recordSendAttempt(
+    _ attempt: SyncModeSendAttempt,
+    setupRetryOffers: [CloudSetupRetryOffer]? = nil,
+    expectedSetupFreezeToken: SyncModeFreezeToken? = nil
+  ) throws {
+    if let expectedSetupFreezeToken {
+      guard let transition = manifest.transition,
+        transition.freezeToken == expectedSetupFreezeToken,
+        manifest.activeStoreID == expectedSetupFreezeToken.sourceStoreID,
+        store(id: expectedSetupFreezeToken.sourceStoreID)?.revision == expectedSetupFreezeToken.revision
+      else { throw SyncModePersistenceError.invalidFreezeToken }
+    }
     var next = manifest
+    next.migrateSetupRetryHistory()
     try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
+    try next.recordSetupRetryOffers(setupRetryOffers, for: attempt)
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
   }
@@ -45,13 +58,13 @@ extension SwiftDataSyncModePersistence {
       [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase)
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
-    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     try crashHook(.afterRetryBasePromotion)
     let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
+    guard manifest.transition == transition else { return }
     var next = manifest
     try next.updateTransition {
       try $0.restartAfterFirstSendFailure(
@@ -61,56 +74,6 @@ extension SwiftDataSyncModePersistence {
     }
     next.attentionReason = reason
     try commit(next)
-  }
-
-  private func promoteAcceptedFullRetryBases(
-    transition: SyncModeTransition,
-    candidate: SwiftDataSnipLibrary
-  ) async throws {
-    guard transition.syncProtocol == .fullRecordV1,
-      let attempt = transition.sendAttempt,
-      let namespace = transition.namespace,
-      attempt.namespace == namespace
-    else { return }
-    let namespaceKey = namespace.namespaceKey
-    let stored = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let accepted = Dictionary(uniqueKeysWithValues:
-      (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
-    )
-    let source = try libraryForTransition(storeID: transition.sourceStoreID)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    var bases: [CloudDormantBase] = []
-    for operation in attempt.operations where operation.kind == .save {
-      guard let reference = operation.reference,
-        let entity = accepted[reference],
-        entity.identity == operation.recordIdentity
-      else { continue }
-      let payload = try encoder.encode(CloudAcceptedEntityInput(
-        reference: entity.reference,
-        identity: entity.identity,
-        schemaVersion: entity.schemaVersion,
-        acceptedData: entity.acceptedData,
-        presenceData: entity.presenceData,
-        shadowData: entity.shadowData,
-        systemFields: entity.systemFields,
-        dependencyListID: entity.dependencyListID
-      ))
-      bases.append(CloudDormantBase(
-        namespaceKey: namespaceKey.rawValue,
-        reference: entity.reference,
-        identity: entity.identity,
-        payload: payload
-      ))
-    }
-    let crashHook = self.crashHook
-    try await source.storeDormantCloudBases(
-      namespaceKey: namespaceKey,
-      bases: bases,
-      afterStagingFirst: {
-        try crashHook(.duringRetryBasePromotionStaging)
-      }
-    )
   }
 
   package func prepareRetryFetch(settlement: SyncModeSeedSettlementProof) async throws {
@@ -126,13 +89,14 @@ extension SwiftDataSyncModePersistence {
         transitionID: transition.id
       )
     }
+    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
     guard transition.awaitsAcceptedServerCapture else { return }
-    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
+    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
     var next = manifest
     try next.updateTransition {
       try $0.settleInterruptedUpload(

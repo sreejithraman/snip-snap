@@ -2058,6 +2058,70 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(remoteTexts, ["edited after hard reopen", "retry full item"])
     }
 
+    func testFullRecordSetupRetryDoesNotRestoreDeletedUnsentSnip() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("delete after failed save", to: source)
+        try await add("keep after failed save", to: source)
+        let before = try await source.checkedSnapshot(sortedBy: .manual)
+        let deleted = try XCTUnwrap(before.snips.first { $0.content == "delete after failed save" })
+        let kept = try XCTUnwrap(before.snips.first { $0.content == "keep after failed save" })
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let deletedRecordID = CloudRecordID.snip(deleted.id, in: zone)
+        let keptRecordID = CloudRecordID.snip(kept.id, in: zone)
+        let server = FakeCloudServer()
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let existing = Snip(content: "already on server", origin: .quickEntry)
+        let remoteWrite = try await writer.send(CloudOutboundBatch(
+            operations: [.save(CloudFullRecordCodec.snipDraft(existing, in: zone))],
+            zonesToSave: [zone]
+        ))
+        try await writer.confirmApplied(remoteWrite.id)
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.failNextSentItem(deletedRecordID, failure: .retryable)
+        await transport.failNextSentItem(keptRecordID, failure: .retryable)
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { transport }
+        )
+
+        let interrupted = try await coordinator.enableOrRetry()
+        XCTAssertEqual(interrupted.state, .settingUp)
+        let beforeRetry = await server.storedTextValues()
+        XCTAssertEqual(beforeRetry, [existing.content])
+        _ = try await source.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let result = try await retry.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        let expected = [kept.id: kept.content, existing.id: existing.content]
+        XCTAssertEqual(final.snips.count, expected.count)
+        XCTAssertEqual(
+            Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected
+        )
+        let deletedRemote = await server.fullSnapshot(for: deletedRecordID)
+        XCTAssertNil(deletedRemote)
+        for (id, content) in expected {
+            let stored = await server.fullSnapshot(for: .snip(id, in: zone))
+            let remoteSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored))
+            XCTAssertEqual(remoteSnip.text, .value(content))
+        }
+    }
+
     func testFullPartialFirstSendRetryThreeWayMergesListAndSnipFields() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2220,23 +2284,31 @@ extension ICloudSyncModeCoordinatorTests {
         let interrupted = try await persistence.snapshot()
         XCTAssertEqual(interrupted.transition?.phase, .firstSendStarted)
         XCTAssertNotNil(interrupted.transition?.sendAttempt)
-        let rawSource = try await persistence.libraryForTransition(
-            storeID: interrupted.activeStore.id
+        let acceptedKey = setupRetryKey(.snip, id: accepted.id, zone: zone)
+        let failedKey = setupRetryKey(.snip, id: failed.id, zone: zone)
+        let storedEvidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+        let evidence = try XCTUnwrap(storedEvidence)
+        let baseline = try XCTUnwrap(evidence.baseline(for: acceptedKey))
+        let decoder = JSONDecoder()
+        XCTAssertEqual(
+            try decoder.decode(CloudSnipMergeFields.self, from: baseline.sourceFields).text,
+            "accepted before crash"
         )
-        let promoted = try await rawSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
-        XCTAssertTrue(promoted.contains(where: {
-            $0.reference == CloudEntityReference(kind: .snip, domainID: accepted.id)
-        }))
-        XCTAssertFalse(promoted.contains(where: {
-            $0.reference == CloudEntityReference(kind: .snip, domainID: failed.id)
-        }))
+        XCTAssertEqual(
+            try decoder.decode(CloudSnipMergeFields.self, from: baseline.serverFields).text,
+            "accepted before crash"
+        )
+        XCTAssertFalse(evidence.requiresRecovery(for: acceptedKey))
+        XCTAssertNil(evidence.baseline(for: failedKey))
+        XCTAssertFalse(evidence.requiresRecovery(for: failedKey))
 
         let settlementCrash = CrashInjector(point: .beforeRetryFetchSettlementCommit)
         let settling = try SwiftDataSyncModePersistence(
             rootURL: root,
             crashHook: settlementCrash.hit
         )
+        let reopenedEvidence = await settling.setupRetryEvidence(namespace: namespace.binding)
+        XCTAssertEqual(reopenedEvidence, evidence)
         let interruptedRetry = ICloudSyncModeCoordinator(
             persistence: settling,
             namespace: namespace,
@@ -2278,11 +2350,21 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(result.state, .on)
         let completed = try await reopened.snapshot()
         XCTAssertNil(completed.transition)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.count, 2)
+        XCTAssertEqual(
+            Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            [accepted.id: "accepted before crash", failed.id: "retry after crash"]
+        )
         let remoteTexts = await server.storedTextValues()
         XCTAssertEqual(remoteTexts, ["accepted before crash", "retry after crash"])
+        let acceptedWrites = await server.acceptedOperationCount(for: .snip(accepted.id, in: zone))
+        let failedWrites = await server.acceptedOperationCount(for: .snip(failed.id, in: zone))
+        XCTAssertEqual(acceptedWrites, 1)
+        XCTAssertEqual(failedWrites, 1)
     }
 
-    func testFullRetryBasePromotionIsAtomicAndReplaysTheExactAcceptedSetAfterReopen() async throws {
+    func testFullSetupAcknowledgementIsAtomicAndPendingSavesStayUnprovenAcrossRetries() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(
@@ -2321,44 +2403,105 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(partial.state, .settingUp)
 
         let interrupted = try await persistence.snapshot()
-        let interruptedSource = try await persistence.libraryForTransition(
-            storeID: interrupted.activeStore.id
-        )
-        let interruptedBases = try await interruptedSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
-        XCTAssertTrue(interruptedBases.isEmpty)
+        let transition = try XCTUnwrap(interrupted.transition)
+        let storedEvidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+        let evidence = try XCTUnwrap(storedEvidence)
+        let attemptedKeys = [
+            setupRetryKey(.list, id: SnipList.inboxID, zone: zone),
+            setupRetryKey(.snip, id: accepted[0].id, zone: zone),
+            setupRetryKey(.snip, id: accepted[1].id, zone: zone),
+            setupRetryKey(.snip, id: failed.id, zone: zone),
+        ]
+        for key in attemptedKeys {
+            XCTAssertNil(evidence.baseline(for: key), "\(key.reference)")
+            XCTAssertTrue(evidence.requiresRecovery(for: key), "\(key.reference)")
+        }
+        let sent = await server.storedTextValues()
+        XCTAssertEqual(sent, ["accepted one", "accepted two"])
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let recovered = try await reopened.snapshot()
         XCTAssertEqual(recovered.transition?.phase, .candidateReady)
-        let recoveredSource = try await reopened.libraryForTransition(
-            storeID: recovered.activeStore.id
+        let reopenedEvidence = await reopened.setupRetryEvidence(namespace: namespace.binding)
+        XCTAssertEqual(reopenedEvidence, evidence)
+        let failedFetchTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await failedFetchTransport.failNextFetch()
+        let failedFetchRetry = ICloudSyncModeCoordinator(
+            persistence: reopened,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { failedFetchTransport }
         )
-        try await reopened.prepareRetryFetch(
-            settlement: SyncModeSeedSettlementProof(
-                namespace: ICloudSyncNamespaceBinding(
-                    scope: namespace.cloudScope,
-                    accountLineage: namespace.accountLineage,
-                    generation: namespace.generation,
-                    zones: Set(namespace.zones.map {
-                        ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
-                    })
-                ),
-                values: [:]
-            )
+        let failedFetch = try await failedFetchRetry.enableOrRetry()
+        XCTAssertEqual(failedFetch.state, .settingUp)
+        let afterFailedFetch = try SwiftDataSyncModePersistence(rootURL: root)
+        let durableEvidence = await afterFailedFetch.setupRetryEvidence(namespace: namespace.binding)
+        XCTAssertEqual(durableEvidence, evidence)
+
+        let edited = try XCTUnwrap(accepted.first(where: { $0.content == "accepted one" }))
+        let local = try await afterFailedFetch.activeLibrary()
+        _ = try await local.perform(
+            .update(
+                id: edited.id,
+                content: "edit after unproven send",
+                attachmentURLs: nil,
+                expectedUpdatedAt: edited.updatedAt,
+                now: edited.updatedAt.addingTimeInterval(10)
+            ),
+            sortedBy: .manual
         )
-        let promoted = try await recoveredSource.dormantCloudBases()
-            .filter { $0.namespaceKey == namespace.namespaceKey.rawValue }
-        let promotedReferences = Set(promoted.map(\.reference))
+        let retry = ICloudSyncModeCoordinator(
+            persistence: afterFailedFetch,
+            namespace: namespace,
+            textZone: zone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let recoveringRetry = try await retry.enableOrRetry()
+        XCTAssertEqual(recoveringRetry.state, .settingUp)
+        XCTAssertEqual(recoveringRetry.syncIssue, .someChangesPending)
+
+        let result = try await retry.enableOrRetry()
+
+        XCTAssertEqual(result.state, .on)
+        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
+            transitionID: transition.id,
+            sourceID: edited.id
+        )
+        let expected = [
+            accepted[0].id: accepted[0].content,
+            accepted[1].id: accepted[1].content,
+            failed.id: "failed",
+            recoveredID: "edit after unproven send",
+        ]
+        let final = try await afterFailedFetch.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.count, expected.count)
         XCTAssertEqual(
-            promotedReferences,
-            Set([
-                CloudEntityReference(kind: .list, domainID: SnipList.inboxID),
-                CloudEntityReference(kind: .snip, domainID: accepted[0].id),
-                CloudEntityReference(kind: .snip, domainID: accepted[1].id),
-            ])
+            Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected
         )
-        XCTAssertFalse(promotedReferences.contains(.init(kind: .snip, domainID: failed.id)))
+        let remoteTexts = await server.storedTextValues()
+        XCTAssertEqual(remoteTexts, expected.values.sorted())
+        for (id, content) in expected {
+            let stored = await server.fullSnapshot(for: .snip(id, in: zone))
+            let remoteSnip = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored))
+            XCTAssertEqual(remoteSnip.domainID, id)
+            XCTAssertEqual(remoteSnip.text, .value(content))
+        }
+    }
+
+    private func setupRetryKey(
+        _ kind: CloudEntityKind,
+        id: UUID,
+        zone: CloudZoneID
+    ) -> CloudSetupRetryRecordKey {
+        let recordID: CloudRecordID = switch kind {
+        case .snip: .snip(id, in: zone)
+        case .list: .list(id, in: zone)
+        }
+        return CloudSetupRetryRecordKey(
+            reference: CloudEntityReference(kind: kind, domainID: id),
+            identity: CloudFullSyncPersistence.storageIdentity(recordID)
+        )
     }
 
     func testTypedModeSendAttemptKeepsListAndSnipWithTheSameDomainID() async throws {
