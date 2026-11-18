@@ -480,7 +480,7 @@ extension SwiftDataSnipLibrary {
         throw CloudFullStorageError.duplicateDormantBinding
       }
     }
-    let prepared = try bases.map { base -> (CloudDormantBase, String) in
+    let prepared = try bases.map { base -> (CloudDormantBase, String, String) in
       let id = StoredCloudDormantBaseRecord.key(
         namespaceKey: namespaceKey,
         reference: base.reference
@@ -495,14 +495,17 @@ extension SwiftDataSnipLibrary {
       if let boundID = recordIDByIdentity[identityID], boundID != id {
         throw CloudFullStorageError.duplicateDormantBinding
       }
-      return (base, id)
+      return (base, id, identityID)
     }
     do {
       for (index, value) in prepared.enumerated() {
-        let (base, id) = value
-        // An existing base is the source's common ancestor. The candidate's accepted
-        // record can contain remote edits that the source has never seen.
-        if recordsByID[id] == nil {
+        let (base, id, _) = value
+        if let current = recordsByID[id] {
+          current.zoneName = base.identity.zoneName
+          current.ownerName = base.identity.ownerName
+          current.recordName = base.identity.recordName
+          current.payload = base.payload
+        } else {
           context.insert(StoredCloudDormantBaseRecord(
             namespaceKey: namespaceKey,
             reference: base.reference,

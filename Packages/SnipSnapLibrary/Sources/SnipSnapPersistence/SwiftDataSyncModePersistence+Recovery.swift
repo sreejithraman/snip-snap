@@ -11,6 +11,7 @@ extension SwiftDataSyncModePersistence {
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
     value.writeReservation = nil
+    value.migrateSetupRetryHistory()
     if case .declared(let isolation) = try value.accountIsolationPhase() {
       guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
         throw SyncModePersistenceError.invalidManifest
@@ -63,7 +64,10 @@ extension SwiftDataSyncModePersistence {
           try FileManager.default.removeItem(at: storeRoot)
         }
         value.stores.removeAll { $0.id == store.id }
-        if value.transition?.candidateStoreID == store.id { value.transition = nil }
+        if value.transition?.candidateStoreID == store.id {
+          value.stopTrackingSetupRetryCandidate()
+          value.transition = nil
+        }
       } catch {
         value.attentionReason = .storageFailure
       }

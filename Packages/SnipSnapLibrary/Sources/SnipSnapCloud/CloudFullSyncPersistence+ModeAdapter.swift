@@ -27,6 +27,13 @@ private struct ICloudSyncRecoveryPayload: Codable, Equatable {
   }
 }
 
+private struct ICloudReenableMergeBasis<Fields> {
+  // A missing pair means the send left us without trustworthy ancestry.
+  let fields: (local: Fields, server: Fields)?
+  let dormant: CloudAcceptedEntity?
+  let conflictVersion: Data
+}
+
 extension CloudFullSyncPersistence {
   package func approveEnrollment(references: Set<CloudEntityReference>) async throws {
     let local = try await library.checkedSnapshot(sortedBy: .manual)
@@ -200,22 +207,23 @@ extension CloudFullSyncPersistence {
   package func makeReenableApplyPlan(
     source: SnipLibraryTransferSnapshot,
     transitionID: UUID,
-    targetRevision: UInt64
+    targetRevision: UInt64,
+    retryEvidence: CloudSetupRetryEvidence? = nil
   ) async throws -> CloudFullReenableApplyPlan? {
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
     let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey.rawValue }
-    guard !exactEntries.isEmpty else { return nil }
-    let allowedZones = Set(namespace.zones.map { "\($0.ownerName)|\($0.name)" })
+    let hasRetryEvidence = retryEvidence?.isEmpty == false
+    let decoder = JSONDecoder()
     var bases: [CloudEntityReference: CloudAcceptedEntity] = [:]
     for entry in exactEntries {
-      guard allowedZones.contains("\(entry.identity.ownerName)|\(entry.identity.zoneName)"),
-        let input = try? JSONDecoder().decode(CloudAcceptedEntityInput.self, from: entry.payload),
+      guard namespace.zones.contains(Self.recordID(entry.identity).zone),
+        let input = try? decoder.decode(CloudAcceptedEntityInput.self, from: entry.payload),
         input.reference == entry.reference,
         input.identity == entry.identity
       else { continue }
       bases[entry.reference] = Self.materializedEntity(input)
     }
-    guard !bases.isEmpty else { return nil }
+    guard !bases.isEmpty || hasRetryEvidence else { return nil }
 
     let target = try await library.transferSnapshot(revision: targetRevision)
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
@@ -224,25 +232,40 @@ extension CloudFullSyncPersistence {
     }
     let acceptedValues = stored.readyEntities + stored.deferredEntities
     let accepted = Dictionary(uniqueKeysWithValues: acceptedValues.map { ($0.reference, $0) })
+    let targetSnips = Dictionary(uniqueKeysWithValues: target.snips.map { ($0.id, $0) })
+    let sourceSnipIDs = Set(source.snips.map(\.id))
     var adjustedLists = source.lists
     var adjustedSnips = source.snips
+    var attachmentData = source.attachmentData
     var replacingLists: Set<UUID> = []
     var replacingSnips: Set<UUID> = []
     var deletedLists: Set<UUID> = []
     var conflicts: [CloudConflictInput] = []
     var recoveryInputs: [CloudFullRecoveryInput] = []
     var recoveredSourceIDs: Set<UUID> = []
+    let retryVersion = Data("snipsnap-setup-retry|\(transitionID.uuidString)".utf8)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
 
     for index in adjustedLists.indices.reversed() {
       let local = adjustedLists[index]
       let reference = CloudEntityReference(kind: .list, domainID: local.id)
-      guard let base = bases[reference] else { continue }
-      guard let server = accepted[reference], server.identity == base.identity else {
-        let baseFields = try Self.listFields(Self.listRecord(base))
-        let localFields = Self.listFields(local, updatedAt: baseFields.updatedAt)
-        if !Self.sameListFields(baseFields, localFields) {
+      let remote = accepted[reference]
+      guard let basis = try reenableBasis(
+        reference: reference, server: remote, dormant: bases[reference],
+        retryEvidence: retryEvidence, retryVersion: retryVersion, decoder: decoder,
+        id: \CloudListMergeFields.id,
+        dormantFields: { try Self.listFields(Self.listRecord($0)) }
+      ) else {
+        if hasRetryEvidence, remote == nil { replacingLists.insert(local.id) }
+        continue
+      }
+      guard let server = remote,
+        basis.dormant == nil || basis.dormant?.identity == server.identity
+      else {
+        if local.id == SnipList.inbox.id { continue }
+        let localFields = Self.listFields(local, updatedAt: basis.fields?.local.updatedAt ?? .distantPast)
+        if basis.fields.map({ !Self.sameListFields($0.local, localFields) }) ?? true {
           recoveryInputs.append(try Self.modeRecovery(
             transitionID: transitionID,
             namespaceKey: namespaceKey.rawValue,
@@ -256,23 +279,25 @@ extension CloudFullSyncPersistence {
           ))
         }
         adjustedLists.remove(at: index)
+        if basis.dormant == nil { replacingLists.insert(local.id) }
         deletedLists.insert(local.id)
         continue
       }
-      let baseFields = try Self.listFields(Self.listRecord(base))
       let serverFields = try Self.listFields(Self.listRecord(server))
-      let result = try CloudThreeWayMerge.list(
-        base: baseFields,
-        local: Self.listFields(local, updatedAt: serverFields.updatedAt),
-        server: serverFields
-      )
-      adjustedLists[index] = Self.localList(result.merged)
+      let localFields = Self.listFields(local, updatedAt: serverFields.updatedAt)
+      let result = try basis.fields.map {
+        try CloudThreeWayMerge.list(bases: $0, local: localFields, server: serverFields)
+      }
+      adjustedLists[index] = Self.localList(result?.merged ?? serverFields)
       replacingLists.insert(local.id)
-      if let payload = result.conflict {
+      let conflict = result == nil
+        ? Self.ambiguousListConflict(local: localFields, server: serverFields)
+        : result?.conflict
+      if let payload = conflict {
         let key = CloudConflictKey.make(
           namespaceKey: namespaceKey,
           recordID: Self.recordID(server.identity),
-          ancestorSystemFields: base.systemFields,
+          ancestorSystemFields: basis.conflictVersion,
           serverSystemFields: server.systemFields
         )
         conflicts.append(CloudConflictInput(
@@ -282,11 +307,20 @@ extension CloudFullSyncPersistence {
           payload: try encoder.encode(payload),
           recovery: .list(Self.recoveredList(payload, key: key))
         ))
+      } else if result == nil, !Self.sameListFields(localFields, serverFields) {
+        recoveryInputs.append(try Self.modeRecovery(
+          transitionID: transitionID,
+          namespaceKey: namespaceKey.rawValue,
+          sourceID: local.id,
+          kind: .modeRecoveredList,
+          payload: ICloudSyncRecoveryPayload(sourceID: local.id, recoveredList: localFields)
+        ))
       }
     }
 
     for index in adjustedSnips.indices.reversed() {
-      var local = adjustedSnips[index]
+      let sourceLocal = adjustedSnips[index]
+      var local = sourceLocal
       let reference = CloudEntityReference(kind: .snip, domainID: local.id)
       if deletedLists.contains(local.listID) {
         let deletedListID = local.listID
@@ -300,20 +334,46 @@ extension CloudFullSyncPersistence {
           payload: ICloudSyncRecoveryPayload(sourceID: local.id, deletedListID: deletedListID)
         ))
       }
-      guard let base = bases[reference] else { continue }
-      guard let server = accepted[reference], server.identity == base.identity else {
-        let baseFields = try Self.snipFields(Self.snipRecord(base))
-        let localFields = Self.snipFields(local, accepted: try Self.snipRecord(base))
-        if Self.sameSnipFields(baseFields, localFields), local.attachments.isEmpty {
+      let remote = accepted[reference]
+      guard let basis = try reenableBasis(
+        reference: reference, server: remote, dormant: bases[reference],
+        retryEvidence: retryEvidence, retryVersion: retryVersion, decoder: decoder,
+        id: \CloudSnipMergeFields.id,
+        dormantFields: { try Self.snipFields(Self.snipRecord($0)) }
+      ) else {
+        if hasRetryEvidence, remote == nil { replacingSnips.insert(local.id) }
+        continue
+      }
+      let localFields: CloudSnipMergeFields
+      if let dormant = basis.dormant {
+        localFields = Self.snipFields(local, accepted: try Self.snipRecord(dormant))
+      } else {
+        localFields = Self.snipFields(sourceLocal, accepted: nil)
+      }
+      guard let server = remote,
+        basis.dormant == nil || basis.dormant?.identity == server.identity
+      else {
+        if basis.dormant == nil { replacingSnips.insert(local.id) }
+        if let bases = basis.fields,
+          Self.sameSnipFields(bases.local, localFields), local.attachments.isEmpty
+        {
           adjustedSnips.remove(at: index)
           continue
         }
-        let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
-          transitionID: transitionID,
-          sourceID: local.id
-        )
+        let priorRecovery = basis.fields == nil
+          ? Self.acceptedRecovery(
+            for: local, listID: SnipList.inbox.id, target: target.snips, accepted: accepted
+          )
+          : nil
+        let recoveredID = priorRecovery?.id
+          ?? SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: local.id)
         let recovered = Self.recovered(local, id: recoveredID, listID: SnipList.inbox.id)
-        adjustedSnips[index] = recovered
+        if priorRecovery != nil, sourceSnipIDs.contains(recoveredID) {
+          adjustedSnips.remove(at: index)
+        } else {
+          adjustedSnips[index] = recovered
+          if priorRecovery != nil { replacingSnips.insert(recoveredID) }
+        }
         recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
@@ -324,19 +384,51 @@ extension CloudFullSyncPersistence {
         ))
         continue
       }
-      let baseRecord = try Self.snipRecord(base)
-      let result = try CloudThreeWayMerge.snip(
-        base: try Self.snipFields(baseRecord),
-        local: Self.snipFields(local, accepted: baseRecord),
-        server: try Self.snipFields(Self.snipRecord(server))
-      )
-      adjustedSnips[index] = Self.snip(result.merged, attachments: local.attachments)
+      let serverFields = try Self.snipFields(Self.snipRecord(server))
+      let result: CloudSnipMergeResult?
+      if let bases = basis.fields {
+        do {
+          result = try CloudThreeWayMerge.snip(bases: bases, local: localFields, server: serverFields)
+        } catch CloudMergeError.immutableMetadata where basis.dormant == nil {
+          result = nil
+        }
+      } else {
+        result = nil
+      }
+      var attachments = local.attachments
+      if basis.dormant == nil {
+        let localAttachmentIDs = Set(attachments.map(\.id))
+        for attachment in targetSnips[local.id]?.attachments ?? []
+          where !localAttachmentIDs.contains(attachment.id)
+        {
+          attachments.append(attachment)
+          if attachmentData[attachment.id] == nil {
+            attachmentData[attachment.id] = target.attachmentData[attachment.id]
+          }
+        }
+      }
+      let merged = Self.snip(result?.merged ?? serverFields, attachments: attachments)
+      adjustedSnips[index] = deletedLists.contains(merged.listID)
+        ? Self.replacing(merged, listID: SnipList.inbox.id) : merged
       replacingSnips.insert(local.id)
-      if let payload = result.conflict {
+      if result == nil, !Self.sameSnipFields(localFields, serverFields) {
+        let listID = local.listID
+        let priorRecovery = Self.acceptedRecovery(
+          for: local, listID: listID, target: target.snips, accepted: accepted
+        )
+        let recoveredID = priorRecovery?.id
+          ?? SnipLibraryTransferPlanner.derivedUUID(transitionID: transitionID, sourceID: local.id)
+        if priorRecovery == nil || !sourceSnipIDs.contains(recoveredID) {
+          adjustedSnips.append(Self.recovered(local, id: recoveredID, listID: listID))
+          if priorRecovery != nil { replacingSnips.insert(recoveredID) }
+        }
+        recoveredSourceIDs.insert(local.id)
+      }
+      if let payload = result?.conflict {
         let key = CloudConflictKey.make(
           namespaceKey: namespaceKey,
           recordID: Self.recordID(server.identity),
-          ancestorSystemFields: base.systemFields,
+          ancestorSystemFields: basis.conflictVersion,
           serverSystemFields: server.systemFields
         )
         let recoveredID = SnipLibraryTransferPlanner.derivedUUID(
@@ -385,7 +477,7 @@ extension CloudFullSyncPersistence {
       revision: source.revision,
       snips: adjustedSnips,
       lists: adjustedLists,
-      attachmentData: source.attachmentData,
+      attachmentData: attachmentData,
       legacyManualPositions: source.legacyManualPositions,
       opaqueSyncStateDigest: source.opaqueSyncStateDigest,
       opaqueSyncStatePayload: source.opaqueSyncStatePayload,
@@ -398,13 +490,27 @@ extension CloudFullSyncPersistence {
       replacingTargetSnipIDs: replacingSnips,
       replacingTargetListIDs: replacingLists
     )
+    let remainingListIDs = Set(transfer.lists.map(\.id))
+    let snips = try transfer.snips.map { snip in
+      guard deletedLists.contains(snip.listID), !remainingListIDs.contains(snip.listID) else {
+        return snip
+      }
+      recoveryInputs.append(try Self.modeRecovery(
+        transitionID: transitionID,
+        namespaceKey: namespaceKey.rawValue,
+        sourceID: snip.id,
+        kind: .modeDeletedListPlacement,
+        payload: ICloudSyncRecoveryPayload(sourceID: snip.id, deletedListID: snip.listID)
+      ))
+      return Self.replacing(snip, listID: SnipList.inbox.id)
+    }
     return try CloudFullReenableApplyPlan(
       transitionID: transitionID,
       namespaceKey: namespaceKey.rawValue,
       expectedNamespaceRevision: stored.namespaceState.revision,
       targetRevision: transfer.targetRevision,
       targetDigest: transfer.targetDigest,
-      snips: transfer.snips,
+      snips: snips,
       lists: transfer.lists,
       attachmentData: transfer.attachmentData,
       dormantPayload: transfer.opaqueSyncStatePayload,
@@ -446,6 +552,85 @@ extension CloudFullSyncPersistence {
   private static func isRetryableRecovery(_ input: CloudFullRecoveryInput) -> Bool {
     input.kind == .retryableFetch || input.kind == .retryableSend
   }
+
+  private func reenableBasis<Fields: Decodable>(
+    reference: CloudEntityReference,
+    server: CloudAcceptedEntity?,
+    dormant: CloudAcceptedEntity?,
+    retryEvidence: CloudSetupRetryEvidence?,
+    retryVersion: Data,
+    decoder: JSONDecoder,
+    id: KeyPath<Fields, UUID>,
+    dormantFields: (CloudAcceptedEntity) throws -> Fields
+  ) throws -> ICloudReenableMergeBasis<Fields>? {
+    if let retryEvidence, !retryEvidence.isEmpty {
+      let canonicalID: CloudRecordID = switch reference.kind {
+      case .snip: .snip(reference.domainID, in: dataZone)
+      case .list: .list(reference.domainID, in: dataZone)
+      }
+      let identities = Set([
+        Self.storageIdentity(canonicalID), server?.identity, dormant?.identity,
+      ].compactMap { $0 })
+      let keys = identities.map { CloudSetupRetryRecordKey(reference: reference, identity: $0) }
+      let identity = server?.identity ?? Self.storageIdentity(canonicalID)
+      let key = CloudSetupRetryRecordKey(reference: reference, identity: identity)
+      let baseline = retryEvidence.baseline(for: key)
+      // With no accepted version on either side, the initial seed can still use its original ID.
+      if (server != nil || dormant != nil || baseline != nil),
+        keys.contains(where: { retryEvidence.requiresRecovery(for: $0) })
+      {
+        return ICloudReenableMergeBasis(fields: nil, dormant: nil, conflictVersion: retryVersion)
+      }
+      if let baseline {
+        guard let localFields = try? decoder.decode(Fields.self, from: baseline.sourceFields),
+          let serverFields = try? decoder.decode(Fields.self, from: baseline.serverFields),
+          localFields[keyPath: id] == reference.domainID,
+          serverFields[keyPath: id] == reference.domainID
+        else {
+          return ICloudReenableMergeBasis(fields: nil, dormant: nil, conflictVersion: retryVersion)
+        }
+        return ICloudReenableMergeBasis(
+          fields: (localFields, serverFields), dormant: nil,
+          conflictVersion: retryVersion + baseline.serverFields
+        )
+      }
+    }
+    guard let dormant else { return nil }
+    let fields = try dormantFields(dormant)
+    return ICloudReenableMergeBasis(
+      fields: (fields, fields), dormant: dormant, conflictVersion: dormant.systemFields
+    )
+  }
+
+  private static func ambiguousListConflict(
+    local: CloudListMergeFields,
+    server: CloudListMergeFields
+  ) -> CloudListConflictPayload? {
+    var fields: Set<CloudListConflictField> = []
+    if local.desiredName != server.desiredName { fields.insert(.desiredName) }
+    if local.systemImage != server.systemImage { fields.insert(.systemImage) }
+    if local.color != server.color { fields.insert(.color) }
+    return fields.isEmpty ? nil : CloudListConflictPayload(fields: fields, local: local, server: server)
+  }
+
+  private static func acceptedRecovery(
+    for local: Snip,
+    listID: UUID,
+    target: [Snip],
+    accepted: [CloudEntityReference: CloudAcceptedEntity]
+  ) -> Snip? {
+    target.first { candidate in
+      guard candidate.id != local.id,
+        candidate.content == local.content,
+        candidate.attachments.map(\.id) == local.attachments.map(\.id),
+        accepted[CloudEntityReference(kind: .snip, domainID: candidate.id)] != nil
+      else { return false }
+      // The recovery request ID links this copy to its source even across a new transition.
+      let recovered = Self.recovered(local, id: candidate.id, listID: listID)
+      return sameSnipFields(snipFields(candidate, accepted: nil), snipFields(recovered, accepted: nil))
+    }
+  }
+
   private static func materializedEntity(_ input: CloudAcceptedEntityInput) -> CloudAcceptedEntity {
     CloudAcceptedEntity(
       reference: input.reference,

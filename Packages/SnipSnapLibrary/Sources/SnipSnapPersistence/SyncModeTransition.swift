@@ -165,6 +165,11 @@ extension SyncModeTransition {
     return false
   }
 
+  var mayHaveUnidentifiedSetupSend: Bool {
+    phase == .firstSendStarted || phase == .firstSendComplete || awaitsAcceptedServerCapture
+      || !seeds.supersededApprovedSnipIDs.isEmpty || !seeds.serverAcceptedSnipIDs.isEmpty
+  }
+
   func awaitsMerge(using token: SyncModeFreezeToken) -> Bool {
     stage == .sourceFrozen(token, .taken)
   }
