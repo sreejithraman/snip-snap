@@ -1,9 +1,132 @@
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
+import Synchronization
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    // Diagnostic for the setup retry path. A base shadow in a fake send does
+    // not make the corresponding CloudKit delete conditional.
+    func testSetupRetryKeepsLocalDeletionWhenPeerEditsAfterFetch() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localRoot = root.appendingPathComponent("local")
+        let persistence = try SwiftDataSyncModePersistence(rootURL: localRoot)
+        let local = try await persistence.activeLibrary()
+        try await add("acknowledged before setup stops", to: local)
+        try await add("still needs an outbound save", to: local)
+        let initial = try await local.checkedSnapshot(sortedBy: .manual)
+        let deleted = try XCTUnwrap(initial.snips.first { $0.content == "acknowledged before setup stops" })
+        let survivor = try XCTUnwrap(initial.snips.first { $0.id != deleted.id })
+        let metadataZone = CloudZoneID(name: "metadata", ownerName: "owner")
+        let payloadZone = CloudZoneID(name: "payload", ownerName: "owner")
+        let namespace = CloudSyncNamespace(
+            cloudScope: "private", accountLineage: "account", generation: UUID(),
+            zones: [metadataZone, payloadZone]
+        )
+        let deletedID = CloudRecordID.snip(deleted.id, in: metadataZone)
+        let survivorID = CloudRecordID.snip(survivor.id, in: metadataZone)
+        let server = FakeCloudServer()
+        let firstTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await firstTransport.failNextSentItem(survivorID, failure: .retryable)
+        let first = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: metadataZone,
+            payloadZone: payloadZone, makeTransport: { firstTransport }
+        )
+        let partial = try await first.enableOrRetry()
+        XCTAssertEqual(partial.state, .settingUp)
+        let key = CloudSetupRetryRecordKey(
+            reference: CloudEntityReference(kind: .snip, domainID: deleted.id),
+            identity: CloudFullSyncPersistence.storageIdentity(deletedID)
+        )
+        let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+        _ = try XCTUnwrap(evidence?.baseline(for: key))
+        _ = try await local.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
+
+        let peer = try SwiftDataSyncModePersistence(rootURL: root.appendingPathComponent("peer"))
+        let peerCoordinator = ICloudSyncModeCoordinator(
+            persistence: peer, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let peerEnabled = try await peerCoordinator.enableOrRetry()
+        XCTAssertEqual(peerEnabled.state, .on)
+        let peerLibrary = try await peer.activeLibrary()
+        let bytes = Data("the peer's attachment bytes".utf8)
+        let file = root.appendingPathComponent("peer.txt")
+        try bytes.write(to: file)
+        let attached = try await peerLibrary.perform(
+            .update(
+                id: deleted.id, content: deleted.content, attachmentURLs: [file],
+                expectedUpdatedAt: nil, now: deleted.updatedAt.addingTimeInterval(1)
+            ),
+            sortedBy: .manual
+        )
+        let attachment = try XCTUnwrap(attached.snapshot.snips.first?.attachments.first)
+        let attachmentSynced = try await peerCoordinator.syncActive()
+        XCTAssertEqual(attachmentSynced.state, .on)
+        let metadataID = CloudRecordID(zone: metadataZone, name: "a-\(attachment.id.uuidString.lowercased())")
+        let published = await server.fullSnapshot(for: metadataID)
+        let pointer = try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(published))
+        let payloadID = CloudAttachmentRecordCodec.recordID(pointer.payloadIdentity)
+
+        let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let eventsBeforePeerEdit = Mutex<[FakeCloudTransportEvent]?>(nil)
+        let peerText = "edited by the peer after retry fetched"
+        let reopened = try SwiftDataSyncModePersistence(rootURL: localRoot, readHook: {
+            let events = await retryTransport.events()
+            // Managed reads can call the hook earlier. The frozen source read
+            // is after fetch confirmation and before the first outbound batch.
+            guard events.contains(.fetched), case .confirmed? = events.last else { return }
+            let firstRead = eventsBeforePeerEdit.withLock { captured in
+                guard captured == nil else { return false }
+                captured = events
+                return true
+            }
+            guard firstRead else { return }
+            _ = try await peerLibrary.perform(
+                .update(
+                    id: deleted.id, content: peerText, attachmentURLs: nil,
+                    expectedUpdatedAt: nil, now: deleted.updatedAt.addingTimeInterval(2)
+                ),
+                sortedBy: .manual
+            )
+            let peerSynced = try await peerCoordinator.syncActive()
+            XCTAssertEqual(peerSynced.state, .on)
+        })
+        let before = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(before.snips.map(\.id), [survivor.id])
+        let reopenedEvidence = await reopened.setupRetryEvidence(namespace: namespace.binding)
+        XCTAssertEqual(reopenedEvidence?.baseline(for: key), evidence?.baseline(for: key))
+
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
+            makeTransport: { retryTransport }
+        )
+        _ = try await retry.enableOrRetry()
+
+        let atPeerEdit = try XCTUnwrap(eventsBeforePeerEdit.withLock { $0 })
+        let events = await retryTransport.events()
+        XCTAssertEqual(Array(events.prefix(atPeerEdit.count)), atPeerEdit)
+        let suppliedIDs = events.dropFirst(atPeerEdit.count).flatMap { event -> [CloudRecordID] in
+            guard case .sent(let ids) = event else { return [] }
+            return ids
+        }
+        XCTAssertFalse(atPeerEdit.contains { if case .sent = $0 { return true }; return false })
+        XCTAssertTrue(suppliedIDs.contains(survivorID), "The probe must observe a real setup send.")
+        // A send for these IDs would be unexpected regardless of the kind
+        // or whether the fake server's shadow check accepts it.
+        XCTAssertTrue(Set(suppliedIDs).isDisjoint(with: [deletedID, metadataID, payloadID]))
+
+        let stored = await server.fullSnapshot(for: deletedID)
+        XCTAssertEqual(try CloudFullRecordCodec.snip(from: XCTUnwrap(stored)).text, .value(peerText))
+        let finalPointer = await server.fullSnapshot(for: metadataID)
+        XCTAssertEqual(try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(finalPointer)), pointer)
+        let payload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(payload)), bytes)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [survivor.id], "Retry silently restored the deleted snip.")
+    }
+
     func testSecondDeviceCanEnableSyncWithAnUncachedRemoteAttachment() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
