@@ -546,6 +546,9 @@ private extension SwiftDataSnipLibrary {
       }
       let complete = Set(remote.values) == Set(0..<remote.count)
       let localOrderChanged = references.contains { previous[$0.attachmentID]?.position != $0.position }
+      let hasOnePendingAttachment = previous.count == references.count
+        && Set(previous.values.map(\.position)) == Set(0..<previous.count)
+        && publications.filter { !$0.lifecycle.isMetadataAccepted }.count == 1
       let ownerKeepsOrder = references.contains { reference in
         let id = reference.attachmentID
         guard let row = rows[id], row.lifecycle.localSourceRelativePath != nil,
@@ -554,8 +557,8 @@ private extension SwiftDataSnipLibrary {
           return false
         }
         if !complete || base.position != reference.position { return true }
-        // A pending row that matches the old rank may be undoing an unacknowledged reorder.
-        let queuedRename = row.position == base.position && row.fileName != base.fileName
+        // An undo of an unacknowledged reorder can leave several attachments pending at their old ranks.
+        let queuedRename = hasOnePendingAttachment && row.position == base.position && row.fileName != base.fileName
           && row.contentType == base.contentType
         return !row.lifecycle.isMetadataAccepted && !queuedRename && remote[id] != reference.position
       }

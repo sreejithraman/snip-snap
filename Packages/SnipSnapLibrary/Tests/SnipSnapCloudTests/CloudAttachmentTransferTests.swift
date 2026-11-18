@@ -5136,6 +5136,51 @@ extension CloudAttachmentTransferTests {
     try await assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: true)
   }
 
+  func testAttachmentOrderUndoSurvivesTwoRenamesAfterLostAcknowledgement() async throws {
+    enum Interruption: Error { case beforeCommit }
+
+    let pair = try await makeDownloadedAttachmentPair()
+    defer { try? FileManager.default.removeItem(at: pair.root) }
+    try await pair.sender.fetchRemote()
+    let initial = try await pair.senderLibrary.checkedSnapshot(sortedBy: .manual)
+    var restored = try XCTUnwrap(initial.snips.first(where: { $0.id == pair.snipID }))
+    let order = restored.attachments.map(\.id)
+    try await keepAttachments(Array(order.reversed()), ofSnip: pair.snipID, in: pair.senderLibrary)
+    do {
+      try await pair.sender.sendPending(beforeApply: { throw Interruption.beforeCommit })
+      XCTFail("Expected the reorder result to be lost before staging.")
+    } catch Interruption.beforeCommit {}
+    let firstID = CloudAttachmentRecordCodec.recordID(pair.first.metadataIdentity)
+    let secondID = CloudAttachmentRecordCodec.recordID(pair.second.metadataIdentity)
+    let reversedFirst = try await serverAttachmentMetadata(firstID, on: pair.server)
+    let reversedSecond = try await serverAttachmentMetadata(secondID, on: pair.server)
+    XCTAssertEqual([reversedFirst.position, reversedSecond.position], [1, 0])
+
+    restored.attachments[0].fileName = "renamed-first.txt"
+    restored.attachments[1].fileName = "renamed-second.txt"
+    try await restoreSnip(restored, in: pair.senderLibrary)
+    let reopened = try attachmentClient(
+      root: pair.root,
+      storeURL: pair.root.appendingPathComponent("sender.store"),
+      namespace: pair.namespace,
+      server: pair.server,
+      snipID: pair.snipID
+    )
+    try await reopened.sync.sync()
+    try await pair.receiver.fetchRemote()
+
+    for library in [reopened.library, pair.receiverLibrary] {
+      let local = try await library.checkedSnapshot(sortedBy: .manual)
+      let snip = try XCTUnwrap(local.snips.first(where: { $0.id == pair.snipID }))
+      XCTAssertEqual(snip.attachments.map(\.id), order)
+      XCTAssertEqual(snip.attachments.map(\.fileName), restored.attachments.map(\.fileName))
+    }
+    let first = try await serverAttachmentMetadata(firstID, on: pair.server)
+    let second = try await serverAttachmentMetadata(secondID, on: pair.server)
+    XCTAssertEqual([first.position, second.position], [0, 1])
+    XCTAssertEqual([first.fileName, second.fileName], restored.attachments.map(\.fileName))
+  }
+
   private func assertConcurrentAttachmentEditsAfterLostAcknowledgement(queueRename: Bool) async throws {
     enum Interruption: Error { case beforeSend, beforeCommit }
 
