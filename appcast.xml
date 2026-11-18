@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Wed, 18 Nov 2026 23:33:41 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.285</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.285-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>285</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.285/Snip-Snap-0.6.1.zip" length="20008026" type="application/octet-stream" sparkle:edSignature="ZYX19lUUF64MN5kKhGFoYpH6DDbAq1aMzY5MzIQDslgzP46HVQflGxIy7yyKKFCLyrwB7iSm/fDMttTAd8yrDA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 285 — Mac
+
+- Keep republished attachments open after a peer deletes them
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Wed, 18 Nov 2026 15:39:37 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.284</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.284-mac.txt</sparkle:fullReleaseNotesLink>
