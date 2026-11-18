@@ -1790,6 +1790,7 @@ extension SnipLibraryBehaviorTests {
         })
       }
     }
+    var phase = "checking the held raw repair and expired save"
     do {
       try await gate.waitUntilEntered()
       try fixture.assertRejected(stale)
@@ -1801,16 +1802,35 @@ extension SnipLibraryBehaviorTests {
       } catch is CancellationError {}
       let savedDespiteExpiry = try await checkedRepairHasMetadata(for: fixture.target.id, in: fixture.raw)
       XCTAssertFalse(savedDespiteExpiry, "The pre-save callback ran before any durable backfill")
+      phase = "verifying original undo and command routing"
       try await fixture.assertOriginalCommandOwner()
 
-      let reopened = try await fixture.persistence.libraryForTransition(storeID: fixture.selected.id)
+      phase = "reopening the original durable store selection"
+      let recovered = try SwiftDataSyncModePersistence(rootURL: await fixture.persistence.rootURL)
+      let recoveredStore = try await recovered.snapshot().activeStore
+      XCTAssertEqual(recoveredStore.id, fixture.selected.id)
+      let recoveredURL = await recovered.storeFileURL(recoveredStore)
+      XCTAssertEqual(recoveredURL, fixture.storeURL)
+
+      phase = "repairing metadata through the reopened owner"
+      let reopened = try await recovered.libraryForTransition(storeID: recoveredStore.id)
       let repaired = try await checkedRepairHasMetadata(for: fixture.target.id, in: reopened)
       XCTAssertTrue(repaired)
-      try await fixture.installFreshAndVerifyDurableCommand(store: fixture.selected, snip: fixture.target)
+
+      phase = "obtaining the reopened owner's managed library"
+      let managed = try await recovered.activeLibrary()
+      phase = "reading, closing and installing the fresh checked application"
+      let fresh = try await fixture.session.replaceLibraryChecked(managed, recoveryScope: nil, sortedBy: .manual)
+      fixture.assertRead(fresh.read, store: fixture.selected, snip: fixture.target)
+      phase = "rejecting the old publication after recovery"
+      try fixture.assertRejected(stale)
+      phase = "verifying the installed owner and durable command in both stores"
+      try await fixture.verifyInstalledAndDurableCommand(store: fixture.selected, snip: fixture.target)
     } catch {
       gate.release()
       repair.cancel()
       await repair.join(until: Date().addingTimeInterval(30))
+      XCTFail("Raw repair fixture failed while \(phase): \(error)")
       throw error
     }
   }
@@ -1920,6 +1940,10 @@ private struct CheckedPublicationFixture: Sendable {
     let fresh = try await session.replaceLibraryChecked(managed,
       recoveryScope: store.namespace.map { SnipRecoveryScope($0.namespaceKey.rawValue) }, sortedBy: .manual)
     assertRead(fresh.read, store: store, snip: snip)
+    try await verifyInstalledAndDurableCommand(store: store, snip: snip)
+  }
+
+  func verifyInstalledAndDurableCommand(store: SyncModeStore, snip: Snip) async throws {
     let installed = try await session.checkedRead(sortedBy: .manual)
     assertRead(installed, store: store, snip: snip)
     _ = try await session.performUserCommand(.add(content: "Command after fresh checked install", origin: .quickEntry,
