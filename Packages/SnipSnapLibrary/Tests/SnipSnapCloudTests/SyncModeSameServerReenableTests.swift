@@ -59,6 +59,126 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertFreshEnableKeepsTheEditAsARecoveredCopy(.relaunchEditThenTryAgain)
     }
 
+    func testFullRecordTryAgainKeepsDeletionOfAcknowledgedSnip() async throws {
+        try await assertSetupRetryAfterDeletingSnip(.acknowledged)
+    }
+
+    func testFullRecordTryAgainKeepsServerEditAfterAcknowledgedSnipWasDeletedLocally() async throws {
+        try await assertSetupRetryAfterDeletingSnip(.serverEdited)
+    }
+
+    func testFullRecordTryAgainKeepsServerSnipWithoutDeletionEvidence() async throws {
+        try await assertSetupRetryAfterDeletingSnip(.missingAcknowledgement)
+    }
+
+    private enum DeletedSetupSnip {
+        case acknowledged
+        case serverEdited
+        case missingAcknowledgement
+    }
+
+    private func assertSetupRetryAfterDeletingSnip(
+        _ scenario: DeletedSetupSnip,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stranded = try await strandAnEnableThatReachedTheServer(
+            root: root, fullDisk: .manifestAndStore, file: file, line: line
+        )
+        stranded.disk.free()
+        let deletedID = stranded.keptSnipID
+        let keptID = try XCTUnwrap(stranded.originals.keys.first { $0 != deletedID }, file: file, line: line)
+        let editable = try relaunch(stranded, root: root)
+        let source = try await editable.activeLibrary()
+        let beforeDeletion = try await source.checkedSnapshot(sortedBy: .manual)
+        let deleted = try XCTUnwrap(beforeDeletion.snips.first { $0.id == deletedID }, file: file, line: line)
+        let storage = try await editable.snapshot()
+        XCTAssertEqual(storage.activeStore.id, stranded.transition.sourceStoreID, file: file, line: line)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly, file: file, line: line)
+        XCTAssertEqual(storage.transition?.phase, .candidateReady, file: file, line: line)
+        _ = try await source.perform(.delete(ids: [deletedID]), sortedBy: .manual)
+        try await edit(keptID, to: "kept with a new local edit", in: editable)
+
+        let namespace = makeNamespace()
+        let zone = textZone(namespace)
+        let recordID = CloudRecordID.snip(deletedID, in: zone)
+        let stored = await stranded.server.fullSnapshot(for: recordID)
+        let accepted = try CloudFullRecordCodec.snip(from: XCTUnwrap(stored, file: file, line: line))
+        XCTAssertEqual(accepted.domainID, deletedID, file: file, line: line)
+        XCTAssertEqual(accepted.text, .value(deleted.content), file: file, line: line)
+
+        var expected = [keptID: "kept with a new local edit"]
+        switch scenario {
+        case .acknowledged:
+            break
+        case .serverEdited:
+            let changed = Snip(
+                id: deletedID,
+                requestID: deleted.requestID,
+                createdAt: deleted.createdAt,
+                updatedAt: deleted.updatedAt.addingTimeInterval(5),
+                content: "edited by another device",
+                origin: deleted.origin,
+                source: deleted.source,
+                listID: deleted.listID,
+                manualSortKey: deleted.manualSortKey
+            )
+            let writer = FakeCloudRecordTransport(server: stranded.server, namespace: namespace)
+            let sent = try await writer.send(CloudOutboundBatch(operations: [
+                .save(CloudFullRecordCodec.snipDraft(changed, accepted: accepted))
+            ]))
+            guard case .saved = try XCTUnwrap(sent.items.first, file: file, line: line) else {
+                return XCTFail("The independent edit must reach the server.", file: file, line: line)
+            }
+            expected[deletedID] = changed.content
+        case .missingAcknowledgement:
+            try stripSetupRetryEvidence(of: stranded, root: root, file: file, line: line)
+            expected[deletedID] = deleted.content
+        }
+
+        let reopened = try relaunch(stranded, root: root)
+        let reopenedStorage = try await reopened.snapshot()
+        XCTAssertEqual(reopenedStorage.activeStore.id, storage.activeStore.id, file: file, line: line)
+        let durable = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(durable.snips.map(\.id), [keptID], file: file, line: line)
+        XCTAssertEqual(durable.snips.map(\.content), ["kept with a new local edit"], file: file, line: line)
+        let key = CloudSetupRetryRecordKey(
+            reference: CloudEntityReference(kind: .snip, domainID: deletedID),
+            identity: CloudFullSyncPersistence.storageIdentity(recordID)
+        )
+        let evidence = await reopened.setupRetryEvidence(namespace: namespace.binding)
+        if scenario == .missingAcknowledgement {
+            XCTAssertNil(evidence?.baseline(for: key), file: file, line: line)
+        } else {
+            let baseline = try XCTUnwrap(evidence?.baseline(for: key), file: file, line: line)
+            XCTAssertEqual(evidence?.requiresRecovery(for: key), false, file: file, line: line)
+            for fields in [baseline.sourceFields, baseline.serverFields] {
+                let snip = try JSONDecoder().decode(CloudSnipMergeFields.self, from: fields)
+                XCTAssertEqual(snip.id, deletedID, file: file, line: line)
+                XCTAssertEqual(snip.text, deleted.content, file: file, line: line)
+            }
+        }
+
+        let result = try await sameServerCoordinator(on: reopened, server: stranded.server).enableOrRetry()
+        XCTAssertEqual(result.state, .on, file: file, line: line)
+        let active = try await reopened.snapshot()
+        XCTAssertEqual(active.activeStore.kind, .iCloudSync, file: file, line: line)
+        XCTAssertNil(active.transition, file: file, line: line)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.count, expected.count, file: file, line: line)
+        XCTAssertEqual(
+            Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
+            expected, file: file, line: line
+        )
+        if scenario == .acknowledged {
+            let restored = await stranded.server.fullSnapshot(for: recordID)
+            XCTAssertNil(restored, "Retry must remove the acknowledged snip from the server.", file: file, line: line)
+        }
+        try await assertSameServerSnips(stranded.server, texts: expected, file: file, line: line)
+    }
+
     func testFullRecordTryAgainAfterReopeningKeepsBothDevicesEdits() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
