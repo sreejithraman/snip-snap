@@ -537,7 +537,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }))
     let oldAttachmentID = target.metadata.attachmentID
     let oldMetadataID = CloudAttachmentRecordCodec.recordID(target.metadataIdentity)
-    let payloadIdentity = target.metadata.payloadIdentity
+    let oldPayloadID = CloudAttachmentRecordCodec.recordID(target.metadata.payloadIdentity)
     let fetchedServerMetadata = await server.fullSnapshot(for: oldMetadataID)
     let serverMetadata = try XCTUnwrap(fetchedServerMetadata)
     let secondClient = FakeCloudRecordTransport(server: server, namespace: namespace)
@@ -565,30 +565,153 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let replacement = try XCTUnwrap(recovered.publications.first(where: {
       $0.metadata.fileName == target.metadata.fileName
     }))
-    XCTAssertNotEqual(replacement.metadata.attachmentID, oldAttachmentID)
+    let replacementID = replacement.metadata.attachmentID
+    let newMetadataID = CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)
+    let freshPayloadID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
+    XCTAssertNotEqual(replacementID, oldAttachmentID)
     XCTAssertNotEqual(replacement.metadataIdentity, target.metadataIdentity)
-    XCTAssertEqual(replacement.metadata.payloadIdentity, payloadIdentity)
-    XCTAssertTrue(replacement.payloadAccepted)
+    XCTAssertNotEqual(freshPayloadID, oldPayloadID)
+    XCTAssertFalse(replacement.payloadAccepted)
     XCTAssertFalse(replacement.metadataAccepted)
     let domain = try await library.checkedSnapshot(sortedBy: .manual)
     let domainSnip = try XCTUnwrap(domain.snips.first(where: { $0.id == snipID }))
     XCTAssertFalse(domainSnip.attachments.contains(where: { $0.id == oldAttachmentID }))
-    XCTAssertTrue(domainSnip.attachments.contains(where: {
-      $0.id == replacement.metadata.attachmentID
-    }))
+    XCTAssertTrue(domainSnip.attachments.contains(where: { $0.id == replacementID }))
 
     try await sync.sendPending()
 
-    let settled = try await snapshot(library, namespace)
-    XCTAssertTrue(try XCTUnwrap(settled.publications.first(where: {
-      $0.metadata.attachmentID == replacement.metadata.attachmentID
-    })).metadataAccepted)
+    let afterUpload = try await snapshot(library, namespace)
+    let uploaded = try publication(of: replacementID, in: afterUpload)
+    XCTAssertTrue(uploaded.payloadAccepted)
+    XCTAssertFalse(uploaded.metadataAccepted)
+    let freshPayload = await server.fullSnapshot(for: freshPayloadID)
+    let metadataBeforePublish = await server.fullSnapshot(for: newMetadataID)
+    let oldPayloadBeforePublish = await server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNotNil(freshPayload)
+    XCTAssertNil(metadataBeforePublish)
+    XCTAssertNotNil(oldPayloadBeforePublish)
+
+    try await sync.sendPending()
+
+    let afterPublish = try await snapshot(library, namespace)
+    XCTAssertTrue(try publication(of: replacementID, in: afterPublish).metadataAccepted)
+    let newMetadata = try await serverAttachmentMetadata(newMetadataID, on: server)
+    XCTAssertEqual(CloudAttachmentRecordCodec.recordID(newMetadata.payloadIdentity), freshPayloadID)
+    let oldPayloadBeforeCleanup = await server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNotNil(oldPayloadBeforeCleanup)
+
+    let cleanup = try await sync.sendPending()
+
+    XCTAssertTrue(cleanup.settled)
     let oldMetadata = await server.fullSnapshot(for: oldMetadataID)
+    let oldPayload = await server.fullSnapshot(for: oldPayloadID)
+    let remainingPayload = await server.fullSnapshot(for: freshPayloadID)
     XCTAssertNil(oldMetadata)
-    let newMetadata = await server.fullSnapshot(
-      for: CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)
+    XCTAssertNil(oldPayload)
+    XCTAssertNotNil(remainingPayload)
+  }
+
+  func testMetadataSaveAfterPeerDeletesPayloadRepublishesDownloadableAttachment() async throws {
+    let owner = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    try await owner.sync.sync()
+    let published = try await snapshot(owner.library, owner.namespace)
+    let original = try XCTUnwrap(published.publications.first)
+    let durableSource = try XCTUnwrap(original.localSourceURL)
+    let bytes = Data("original payload".utf8)
+    let oldMetadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let oldPayloadID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
     )
-    XCTAssertNotNil(newMetadata)
+    try await peer.sync.fetchRemote()
+    try await keepAttachments([], ofSnip: peer.snipID, in: peer.library)
+    try await peer.sync.sendPending()
+    let deletedMetadata = await owner.server.fullSnapshot(for: oldMetadataID)
+    let payloadBeforeCleanup = await owner.server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNil(deletedMetadata)
+    XCTAssertNotNil(payloadBeforeCleanup, "The metadata delete must precede payload cleanup.")
+
+    // The peer can need two cleanup sends to learn the payload's accepted shadow and delete it.
+    for _ in 0..<2 { try await peer.sync.sendPending() }
+    let deletedPayload = await owner.server.fullSnapshot(for: oldPayloadID)
+    let deleted = try await snapshot(peer.library, peer.namespace)
+    XCTAssertNil(deletedPayload)
+    XCTAssertTrue(deleted.publications.isEmpty)
+    XCTAssertTrue(deleted.cleanups.isEmpty)
+
+    let renamed = "renamed.txt"
+    try await renameAttachment(ofSnip: owner.snipID, to: renamed, in: owner.library)
+    try await owner.sync.sendPending(beforeSend: { batch in
+      XCTAssertTrue(batch.operations.contains { operation in
+        guard case .save(let draft) = operation else { return false }
+        return draft.id == oldMetadataID && draft.base != nil
+      }, "The owner's stale metadata save must reach the server.")
+    })
+    let recovered = try await snapshot(owner.library, owner.namespace)
+    let replacement = try XCTUnwrap(recovered.publications.first)
+    let attachmentID = replacement.metadata.attachmentID
+    let metadataID = CloudAttachmentRecordCodec.recordID(replacement.metadataIdentity)
+    XCTAssertNotEqual(attachmentID, original.metadata.attachmentID)
+    XCTAssertNotEqual(metadataID, oldMetadataID)
+
+    try await owner.sync.sendPending()
+    let afterFirstFollowUp = try await snapshot(owner.library, owner.namespace)
+    let firstFollowUp = try publication(of: attachmentID, in: afterFirstFollowUp)
+    if firstFollowUp.payloadAccepted,
+       firstFollowUp.metadata.payloadIdentity != original.metadata.payloadIdentity {
+      let metadataBeforePublish = await owner.server.fullSnapshot(for: metadataID)
+      XCTAssertNil(metadataBeforePublish, "The fresh payload must be accepted before metadata is published.")
+    }
+    let settled = try await owner.sync.sendPendingUntilSettled()
+    XCTAssertTrue(settled.settled)
+    let finished = try await snapshot(owner.library, owner.namespace)
+    let republished = try publication(of: attachmentID, in: finished)
+    XCTAssertEqual(republished.localSourceURL, durableSource)
+    XCTAssertEqual(try Data(contentsOf: durableSource), bytes)
+    let ownerSnapshot = try await owner.library.checkedSnapshot(sortedBy: .manual)
+    let ownerSnip = try XCTUnwrap(ownerSnapshot.snips.first { $0.id == owner.snipID })
+    XCTAssertEqual(ownerSnip.attachments.map(\.id), [attachmentID])
+    XCTAssertEqual(ownerSnip.attachments.map(\.fileName), [renamed])
+
+    let wireMetadata = try await serverAttachmentMetadata(metadataID, on: owner.server)
+    let payloadID = CloudAttachmentRecordCodec.recordID(wireMetadata.payloadIdentity)
+    XCTAssertEqual(wireMetadata.fileName, renamed)
+    XCTAssertNotEqual(payloadID, oldPayloadID, "Replacement metadata must name a fresh payload.")
+    let serverAsset = await owner.server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
+    let serverBytes = serverAsset.flatMap { try? Data(contentsOf: $0) }
+    XCTAssertEqual(serverBytes, bytes, "The server must have the replacement bytes.")
+    let finalOldMetadata = await owner.server.fullSnapshot(for: oldMetadataID)
+    let finalOldPayload = await owner.server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNil(finalOldMetadata)
+    XCTAssertNil(finalOldPayload)
+
+    try await peer.sync.fetchRemote()
+    let received = try await snapshot(peer.library, peer.namespace)
+    let remote = try publication(of: attachmentID, in: received)
+    XCTAssertTrue(remote.metadataAccepted)
+    XCTAssertNil(remote.localSourceURL)
+    XCTAssertNil(remote.sourceURL)
+    XCTAssertTrue(received.cacheEntries.isEmpty)
+    let transfers = CloudAttachmentTransferCoordinator(
+      library: peer.library,
+      namespace: peer.namespace,
+      payloadZone: oldPayloadID.zone,
+      transport: peer.transport,
+      maximumCacheBytes: 1_024
+    )
+    do {
+      let opened = try await transfers.prepare(attachmentID: attachmentID, for: .open)
+      XCTAssertEqual(try Data(contentsOf: opened), bytes)
+    } catch CloudAttachmentStorageError.missingPayload {
+      XCTFail("Opening the replacement on the peer failed with missingPayload.")
+    }
   }
 
   func testPayloadUnknownItemRetriesWithANewOpaquePayloadIdentity() async throws {
@@ -1334,6 +1457,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await assertCleanupWaitsForRemappedReplacement(
       fixture,
       removedPayload: removed.metadata.payloadIdentity,
+      previousPayload: remaining.metadata.payloadIdentity,
       replacedAttachmentID: remaining.metadata.attachmentID,
       remappedAttachmentID: remappedAttachmentID,
       remappedMetadataIdentity: remappedMetadataIdentity
@@ -1374,10 +1498,133 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await assertCleanupWaitsForRemappedReplacement(
       fixture,
       removedPayload: removed.metadata.payloadIdentity,
+      previousPayload: remaining.metadata.payloadIdentity,
       replacedAttachmentID: remaining.metadata.attachmentID,
       remappedAttachmentID: remappedAttachmentID,
       remappedMetadataIdentity: remappedMetadataIdentity
     )
+  }
+
+  func testUnknownMetadataSavePreservesAnAlreadyQueuedPayload() async throws {
+    let owner = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    try await owner.sync.sync()
+    let published = try await snapshot(owner.library, owner.namespace)
+    let original = try XCTUnwrap(published.publications.first)
+    let durableSource = try XCTUnwrap(original.localSourceURL)
+    let oldMetadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let oldPayload = original.metadata.payloadIdentity
+
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
+    )
+    try await peer.sync.fetchRemote()
+    try await keepAttachments([], ofSnip: peer.snipID, in: peer.library)
+    try await peer.sync.sendPending()
+    let peerStorage = try await snapshot(peer.library, peer.namespace)
+    XCTAssertEqual(peerStorage.cleanups.map(\.identity), [oldPayload])
+
+    try await renameAttachment(ofSnip: owner.snipID, to: "renamed.txt", in: owner.library)
+    let frozen = try await owner.store.pendingChanges()
+    XCTAssertTrue(frozen.operations.contains { operation in
+      guard case .save(let draft) = operation else { return false }
+      return draft.id == oldMetadataID && draft.base != nil
+    })
+    let sent = try await owner.transport.send(frozen)
+    XCTAssertTrue(sent.items.contains(.unknownItem(oldMetadataID)))
+
+    let bytes = Data("new bytes while the rename is in flight".utf8)
+    try bytes.write(to: durableSource)
+    _ = try await owner.store.pendingChanges()
+    let beforeRemap = try await snapshot(owner.library, owner.namespace)
+    let queued = try publication(of: original.metadata.attachmentID, in: beforeRemap)
+    let queuedPayload = queued.metadata.payloadIdentity
+    let queuedSource = try XCTUnwrap(queued.sourceURL)
+    XCTAssertNotEqual(queuedPayload, oldPayload)
+    XCTAssertFalse(queued.payloadAccepted)
+    XCTAssertEqual(try Data(contentsOf: queuedSource), bytes)
+
+    try await owner.store.stage(.sent(sent), outbound: frozen)
+    try await owner.store.applyStaged(sent.id)
+    try await owner.transport.confirmApplied(sent.id)
+
+    let remapped = try await snapshot(owner.library, owner.namespace)
+    let replacement = try XCTUnwrap(remapped.publications.first)
+    XCTAssertNotEqual(replacement.metadata.attachmentID, original.metadata.attachmentID)
+    XCTAssertEqual(replacement.metadata.payloadIdentity, queuedPayload)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertEqual(replacement.sourceURL, queuedSource)
+    XCTAssertEqual(try Data(contentsOf: queuedSource), bytes)
+    XCTAssertEqual(replacement.localSourceURL, durableSource)
+    XCTAssertEqual(try Data(contentsOf: durableSource), bytes)
+    let cleanup = try XCTUnwrap(remapped.cleanups.first(where: { $0.identity == oldPayload }))
+    XCTAssertEqual(cleanup.blockedByAttachmentID, replacement.metadata.attachmentID)
+
+    try await owner.sync.sendPending()
+
+    let queuedID = CloudAttachmentRecordCodec.recordID(queuedPayload)
+    let serverAsset = await owner.server.asset(for: queuedID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(serverAsset)), bytes)
+    let oldPayloadRecord = await owner.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(oldPayload))
+    XCTAssertNotNil(oldPayloadRecord, "Old payload cleanup must wait for the replacement metadata.")
+  }
+
+  func testRemovingARemappedAttachmentStillCleansUpBothOldPayloads() async throws {
+    let client = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await client.sync.sync()
+    try await client.sync.sync()
+    let published = try await snapshot(client.library, client.namespace)
+    let original = try XCTUnwrap(published.publications.first)
+    let durableFile = try XCTUnwrap(original.localSourceURL)
+    try Data("changed bytes".utf8).write(to: durableFile)
+    try await client.sync.sendPending()
+    let afterUpload = try await snapshot(client.library, client.namespace)
+    let uploaded = try publication(of: original.metadata.attachmentID, in: afterUpload)
+    XCTAssertTrue(uploaded.payloadAccepted)
+    XCTAssertFalse(uploaded.metadataAccepted)
+    XCTAssertEqual(uploaded.priorPayloadIdentity, original.metadata.payloadIdentity)
+    XCTAssertNotEqual(uploaded.metadata.payloadIdentity, original.metadata.payloadIdentity)
+    let oldPayloads = [original.metadata.payloadIdentity, uploaded.metadata.payloadIdentity]
+
+    let metadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let serverRecord = await client.server.fullSnapshot(for: metadataID)
+    let serverMetadata = try XCTUnwrap(serverRecord)
+    let peerTransport = FakeCloudRecordTransport(server: client.server, namespace: client.namespace)
+    let deleted = try await peerTransport.send(CloudOutboundBatch(operations: [
+      .delete(metadataID, base: serverMetadata.shadow)
+    ]))
+    try await peerTransport.confirmApplied(deleted.id)
+    try await client.sync.sendPending()
+
+    let remapped = try await snapshot(client.library, client.namespace)
+    let replacement = try XCTUnwrap(remapped.publications.first)
+    XCTAssertNotEqual(replacement.metadata.attachmentID, original.metadata.attachmentID)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertNil(replacement.priorPayloadIdentity)
+    XCTAssertEqual(Set(remapped.cleanups.map(\.identity)), Set(oldPayloads))
+    for payload in oldPayloads {
+      XCTAssertEqual(
+        remapped.cleanups.first(where: { $0.identity == payload })?.blockedByAttachmentID,
+        replacement.metadata.attachmentID
+      )
+      let record = await client.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(payload))
+      XCTAssertNotNil(record, "Both old payloads must still exist before the replacement is removed.")
+    }
+
+    try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+    let settled = try await client.sync.sendPendingUntilSettled()
+
+    XCTAssertTrue(settled.settled)
+    for payload in oldPayloads {
+      let record = await client.server.fullSnapshot(for: CloudAttachmentRecordCodec.recordID(payload))
+      XCTAssertNil(record, "Removing the replacement must release both old payload cleanups.")
+    }
   }
 
   func testRemovingAndRestoringADownloadedAttachmentKeepsItsPublishedMetadata() async throws {
@@ -3712,13 +3959,23 @@ final class CloudAttachmentTransferTests: XCTestCase {
       restored.metadata.attachmentID,
       "The first sync must remap the restored attachment and make progress."
     )
-    let firstSyncRecord = await upgraded.server.fullSnapshot(
-      for: CloudAttachmentRecordCodec.recordID(firstSyncPublication.metadataIdentity)
+    let freshPayload = firstSyncPublication.metadata.payloadIdentity
+    XCTAssertNotEqual(freshPayload, restored.metadata.payloadIdentity)
+    XCTAssertTrue(firstSyncPublication.payloadAccepted)
+    XCTAssertFalse(firstSyncPublication.metadataAccepted)
+    let freshPayloadRecord = await upgraded.server.fullSnapshot(
+      for: CloudAttachmentRecordCodec.recordID(freshPayload)
     )
-    XCTAssertNotNil(firstSyncRecord, "The first sync must republish the restored metadata.")
+    XCTAssertNotNil(freshPayloadRecord, "The first sync must upload the restored attachment's fresh payload.")
+    let metadataID = CloudAttachmentRecordCodec.recordID(firstSyncPublication.metadataIdentity)
+    let firstSyncMetadata = await upgraded.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(firstSyncMetadata, "The first sync must leave the restored metadata pending.")
+
     let text = "edited after the upgrade"
     try await editText(ofSnip: client.snipID, to: text, in: upgraded.library)
     try await upgraded.sync.sync()
+    let metadata = try await serverAttachmentMetadata(metadataID, on: upgraded.server)
+    XCTAssertEqual(metadata.payloadIdentity, freshPayload)
     try await assertRestoreRepublished(held, in: upgraded, text: text)
   }
 
@@ -4586,13 +4843,15 @@ final class CloudAttachmentTransferTests: XCTestCase {
   private func assertCleanupWaitsForRemappedReplacement(
     _ fixture: PendingAttachmentFixture,
     removedPayload: CloudTextStorageIdentity,
+    previousPayload: CloudTextStorageIdentity,
     replacedAttachmentID: UUID,
     remappedAttachmentID: UUID,
     remappedMetadataIdentity: CloudTextStorageIdentity,
     file: StaticString = #filePath,
     line: UInt = #line
   ) async throws {
-    let cleanupRecordID = CloudAttachmentRecordCodec.recordID(removedPayload)
+    let payloadsOwedCleanup = [removedPayload, previousPayload]
+    let cleanupIDs = Set(payloadsOwedCleanup.map(CloudAttachmentRecordCodec.recordID))
     let remappedMetadataRecordID = CloudAttachmentRecordCodec.recordID(remappedMetadataIdentity)
     let remapped = try await snapshot(fixture.library, fixture.namespace)
     XCTAssertNil(remapped.publications.first(where: {
@@ -4601,31 +4860,59 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let replacement = try XCTUnwrap(remapped.publications.first(where: {
       $0.metadata.attachmentID == remappedAttachmentID
     }), "The remap must add the replacement publication.", file: file, line: line)
+    let freshPayload = replacement.metadata.payloadIdentity
+    XCTAssertNotEqual(freshPayload, previousPayload, file: file, line: line)
+    XCTAssertFalse(replacement.payloadAccepted, file: file, line: line)
     XCTAssertFalse(
       replacement.metadataAccepted,
       "The replacement's metadata must start pending.",
       file: file,
       line: line
     )
-    XCTAssertEqual(
-      remapped.cleanups.first(where: { $0.identity == removedPayload })?.blockedByAttachmentID,
-      remappedAttachmentID,
-      "The stored cleanup must wait for the remapped replacement.",
+    for payload in payloadsOwedCleanup {
+      XCTAssertEqual(
+        remapped.cleanups.first(where: { $0.identity == payload })?.blockedByAttachmentID,
+        remappedAttachmentID,
+        "Both cleanups must wait for the remapped replacement.",
+        file: file,
+        line: line
+      )
+    }
+
+    let remappedBatch = try await fixture.store.pendingChanges()
+    let beforePayload = remappedBatch.operations.map(\.id)
+    let freshPayloadRecordID = CloudAttachmentRecordCodec.recordID(freshPayload)
+    XCTAssertTrue(beforePayload.contains(freshPayloadRecordID), file: file, line: line)
+    XCTAssertFalse(beforePayload.contains(remappedMetadataRecordID), file: file, line: line)
+    XCTAssertTrue(
+      cleanupIDs.isDisjoint(with: beforePayload),
+      "The old payloads must stay while the fresh payload is pending.",
       file: file,
       line: line
     )
+    let staged = try await snapshot(fixture.library, fixture.namespace)
+    let stagedReplacement = try publication(of: remappedAttachmentID, in: staged)
+    let acceptedPayload = try payloadShadow(freshPayload)
+    try await fixture.library.commitCloudAttachmentTransitions(
+      namespaceKey: fixture.namespace.namespaceKey,
+      transitions: [.payloadAccepted(
+        attachmentID: remappedAttachmentID,
+        expectedRevision: stagedReplacement.revision,
+        shadowData: acceptedPayload.data,
+        systemFields: acceptedPayload.systemFields
+      )]
+    )
 
-    let remappedBatch = try await fixture.store.pendingChanges()
-
+    let afterPayload = try await fixture.store.pendingChanges()
     XCTAssertTrue(
-      remappedBatch.operations.contains(where: { $0.id == remappedMetadataRecordID }),
+      afterPayload.operations.contains(where: { $0.id == remappedMetadataRecordID }),
       "The replacement's metadata save must be planned.",
       file: file,
       line: line
     )
-    XCTAssertFalse(
-      remappedBatch.operations.contains(where: { $0.id == cleanupRecordID }),
-      "The old payload must stay until the replacement's metadata is accepted.",
+    XCTAssertTrue(
+      cleanupIDs.isDisjoint(with: afterPayload.operations.map(\.id)),
+      "The old payloads must stay until the replacement's metadata is accepted.",
       file: file,
       line: line
     )
@@ -4647,8 +4934,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let releasedBatch = try await fixture.store.pendingChanges()
 
     XCTAssertTrue(
-      releasedBatch.operations.contains(where: { $0.id == cleanupRecordID }),
-      "Accepting the replacement's metadata must release the old payload's cleanup.",
+      cleanupIDs.isSubset(of: releasedBatch.operations.map(\.id)),
+      "Accepting the replacement's metadata must release both old payload cleanups.",
       file: file,
       line: line
     )

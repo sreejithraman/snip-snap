@@ -306,7 +306,8 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        let replacementLifecycle = try row.lifecycle.remappedReplacement(
+        let originalLifecycle = row.lifecycle
+        let (replacementLifecycle, cleanups) = try originalLifecycle.remappedReplacement(
           expectedRevision: expected
         )
         guard byAttachment[replacementAttachmentID] == nil,
@@ -314,10 +315,13 @@ extension SwiftDataSnipLibrary {
         else {
           throw CloudAttachmentStorageError.staleTransition
         }
-        guard row.lifecycle.republishesUnknownMetadata else {
+        guard originalLifecycle.republishesUnknownMetadata else {
           // The device that deleted it owns the payload's cleanup.
           removeRemotelyDeleted(row)
           continue
+        }
+        for cleanup in cleanups {
+          cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
         }
         let oldAttachments = storedAttachments.removeValue(forKey: attachmentID) ?? []
         var newAttachments: [StoredAttachmentRecord] = []
