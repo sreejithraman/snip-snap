@@ -11,6 +11,65 @@ import XCTest
 
 @MainActor
 final class IOSAppModelTests: IOSModelTestCase {
+    func testSendFinishesBeforeAttachmentStatusReadIsReleased() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("snips.json")
+        let library = try JSONSnipLibrary(fileURL: storeURL)
+        let handler = HeldAttachmentStatusHandler()
+        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
+        await model.load()
+        await handler.holdNextRead()
+        var result: Bool?
+        let sending = Task {
+            result = await model.createSnip(content: "Send locally", in: SnipList.inboxID)
+        }
+        let held = await TestReadiness.wait(timeout: 2) { await handler.isReadHeld }
+        XCTAssertTrue(held)
+        let finished = await TestReadiness.wait(timeout: 2) { result != nil }
+        XCTAssertTrue(finished, "Send must return its local result before status is released")
+        XCTAssertEqual(result, true)
+        XCTAssertEqual(model.snips.map(\.content), ["Send locally"])
+        XCTAssertEqual(model.selectedSnipID, model.snips.first?.id)
+        let saved = try await JSONSnipLibrary(fileURL: storeURL).checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(saved.snips.map(\.content), ["Send locally"])
+        XCTAssertNil(model.errorMessage)
+        await handler.releaseRead()
+        await sending.value
+        let explicitSyncs = await handler.explicitSyncs
+        XCTAssertEqual(explicitSyncs, 0)
+    }
+
+    func testLibraryReplacementRejectsHeldAttachmentStatusFromPreviousStore() async throws {
+        for scope in [SnipRecoveryScope?.none, SnipRecoveryScope("another-account")] {
+            let id = UUID()
+            let old = Snip(content: "Old collection", origin: .quickEntry)
+            let current = Snip(content: "Current collection", origin: .quickEntry)
+            let handler = HeldAttachmentStatusHandler(states: [id: .failed])
+            let model = IOSAppModel(library: ModelTestLibrary(snips: [old]), cloudSyncHandler: handler)
+            await model.load()
+            await handler.holdNextRead()
+            let refresh = Task { await model.load() }
+            let held = await TestReadiness.wait(timeout: 2) { await handler.isReadHeld }
+            XCTAssertTrue(held)
+            await handler.setLocalOnly()
+            var replaced = false
+            let replacement = Task {
+                await model.replaceLibrary(ModelTestLibrary(snips: [current]), recoveryScope: scope)
+                replaced = true
+            }
+            let finished = await TestReadiness.wait(timeout: 2) { replaced }
+            XCTAssertTrue(finished, "Replacement must not wait for a presentation read")
+            await handler.releaseRead()
+            await refresh.value
+            await replacement.value
+            XCTAssertEqual(model.snips.map(\.content), ["Current collection"])
+            XCTAssertFalse(model.isCloudSyncActive)
+            XCTAssertEqual(model.attachmentTransferState(for: id), .waiting)
+        }
+    }
+
     func testCreateFailureNamesAddWithoutRecordingDraftText() async {
         let diagnostics = IOSDiagnosticRecorderProbe()
         let model = IOSAppModel(library: JSONSnipLibrary.unavailable(), diagnostics: diagnostics.recorder)

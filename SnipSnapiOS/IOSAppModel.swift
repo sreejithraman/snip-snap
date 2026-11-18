@@ -51,6 +51,8 @@ final class InlineListDraft {
 final class IOSAppModel {
     private let session: SavedSnipsSession
     private(set) var libraryRevision = UUID()
+    // Nil while replacing the source; libraryRevision names the applied snapshot.
+    private(set) var attachmentSourceRevision: UUID? = UUID()
     var isManagingLists = false
     let haptics: IOSHapticFeedback
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
@@ -65,6 +67,41 @@ final class IOSAppModel {
     private var attachmentTransferStates: [UUID: SyncedAttachmentTransferState] = [:]
     @ObservationIgnored private var attachmentPreparations: [UUID: AttachmentPreparationGroup] = [:]
     private var cloudAttachmentKnowledge: CloudAttachmentKnowledge
+    @MainActor
+    final class AttachmentCapture {
+        private let snips: [Snip]
+        private let allowsDeletion: Bool
+        private(set) var isValid = true
+
+        init(snips: [Snip], allowsDeletion: Bool) {
+            self.snips = snips
+            self.allowsDeletion = allowsDeletion
+        }
+
+        func validate(in currentSnips: [Snip]) {
+            guard isValid else { return }
+            isValid = snips.allSatisfy { captured in
+                guard let current = currentSnips.first(where: { $0.id == captured.id }) else {
+                    return allowsDeletion
+                }
+                return captured.attachments.allSatisfy { current.attachments.contains($0) }
+            }
+        }
+    }
+
+    private struct PendingAttachmentCapture {
+        weak var value: AttachmentCapture?
+    }
+    @ObservationIgnored private var attachmentCaptures: [PendingAttachmentCapture] = []
+
+    func captureAttachments(in snips: [Snip], allowingDeletion: Bool) -> AttachmentCapture {
+        let capture = AttachmentCapture(snips: snips, allowsDeletion: allowingDeletion)
+        capture.validate(in: self.snips)
+        attachmentCaptures.removeAll { $0.value == nil }
+        attachmentCaptures.append(PendingAttachmentCapture(value: capture))
+        return capture
+    }
+
     private struct PreparedAttachmentRecord {
         var url: URL
         var identity: PreparedAttachmentIdentity?
@@ -106,6 +143,7 @@ final class IOSAppModel {
 
         var source: AttachmentFileSource? {
             switch self {
+            case .unknown(let lastKnown, .some): lastKnown
             case .unknown: nil
             case .readingStates(_, let lastStatesAreCurrent):
                 .iCloudSync(statesAreCurrent: lastStatesAreCurrent)
@@ -576,6 +614,7 @@ final class IOSAppModel {
 
     func load() async {
         await withSerializedMutation { await loadUnlocked() }
+        await refreshAttachmentTransferStates()
     }
 
     func replaceLibrary(
@@ -584,6 +623,11 @@ final class IOSAppModel {
     ) async {
         haptics.invalidatePendingFeedback()
         await withSerializedMutation {
+            attachmentSourceRevision = nil
+            cloudAttachmentKnowledge = .unknown(lastKnown: nil, refresh: nil)
+            replaceAttachmentTransferStates(with: [:])
+            preparedAttachments.removeAll()
+            attachmentPreparations.removeAll()
             clearPendingUndoToast()
             if let snipEditorDraft { finishInlineSnipEdit(snipEditorDraft) }
             selectedSnipID = nil
@@ -593,10 +637,9 @@ final class IOSAppModel {
                 sortedBy: sortMode
             ))
             libraryRevision = UUID()
-            await refreshAttachmentTransferStates()
-            // A prepare can store a file during either await. This switch must end without one.
-            preparedAttachments.removeAll()
+            attachmentSourceRevision = UUID()
         }
+        await refreshAttachmentTransferStates()
     }
 
     @discardableResult
@@ -1019,7 +1062,6 @@ final class IOSAppModel {
 
     private func loadUnlocked() async {
         apply(await session.state(sortedBy: sortMode))
-        await refreshAttachmentTransferStates()
     }
 
     private func resolveRecoveryUnlocked(
@@ -1039,8 +1081,9 @@ final class IOSAppModel {
         } catch {
             presentError(error, operation: "recovery.resolve")
             await loadUnlocked()
+            scheduleAttachmentTransferStateRefresh()
             return false
-    }
+        }
     }
 
     private func createSnipUnlocked(
@@ -1114,11 +1157,30 @@ final class IOSAppModel {
         _ attachmentID: UUID,
         for use: SyncedAttachmentUse,
         fallbackLocalURL: URL? = nil,
+        capturedSnipID: UUID? = nil,
         showsFailureAlert: Bool = true,
         onFailure: ((String) -> Void)? = nil,
         onCancellation: (() -> Void)? = nil,
         failureIsRelevant: () -> Bool = { true }
     ) async -> URL? {
+        guard let sourceRevision = attachmentSourceRevision else { return nil }
+        if let capturedSnipID, !snips.contains(where: { $0.id == capturedSnipID }) {
+            guard use == .copy else { return nil }
+            do {
+                if let fallbackLocalURL, isAvailablePreparedAttachment(fallbackLocalURL) {
+                    return fallbackLocalURL
+                }
+                guard let cloudSyncHandler else { return nil }
+                let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: .copy)
+                guard attachmentSourceRevision == sourceRevision, !Task.isCancelled else { return nil }
+                return url
+            } catch {
+                guard attachmentSourceRevision == sourceRevision else { return nil }
+                if error is CancellationError || Task.isCancelled { onCancellation?() }
+                else { onFailure?(diagnosticErrorCode(error)) }
+                return nil
+            }
+        }
         if let preparedURL = preparedAttachments[attachmentID]?.url,
            isAvailablePreparedAttachment(preparedURL)
         {
@@ -1149,10 +1211,17 @@ final class IOSAppModel {
         let identity = preparedAttachmentIdentity(for: attachmentID)
         do {
             let url = try await cloudSyncHandler.prepareSyncedAttachment(attachmentID, for: use)
+            guard attachmentSourceRevision == sourceRevision else { return nil }
             let currentIdentity = preparedAttachmentIdentity(for: attachmentID)
             if let identity, let currentIdentity, identity != currentIdentity {
                 finishAttachmentPreparation(attachmentID, outcome: .cancelled)
                 return nil
+            }
+            // A captured Copy may finish after ordinary deletion without restoring model entries.
+            if identity != nil, currentIdentity == nil {
+                attachmentPreparations[attachmentID] = nil
+                attachmentTransferStates[attachmentID] = nil
+                return use == .copy ? url : nil
             }
             attachmentURLs[attachmentID] = url
             preparedAttachments[attachmentID] = PreparedAttachmentRecord(
@@ -1162,10 +1231,12 @@ final class IOSAppModel {
             finishAttachmentPreparation(attachmentID, outcome: .succeeded)
             return url
         } catch is CancellationError {
+            guard attachmentSourceRevision == sourceRevision else { return nil }
             finishAttachmentPreparation(attachmentID, outcome: .cancelled)
             onCancellation?()
             return nil
         } catch {
+            guard attachmentSourceRevision == sourceRevision else { return nil }
             if Task.isCancelled {
                 finishAttachmentPreparation(attachmentID, outcome: .cancelled)
                 onCancellation?()
@@ -1380,7 +1451,7 @@ final class IOSAppModel {
             }
             haptics.emit(done ? .markedDone : .reopened, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
-            await refreshAttachmentTransferStates()
+            scheduleAttachmentTransferStateRefresh()
             scheduleCloudSync()
             return true
         } catch {
@@ -1447,7 +1518,7 @@ final class IOSAppModel {
             apply(update.snapshot)
             haptics.emit(.restored, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
-            await refreshAttachmentTransferStates()
+            scheduleAttachmentTransferStateRefresh()
             scheduleCloudSync()
         } catch {
             haptics.emit(.error, for: feedbackInteraction)
@@ -1484,7 +1555,7 @@ final class IOSAppModel {
             snackbarAndErrors.show(.deleted(count: count, id: token))
             haptics.emit(.deleted, for: feedbackInteraction)
             recoverySnapshot = await session.refreshRecovery()
-            await refreshAttachmentTransferStates()
+            scheduleAttachmentTransferStateRefresh()
             scheduleCloudSync()
             return true
         } catch {
@@ -1528,7 +1599,7 @@ final class IOSAppModel {
             }
             afterSuccess(update.outcome)
             recoverySnapshot = await session.refreshRecovery()
-            await refreshAttachmentTransferStates()
+            scheduleAttachmentTransferStateRefresh()
             scheduleCloudSync()
             return true
         } catch {
@@ -1677,6 +1748,14 @@ final class IOSAppModel {
     }
 
     private func apply(_ snapshot: SnipLibrarySnapshot) {
+        attachmentCaptures.removeAll { $0.value == nil }
+        for capture in attachmentCaptures { capture.value?.validate(in: snapshot.snips) }
+        let removedAttachments = Set(snips.flatMap(\.attachments).map(\.id))
+            .subtracting(snapshot.snips.flatMap(\.attachments).map(\.id))
+        for id in removedAttachments {
+            attachmentPreparations[id] = nil
+            attachmentTransferStates[id] = nil
+        }
         snips = snapshot.snips
         lists = snapshot.lists
         attachmentURLs = snapshot.attachmentURLs
@@ -1701,7 +1780,16 @@ final class IOSAppModel {
         publishShareDestinations?(lists)
     }
 
+    private func scheduleAttachmentTransferStateRefresh() {
+        guard let revision = attachmentSourceRevision else { return }
+        Task { [weak self] in
+            guard let self, self.attachmentSourceRevision == revision else { return }
+            await self.refreshAttachmentTransferStates()
+        }
+    }
+
     private func refreshAttachmentTransferStates() async {
+        guard let revision = attachmentSourceRevision else { return }
         guard let cloudSyncHandler else {
             cloudAttachmentKnowledge = .known(.libraryFiles)
             replaceAttachmentTransferStates(with: Dictionary(uniqueKeysWithValues:
@@ -1717,7 +1805,7 @@ final class IOSAppModel {
         do {
             isActive = try await cloudSyncHandler.isCloudSyncActive()
         } catch {
-            guard cloudAttachmentKnowledge.refresh == refresh else { return }
+            guard attachmentSourceRevision == revision, cloudAttachmentKnowledge.refresh == refresh else { return }
             if case .iCloudSync = lastKnown {
                 cloudAttachmentKnowledge = .unknown(
                     lastKnown: .iCloudSync(statesAreCurrent: false), refresh: nil
@@ -1727,7 +1815,7 @@ final class IOSAppModel {
             }
             return
         }
-        guard cloudAttachmentKnowledge.refresh == refresh else { return }
+        guard attachmentSourceRevision == revision, cloudAttachmentKnowledge.refresh == refresh else { return }
         guard isActive else {
             cloudAttachmentKnowledge = .known(.libraryFiles)
             replaceAttachmentTransferStates(with: [:])
@@ -1747,11 +1835,11 @@ final class IOSAppModel {
         do {
             states = try await cloudSyncHandler.syncedAttachmentStates()
         } catch {
-            guard cloudAttachmentKnowledge.refresh == refresh else { return }
+            guard attachmentSourceRevision == revision, cloudAttachmentKnowledge.refresh == refresh else { return }
             cloudAttachmentKnowledge = .known(.iCloudSync(statesAreCurrent: false))
             return
         }
-        guard cloudAttachmentKnowledge.refresh == refresh else { return }
+        guard attachmentSourceRevision == revision, cloudAttachmentKnowledge.refresh == refresh else { return }
         replaceAttachmentTransferStates(with: states)
         cloudAttachmentKnowledge = .known(.iCloudSync(statesAreCurrent: true))
         // Failed must show the failure badge, not the downloaded photo.

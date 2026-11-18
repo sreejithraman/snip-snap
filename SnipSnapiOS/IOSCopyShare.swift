@@ -582,19 +582,36 @@ final class IOSCopyShareCoordinator {
         model: IOSAppModel,
         use: SyncedAttachmentUse
     ) async -> (payload: IOSCopySharePayload?, failureCode: String?) {
+        guard let sourceRevision = model.attachmentSourceRevision else { return (nil, nil) }
+        let capture = model.captureAttachments(in: snips, allowingDeletion: use == .copy)
+        let localURLs = Dictionary(uniqueKeysWithValues: payloadBuilder.uniqueAttachments(in: snips).compactMap {
+            attachment in model.usableAttachmentURL(for: attachment.id).map { (attachment.id, $0) }
+        })
+        var preparedURLs: [UUID: URL] = [:]
         var firstFailureCode: String?
         var cancelled = false
         for attachment in payloadBuilder.uniqueAttachments(in: snips) {
-            guard !Task.isCancelled else { return (nil, nil) }
-            _ = await model.prepareAttachment(
+            guard !Task.isCancelled, capture.isValid else { return (nil, nil) }
+            let capturedSnip = snips.first { $0.attachments.contains(where: { $0.id == attachment.id }) }
+            let url = await model.prepareAttachment(
                 attachment.id,
                 for: use,
+                fallbackLocalURL: localURLs[attachment.id],
+                capturedSnipID: capturedSnip?.id,
                 onFailure: { code in
                     if firstFailureCode == nil { firstFailureCode = code }
                 },
                 onCancellation: { cancelled = true }
             )
-            if cancelled || Task.isCancelled { return (nil, nil) }
+            guard !cancelled, !Task.isCancelled, model.attachmentSourceRevision == sourceRevision else {
+                return (nil, nil)
+            }
+            preparedURLs[attachment.id] = url
+        }
+        capture.validate(in: model.snips)
+        guard capture.isValid else { return (nil, nil) }
+        if use == .copy {
+            return (payloadBuilder.payload(for: snips) { preparedURLs[$0] }, firstFailureCode)
         }
         return (makePayload(snips: snips, model: model), firstFailureCode)
     }
@@ -631,7 +648,8 @@ final class IOSCopyShareCoordinator {
         interaction: UUID?,
         makeToast: () -> AppToast
     ) async -> Bool {
-        guard isCurrentCopyRequest(token) else { return false }
+        guard !Task.isCancelled, isCurrentCopyRequest(token) else { return false }
+        guard let sourceRevision = model.attachmentSourceRevision else { return false }
         guard pasteboard.write(items) else {
             diagnostics.record(.failure(
                 operation: "clipboard.write",
@@ -650,9 +668,12 @@ final class IOSCopyShareCoordinator {
         switch await model.markCopiedSnipsDone(
             versions: versions,
             copyToast: toast,
-            ifStillCurrent: { self.isCurrentCopyRequest(token) }
+            ifStillCurrent: {
+                self.isCurrentCopyRequest(token) && model.attachmentSourceRevision == sourceRevision
+            }
         ) {
         case .unchanged:
+            guard model.attachmentSourceRevision == sourceRevision else { return false }
             if isCurrentCopyRequest(token) { model.presentToast(makeToast()) }
             model.haptics.emit(.copied, for: interaction)
             return true

@@ -266,16 +266,25 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     }
 
     public func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
-        try await operationGate.withLease {
-            let values = try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.transferStates() }
-            return values.mapValues { value in
-                switch value {
-                case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: .waiting
-                case .available: .available
-                case .failed: .failed
-                }
+        guard case .resolved(let configuration) = coordinatorSource,
+              let persistence = try await configuration.persistence()
+        else { throw SnipLibraryError.transferUnsupported }
+        let storage = try await persistence.snapshot()
+        guard storage.activeStore.kind == .iCloudSync,
+              let binding = storage.activeStore.namespace
+        else { throw SnipLibraryError.transferUnsupported }
+        try await requireCurrentSource(storage, persistence: persistence)
+        let library = try await persistence.libraryForTransition(storeID: storage.activeStore.id)
+        let snapshot = try await library.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+        try await requireCurrentSource(storage, persistence: persistence)
+        return Dictionary(uniqueKeysWithValues: snapshot.publications.map { publication in
+            let state: SyncedAttachmentTransferState = switch publication.transferState {
+            case .waitingForUpload, .waitingForMetadata, .waitingForDeletion: .waiting
+            case .available: .available
+            case .failed: .failed
             }
-        }
+            return (publication.metadata.attachmentID, state)
+        })
     }
 
     public func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {

@@ -305,3 +305,24 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     func preparationRequests() -> [MacAttachmentPreparationRequest] { requests }
     func clearCount() -> Int { clears }
 }
+
+actor MacHeldAttachmentStatusHandler: OptionalCloudSyncHandling {
+    private var release: CheckedContinuation<Void, Never>?
+    private(set) var isReadHeld = false
+    private(set) var explicitSyncs = 0
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { explicitSyncs += 1 }
+    func scheduleSyncAfterLocalChange() async {}
+    func isCloudSyncActive() async throws -> Bool { true }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
+        isReadHeld = true
+        await withCheckedContinuation { release = $0 }
+        return [:]
+    }
+    func releaseRead() { release?.resume(); release = nil }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        throw SnipLibraryError.attachmentCopyFailed
+    }
+    func clearDownloadedFiles() async throws {}
+}

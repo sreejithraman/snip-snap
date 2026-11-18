@@ -1,4 +1,5 @@
 import Foundation
+import CloudKit
 import CryptoKit
 import SnipSnapCore
 @testable import SnipSnapPersistence
@@ -6,6 +7,92 @@ import SnipSnapCore
 import XCTest
 
 final class CloudAppAccountOwnershipTests: XCTestCase {
+  func testAttachmentStatusUsesPersistedPublicationsWhenControlFails() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let storage = try await fixture.persistence.snapshot()
+    let binding = try XCTUnwrap(storage.activeStore.namespace)
+    let library = try await fixture.persistence.libraryForTransition(storeID: storage.activeStore.id)
+    let files = (0..<3).map { fixture.root.appendingPathComponent("status-\($0).txt") }
+    for file in files { try Data("Local file".utf8).write(to: file) }
+    let active = try await fixture.persistence.activeLibrary()
+    let added = try await active.perform(.add(content: "Publications", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: files, requestID: UUID(), now: .distantPast), sortedBy: .manual)
+    let attachments = try XCTUnwrap(added.snapshot.snips.first).attachments
+    XCTAssertEqual(attachments.count, 3)
+    try await library.reconcileCloudAttachments(namespaceKey: binding.namespaceKey,
+      metadataZoneName: fixture.descriptor.metadataZone.name,
+      metadataOwnerName: fixture.descriptor.metadataZone.ownerName,
+      payloadZoneName: fixture.descriptor.payloadZone.name,
+      payloadOwnerName: fixture.descriptor.payloadZone.ownerName)
+    let initial = try await library.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+    let failed = try XCTUnwrap(initial.publications.first { $0.metadata.attachmentID == attachments[1].id })
+    let available = try XCTUnwrap(initial.publications.first { $0.metadata.attachmentID == attachments[2].id })
+    try await library.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey, transitions: [
+      .operationFailed(attachmentID: attachments[1].id, expectedRevision: failed.revision, failure: .quotaExceeded),
+      .payloadAccepted(attachmentID: attachments[2].id, expectedRevision: available.revision,
+        shadowData: Data(), systemFields: Data()),
+    ])
+    let uploaded = try await library.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+    let metadata = try XCTUnwrap(uploaded.publications.first { $0.metadata.attachmentID == attachments[2].id })
+    try await library.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey, transitions: [
+      .metadataAccepted(attachmentID: attachments[2].id, expectedRevision: metadata.revision,
+        shadowData: Data(), systemFields: Data())
+    ])
+    await fixture.control.rejectFetches()
+    let states = try await fixture.handler.syncedAttachmentStates()
+    XCTAssertEqual(states, [attachments[0].id: .waiting, attachments[1].id: .failed, attachments[2].id: .available])
+    let fetches = await fixture.control.fetchCount()
+    XCTAssertEqual(fetches, 0)
+
+    try await fixture.persistence.activateEmptyCollection(namespace: nil)
+    try await fixture.persistence.activateEmptyCollection(namespace: binding)
+    let replacementStore = try await fixture.persistence.snapshot().activeStore
+    XCTAssertNotEqual(replacementStore.id, storage.activeStore.id)
+    let replaced = try await fixture.handler.syncedAttachmentStates()
+    XCTAssertTrue(replaced.isEmpty, "The prior store's publications must not appear in its replacement")
+    _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
+    do {
+      _ = try await fixture.handler.syncedAttachmentStates()
+      XCTFail("A local-only source cannot report retired iCloud publications")
+    } catch SnipLibraryError.transferUnsupported {}
+  }
+
+  func testAttachmentStatusDoesNotEnterProductionControlRetryGate() async throws {
+    let pause = OwnerPause()
+    let probe = HeldControlDatabase(pause: pause)
+    let control = CloudKitCollectionControlTransport(
+      controlID: CloudRecordID(zone: CloudZoneID(name: "test-control", ownerName: "owner"), name: "control"),
+      bound: .standard,
+      calls: CloudKitDatabaseCalls(
+        record: { _, _ in try await probe.record() },
+        modifyRecords: { _, _, _, _, _ in throw CloudTransportError.sendFailed },
+        modifyRecordZones: { _, _, _ in throw CloudTransportError.sendFailed },
+        saveZone: { _, _ in throw CloudTransportError.sendFailed },
+        deleteZone: { _, _ in throw CloudTransportError.sendFailed }),
+      retry: CloudKitOperationRetry(diagnostics: AppDiagnosticRecorder(record: { _ in })))
+    let fixture = try await Fixture.make(controlTransport: control)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let fetching = Task { try await fixture.handler.prepareSyncedAttachment(UUID(), for: .copy) }
+    await pause.waitUntilSuspended()
+    let finished = expectation(description: "Persisted status finishes while the production retry gate is held")
+    let reading = Task {
+      do {
+        let states = try await fixture.handler.syncedAttachmentStates()
+        XCTAssertTrue(states.isEmpty)
+      } catch { XCTFail("Local status must not inherit control failure: \(error)") }
+      finished.fulfill()
+    }
+    await fulfillment(of: [finished], timeout: 2)
+    let callsWhileHeld = await probe.callCount()
+    XCTAssertEqual(callsWhileHeld, 1)
+    await pause.resume()
+    _ = await fetching.result
+    await reading.value
+    let calls = await probe.callCount()
+    XCTAssertEqual(calls, 1, "Status must never submit a second control request")
+  }
+
   func testUnboundLocalStoreDoesNotWaitForCloudAccountLookup() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("LocalReadiness-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -225,14 +312,16 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
       _ = try await fixture.handler.refreshAppleAccountNotice()
       XCTFail("Account isolation cannot pass the live record commit")
     } catch SyncModePersistenceError.transitionInProgress {}
-    let attachmentRead = Task { try await fixture.handler.syncedAttachmentStates() }
-    try await waitForQueuedMutations(fixture.persistence, count: 1)
+    _ = try await fixture.handler.syncedAttachmentStates()
+    do {
+      _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
+      XCTFail("A status read cannot clear another live record reservation")
+    } catch SyncModePersistenceError.transitionInProgress {}
     let unchanged = try await fixture.persistence.snapshot()
     XCTAssertEqual(unchanged.activeStore.id, source.id)
     XCTAssertNil(unchanged.accountIsolation)
     await pause.resume()
     try await commit.value
-    _ = try await attachmentRead.value
 
     let notice = try await fixture.handler.refreshAppleAccountNotice()
     XCTAssertEqual(notice, .signedOut)
@@ -288,6 +377,7 @@ private struct Fixture: Sendable {
 
   static func make(
     attachmentPause: OwnerPause? = nil,
+    controlTransport: (any CloudCollectionControlTransport)? = nil,
     makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil
   ) async throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudAppOwner-\(UUID())")
@@ -309,7 +399,7 @@ private struct Fixture: Sendable {
     let control = OwnerControlTransport(base: baseControl)
     let lifecycle = SnipSnapICloudSyncLifecycle(rootURL: root, sourceLibrary: source,
       syncModeStore: SnipSyncModeStore(persistence), cloudScope: "private", accountLineage: "account-a",
-      accountStateSource: account, ownerName: "owner", controlTransport: control,
+      accountStateSource: account, ownerName: "owner", controlTransport: controlTransport ?? control,
       makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
       makeDescriptor: { descriptor })
     let gate = AsyncOperationGate()
@@ -513,4 +603,16 @@ private actor CacheInstallingAttachment: CloudAttachmentTransferring {
     let snapshot = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
     return Dictionary(uniqueKeysWithValues: snapshot.publications.map { ($0.metadata.attachmentID, $0.transferState) })
   }
+}
+
+private actor HeldControlDatabase {
+  let pause: OwnerPause
+  private var calls = 0
+  init(pause: OwnerPause) { self.pause = pause }
+  func record() async throws -> CKRecord {
+    calls += 1
+    if calls == 1 { await pause.suspend() }
+    throw CKError(.permissionFailure)
+  }
+  func callCount() -> Int { calls }
 }

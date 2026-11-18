@@ -251,3 +251,63 @@ actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
 
     func prepareCalls() -> [PrepareCall] { calls }
 }
+
+/// Holds only the next presentation read; attachment preparation remains usable.
+actor HeldAttachmentStatusHandler: OptionalCloudSyncHandling {
+    private var states: [UUID: SyncedAttachmentTransferState]
+    private let urls: [UUID: URL]
+    private var active = true
+    private var holdsNextRead = false
+    private var queuesActiveReads = false
+    private var release: CheckedContinuation<Void, Never>?
+    private var queuedActiveReads: [CheckedContinuation<Void, Never>] = []
+    private(set) var isActiveReadHeld = false
+    private(set) var prepareCount = 0
+    private(set) var isReadHeld = false
+    private(set) var schedules = 0
+    private(set) var explicitSyncs = 0
+
+    init(states: [UUID: SyncedAttachmentTransferState] = [:], urls: [UUID: URL] = [:]) {
+        self.states = states
+        self.urls = urls
+    }
+
+    func holdNextRead(queuesActiveReads: Bool = false) {
+        holdsNextRead = true
+        self.queuesActiveReads = queuesActiveReads
+    }
+    func setLocalOnly() { active = false }
+    func releaseRead() {
+        release?.resume(); release = nil
+        queuedActiveReads.forEach { $0.resume() }
+        queuedActiveReads.removeAll()
+    }
+    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
+    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
+    func syncWhenPossible() async { explicitSyncs += 1 }
+    func scheduleSyncAfterLocalChange() async { schedules += 1 }
+    func isCloudSyncActive() async throws -> Bool {
+        if isReadHeld && queuesActiveReads {
+            isActiveReadHeld = true
+            await withCheckedContinuation { queuedActiveReads.append($0) }
+        }
+        return active
+    }
+    func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
+        let captured = states
+        if holdsNextRead {
+            holdsNextRead = false
+            isReadHeld = true
+            await withCheckedContinuation { release = $0 }
+            isReadHeld = false
+        }
+        return captured
+    }
+    func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
+        prepareCount += 1
+        if isReadHeld && queuesActiveReads { await withCheckedContinuation { queuedActiveReads.append($0) } }
+        guard let url = urls[id] else { throw SnipLibraryError.attachmentCopyFailed }
+        return url
+    }
+    func clearDownloadedFiles() async throws {}
+}
