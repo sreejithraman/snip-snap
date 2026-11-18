@@ -70,6 +70,7 @@ extension ICloudSyncModeCoordinatorTests {
         let payloadID = CloudAttachmentRecordCodec.recordID(pointer.payloadIdentity)
 
         let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let observedTransport = SetupRetryDeleteProbeTransport(retryTransport)
         let eventsBeforePeerEdit = Mutex<[FakeCloudTransportEvent]?>(nil)
         let peerText = "edited by the peer after retry fetched"
         let reopened = try SwiftDataSyncModePersistence(rootURL: localRoot, readHook: {
@@ -100,9 +101,9 @@ extension ICloudSyncModeCoordinatorTests {
 
         let retry = ICloudSyncModeCoordinator(
             persistence: reopened, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
-            makeTransport: { retryTransport }
+            makeTransport: { observedTransport }
         )
-        _ = try await retry.enableOrRetry()
+        let status = try await retry.enableOrRetry()
 
         let atPeerEdit = try XCTUnwrap(eventsBeforePeerEdit.withLock { $0 })
         let events = await retryTransport.events()
@@ -111,11 +112,14 @@ extension ICloudSyncModeCoordinatorTests {
             guard case .sent(let ids) = event else { return [] }
             return ids
         }
-        XCTAssertFalse(atPeerEdit.contains { if case .sent = $0 { return true }; return false })
+        XCTAssertFalse(atPeerEdit.contains { event in
+            if case .sent = event { return true }
+            return false
+        })
         XCTAssertTrue(suppliedIDs.contains(survivorID), "The probe must observe a real setup send.")
-        // A send for these IDs would be unexpected regardless of the kind
-        // or whether the fake server's shadow check accepts it.
-        XCTAssertTrue(Set(suppliedIDs).isDisjoint(with: [deletedID, metadataID, payloadID]))
+        XCTAssertFalse(suppliedIDs.contains(deletedID))
+        let deletes = await observedTransport.suppliedDeleteIDs
+        XCTAssertEqual(deletes.intersection([deletedID, metadataID, payloadID]), [])
 
         let stored = await server.fullSnapshot(for: deletedID)
         XCTAssertEqual(try CloudFullRecordCodec.snip(from: XCTUnwrap(stored)).text, .value(peerText))
@@ -123,6 +127,12 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try CloudAttachmentRecordCodec.metadata(from: XCTUnwrap(finalPointer)), pointer)
         let payload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(payload)), bytes)
+        let storage = try await reopened.snapshot()
+        XCTAssertEqual(
+            storage.activeStore.kind, .iCloudSync,
+            "Retry returned \(status) at transition phase \(String(describing: storage.transition?.phase))."
+        )
+        XCTAssertNil(storage.transition)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [survivor.id], "Retry silently restored the deleted snip.")
     }
@@ -632,5 +642,48 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(final.snips.first?.attachments.map(\.id), [attachment.id])
         let copiedURL = try XCTUnwrap(final.attachmentURLs[attachment.id])
         XCTAssertEqual(try Data(contentsOf: copiedURL), bytes)
+    }
+}
+
+private actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
+    let fake: FakeCloudRecordTransport
+    private(set) var suppliedDeleteIDs: Set<CloudRecordID> = []
+
+    init(_ fake: FakeCloudRecordTransport) {
+        self.fake = fake
+    }
+
+    func start(state: CloudEngineStateEnvelope?) async throws {
+        try await fake.start(state: state)
+    }
+
+    func reset() async {
+        await fake.reset()
+    }
+
+    func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
+        try await fake.fetch(scope: scope)
+    }
+
+    func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {
+        // The production provider submits only the IDs of these deletes.
+        for case .delete(let id, _) in batch.operations {
+            suppliedDeleteIDs.insert(id)
+        }
+        return try await fake.send(batch)
+    }
+
+    func confirmApplied(_ batchID: UUID) async throws {
+        try await fake.confirmApplied(batchID)
+    }
+
+    func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot? {
+        try await fake.fetchRecord(id, fields: fields)
+    }
+
+    func fetchAsset(
+        _ id: CloudRecordID, field: String, destination: CloudAssetDestination
+    ) async throws -> CloudAssetReceipt? {
+        try await fake.fetchAsset(id, field: field, destination: destination)
     }
 }
