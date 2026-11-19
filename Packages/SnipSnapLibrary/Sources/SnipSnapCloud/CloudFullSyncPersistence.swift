@@ -682,8 +682,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   }
 
   func setupPointerDeleteProtection() async -> CloudSetupDeleteProtection {
-    let receipts = await modePersistence?.setupPointerDeletesProtectingOutbound(in: namespace.binding) ?? []
-    return CloudSetupDeleteProtection(receipts)
+    await modePersistence?.setupDeleteProtection(in: namespace.binding) ?? CloudSetupDeleteProtection()
   }
 }
 

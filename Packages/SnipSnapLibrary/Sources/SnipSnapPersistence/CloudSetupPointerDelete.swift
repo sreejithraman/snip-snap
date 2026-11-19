@@ -3,6 +3,35 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
+package struct CloudSetupPointerDeleteOffer: Sendable {
+  let pointer: CloudTextStorageIdentity
+  let metadataShadow: Data?
+
+  package init(pointer: CloudTextStorageIdentity, metadataShadow: Data?) {
+    self.pointer = pointer
+    self.metadataShadow = metadataShadow
+  }
+
+  package static func isPointer(_ identity: CloudTextStorageIdentity) -> Bool {
+    guard identity.recordName.hasPrefix("a-"),
+      let id = UUID(uuidString: String(identity.recordName.dropFirst(2)))
+    else { return false }
+    return identity.recordName == "a-\(id.uuidString.lowercased())"
+  }
+}
+
+struct CloudSetupPointerDeleteHold: Codable, Equatable, Sendable {
+  let pointer: CloudTextStorageIdentity
+  let payloads: Set<CloudTextStorageIdentity>
+
+  func isValid(in namespace: ICloudSyncNamespaceBinding) -> Bool {
+    CloudSetupPointerDeleteOffer.isPointer(pointer) && namespace.contains(pointer)
+      && payloads.allSatisfy {
+        namespace.contains($0) && ($0.zoneName != pointer.zoneName || $0.ownerName != pointer.ownerName)
+      }
+  }
+}
+
 /// Evidence of an accepted pointer delete and the cleanup authority of its original publication.
 /// The enclosing setup history supplies the account and collection generation.
 package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
@@ -153,6 +182,24 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
 }
 
 extension SwiftDataSnipLibrary {
+  func setupPointerDeleteHolds(
+    namespaceKey: CloudSyncNamespaceKey,
+    offers: [CloudSetupPointerDeleteOffer]
+  ) throws -> [CloudSetupPointerDeleteHold] {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let publications = try Self.cloudAttachmentPublications(namespaceKey: namespaceKey.rawValue, context: context)
+    return try offers.map { offer in
+      guard let row = publications.first(where: {
+        $0.metadataIdentity == offer.pointer && $0.metadataShadowData == offer.metadataShadow
+      }) else { throw CloudAttachmentStorageError.staleTransition }
+      let owed = try row.lifecycle.acceptMetadataDeletion(expectedRevision: row.revision)
+      return CloudSetupPointerDeleteHold(pointer: offer.pointer, payloads: Set(owed.map(\.identity)))
+    }
+  }
+
   func setupPointerDeletes(
     namespaceKey: CloudSyncNamespaceKey,
     bindings: [CloudSetupPointerDelete.Binding]

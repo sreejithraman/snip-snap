@@ -1145,15 +1145,25 @@ package actor ICloudSyncModeCoordinator {
                         dataZone: textZone,
                         payloadZone: payloadZone
                     )
+                    let pointerDeletes = outbound.operations.compactMap { operation -> CloudSetupPointerDeleteOffer? in
+                        guard case .delete(let id, let base) = operation, id.zone == textZone else { return nil }
+                        let pointer = CloudFullSyncPersistence.storageIdentity(id)
+                        guard CloudSetupPointerDeleteOffer.isPointer(pointer) else { return nil }
+                        return .init(pointer: pointer, metadataShadow: base?.data)
+                    }
                     try await self.requireMatchingAccount()
-                    try await persistence.recordSendAttempt(
+                    let newlyProtected = try await persistence.recordSetupSendAttempt(
                         attempt,
-                        setupRetryOffers: offers,
-                        expectedSetupFreezeToken: freezeToken
+                        offers: offers,
+                        pointerDeletes: pointerDeletes,
+                        candidateStoreID: candidateStoreID,
+                        using: freezeToken
                     )
                     try await self.checkSetupCollection()
-                    let receipts = await persistence.setupPointerDeletesProtectingOutbound(in: namespace.binding)
-                    if outbound.operations.contains(where: CloudSetupDeleteProtection(receipts).blocks) {
+                    let protection = try await persistence.requireCurrentSetupSend(
+                        candidateStoreID: candidateStoreID, namespace: namespace.binding, using: freezeToken
+                    )
+                    if attempt.operations.contains(where: { protection.blocks($0, allowingNewPointerDeletes: newlyProtected) }) {
                         throw CloudSetupRetryHold()
                     }
                 } else {

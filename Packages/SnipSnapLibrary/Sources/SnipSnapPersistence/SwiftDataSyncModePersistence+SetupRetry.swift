@@ -4,10 +4,33 @@ import SnipSnapCore
 struct CloudRetainedSetupPointerDeletes: Codable, Equatable {
   let namespace: ICloudSyncNamespaceBinding
   var receipts: [CloudSetupPointerDelete]
+  var holds: [CloudSetupPointerDeleteHold]? = nil
 
   var isValid: Bool {
-    !receipts.isEmpty && Set(receipts.map(\.key)).count == receipts.count
+    let holds = holds ?? []
+    return (!receipts.isEmpty || !holds.isEmpty) && Set(receipts.map(\.key)).count == receipts.count
       && receipts.allSatisfy { $0.isValid(in: namespace) }
+      && Set(holds.map(\.pointer)).count == holds.count
+      && holds.allSatisfy { $0.isValid(in: namespace) }
+  }
+}
+
+package struct CloudSetupDeleteProtection: Sendable {
+  package let pointers: Set<CloudTextStorageIdentity>
+  package let payloads: Set<CloudTextStorageIdentity>
+
+  package init(pointers: Set<CloudTextStorageIdentity> = [], payloads: Set<CloudTextStorageIdentity> = []) {
+    self.pointers = pointers
+    self.payloads = payloads
+  }
+
+  package func blocks(
+    _ operation: SyncModeSendOperation,
+    allowingNewPointerDeletes allowed: Set<CloudTextStorageIdentity> = []
+  ) -> Bool {
+    payloads.contains(operation.recordIdentity)
+      || (operation.kind == .delete && pointers.contains(operation.recordIdentity)
+        && !allowed.contains(operation.recordIdentity))
   }
 }
 
@@ -225,8 +248,58 @@ extension SwiftDataSyncModePersistence {
     manifest.retainedSetupPointerDeletes.first { $0.namespace == namespace }?.receipts ?? []
   }
 
-  package func setupPointerDeletesProtectingOutbound(in namespace: ICloudSyncNamespaceBinding) -> [CloudSetupPointerDelete] {
-    retainedSetupPointerDeletes(in: namespace) + (setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes ?? [])
+  package func setupDeleteProtection(in namespace: ICloudSyncNamespaceBinding) -> CloudSetupDeleteProtection {
+    let retained = manifest.retainedSetupPointerDeletes.first { $0.namespace == namespace }
+    let receipts = (retained?.receipts ?? []) + (setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes ?? [])
+    let holds = retained?.holds ?? []
+    return CloudSetupDeleteProtection(
+      pointers: Set(receipts.map(\.key.pointer)).union(holds.map(\.pointer)),
+      payloads: Set(receipts.flatMap(\.payloadIdentities)).union(holds.flatMap(\.payloads))
+    )
+  }
+
+  /// Only this send may use the newly protected pointers. A later attempt sees them as already protected.
+  package func recordSetupSendAttempt(
+    _ attempt: SyncModeSendAttempt,
+    offers: [CloudSetupRetryOffer],
+    pointerDeletes: [CloudSetupPointerDeleteOffer],
+    candidateStoreID: UUID,
+    using token: SyncModeFreezeToken
+  ) async throws -> Set<CloudTextStorageIdentity> {
+    guard let transition = manifest.transition, transition.namespace == attempt.namespace,
+      setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token
+    else { throw SyncModePersistenceError.invalidFreezeToken }
+    let pointers = Set(pointerDeletes.map(\.pointer))
+    let offeredPointers = attempt.operations.filter {
+      $0.kind == .delete && CloudSetupPointerDeleteOffer.isPointer($0.recordIdentity)
+    }.map(\.recordIdentity)
+    guard pointers.count == pointerDeletes.count, pointers.count == offeredPointers.count,
+      pointers == Set(offeredPointers)
+    else {
+      throw SyncModePersistenceError.invalidManifest
+    }
+    let holds = if pointerDeletes.isEmpty {
+      [CloudSetupPointerDeleteHold]()
+    } else {
+      try await libraryForTransition(storeID: candidateStoreID).setupPointerDeleteHolds(
+        namespaceKey: attempt.namespace.namespaceKey, offers: pointerDeletes
+      )
+    }
+    let previousProtection = setupDeleteProtection(in: attempt.namespace)
+    guard manifest.transition == transition, setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token,
+      !attempt.operations.contains(where: { previousProtection.blocks($0) })
+    else { throw SyncModePersistenceError.transitionInProgress }
+    try commitSendAttempt(attempt, setupRetryOffers: offers, holding: holds)
+    return pointers
+  }
+
+  package func requireCurrentSetupSend(
+    candidateStoreID: UUID, namespace: ICloudSyncNamespaceBinding, using token: SyncModeFreezeToken
+  ) throws -> CloudSetupDeleteProtection {
+    guard let transition = manifest.transition, transition.phase == .firstSendStarted,
+      transition.namespace == namespace, setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token
+    else { throw SyncModePersistenceError.invalidFreezeToken }
+    return setupDeleteProtection(in: namespace)
   }
 
   package func preserveSetupPointerReplacementRemaps(
@@ -268,6 +341,15 @@ extension SwiftDataSyncModePersistence {
 }
 
 extension SwiftDataSyncModePersistence.Manifest {
+  mutating func holdSetupPointerDeletes(_ holds: [CloudSetupPointerDeleteHold], in namespace: ICloudSyncNamespaceBinding) {
+    guard !holds.isEmpty else { return }
+    if let index = retainedSetupPointerDeletes.firstIndex(where: { $0.namespace == namespace }) {
+      retainedSetupPointerDeletes[index].holds = (retainedSetupPointerDeletes[index].holds ?? []) + holds
+    } else {
+      retainedSetupPointerDeletes.append(.init(namespace: namespace, receipts: [], holds: holds))
+    }
+  }
+
   mutating func retainSetupPointerDeletes(
     _ receipts: [CloudSetupPointerDelete], in namespace: ICloudSyncNamespaceBinding?
   ) throws {

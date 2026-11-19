@@ -16,22 +16,20 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func recordSendAttempt(
+  package func recordSendAttempt(_ attempt: SyncModeSendAttempt) throws {
+    try commitSendAttempt(attempt, setupRetryOffers: nil, holding: [])
+  }
+
+  func commitSendAttempt(
     _ attempt: SyncModeSendAttempt,
-    setupRetryOffers: [CloudSetupRetryOffer]? = nil,
-    expectedSetupFreezeToken: SyncModeFreezeToken? = nil
+    setupRetryOffers: [CloudSetupRetryOffer]?,
+    holding pointerDeletes: [CloudSetupPointerDeleteHold]
   ) throws {
-    if let expectedSetupFreezeToken {
-      guard let transition = manifest.transition,
-        transition.freezeToken == expectedSetupFreezeToken,
-        manifest.activeStoreID == expectedSetupFreezeToken.sourceStoreID,
-        store(id: expectedSetupFreezeToken.sourceStoreID)?.revision == expectedSetupFreezeToken.revision
-      else { throw SyncModePersistenceError.invalidFreezeToken }
-    }
     var next = manifest
     next.migrateSetupRetryHistory()
     try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
     try next.recordSetupRetryOffers(setupRetryOffers, for: attempt)
+    next.holdSetupPointerDeletes(pointerDeletes, in: attempt.namespace)
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
   }
