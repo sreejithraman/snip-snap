@@ -34,10 +34,7 @@ private struct ICloudReenableMergeBasis<Fields> {
   let conflictVersion: Data
 }
 
-enum CloudSetupRetryHold: Error {
-  case candidateState
-  case incompleteFetch
-}
+struct CloudSetupRetryHold: Error {}
 
 extension CloudFullSyncPersistence {
   func setupRetryHasCandidateChanges(for snipIDs: Set<UUID>) async throws -> Bool {

@@ -143,7 +143,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     private let syncDriver: CloudFullSyncCoordinator
     private let beforeApply: CloudFullSyncPersistence.ApplyHook
     private var pendingIssue: SyncedContentSyncIssue?
-    private var forceInitialFetch = false
+    private var checkedSetupMetadata = false
 
     init(
         raw: CloudFullSyncPersistence,
@@ -165,10 +165,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         pendingIssue = nil
         let outcome = try await syncDriver.fetchRemote(beforeApply: beforeApply)
         try retainFetchIssue(outcome)
-        if forceInitialFetch, outcome.issue == nil,
-           !outcome.completedInitialFetchZones.contains(raw.dataZone) {
-            throw CloudSetupRetryHold.incompleteFetch
-        }
+        checkedSetupMetadata = outcome.completedInitialFetchZones.contains(raw.dataZone)
     }
 
     func sendPending(
@@ -213,7 +210,9 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     }
 
     func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool {
-        try await raw.setupRetryMustHold(deletedSnipIDs: deletedSnipIDs)
+        guard !deletedSnipIDs.isEmpty else { return false }
+        guard checkedSetupMetadata else { return true }
+        return try await raw.setupRetryMustHold(deletedSnipIDs: deletedSnipIDs)
     }
 
     func dormantAcceptedBaseTransferPayload() async throws -> Data? {
@@ -269,7 +268,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         try await commitSettlement()
         // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
         _ = snipIDs
-        self.forceInitialFetch = forceInitialFetch
+        checkedSetupMetadata = false
         try await syncDriver.prepareManualRetry(
             forceInitialFetch: forceInitialFetch, beforeApply: beforeApply, beforeStateSave: beforeApply
         )

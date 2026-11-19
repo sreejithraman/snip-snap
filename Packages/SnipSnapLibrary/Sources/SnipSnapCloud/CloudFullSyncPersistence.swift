@@ -787,10 +787,12 @@ extension CloudFullSyncPersistence {
 
   private func checkSetupRetryFetch(_ batch: CloudSyncBatch) async throws {
     // Applying an absent parent can promote candidate-only edits or files.
-    guard case .fetched = batch, let setupRetryDeletedSnipIDs else { return }
+    guard case .fetched = batch, let setupRetryDeletedSnipIDs,
+      Self.destructiveResetReason(batch) == nil
+    else { return }
     let deleted = try await setupRetryDeletedSnipIDs()
     if try await setupRetryHasCandidateChanges(for: deleted) {
-      throw CloudSetupRetryHold.candidateState
+      throw CloudSetupRetryHold()
     }
   }
 
