@@ -20,10 +20,55 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
     let shadowData: Data?
   }
 
+  package struct Replacement: Codable, Equatable, Sendable {
+    package let sha256: Data
+    package let byteCount: Int64
+
+    package init(sha256: Data, byteCount: Int64) {
+      self.sha256 = sha256
+      self.byteCount = byteCount
+    }
+  }
+
+  package struct Binding: Sendable {
+    let key: Key
+    let digest: Data
+    let metadataShadow: Data?
+    package let attachmentID: UUID
+    let revision: UInt64?
+
+    package init(key: Key, digest: Data, metadataShadow: Data?, attachmentID: UUID, revision: UInt64?) {
+      self.key = key
+      self.digest = digest
+      self.metadataShadow = metadataShadow
+      self.attachmentID = attachmentID
+      self.revision = revision
+    }
+  }
+
+  package struct Deferral: Sendable {
+    let receipt: CloudSetupPointerDelete
+    let metadataShadow: Data?
+
+    package init(receipt: CloudSetupPointerDelete, metadataShadow: Data?) {
+      self.receipt = receipt
+      self.metadataShadow = metadataShadow
+    }
+  }
+
   package let key: Key
   let bindingDigest: Data
   package let snipID: UUID
   let payloads: [Payload]
+  /// Optional on disk for receipts from the initial implementation.
+  package let position: Int?
+  package let replacements: [Replacement]?
+  package var payloadIdentities: Set<CloudTextStorageIdentity> { Set(payloads.map(\.identity)) }
+
+  static func payloads(for owed: [CloudAttachmentOwedCleanup]) -> [Payload] {
+    owed.map { Payload(identity: $0.identity, shadowData: $0.shadowData) }
+      .sorted { $0.identity.key < $1.identity.key }
+  }
 
   func isValid(in namespace: ICloudSyncNamespaceBinding) -> Bool {
     namespace.contains(key.pointer) && bindingDigest.count == 32
@@ -41,29 +86,33 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
 extension SwiftDataSnipLibrary {
   func setupPointerDelete(
     namespaceKey: CloudSyncNamespaceKey,
-    key: CloudSetupPointerDelete.Key,
-    attachmentID: UUID,
-    expectedRevision: UInt64,
-    bindingDigest: Data,
-    metadataShadowData: Data?
+    binding: CloudSetupPointerDelete.Binding
   ) throws -> CloudSetupPointerDelete {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
-    guard let row = try Self.cloudAttachmentPublications(
-      namespaceKey: namespaceKey.rawValue, context: context
-    ).first(where: {
-      $0.attachmentID == attachmentID && $0.metadataIdentity == key.pointer
-        && $0.metadataShadowData == metadataShadowData
+    let publications = try Self.cloudAttachmentPublications(namespaceKey: namespaceKey.rawValue, context: context)
+    guard let row = publications.first(where: {
+      $0.attachmentID == binding.attachmentID && $0.metadataIdentity == binding.key.pointer
+        && $0.metadataShadowData == binding.metadataShadow
     })
     else { throw CloudAttachmentStorageError.staleTransition }
-    let owed = try row.lifecycle.acceptMetadataDeletion(expectedRevision: expectedRevision)
-    let payloads = owed.map {
-      CloudSetupPointerDelete.Payload(identity: $0.identity, shadowData: $0.shadowData)
-    }.sorted { $0.identity.key < $1.identity.key }
+    let lifecycle = row.lifecycle
+    // A single failure update advances the revision but preserves the bound publication.
+    guard let revision = binding.revision,
+      row.revision == revision
+        || (row.revision > revision && row.revision - revision == 1 && lifecycle.lastFailure != nil)
+    else { throw CloudAttachmentStorageError.staleTransition }
+    let owed = try lifecycle.acceptMetadataDeletion(expectedRevision: row.revision)
+    let replacements = publications.filter {
+      $0.attachmentID != row.attachmentID && $0.snipID == row.snipID
+        && $0.position == row.position && $0.lifecycle.isPresentAwaitingMetadata
+    }.sorted { $0.attachmentID.uuidString < $1.attachmentID.uuidString }
     return CloudSetupPointerDelete(
-      key: key, bindingDigest: bindingDigest, snipID: row.snipID, payloads: payloads
+      key: binding.key, bindingDigest: binding.digest, snipID: row.snipID,
+      payloads: CloudSetupPointerDelete.payloads(for: owed), position: row.position,
+      replacements: replacements.map { .init(sha256: $0.sha256, byteCount: $0.byteCount) }
     )
   }
 

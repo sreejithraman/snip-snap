@@ -178,36 +178,39 @@ enum CloudSetupRetryCapture {
   }
 
   static func retainPointerDeletes(
-    in batch: CloudFullBatchCommit, applying: Bool, retain: CloudFullSyncPersistence.RetainSetupPointerDelete
-  ) async throws -> Set<UUID> {
+    in batch: CloudFullBatchCommit, retain: CloudFullSyncPersistence.RetainSetupPointerDelete
+  ) async throws -> [UUID: CloudSetupPointerDelete.Deferral] {
     guard let data = batch.rawBatchData,
       let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),
       raw.storageVersion == 1, raw.batch.id == batch.batchID,
       case .sent(let sent) = raw.batch, let outbound = raw.outbound,
       CloudFullSyncPersistence.destructiveResetReason(raw.batch) == nil
-    else { return [] }
+    else { return [:] }
     let results = Dictionary(grouping: sent.items, by: \.id)
-    let bindings = Set(batch.outboundBindings.map(\.identity))
-    var deferred: Set<UUID> = []
+    var deferred: [UUID: CloudSetupPointerDelete.Deferral] = [:]
     for operation in outbound.operations {
       guard case .delete(let id, let base) = operation,
         results[id] == [.deleted(id)]
       else { continue }
       let identity = CloudFullSyncPersistence.storageIdentity(id)
-      guard bindings.contains(identity), identity.recordName.hasPrefix("a-"),
+      guard identity.recordName.hasPrefix("a-"),
         let attachmentID = UUID(uuidString: String(identity.recordName.dropFirst(2))),
-        identity.recordName == "a-\(attachmentID.uuidString.lowercased())",
-        let effect = batch.attachmentTransitions.first(where: {
-          guard case .metadataDeleteAccepted(let plannedID, _) = $0 else { return false }
-          return plannedID == attachmentID
-        }), case .metadataDeleteAccepted(_, let revision) = effect
+        identity.recordName == "a-\(attachmentID.uuidString.lowercased())"
       else { continue }
       let binding = try CloudFullSyncPersistence.outboundBinding(operation)
       guard batch.outboundBindings.contains(binding) else { throw CloudFullStorageError.invalidBatchReplay }
+      let revision = batch.attachmentTransitions.lazy.compactMap { transition -> UInt64? in
+        guard case .metadataDeleteAccepted(let plannedID, let revision) = transition,
+          plannedID == attachmentID
+        else { return nil }
+        return revision
+      }.first
       let key = CloudSetupPointerDelete.Key(batchID: sent.id, pointer: identity)
-      if try await retain(key, operationDigest(binding), base?.data, attachmentID, revision, applying) {
-        deferred.insert(attachmentID)
-      }
+      let receipt = try await retain(.init(
+        key: key, digest: operationDigest(binding), metadataShadow: base?.data,
+        attachmentID: attachmentID, revision: revision
+      ))
+      if revision != nil { deferred[attachmentID] = .init(receipt: receipt, metadataShadow: base?.data) }
     }
     return deferred
   }
@@ -227,10 +230,9 @@ enum CloudSetupRetryCapture {
       return
     }
     for batch in try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey) {
-      _ = try await retainPointerDeletes(in: batch, applying: false) { key, digest, base, id, revision, applying in
+      _ = try await retainPointerDeletes(in: batch) { binding in
         try await persistence.retainSetupPointerDelete(
-          key: key, bindingDigest: digest, metadataShadowData: base, attachmentID: id, expectedRevision: revision,
-          candidateStoreID: transition.candidateStoreID, namespace: namespace, applying: applying
+          binding, candidateStoreID: transition.candidateStoreID, namespace: namespace
         )
       }
     }

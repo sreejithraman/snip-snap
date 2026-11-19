@@ -21,6 +21,9 @@ private protocol ICloudSyncAdapter: Sendable {
     func setupRetryMustHold(
         deletedSnipIDs: Set<UUID>, pointerDeletes: [CloudSetupPointerDelete]
     ) async throws -> Bool
+    func recheckSetupPointerCleanup(
+        deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete]
+    ) async throws -> Bool
     func dormantAcceptedBaseTransferPayload() async throws -> Data?
     func canPrepareModeMerge() async throws -> Bool
     func prepareModeMerge(
@@ -50,6 +53,9 @@ private protocol ICloudSyncAdapter: Sendable {
 private extension ICloudSyncAdapter {
     func setupRetryMustHold(
         deletedSnipIDs: Set<UUID>, pointerDeletes: [CloudSetupPointerDelete]
+    ) async throws -> Bool { false }
+    func recheckSetupPointerCleanup(
+        deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete]
     ) async throws -> Bool { false }
 }
 
@@ -225,6 +231,18 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         )
     }
 
+    func recheckSetupPointerCleanup(
+        deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete]
+    ) async throws -> Bool {
+        checkedSetupMetadata = false
+        try await syncDriver.prepareManualRetry(
+            forceInitialFetch: true, beforeApply: beforeApply, beforeStateSave: beforeApply
+        )
+        try await fetchRemote(beforeApply: beforeApply)
+        guard checkedSetupMetadata, pendingIssue == nil else { return false }
+        return try await raw.canReleaseSetupPointerCleanup(deletedSnipIDs: deletedSnipIDs, receipts: receipts)
+    }
+
     func dormantAcceptedBaseTransferPayload() async throws -> Data? {
         try await raw.dormantAcceptedBaseTransferPayload()
     }
@@ -339,6 +357,7 @@ package actor ICloudSyncModeCoordinator {
     private let makeTransport: TransportFactory
     private let applyHook: SwiftDataCloudTextPersistence.ApplyHook
     private let accountStateSource: any ICloudAccountStateSource
+    private let checkSetupCollection: @Sendable () async throws -> Void
     private enum Operation { case enable, optOut, activeSync }
     private var currentOperation: Operation?
 
@@ -350,7 +369,8 @@ package actor ICloudSyncModeCoordinator {
         attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
         makeTransport: @escaping TransportFactory,
         applyHook: @escaping SwiftDataCloudTextPersistence.ApplyHook = {},
-        accountStateSource: (any ICloudAccountStateSource)? = nil
+        accountStateSource: (any ICloudAccountStateSource)? = nil,
+        checkSetupCollection: @escaping @Sendable () async throws -> Void = {}
     ) {
         precondition(namespace.zones.contains(textZone))
         precondition(payloadZone.map(namespace.zones.contains) ?? true)
@@ -364,6 +384,7 @@ package actor ICloudSyncModeCoordinator {
         self.accountStateSource = accountStateSource ?? FixedICloudAccountStateSource(
             state: .available(accountLineage: namespace.accountLineage)
         )
+        self.checkSetupCollection = checkSetupCollection
     }
 
     package func status() async throws -> ICloudSyncModeStatus {
@@ -587,7 +608,6 @@ package actor ICloudSyncModeCoordinator {
             transition = try await currentTransition()
         }
 
-        var pointerRelease: (deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete])?
         do {
             if transition.phase == .remoteFetched {
                 guard try await bridge.canPrepareModeMerge() else {
@@ -602,9 +622,6 @@ package actor ICloudSyncModeCoordinator {
                     if try await bridge.setupRetryMustHold(deletedSnipIDs: deleted, pointerDeletes: deferred) {
                         return try await holdSetupForDeletedSnip(transition)
                     }
-                    pointerRelease = (deleted, deferred)
-                } else if transition.syncProtocol == .fullRecordV1 {
-                    pointerRelease = ([], [])
                 }
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
@@ -674,15 +691,20 @@ package actor ICloudSyncModeCoordinator {
             if transition.phase == .firstSendComplete {
                 let receipts = await persistence.deferredSetupPointerDeletes(for: transition)
                 var authorizedPointerDeletes: Set<CloudSetupPointerDelete.Key> = []
-                if let pointerRelease, !receipts.isEmpty {
+                if !receipts.isEmpty {
                     try await requireMatchingAccount()
-                    if try await bridge.setupRetryMustHold(
-                        deletedSnipIDs: pointerRelease.deletedSnipIDs, pointerDeletes: pointerRelease.receipts
-                    ) {
+                    try await checkSetupCollection()
+                    let frozenSource = try await persistence.setupRetryFrozenSnapshot(
+                        candidateStoreID: transition.candidateStoreID
+                    )
+                    let deleted = await acknowledgedSetupSnipIDs().subtracting(frozenSource.snips.map(\.id))
+                    guard try await bridge.recheckSetupPointerCleanup(
+                        deletedSnipIDs: deleted, receipts: receipts
+                    ) else {
                         throw CloudSetupRetryHold()
                     }
-                    // Older receipts passed the fresh check. Receipts added by this
-                    // attempt were accepted while the checked source stayed frozen.
+                    try await requireMatchingAccount()
+                    try await checkSetupCollection()
                     authorizedPointerDeletes = Set(receipts.map(\.key))
                 }
                 try await persistence.swapPointer(authorizedSetupPointerDeletes: authorizedPointerDeletes)
@@ -948,12 +970,9 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
             }
-            retainPointerDelete = { [persistence, namespace] key, digest, base, id, revision, applying in
-                try await validateSetupAccount()
+            retainPointerDelete = { [persistence, namespace] binding in
                 return try await persistence.retainSetupPointerDelete(
-                    key: key, bindingDigest: digest, metadataShadowData: base, attachmentID: id,
-                    expectedRevision: revision,
-                    candidateStoreID: storeID, namespace: namespace.binding, applying: applying
+                    binding, candidateStoreID: storeID, namespace: namespace.binding
                 )
             }
         } else {
@@ -1033,6 +1052,7 @@ package actor ICloudSyncModeCoordinator {
                         setupRetryOffers: offers,
                         expectedSetupFreezeToken: freezeToken
                     )
+                    try await self.checkSetupCollection()
                 } else {
                     try await persistence.recordSendAttempt(attempt)
                 }

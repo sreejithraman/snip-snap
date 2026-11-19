@@ -88,40 +88,32 @@ extension SwiftDataSyncModePersistence {
       .first { $0.namespace == namespace }
   }
 
-  /// Runs before the candidate can consume the sent batch. Retention alone is also used by
-  /// cancellation and by staging, where the candidate has not taken ownership of cleanup.
+  /// The exact source receipt is durable before the candidate can consume the sent batch.
   package func retainSetupPointerDelete(
-    key: CloudSetupPointerDelete.Key,
-    bindingDigest: Data,
-    metadataShadowData: Data?,
-    attachmentID: UUID,
-    expectedRevision: UInt64,
+    _ binding: CloudSetupPointerDelete.Binding,
     candidateStoreID: UUID,
-    namespace: ICloudSyncNamespaceBinding,
-    applying: Bool
-  ) async throws -> Bool {
+    namespace: ICloudSyncNamespaceBinding
+  ) async throws -> CloudSetupPointerDelete {
     guard let index = manifest.setupRetrySourceIndex, let transition = manifest.transition,
       transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
     else { throw SyncModePersistenceError.transitionInProgress }
-    let retained = setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes.first { $0.key == key }
-    if let retained, !applying {
-      guard retained.bindingDigest == bindingDigest else { throw SyncModePersistenceError.invalidManifest }
-      return false
+    if let retained = setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes.first(where: {
+      $0.key == binding.key
+    }) {
+      guard retained.bindingDigest == binding.digest else { throw SyncModePersistenceError.invalidManifest }
+      return retained
     }
     let receipt = try await libraryForTransition(storeID: candidateStoreID).setupPointerDelete(
-      namespaceKey: namespace.namespaceKey, key: key, attachmentID: attachmentID,
-      expectedRevision: expectedRevision, bindingDigest: bindingDigest, metadataShadowData: metadataShadowData
+      namespaceKey: namespace.namespaceKey, binding: binding
     )
     guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
-    if receipt != retained {
-      var next = manifest
-      var history = next.stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
-      try history.update(namespace: namespace) { try $0.retainPointerDelete(receipt) }
-      next.stores[index].setupRetryHistory = history
-      try commit(next)
-      try crashHook(.afterSetupPointerDeleteRetention)
-    }
-    return applying
+    var next = manifest
+    var history = next.stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
+    try history.update(namespace: namespace) { try $0.retainPointerDelete(receipt) }
+    next.stores[index].setupRetryHistory = history
+    try commit(next)
+    try crashHook(.afterSetupPointerDeleteRetention)
+    return receipt
   }
 
   package func deferredSetupPointerDeletes(for transition: SyncModeTransition) -> [CloudSetupPointerDelete] {

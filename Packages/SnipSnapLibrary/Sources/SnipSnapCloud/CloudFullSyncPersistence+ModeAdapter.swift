@@ -95,6 +95,60 @@ extension CloudFullSyncPersistence {
     return try await setupRetryHasCandidateChanges(for: deletedSnipIDs)
   }
 
+  func canReleaseSetupPointerCleanup(
+    deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete]
+  ) async throws -> Bool {
+    guard try await setupRetryMustHold(deletedSnipIDs: deletedSnipIDs, pointerDeletes: receipts) == false else {
+      return false
+    }
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard let inventory = stored.namespaceState.initialFetchInventory, let payloadZone else { return false }
+    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    let publications = Dictionary(grouping: attachments.publications, by: \.metadataIdentity)
+    let observedPointers = inventory.observed.filter {
+      $0.recordName.hasPrefix("a-") || publications[$0] != nil
+    }
+    var published: [CloudAttachmentMetadataValue] = []
+    for pointer in observedPointers {
+      guard let rows = publications[pointer], rows.count == 1,
+        let bytes = rows.first?.metadataShadowData,
+        let shadow = try? CloudRecordShadow(data: bytes),
+        let snapshot = try? CloudKitRecordMapper.snapshot(shadow.record()),
+        snapshot.id == Self.recordID(pointer),
+        let metadata = try? CloudAttachmentRecordCodec.metadata(
+          from: snapshot, metadataZone: dataZone, payloadZone: payloadZone
+        )
+      else { return false }
+      published.append(metadata)
+    }
+    let namedPayloads = Set(published.map(\.payloadIdentity))
+    return receipts.allSatisfy { receipt in
+      guard receipt.payloadIdentities.isDisjoint(with: namedPayloads) else { return false }
+      // Checked parent absence plus the frozen source deletion releases the
+      // replacement dependency. Otherwise its published bytes must be proved.
+      if deletedSnipIDs.contains(receipt.snipID) {
+        return !inventory.observed.contains(Self.storageIdentity(.snip(receipt.snipID, in: dataZone)))
+      }
+      guard let position = receipt.position, let replacements = receipt.replacements,
+        !attachments.publications.contains(where: {
+          guard $0.metadata.snipID == receipt.snipID, $0.isLocallyPresent, !$0.metadataAccepted else {
+            return false
+          }
+          let fingerprint = CloudSetupPointerDelete.Replacement(
+            sha256: $0.metadata.sha256, byteCount: $0.metadata.byteCount
+          )
+          return $0.metadata.position == position || replacements.contains(fingerprint)
+        })
+      else { return false }
+      return replacements.allSatisfy { replacement in
+        published.contains {
+          $0.snipID == receipt.snipID && $0.position == position && $0.sha256 == replacement.sha256
+            && $0.byteCount == replacement.byteCount
+        }
+      }
+    }
+  }
+
   package func approveEnrollment(references: Set<CloudEntityReference>) async throws {
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let dependencies = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0.listID) })

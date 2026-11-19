@@ -7,7 +7,7 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     resolveMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
-    deferredSetupPointerDeletes: Set<UUID> = [],
+    deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
     context: ModelContext
   ) throws -> Set<UUID> {
     guard !transitions.isEmpty else { return [] }
@@ -394,7 +394,25 @@ extension SwiftDataSnipLibrary {
           $0 != attachmentID
         })
         // Setup has already durably retained the exact cleanup authority for these deletes.
-        if !deferredSetupPointerDeletes.contains(attachmentID) {
+        if let deferral = deferredSetupPointerDeletes[attachmentID] {
+          let receipt = deferral.receipt
+          guard receipt.key.pointer == row.metadataIdentity, receipt.snipID == row.snipID,
+            receipt.position.map({ $0 == row.position }) ?? true,
+            deferral.metadataShadow == row.metadataShadowData,
+            receipt.payloads == CloudSetupPointerDelete.payloads(for: owedCleanups)
+          else { throw CloudAttachmentStorageError.staleTransition }
+          if let replacementAttachmentID {
+            guard let replacement = byAttachment[replacementAttachmentID] else {
+              throw CloudAttachmentStorageError.staleTransition
+            }
+            let expected = CloudSetupPointerDelete.Replacement(
+              sha256: replacement.sha256, byteCount: replacement.byteCount
+            )
+            guard receipt.replacements?.contains(expected) == true else {
+              throw CloudAttachmentStorageError.staleTransition
+            }
+          }
+        } else {
           for cleanup in owedCleanups {
             cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
           }

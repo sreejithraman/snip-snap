@@ -8,7 +8,7 @@ extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
     resolveAttachmentMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
-    deferredSetupPointerDeletes: Set<UUID> = [],
+    deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
