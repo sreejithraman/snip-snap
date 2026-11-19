@@ -418,6 +418,30 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
+  func testUnrelatedFailuresKeepTheirSyncControls() async {
+    let calls = DeleteEventRecorder()
+    let local = SyncedContentSettingsModel(
+      mode: .localOnly, initialState: .failed(.appDataIssue),
+      enableAction: { .enabled }, cancelEnableAction: { await calls.record("cancel") }
+    )
+    let synced = SyncedContentSettingsModel(
+      mode: .iCloudSync, initialState: .failed(.appDataIssue),
+      cancelEnableAction: { await calls.record("cancel") },
+      hasFailedPendingEnable: { true }, disableAction: { _ in }
+    )
+    XCTAssertTrue(local.canEnable)
+    XCTAssertFalse(local.isSyncRequested)
+    XCTAssertTrue(synced.canDisable)
+    XCTAssertTrue(synced.isSyncRequested)
+    XCTAssertFalse(local.canCancelEnable)
+    XCTAssertFalse(synced.canCancelEnable)
+    await local.cancelICloudSyncSetup()
+    await synced.cancelICloudSyncSetup()
+    let events = await calls.values()
+    XCTAssertTrue(events.isEmpty)
+  }
+
+  @MainActor
   func testRoutineSyncUsesSettingsStatusForProgressAndFailure() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
 

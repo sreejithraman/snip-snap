@@ -138,12 +138,21 @@ public enum SnipSnapCloudAppAssembly {
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
         cancelEnableAction: { try await session.cancelICloudSyncSetup() },
+        hasFailedPendingEnable: { hasPendingSetup(rootURL: rootURL) },
         disableAction: { choice in try await session.disableICloudSync(choice) },
         deleteAction: { try await session.deleteSyncedContent() }
       ),
       syncSession: session,
       accountHandlerFactory: accountHandlerFactory
     )
+  }
+
+  package static func hasPendingSetup(rootURL: URL) -> Bool {
+    switch SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: rootURL) {
+    case .settingUp, .needsAttention: true
+    case .localOnly: PendingICloudSyncEnable.needsAttention(at: rootURL)
+    case .active: false
+    }
   }
 
   package static func settingsStartupState(

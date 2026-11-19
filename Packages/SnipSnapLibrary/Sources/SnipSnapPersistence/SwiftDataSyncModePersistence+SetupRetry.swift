@@ -2,6 +2,33 @@ import Foundation
 import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
+  func hasDeletedSetupSnip(in transition: SyncModeTransition) async throws -> Bool {
+    guard manifest.setupRetrySourceIndex != nil, let namespace = transition.namespace,
+      let evidence = setupRetryEvidence(namespace: namespace)
+    else { return false }
+    let acknowledged = Set(evidence.acknowledgedSnipKeys.map(\.reference.domainID))
+    guard !acknowledged.isEmpty else { return false }
+    let source = try await libraryForTransition(storeID: transition.sourceStoreID)
+      .checkedSnapshot(sortedBy: .manual)
+    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
+    return !acknowledged.subtracting(source.snips.map(\.id)).isEmpty
+  }
+
+  package func withSetupRetryFetchCommit<Value: Sendable>(
+    candidateStoreID: UUID,
+    namespace: ICloudSyncNamespaceBinding,
+    _ commit: @Sendable () async throws -> Value
+  ) async throws -> Value {
+    guard manifest.setupRetrySourceIndex != nil, let transition = manifest.transition,
+      transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
+    else { throw SyncModePersistenceError.transitionInProgress }
+    // Setup fetches can apply a pointer tombstone to the candidate and queue
+    // payload cleanup. Keep source writes out of the check and commit.
+    try beginStoreReplacement()
+    defer { finishStoreReplacement() }
+    return try await commit()
+  }
+
   package func holdSetupForDeletedSnip(transitionID: UUID) throws {
     guard let transition = manifest.transition,
       transition.id == transitionID, transition.targetKind == .iCloudSync,

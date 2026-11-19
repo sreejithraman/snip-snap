@@ -556,6 +556,9 @@ package actor CloudFullSyncCoordinator {
 package actor CloudFullSyncPersistence: CloudFullSyncStore {
   package typealias ApplyHook = @Sendable () async throws -> Void
   package typealias SetupRetryResultHook = @Sendable ([CloudSetupRetryResult]) async throws -> Void
+  package typealias SetupRetryFetchCommit = @Sendable (
+    @Sendable () async throws -> CloudFullBatchCommit
+  ) async throws -> CloudFullBatchCommit
 
   struct RawStagedBatch: Codable, Equatable, Sendable {
     let storageVersion: Int
@@ -582,6 +585,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private let mutationLease: SyncModeActiveMutationLease?
   private let recordSetupRetryResults: SetupRetryResultHook?
   private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
+  private let withSetupRetryFetchCommit: SetupRetryFetchCommit?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -594,6 +598,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     recordSetupRetryResults: SetupRetryResultHook? = nil,
     setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
+    withSetupRetryFetchCommit: SetupRetryFetchCommit? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -608,6 +613,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.diagnostics = diagnostics
     self.recordSetupRetryResults = recordSetupRetryResults
     self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
+    self.withSetupRetryFetchCommit = withSetupRetryFetchCommit
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }
@@ -689,17 +695,31 @@ extension CloudFullSyncPersistence {
 
   private func applyStagedWithinMutation(_ id: UUID) async throws {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
-    if let rawData = batch.rawBatchData,
-      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData)
+    let raw = batch.rawBatchData.flatMap { try? JSONDecoder().decode(RawStagedBatch.self, from: $0) }
+    let committed: CloudFullBatchCommit
+    if let withSetupRetryFetchCommit, let raw, case .fetched = raw.batch,
+      Self.destructiveResetReason(raw.batch) == nil
     {
-      try await checkSetupRetryFetch(raw.batch)
-      if let reason = Self.destructiveResetReason(raw.batch) {
-        observedDestructiveReset = reason
+      committed = try await withSetupRetryFetchCommit {
+        try await self.checkSetupRetryFetch(raw.batch)
+        return try await self.commitStagedBatch(batch)
       }
+    } else {
+      if let raw {
+        try await checkSetupRetryFetch(raw.batch)
+        if let reason = Self.destructiveResetReason(raw.batch) {
+          observedDestructiveReset = reason
+        }
+      }
+      committed = try await commitStagedBatch(batch)
     }
+    try await finishCommittedBatch(committed)
+  }
+
+  private func commitStagedBatch(_ batch: CloudFullBatchCommit) async throws -> CloudFullBatchCommit {
     do {
       _ = try await library.commitCloudFullBatch(batch)
-      try await finishCommittedBatch(batch)
+      return batch
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
       || (error as? CloudAttachmentStorageError) == .staleTransition
@@ -709,7 +729,7 @@ extension CloudFullSyncPersistence {
       // the fresh commit must still validate.
       guard let rawData = batch.rawBatchData else { throw error }
       let raw = try JSONDecoder().decode(RawStagedBatch.self, from: rawData)
-      guard raw.storageVersion == 1, raw.batch.id == id else {
+      guard raw.storageVersion == 1, raw.batch.id == batch.batchID else {
         throw CloudFullStorageError.invalidBatchReplay
       }
       let replacement = try await makeCommit(
@@ -719,7 +739,7 @@ extension CloudFullSyncPersistence {
       )
       try await library.replaceStagedCloudFullBatch(replacement)
       _ = try await library.commitCloudFullBatch(replacement)
-      try await finishCommittedBatch(replacement)
+      return replacement
     }
   }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
@@ -5,6 +6,7 @@ import Synchronization
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
+    @MainActor
     func testSetupRetryKeepsLocalDeletionWhenPeerEditsAfterFetch() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -218,12 +220,43 @@ extension ICloudSyncModeCoordinatorTests {
         let staleTransport = FakeCloudRecordTransport(
             server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
         )
-        let stale = ICloudSyncModeCoordinator(
-            persistence: later, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
-            makeTransport: { staleTransport }
+        let descriptor = CloudCollectionDescriptor(
+            generation: namespace.generation, metadataZone: metadataZone, payloadZone: payloadZone
         )
-        let staleStatus = try await stale.enableOrRetry()
-        XCTAssertEqual(staleStatus.state, .needsAttention)
+        func settings(
+            persistence: SwiftDataSyncModePersistence,
+            transport: FakeCloudRecordTransport
+        ) async throws -> SyncedContentSettingsModel {
+            let lifecycle = SnipSnapICloudSyncLifecycle(
+                rootURL: localRoot,
+                sourceLibrary: try await persistence.activeLibrary(),
+                syncModeStore: SnipSyncModeStore(persistence),
+                cloudScope: "private", accountLineage: "account", ownerName: "owner",
+                controlTransport: FakeCloudControlTransport(server: server),
+                makeRecordTransport: { _ in transport },
+                makeDescriptor: { descriptor }
+            )
+            let startup = SnipSnapCloudAppAssembly.settingsStartupState(
+                rootURL: localRoot,
+                startupState: SyncModeActivationManifestReader.iCloudStartupState(
+                    atSyncModeRootURL: localRoot
+                )
+            )
+            return SyncedContentSettingsModel(
+                mode: startup.mode,
+                initialState: startup.state,
+                issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
+                enableAction: { try await lifecycle.enableICloudSync() },
+                cancelEnableAction: { try await lifecycle.cancelPendingEnable() },
+                hasFailedPendingEnable: { SnipSnapCloudAppAssembly.hasPendingSetup(rootURL: localRoot) }
+            )
+        }
+        let heldSettings = try await settings(persistence: later, transport: staleTransport)
+        await heldSettings.enableICloudSync()
+        XCTAssertEqual(heldSettings.state, .failed(.appDataIssue))
+        XCTAssertTrue(heldSettings.canCancelEnable)
+        XCTAssertTrue(heldSettings.isSyncRequested)
+        XCTAssertTrue(heldSettings.canEnable)
         let staleEvents = await staleTransport.events()
         XCTAssertEqual(staleEvents, [.started, .fetched])
         let heldStorage = try await later.snapshot()
@@ -242,23 +275,176 @@ extension ICloudSyncModeCoordinatorTests {
         ]))
         XCTAssertEqual(pointerRemoval.items, [.deleted(metadataID)])
         try await peerWriter.confirmApplied(pointerRemoval.id)
-        try await later.cancelPendingICloudEnable()
-        let fresh = ICloudSyncModeCoordinator(
-            persistence: later, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
-            makeTransport: {
-                FakeCloudRecordTransport(
-                    server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
-                )
-            }
+        let afterRestart = try SwiftDataSyncModePersistence(rootURL: localRoot)
+        let freshTransport = FakeCloudRecordTransport(
+            server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
         )
-        let freshStatus = try await fresh.enableOrRetry()
-        XCTAssertEqual(freshStatus.state, .on)
-        let finalLibrary = try await later.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        let restartedSettings = try await settings(persistence: afterRestart, transport: freshTransport)
+        XCTAssertEqual(restartedSettings.state, .failed(.appDataIssue))
+        XCTAssertTrue(restartedSettings.canCancelEnable)
+        XCTAssertTrue(restartedSettings.isSyncRequested)
+        await restartedSettings.cancelICloudSyncSetup()
+        XCTAssertEqual(restartedSettings.mode, .localOnly)
+        XCTAssertEqual(restartedSettings.state, .ready)
+        XCTAssertFalse(restartedSettings.canCancelEnable)
+        XCTAssertFalse(restartedSettings.isSyncRequested)
+        let cancelled = try await afterRestart.snapshot()
+        XCTAssertNil(cancelled.transition)
+        XCTAssertEqual(cancelled.activeStore.id, initialStorage.activeStore.id)
+        let retained = await afterRestart.setupRetryEvidence(namespace: namespace.binding)
+        XCTAssertEqual(retained?.baseline(for: key), evidence?.baseline(for: key))
+        await restartedSettings.enableICloudSync()
+        XCTAssertEqual(restartedSettings.mode, .iCloudSync)
+        XCTAssertEqual(restartedSettings.state, .ready)
+        let finalLibrary = try await afterRestart.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(finalLibrary.snips.map(\.id), [survivor.id])
         let survivingPayload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(survivingPayload)), bytes)
         let deletionCount = await server.acceptedDeletionCount()
         XCTAssertEqual(deletionCount, 2, "Only the peer sent a deletion.")
+    }
+
+    func testSetupRetrySerializesSourceDeletionWithFetchedPointerCommit() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await initial.activeLibrary()
+        try await add("acknowledged", to: source)
+        try await add("unsent", to: source)
+        let original = try await source.checkedSnapshot(sortedBy: .manual)
+        let snip = try XCTUnwrap(original.snips.first { $0.content == "acknowledged" })
+        let survivor = try XCTUnwrap(original.snips.first { $0.id != snip.id })
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+        let zone = descriptor.metadataZone
+        let payloadZone = descriptor.payloadZone
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
+        let snipID = CloudRecordID.snip(snip.id, in: zone)
+        let server = FakeCloudServer()
+        let firstTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await firstTransport.failNextSentItem(.snip(survivor.id, in: zone), failure: .retryable)
+        let first = ICloudSyncModeCoordinator(
+            persistence: initial, namespace: namespace, textZone: zone, payloadZone: payloadZone,
+            makeTransport: { firstTransport }
+        )
+        let partial = try await first.enableOrRetry()
+        XCTAssertEqual(partial.state, .settingUp)
+
+        let attachmentID = UUID()
+        let metadataID = CloudRecordID(zone: zone, name: "a-\(attachmentID.uuidString.lowercased())")
+        let payloadID = CloudRecordID(zone: payloadZone, name: UUID().uuidString.lowercased())
+        let bytes = Data("independently uploaded payload".utf8)
+        let file = root.appendingPathComponent("peer.txt")
+        try bytes.write(to: file)
+        let metadata = CloudAttachmentMetadataValue(
+            attachmentID: attachmentID, snipID: snip.id, position: 0, fileName: "peer.txt",
+            contentType: "text/plain", byteCount: Int64(bytes.count),
+            sha256: Data(SHA256.hash(data: bytes)),
+            payloadIdentity: CloudAttachmentRecordCodec.identity(payloadID)
+        )
+        let publication = CloudAttachmentPublication(
+            metadata: metadata, metadataIdentity: CloudAttachmentRecordCodec.identity(metadataID),
+            sourceURL: file, payloadAccepted: true, payloadShadowData: nil,
+            metadataAccepted: false, metadataShadowData: nil, revision: 0
+        )
+        _ = try await server.send(CloudOutboundBatch(operations: [
+            .save(CloudAttachmentRecordCodec.payloadDraft(publication)),
+            .save(CloudAttachmentRecordCodec.metadataDraft(publication))
+        ]), failures: [:])
+        let pointer = await server.fullSnapshot(for: metadataID)
+        let shadow = try XCTUnwrap(pointer).shadow
+        let storage = try await initial.snapshot()
+        let candidateID = try XCTUnwrap(storage.transition?.candidateStoreID)
+        let candidate = try await initial.libraryForTransition(storeID: candidateID)
+        try await candidate.commitCloudAttachmentTransitions(
+            namespaceKey: namespace.namespaceKey,
+            transitions: [.remoteMetadataAccepted(
+                metadata: metadata, metadataIdentity: publication.metadataIdentity,
+                shadowData: shadow.data, systemFields: shadow.systemFields
+            )]
+        )
+        let removal = try await server.send(
+            CloudOutboundBatch(operations: [.delete(metadataID, base: shadow)]), failures: [:]
+        )
+        XCTAssertEqual(removal.items, [.deleted(metadataID)])
+        let fake = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let probe = SetupRetryDeleteProbeTransport(fake, interruptConfirmation: true)
+        let armSave = Mutex(false)
+        let racingSource = Mutex<(any SnipLibrary)?>(nil)
+        let deletionWasBlocked = Mutex<Bool?>(nil)
+        let reopened = try SwiftDataSyncModePersistence(
+            rootURL: root,
+            readHook: {
+                guard deletionWasBlocked.withLock({ $0 == nil }),
+                    try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey)
+                        .contains(where: { $0.attachmentTransitions.contains(.remoteMetadataDeleted(
+                            metadataIdentity: publication.metadataIdentity
+                        )) })
+                else { return }
+                armSave.withLock { $0 = true }
+            },
+            afterMutationBeforeSave: {
+                let armed = armSave.withLock { armed in
+                    defer { armed = false }
+                    return armed
+                }
+                guard armed, let editable = racingSource.withLock({ $0 }) else { return }
+                // This is the save of the staged pointer tombstone, after the source
+                // check. The two stores have distinct file locks.
+                let finished = DispatchSemaphore(value: 0)
+                Task.detached {
+                    defer { finished.signal() }
+                    do {
+                        _ = try await editable.perform(.delete(ids: [snip.id]), sortedBy: .manual)
+                        deletionWasBlocked.withLock { $0 = false }
+                    } catch SnipLibraryError.modeTransitionInProgress {
+                        deletionWasBlocked.withLock { $0 = true }
+                    } catch {
+                        deletionWasBlocked.withLock { $0 = false }
+                    }
+                }
+                guard finished.wait(timeout: .now() + 15) == .success else {
+                    throw CloudTransportError.fetchFailed
+                }
+            }
+        )
+        let editable = try await reopened.activeLibrary()
+        racingSource.withLock { $0 = editable }
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: zone, payloadZone: payloadZone,
+            makeTransport: { probe }
+        )
+        let paused = try await retry.enableOrRetry()
+        XCTAssertNotEqual(paused.state, .on)
+        XCTAssertEqual(deletionWasBlocked.withLock { $0 }, true)
+        let firstIntents = await probe.suppliedDeleteIDs
+        XCTAssertTrue(firstIntents.isEmpty)
+
+        let later = try SwiftDataSyncModePersistence(rootURL: root)
+        let stillEditable = try await later.activeLibrary()
+        let beforeDelete = try await stillEditable.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(beforeDelete.snips.map(\.id)), [snip.id, survivor.id])
+        let durableCandidate = try await later.libraryForTransition(storeID: candidateID)
+        let ledger = try await durableCandidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(ledger.cleanups.map(\.identity), [metadata.payloadIdentity])
+        XCTAssertTrue(ledger.publications.isEmpty)
+        _ = try await stillEditable.perform(.delete(ids: [snip.id]), sortedBy: .manual)
+        let nextProbe = SetupRetryDeleteProbeTransport(FakeCloudRecordTransport(server: server, namespace: namespace))
+        let next = ICloudSyncModeCoordinator(
+            persistence: later, namespace: namespace, textZone: zone, payloadZone: payloadZone,
+            makeTransport: { nextProbe }
+        )
+        let held = try await next.enableOrRetry()
+        XCTAssertEqual(held.state, .needsAttention)
+        let unchangedLedger = try await durableCandidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(unchangedLedger, ledger)
+        let heldDeletes = await nextProbe.suppliedDeleteIDs
+        XCTAssertTrue(heldDeletes.isEmpty)
+        let peer = await server.fullSnapshot(for: snipID)
+        XCTAssertNotNil(peer)
+        let payload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(payload)), bytes)
+        let final = try await stillEditable.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [survivor.id])
     }
 
     func testSecondDeviceCanEnableSyncWithAnUncachedRemoteAttachment() async throws {
@@ -772,13 +958,19 @@ extension ICloudSyncModeCoordinatorTests {
 actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
     let fake: FakeCloudRecordTransport
     let omitFetchCompletion: Bool
+    let interruptConfirmation: Bool
     private(set) var resumed = false
     private(set) var receivedInitialOutbound = false
     private(set) var suppliedDeleteIDs: Set<CloudRecordID> = []
 
-    init(_ fake: FakeCloudRecordTransport, omitFetchCompletion: Bool = false) {
+    init(
+        _ fake: FakeCloudRecordTransport,
+        omitFetchCompletion: Bool = false,
+        interruptConfirmation: Bool = false
+    ) {
         self.fake = fake
         self.omitFetchCompletion = omitFetchCompletion
+        self.interruptConfirmation = interruptConfirmation
     }
 
     func start(state: CloudEngineStateEnvelope?) async throws {
@@ -816,6 +1008,7 @@ actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
     }
 
     func confirmApplied(_ batchID: UUID) async throws {
+        if interruptConfirmation { throw CloudTransportError.fetchFailed }
         try await fake.confirmApplied(batchID)
     }
 

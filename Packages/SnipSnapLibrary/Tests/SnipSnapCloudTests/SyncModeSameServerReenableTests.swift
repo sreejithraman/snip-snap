@@ -71,6 +71,113 @@ extension ICloudSyncModeCoordinatorTests {
         try await assertSetupRetryAfterDeletingSnip(.missingAcknowledgement)
     }
 
+    func testSetupRetryChecksDeletedSourceBeforeRecoveringOldFullMergeIntent() async throws {
+        for point: SyncModeCrashPoint in [.beforeCandidateMergeDurability, .afterCandidateMergeDurability] {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+            let local = try await persistence.activeLibrary()
+            try await add("acknowledged", to: local)
+            try await add("unsent", to: local)
+            let original = try await local.checkedSnapshot(sortedBy: .manual)
+            let deleted = try XCTUnwrap(original.snips.first { $0.content == "acknowledged" })
+            let survivor = try XCTUnwrap(original.snips.first { $0.id != deleted.id })
+            let namespace = makeNamespace()
+            let zone = textZone(namespace)
+            let deletedID = CloudRecordID.snip(deleted.id, in: zone)
+            let server = FakeCloudServer()
+            let firstTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+            await firstTransport.failNextSentItem(.snip(survivor.id, in: zone), failure: .retryable)
+            let first = ICloudSyncModeCoordinator(
+                persistence: persistence, namespace: namespace, textZone: zone,
+                makeTransport: { firstTransport }
+            )
+            let partial = try await first.enableOrRetry()
+            XCTAssertEqual(partial.state, .settingUp)
+            _ = try await local.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
+
+            let crash = CrashInjector(point: point)
+            let old = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
+            let state = try await old.snapshot()
+            let transition = try XCTUnwrap(state.transition)
+            let evidence = await old.setupRetryEvidence(namespace: namespace.binding)
+            XCTAssertEqual(evidence?.acknowledgedSnipKeys.map(\.reference.domainID), [deleted.id])
+            let candidate = try await old.libraryForTransition(storeID: transition.candidateStoreID)
+            let raw = CloudFullSyncPersistence(library: candidate, namespace: namespace, dataZone: zone)
+            let settlement = try await raw.currentModeSeedSettlement(
+                candidates: transition.seedSettlementCandidates, namespace: namespace.binding
+            )
+            try await old.prepareRetryFetch(settlement: settlement)
+            let oldFetch = FakeCloudRecordTransport(server: server, namespace: namespace)
+            let driver = CloudFullSyncCoordinator(store: raw, transport: oldFetch, fetchScope: .zones([zone]))
+            _ = try await driver.fetchRemote()
+            try await old.recordPreparationComplete()
+            let prepared = try await old.snapshot()
+            let token = try await old.freezeSource()
+            let source = try await old.finalSnapshot(using: token)
+            let revision = try await old.candidateRevision(transitionID: transition.id)
+            // Model a retry that predates the hold by staging the actual old merge,
+            // with the accepted peer copy still present in its plan.
+            let generated = try await raw.makeReenableApplyPlan(
+                source: source, transitionID: transition.id, targetRevision: revision,
+                priorSeedProvenance: try XCTUnwrap(prepared.transition).seedProvenance,
+                retryEvidence: evidence
+            )
+            let plan = try XCTUnwrap(generated)
+            XCTAssertTrue(plan.snips.contains { $0.id == deleted.id })
+            do {
+                _ = try await old.mergeFullReenableSnapshot(source, using: token, plan: plan)
+                XCTFail("Expected the old setup to stop at \(point).")
+            } catch CrashInjector.Failure.injected {}
+            let intent = try await old.snapshot().transition?.mergeIntent
+            XCTAssertEqual(intent?.fullReenablePlanID, transition.id)
+            let applied = try await candidate.recognizesAppliedCloudFullReenable(
+                CloudFullReenableCommitProof(
+                    namespaceKey: namespace.namespaceKey, transitionID: transition.id,
+                    digest: try XCTUnwrap(intent).planDigest
+                )
+            )
+            XCTAssertEqual(applied, point == .afterCandidateMergeDurability)
+
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+            let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+            let retry = ICloudSyncModeCoordinator(
+                persistence: reopened, namespace: namespace, textZone: zone,
+                makeTransport: { retryTransport }
+            )
+            let held = try await retry.enableOrRetry()
+            XCTAssertEqual(held.state, .needsAttention)
+            let heldStorage = try await reopened.snapshot()
+            XCTAssertEqual(heldStorage.activeStore.id, transition.sourceStoreID)
+            XCTAssertEqual(heldStorage.transition?.candidateStoreID, transition.candidateStoreID)
+            XCTAssertEqual(heldStorage.transition?.phase, .candidateReady)
+            XCTAssertNil(heldStorage.transition?.mergeIntent)
+            let durableSource = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(durableSource.snips.map(\.id), [survivor.id])
+            let retained = await reopened.setupRetryEvidence(namespace: namespace.binding)
+            XCTAssertEqual(retained?.acknowledgedSnipKeys, evidence?.acknowledgedSnipKeys)
+            let beforeRemoval = await retryTransport.events()
+            XCTAssertTrue(beforeRemoval.contains(.fetched))
+            XCTAssertFalse(beforeRemoval.contains { if case .sent = $0 { return true }; return false })
+            let remote = await server.fullSnapshot(for: deletedID)
+            XCTAssertEqual(try CloudFullRecordCodec.snip(from: XCTUnwrap(remote)).text, .value(deleted.content))
+
+            let peer = FakeCloudRecordTransport(server: server, namespace: namespace)
+            try await peer.start(state: nil)
+            let removed = try await peer.send(CloudOutboundBatch(operations: [
+                .delete(deletedID, base: try XCTUnwrap(remote).shadow)
+            ]))
+            XCTAssertEqual(removed.items, [.deleted(deletedID)])
+            try await peer.confirmApplied(removed.id)
+            let released = try await retry.enableOrRetry()
+            XCTAssertEqual(released.state, .on)
+            let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(final.snips.map(\.id), [survivor.id])
+            let deletionCount = await server.acceptedDeletionCount()
+            XCTAssertEqual(deletionCount, 1)
+        }
+    }
+
     private enum DeletedSetupSnip {
         case acknowledged
         case serverEdited

@@ -917,12 +917,19 @@ package actor ICloudSyncModeCoordinator {
             recordResults = nil
         }
         let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
+        let withFetchCommit: CloudFullSyncPersistence.SetupRetryFetchCommit?
         if checksSetupRetry {
             deletedSnipIDs = { [self] in
                 try await deletedSetupSnipIDs(await acknowledgedSetupSnipIDs())
             }
+            withFetchCommit = { [persistence, namespace] commit in
+                try await persistence.withSetupRetryFetchCommit(
+                    candidateStoreID: storeID, namespace: namespace.binding, commit
+                )
+            }
         } else {
             deletedSnipIDs = nil
+            withFetchCommit = nil
         }
         return CloudFullSyncPersistence(
             library: library,
@@ -931,7 +938,8 @@ package actor ICloudSyncModeCoordinator {
             payloadZone: payloadZone,
             attachmentPolicy: attachmentPolicy,
             recordSetupRetryResults: recordResults,
-            setupRetryDeletedSnipIDs: deletedSnipIDs
+            setupRetryDeletedSnipIDs: deletedSnipIDs,
+            withSetupRetryFetchCommit: withFetchCommit
         )
     }
 

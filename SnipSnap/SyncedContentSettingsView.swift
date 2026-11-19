@@ -242,10 +242,7 @@ struct SyncedContentSettingsView: View {
 
     private var syncEnabled: Binding<Bool> {
         Binding(
-            get: {
-                if case .enabling = model.state { return true }
-                return model.mode == .iCloudSync
-            },
+            get: { model.isSyncRequested },
             set: { enabled in
                 Task {
                     if enabled {

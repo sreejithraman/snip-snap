@@ -217,6 +217,7 @@ public final class SyncedContentSettingsModel {
   private let enableAction: EnableAction?
   private let issueMapper: IssueMapper
   private let cancelEnableAction: CancelEnableAction?
+  private let hasFailedPendingEnable: @MainActor () -> Bool
   private let disableAction: DisableAction?
   private let deleteAction: DeleteAction?
   private let diagnostics: AppDiagnosticRecorder
@@ -230,6 +231,7 @@ public final class SyncedContentSettingsModel {
     issueMapper: @escaping IssueMapper = { _ in .appDataIssue },
     enableAction: EnableAction? = nil,
     cancelEnableAction: CancelEnableAction? = nil,
+    hasFailedPendingEnable: @escaping @MainActor () -> Bool = { false },
     disableAction: DisableAction? = nil,
     deleteAction: DeleteAction? = nil,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live
@@ -238,6 +240,7 @@ public final class SyncedContentSettingsModel {
     self.issueMapper = issueMapper
     self.enableAction = enableAction
     self.cancelEnableAction = cancelEnableAction
+    self.hasFailedPendingEnable = hasFailedPendingEnable
     self.disableAction = disableAction
     self.deleteAction = deleteAction
     self.diagnostics = diagnostics
@@ -279,8 +282,16 @@ public final class SyncedContentSettingsModel {
 
   public var canCancelEnable: Bool {
     guard mode == .localOnly, cancelEnableAction != nil else { return false }
+    switch state {
+    case .enabling: return true
+    case .failed: return hasFailedPendingEnable()
+    default: return false
+    }
+  }
+
+  public var isSyncRequested: Bool {
     if case .enabling = state { return true }
-    return false
+    return mode == .iCloudSync || canCancelEnable
   }
 
   public var canEnableClipboardSync: Bool {
