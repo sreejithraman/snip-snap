@@ -571,6 +571,7 @@ package actor SwiftDataSyncModePersistence {
       guard manifest.transition == transition else {
         throw SyncModePersistenceError.transitionInProgress
       }
+      try SyncModeDeferredEnableCompletion.record(namespace, at: rootURL)
     }
     var next = manifest
     if installsCleanup {

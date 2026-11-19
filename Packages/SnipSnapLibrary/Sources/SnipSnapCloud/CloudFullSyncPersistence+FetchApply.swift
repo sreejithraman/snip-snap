@@ -5,11 +5,11 @@ import SnipSnapPersistence
 extension CloudFullSyncPersistence {
   func commitStagedBatch(
     _ batch: CloudFullBatchCommit, deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
-    setupReplacementIDs: Set<UUID> = []
+    setupReplacements: Set<CloudSetupPointerDelete.Replacement> = []
   ) async throws {
     _ = try await library.commitCloudFullBatch(
       batch, resolveAttachmentMetadata: attachmentMetadataRebase(for: batch),
-      deferredSetupPointerDeletes: deferredSetupPointerDeletes, setupReplacementIDs: setupReplacementIDs
+      deferredSetupPointerDeletes: deferredSetupPointerDeletes, setupReplacements: setupReplacements
     )
   }
 

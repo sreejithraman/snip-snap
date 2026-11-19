@@ -1,4 +1,21 @@
 import SnipSnapCore
+import SnipSnapPersistence
+
+extension SnipSnapCloudSyncResult {
+  @MainActor
+  public func applyDeferredEnableCompletion(
+    to settings: SyncedContentSettingsModel,
+    reload: @MainActor () async throws -> Void,
+    acknowledge: @MainActor (ICloudSyncNamespaceBinding) async throws -> Void
+  ) async throws -> Bool {
+    guard case .deferredICloudSyncEnabled(let binding, let issue) = self else { return false }
+    try await reload()
+    settings.recordEnableCompleted()
+    if let issue { settings.recordSyncFailure(issue) }
+    try await acknowledge(binding)
+    return issue != nil
+  }
+}
 
 package enum CloudAccountIsolationError: Error, Equatable, Sendable {
   case signedOut

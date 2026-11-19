@@ -367,6 +367,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .iCloudSyncEnabled:
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordEnableCompleted()
+                case .deferredICloudSyncEnabled:
+                    if try await result.applyDeferredEnableCompletion(
+                        to: cloudServices.syncedContentSettings,
+                        reload: reloadActiveLibrary,
+                        acknowledge: { try await session.acknowledgeDeferredEnableCompletion(for: $0) }
+                    ) { return }
                 case .oldSyncedContentRemovalPending:
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending()

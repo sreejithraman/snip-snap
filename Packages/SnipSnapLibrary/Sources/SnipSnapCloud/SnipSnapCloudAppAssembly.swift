@@ -103,6 +103,7 @@ public enum SnipSnapCloudAppAssembly {
       retry: { try await lifecycle.retrySynchronization() },
       scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
       enable: { try await lifecycle.enableICloudSync() },
+      acknowledgeEnable: { try await lifecycle.acknowledgeDeferredEnableCompletion(for: $0) },
       cancelEnable: { try await lifecycle.cancelPendingEnable() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
@@ -249,6 +250,7 @@ public enum SnipSnapCloudAppAssembly {
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
+      acknowledgeEnable: { try await lifecycle.acknowledgeDeferredEnableCompletion(for: $0) },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },

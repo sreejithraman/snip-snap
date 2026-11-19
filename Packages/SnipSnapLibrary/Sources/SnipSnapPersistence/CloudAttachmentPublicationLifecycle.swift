@@ -556,6 +556,11 @@ struct CloudAttachmentCleanupQueue {
     rows[cleanup.identity] = row
   }
 
+  mutating func installAuthorizedSetupCleanup(_ cleanup: CloudAttachmentOwedCleanup) {
+    queue(cleanup)
+    if let shadow = cleanup.shadowData { rows[cleanup.identity]?.shadowData = shadow }
+  }
+
   mutating func acceptDeletion(
     of identity: CloudTextStorageIdentity,
     expectedRevision: UInt64

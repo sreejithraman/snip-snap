@@ -1,6 +1,19 @@
 import Foundation
 import SnipSnapCore
 
+package enum SyncModeDeferredEnableCompletion {
+  package static let prefix = "checking-deferred-completion:"
+
+  package static func markerURL(at rootURL: URL) -> URL {
+    rootURL.appendingPathComponent("icloud-sync-enable-pending", isDirectory: false)
+  }
+
+  package static func record(_ binding: ICloudSyncNamespaceBinding, at rootURL: URL) throws {
+    let encoded = try JSONEncoder().encode(binding).base64EncodedString()
+    try DurableFile.write(Data((prefix + encoded).utf8), to: markerURL(at: rootURL))
+  }
+}
+
 extension SwiftDataSyncModePersistence {
   func hasDeletedSetupSnip(in transition: SyncModeTransition) async throws -> Bool {
     guard manifest.setupRetrySourceIndex != nil, let namespace = transition.namespace,
@@ -125,7 +138,7 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func preserveSetupPointerReplacementRemaps(
-    _ remaps: [UUID: UUID], for transition: SyncModeTransition
+    _ remaps: CloudSetupPointerDelete.ReplacementRemaps, for transition: SyncModeTransition
   ) throws {
     guard !remaps.isEmpty, let namespace = transition.namespace else { return }
     guard manifest.transition == transition, let index = manifest.setupRetrySourceIndex else {
@@ -141,13 +154,10 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  package func finishDeferredSetupCleanupIfNeeded(
-    beforeFinish: @Sendable (ICloudSyncNamespaceBinding) throws -> Void
-  ) async throws -> Bool {
+  package func finishDeferredSetupCleanupIfNeeded() async throws -> Bool {
     guard let transition = manifest.transition, transition.phase == .pointerSwapped,
-      let binding = transition.namespace, !deferredSetupPointerDeletes(for: transition).isEmpty
+      !deferredSetupPointerDeletes(for: transition).isEmpty
     else { return false }
-    try beforeFinish(binding)
     try await finishTransition()
     try? cleanupRetiredStores()
     return true

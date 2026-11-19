@@ -8,7 +8,7 @@ extension SwiftDataSnipLibrary {
     transitions: [CloudAttachmentTransition],
     resolveMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
     deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
-    setupReplacementIDs: Set<UUID> = [],
+    setupReplacements: Set<CloudSetupPointerDelete.Replacement> = [],
     context: ModelContext
   ) throws -> Set<UUID> {
     guard !transitions.isEmpty else { return [] }
@@ -27,11 +27,11 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
-    var setupRemaps = setupReplacementIDs.isEmpty ? [:] : try Self.setupPointerReplacementRemaps(
+    var setupRemaps = setupReplacements.isEmpty ? [:] : try Self.setupPointerReplacementRemaps(
       namespaceKey: namespaceKey, context: context
     )
-    var trackedReplacements = Set(try setupReplacementIDs.map {
-      try CloudSetupPointerDelete.currentReplacementID($0, remaps: setupRemaps)
+    var trackedReplacements = Set(try setupReplacements.map {
+      try CloudSetupPointerDelete.currentReplacement($0, remaps: setupRemaps)
     })
     var materializedAttachmentIDs: Set<UUID> = []
     var fetchedOrderSnips: Set<UUID> = []
@@ -386,13 +386,15 @@ extension SwiftDataSnipLibrary {
           $0.uuidString < $1.uuidString
         }
         cleanupQueue.remapBlockers(from: attachmentID, to: replacementAttachmentID)
-        if trackedReplacements.remove(attachmentID) != nil {
+        let prior = CloudSetupPointerDelete.Replacement(row.metadata)
+        if trackedReplacements.remove(prior) != nil {
           // Commit the exact remap with the publication, without adding a cleanup row.
-          Self.recordSetupPointerReplacementRemap(
-            from: attachmentID, to: replacementAttachmentID, namespaceKey: namespaceKey, context: context
+          let remap = CloudSetupPointerDelete.ReplacementRemap(source: prior, target: .init(replacement.metadata))
+          try Self.recordSetupPointerReplacementRemap(
+            remap, namespaceKey: namespaceKey, context: context
           )
-          setupRemaps[attachmentID] = replacementAttachmentID
-          trackedReplacements.insert(replacementAttachmentID)
+          setupRemaps[attachmentID] = remap
+          trackedReplacements.insert(remap.target)
         }
       case .operationFailed(let attachmentID, let expected, let failure):
         guard let row = byAttachment[attachmentID] else {
@@ -416,10 +418,12 @@ extension SwiftDataSnipLibrary {
             receipt.payloads == CloudSetupPointerDelete.payloads(for: owedCleanups)
           else { throw CloudAttachmentStorageError.staleTransition }
           if let replacementAttachmentID {
-            let boundIDs = try receipt.replacementIDs?.map {
-              try CloudSetupPointerDelete.currentReplacementID($0, remaps: setupRemaps)
+            let bound = try receipt.replacementDependencies?.map {
+              try CloudSetupPointerDelete.currentReplacement($0, remaps: setupRemaps)
             }
-            guard boundIDs?.contains(replacementAttachmentID) == true else {
+            guard let actual = byAttachment[replacementAttachmentID],
+              bound?.contains(CloudSetupPointerDelete.Replacement(actual.metadata)) == true
+            else {
               throw CloudAttachmentStorageError.staleTransition
             }
           }

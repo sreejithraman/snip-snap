@@ -26,6 +26,36 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
     let byteCount: Int64
   }
 
+  package struct Replacement: Codable, Hashable, Sendable {
+    package let attachmentID: UUID
+    let snipID: UUID
+    let payloadIdentity: CloudTextStorageIdentity
+    let sha256: Data
+    let byteCount: Int64
+
+    package init(_ metadata: CloudAttachmentMetadataValue) {
+      attachmentID = metadata.attachmentID
+      snipID = metadata.snipID
+      payloadIdentity = metadata.payloadIdentity
+      sha256 = metadata.sha256
+      byteCount = metadata.byteCount
+    }
+  }
+
+  package struct ReplacementRemap: Codable, Equatable, Sendable {
+    let source: Replacement
+    let target: Replacement
+
+    var isValid: Bool {
+      source.attachmentID != target.attachmentID && source.snipID == target.snipID
+        && source.sha256 == target.sha256 && source.byteCount == target.byteCount
+        && source.payloadIdentity.zoneName == target.payloadIdentity.zoneName
+        && source.payloadIdentity.ownerName == target.payloadIdentity.ownerName
+    }
+  }
+
+  package typealias ReplacementRemaps = [UUID: ReplacementRemap]
+
   package struct Binding: Sendable {
     let key: Key
     let digest: Data
@@ -56,36 +86,47 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
   let bindingDigest: Data
   package let snipID: UUID
   let payloads: [Payload]
-  package private(set) var replacementAttachmentIDs: [UUID]?
+  private var boundReplacements: [Replacement]?
   // Older draft receipts retain their evidence but cannot prove a nonempty dependency.
+  private var replacementAttachmentIDs: [UUID]? = nil
   private var position: Int? = nil
   private var replacements: [LegacyReplacement]? = nil
   package var payloadIdentities: Set<CloudTextStorageIdentity> { Set(payloads.map(\.identity)) }
 
-  init(key: Key, bindingDigest: Data, snipID: UUID, payloads: [Payload], replacementAttachmentIDs: [UUID]) {
+  package static func protectedIdentities(_ receipts: [Self]) -> Set<CloudTextStorageIdentity> {
+    var protected = Set(receipts.map(\.key.pointer))
+    for receipt in receipts { protected.formUnion(receipt.payloadIdentities) }
+    return protected
+  }
+
+  init(key: Key, bindingDigest: Data, snipID: UUID, payloads: [Payload], boundReplacements: [Replacement]) {
     self.key = key
     self.bindingDigest = bindingDigest
     self.snipID = snipID
     self.payloads = payloads
-    self.replacementAttachmentIDs = replacementAttachmentIDs
+    self.boundReplacements = boundReplacements
   }
 
-  package var replacementIDs: [UUID]? {
-    replacementAttachmentIDs ?? (replacements?.isEmpty == true ? [] : nil)
+  package var replacementDependencies: [Replacement]? {
+    if let boundReplacements { return boundReplacements }
+    if let replacementAttachmentIDs { return replacementAttachmentIDs.isEmpty ? [] : nil }
+    return replacements?.isEmpty == true ? [] : nil
   }
 
-  mutating func applyReplacementRemaps(_ remaps: [UUID: UUID]) throws {
-    if let ids = replacementAttachmentIDs {
-      replacementAttachmentIDs = try ids.map { try Self.currentReplacementID($0, remaps: remaps) }
+  mutating func applyReplacementRemaps(_ remaps: [UUID: ReplacementRemap]) throws {
+    if let boundReplacements {
+      self.boundReplacements = try boundReplacements.map { try Self.currentReplacement($0, remaps: remaps) }
     }
   }
 
-  package static func currentReplacementID(_ id: UUID, remaps: [UUID: UUID]) throws -> UUID {
-    var current = id
+  package static func currentReplacement(
+    _ dependency: Replacement, remaps: [UUID: ReplacementRemap]
+  ) throws -> Replacement {
+    var current = dependency
     var visited: Set<UUID> = []
-    while let next = remaps[current] {
-      guard visited.insert(current).inserted else { throw SyncModePersistenceError.invalidManifest }
-      current = next
+    while let remap = remaps[current.attachmentID], remap.source == current {
+      guard visited.insert(current.attachmentID).inserted else { throw SyncModePersistenceError.invalidManifest }
+      current = remap.target
     }
     return current
   }
@@ -105,7 +146,11 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
           || $0.identity.ownerName != key.pointer.ownerName)
       }
       && Set(payloads.map(\.identity)).count == payloads.count
-      && replacementIDs.map { Set($0).count == $0.count } != false
+      && replacementDependencies.map { dependencies in
+        Set(dependencies.map(\.attachmentID)).count == dependencies.count
+          && dependencies.allSatisfy { $0.snipID == snipID && namespace.contains($0.payloadIdentity)
+            && $0.sha256.count == 32 && $0.byteCount >= 0 }
+      } != false
   }
 }
 
@@ -138,11 +183,13 @@ extension SwiftDataSnipLibrary {
     return CloudSetupPointerDelete(
       key: binding.key, bindingDigest: binding.digest, snipID: row.snipID,
       payloads: CloudSetupPointerDelete.payloads(for: owed),
-      replacementAttachmentIDs: replacements.map(\.attachmentID)
+      boundReplacements: replacements.map { .init($0.metadata) }
     )
   }
 
-  package func setupPointerReplacementRemaps(namespaceKey: CloudSyncNamespaceKey) throws -> [UUID: UUID] {
+  package func setupPointerReplacementRemaps(
+    namespaceKey: CloudSyncNamespaceKey
+  ) throws -> [UUID: CloudSetupPointerDelete.ReplacementRemap] {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -151,25 +198,34 @@ extension SwiftDataSnipLibrary {
     )
   }
 
-  static func setupPointerReplacementRemaps(namespaceKey: String, context: ModelContext) throws -> [UUID: UUID] {
-    let prefix = "\(namespaceKey)|setup-replacement-"
-    var remaps: [UUID: UUID] = [:]
+  static func setupPointerReplacementRemaps(
+    namespaceKey: String, context: ModelContext
+  ) throws -> [UUID: CloudSetupPointerDelete.ReplacementRemap] {
+    let prefix = "\(namespaceKey)|setup-replacement-v2-"
+    var remaps: [UUID: CloudSetupPointerDelete.ReplacementRemap] = [:]
     for row in try setupPointerReplacementReceipts(namespaceKey: namespaceKey, context: context) {
+      guard row.id.hasPrefix(prefix) else { continue }
       let fields = row.id.dropFirst(prefix.count).split(separator: "|")
-      guard fields.count == 2, let to = UUID(uuidString: String(fields[0])),
-        CloudFullReceiptOperation.setupReplacementRemap(from: row.batchID, to: to)
+      guard fields.count == 2, let data = Data(base64Encoded: String(fields[0])),
+        let remap = try? JSONDecoder().decode(CloudSetupPointerDelete.ReplacementRemap.self, from: data),
+        remap.isValid, remap.source.attachmentID == row.batchID,
+        CloudFullReceiptOperation.setupReplacementRemap(from: row.batchID, proof: String(fields[0]))
           .matches(row, namespaceKey: namespaceKey),
         row.digest == Data(SHA256.hash(data: Data(row.id.utf8))),
-        remaps.updateValue(to, forKey: row.batchID) == nil
+        remaps.updateValue(remap, forKey: row.batchID) == nil
       else { throw SyncModePersistenceError.invalidManifest }
     }
     return remaps
   }
 
   static func recordSetupPointerReplacementRemap(
-    from: UUID, to: UUID, namespaceKey: String, context: ModelContext
-  ) {
-    let operation = CloudFullReceiptOperation.setupReplacementRemap(from: from, to: to)
+    _ remap: CloudSetupPointerDelete.ReplacementRemap, namespaceKey: String, context: ModelContext
+  ) throws {
+    guard remap.isValid else { throw SyncModePersistenceError.invalidManifest }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let proof = try encoder.encode(remap).base64EncodedString()
+    let operation = CloudFullReceiptOperation.setupReplacementRemap(from: remap.source.attachmentID, proof: proof)
     let key = operation.storageKey(namespaceKey: namespaceKey)
     SwiftDataCloudFullOperationReceipts.record(
       operation, namespaceKey: namespaceKey, digest: Data(SHA256.hash(data: Data(key.utf8))), context: context
@@ -195,7 +251,7 @@ extension SwiftDataSnipLibrary {
     var queue = try CloudAttachmentCleanupQueue(namespaceKey: namespaceKey.rawValue, context: context)
     for receipt in receipts {
       for payload in receipt.payloads {
-        queue.queue(CloudAttachmentOwedCleanup(identity: payload.identity, shadowData: payload.shadowData))
+        queue.installAuthorizedSetupCleanup(CloudAttachmentOwedCleanup(identity: payload.identity, shadowData: payload.shadowData))
       }
     }
     for row in try Self.setupPointerReplacementReceipts(namespaceKey: namespaceKey.rawValue, context: context) {

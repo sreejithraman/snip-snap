@@ -49,7 +49,8 @@ extension CloudFullSyncPersistence {
         guard case .remoteMetadataDeleted(let identity) = transition else { return nil }
         return identity
       })
-      if !attachments.cleanups.isEmpty || attachments.publications.contains(where: {
+      let protected = await protectedSetupIdentities()
+      if attachments.cleanups.contains(where: { !protected.contains($0.identity) }) || attachments.publications.contains(where: {
         snipIDs.contains($0.metadata.snipID) || removedPointers.contains($0.metadataIdentity)
       }) { return true }
     }
@@ -109,7 +110,7 @@ extension CloudFullSyncPersistence {
       $0.recordName.hasPrefix("a-") || publications[$0] != nil
     }
     var namedPayloads: Set<CloudTextStorageIdentity> = []
-    var checkedReplacementIDs: Set<UUID> = []
+    var checkedReplacements: Set<CloudSetupPointerDelete.Replacement> = []
     for pointer in observedPointers {
       guard let rows = publications[pointer], rows.count == 1,
         let publication = rows.first, let bytes = publication.metadataShadowData,
@@ -121,14 +122,8 @@ extension CloudFullSyncPersistence {
         )
       else { return false }
       namedPayloads.insert(metadata.payloadIdentity)
-      // Local order or name edits can leave metadata pending even though the
-      // checked server pointer already publishes this replacement's payload.
-      if publication.payloadAccepted, publication.metadata.attachmentID == metadata.attachmentID,
-        publication.metadata.payloadIdentity == metadata.payloadIdentity,
-        publication.metadata.sha256 == metadata.sha256, publication.metadata.byteCount == metadata.byteCount,
-        pointer.recordName == "a-\(metadata.attachmentID.uuidString.lowercased())"
-      {
-        checkedReplacementIDs.insert(metadata.attachmentID)
+      if pointer.recordName == "a-\(metadata.attachmentID.uuidString.lowercased())" {
+        checkedReplacements.insert(.init(metadata))
       }
     }
     let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
@@ -139,10 +134,10 @@ extension CloudFullSyncPersistence {
       if deletedSnipIDs.contains(receipt.snipID) {
         return !inventory.observed.contains(Self.storageIdentity(.snip(receipt.snipID, in: dataZone)))
       }
-      guard let replacements = receipt.replacementIDs else { return false }
+      guard let replacements = receipt.replacementDependencies else { return false }
       return try replacements.allSatisfy { original in
-        let current = try CloudSetupPointerDelete.currentReplacementID(original, remaps: remaps)
-        return checkedReplacementIDs.contains(current)
+        let current = try CloudSetupPointerDelete.currentReplacement(original, remaps: remaps)
+        return checkedReplacements.contains(current)
       }
     }
   }

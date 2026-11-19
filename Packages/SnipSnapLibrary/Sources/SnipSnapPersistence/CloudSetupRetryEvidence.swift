@@ -117,7 +117,7 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
     }
   }
 
-  mutating func applyPointerReplacementRemaps(_ remaps: [UUID: UUID]) throws {
+  mutating func applyPointerReplacementRemaps(_ remaps: CloudSetupPointerDelete.ReplacementRemaps) throws {
     for index in acceptedPointerDeletes.indices {
       try acceptedPointerDeletes[index].applyReplacementRemaps(remaps)
     }

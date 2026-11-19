@@ -611,8 +611,8 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private let mutationLease: SyncModeActiveMutationLease?
   private let recordSetupRetryResults: SetupRetryResultHook?
   private let retainSetupPointerDelete: RetainSetupPointerDelete?
-  private let setupReplacementIDs: (@Sendable () async -> Set<UUID>)?
-  private let preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)?
+  private let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
+  private let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
   private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
   private let withSetupRetryBatchCommit: SetupRetryBatchCommit?
 
@@ -627,8 +627,8 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     recordSetupRetryResults: SetupRetryResultHook? = nil,
     retainSetupPointerDelete: RetainSetupPointerDelete? = nil,
-    setupReplacementIDs: (@Sendable () async -> Set<UUID>)? = nil,
-    preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)? = nil,
+    setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])? = nil,
+    preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)? = nil,
     setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
     withSetupRetryBatchCommit: SetupRetryBatchCommit? = nil,
     afterCommitHook: @escaping ApplyHook = {}
@@ -645,12 +645,16 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.diagnostics = diagnostics
     self.recordSetupRetryResults = recordSetupRetryResults
     self.retainSetupPointerDelete = retainSetupPointerDelete
-    self.setupReplacementIDs = setupReplacementIDs
+    self.setupPointerDeletes = setupPointerDeletes
     self.preserveSetupReplacementRemaps = preserveSetupReplacementRemaps
     self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
     self.withSetupRetryBatchCommit = withSetupRetryBatchCommit
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
+  }
+
+  func protectedSetupIdentities() async -> Set<CloudTextStorageIdentity> {
+    CloudSetupPointerDelete.protectedIdentities(await setupPointerDeletes?() ?? [])
   }
 }
 
@@ -896,11 +900,12 @@ extension CloudFullSyncPersistence {
       default: false
       }
     }) { throw CloudSetupRetryHold() }
-    let replacementIDs = await setupReplacementIDs?() ?? []
+    let receipts = await setupPointerDeletes?() ?? []
+    let replacements = Set(receipts.flatMap { $0.replacementDependencies ?? [] })
     try await commitStagedBatch(
-      batch, deferredSetupPointerDeletes: deferrals, setupReplacementIDs: replacementIDs
+      batch, deferredSetupPointerDeletes: deferrals, setupReplacements: replacements
     )
-    if let preserveSetupReplacementRemaps, !replacementIDs.isEmpty,
+    if let preserveSetupReplacementRemaps, !replacements.isEmpty,
       batch.attachmentTransitions.contains(where: { if case .metadataUnknown = $0 { true } else { false } })
     {
       let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)

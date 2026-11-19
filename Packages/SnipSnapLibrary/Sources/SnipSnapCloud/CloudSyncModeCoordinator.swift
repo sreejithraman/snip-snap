@@ -961,8 +961,8 @@ package actor ICloudSyncModeCoordinator {
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
         let retainPointerDelete: CloudFullSyncPersistence.RetainSetupPointerDelete?
-        let setupReplacementIDs: (@Sendable () async -> Set<UUID>)?
-        let preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)?
+        let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
+        let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
         if let validateSetupAccount {
             recordResults = { [persistence, namespace] results in
                 try await validateSetupAccount()
@@ -977,9 +977,9 @@ package actor ICloudSyncModeCoordinator {
                     binding, candidateStoreID: storeID, namespace: namespace.binding
                 )
             }
-            setupReplacementIDs = { [persistence, namespace] in
+            setupPointerDeletes = { [persistence, namespace] in
                 let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
-                return Set(evidence?.acceptedPointerDeletes.flatMap { $0.replacementIDs ?? [] } ?? [])
+                return evidence?.acceptedPointerDeletes ?? []
             }
             preserveSetupReplacementRemaps = { [persistence, namespace] remaps in
                 guard !remaps.isEmpty else { return }
@@ -992,7 +992,7 @@ package actor ICloudSyncModeCoordinator {
         } else {
             recordResults = nil
             retainPointerDelete = nil
-            setupReplacementIDs = nil
+            setupPointerDeletes = nil
             preserveSetupReplacementRemaps = nil
         }
         let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
@@ -1018,7 +1018,7 @@ package actor ICloudSyncModeCoordinator {
             attachmentPolicy: attachmentPolicy,
             recordSetupRetryResults: recordResults,
             retainSetupPointerDelete: retainPointerDelete,
-            setupReplacementIDs: setupReplacementIDs,
+            setupPointerDeletes: setupPointerDeletes,
             preserveSetupReplacementRemaps: preserveSetupReplacementRemaps,
             setupRetryDeletedSnipIDs: deletedSnipIDs,
             withSetupRetryBatchCommit: withBatchCommit
@@ -1046,14 +1046,6 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
                 if capturesSetupRetry {
-                    let retained = await persistence.setupRetryEvidence(namespace: namespace.binding)
-                    let acceptedPointers = Set(retained?.acceptedPointerDeletes.map(\.key.pointer) ?? [])
-                    if outbound.operations.contains(where: {
-                        guard case .delete(let id, _) = $0 else { return false }
-                        return acceptedPointers.contains(CloudFullSyncPersistence.storageIdentity(id))
-                    }) {
-                        throw CloudSetupRetryHold()
-                    }
                     guard let freezeToken = transition.freezeToken else {
                         throw SyncModePersistenceError.invalidFreezeToken
                     }
@@ -1071,6 +1063,11 @@ package actor ICloudSyncModeCoordinator {
                         expectedSetupFreezeToken: freezeToken
                     )
                     try await self.checkSetupCollection()
+                    let retained = await persistence.setupRetryEvidence(namespace: namespace.binding)
+                    let protected = CloudSetupPointerDelete.protectedIdentities(retained?.acceptedPointerDeletes ?? [])
+                    if outbound.operations.contains(where: { protected.contains(CloudFullSyncPersistence.storageIdentity($0.id)) }) {
+                        throw CloudSetupRetryHold()
+                    }
                 } else {
                     try await persistence.recordSendAttempt(attempt)
                 }

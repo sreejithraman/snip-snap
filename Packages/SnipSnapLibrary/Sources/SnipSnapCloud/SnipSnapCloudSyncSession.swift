@@ -13,6 +13,7 @@ public actor SnipSnapCloudSyncSession {
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
+  private let acknowledgeEnableAction: @Sendable (ICloudSyncNamespaceBinding) async throws -> Void
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
@@ -139,6 +140,7 @@ public actor SnipSnapCloudSyncSession {
       _ = try await coordinator.enableSync()
       return .enabled
     }
+    acknowledgeEnableAction = { _ in }
     cancelEnableAction = {}
     disableAction = { _ in throw CloudCollectionError.noActiveCollection }
     deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
@@ -158,6 +160,7 @@ public actor SnipSnapCloudSyncSession {
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
+    acknowledgeEnable: @escaping @Sendable (ICloudSyncNamespaceBinding) async throws -> Void = { _ in },
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
@@ -174,6 +177,7 @@ public actor SnipSnapCloudSyncSession {
     retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
+    acknowledgeEnableAction = acknowledgeEnable
     cancelEnableAction = cancelEnable
     disableAction = disable
     deleteAction = delete
@@ -195,6 +199,10 @@ public actor SnipSnapCloudSyncSession {
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
     try await operationGate.withLease(enableAction)
+  }
+
+  public func acknowledgeDeferredEnableCompletion(for binding: ICloudSyncNamespaceBinding) async throws {
+    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(binding) }
   }
 
   public func cancelICloudSyncSetup() async throws {
