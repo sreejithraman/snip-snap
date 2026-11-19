@@ -35,20 +35,33 @@ private struct ICloudReenableMergeBasis<Fields> {
 }
 
 enum CloudSetupRetryHold: Error {
-  case attachmentState
+  case candidateState
   case incompleteFetch
 }
 
 extension CloudFullSyncPersistence {
-  func setupRetryHasAttachmentState(for snipIDs: Set<UUID>) async throws -> Bool {
-    guard !snipIDs.isEmpty, payloadZone != nil else { return false }
-    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
-    if !attachments.cleanups.isEmpty || attachments.publications.contains(where: {
-      snipIDs.contains($0.metadata.snipID)
-    }) { return true }
+  func setupRetryHasCandidateChanges(for snipIDs: Set<UUID>) async throws -> Bool {
+    guard !snipIDs.isEmpty else { return false }
+    if payloadZone != nil {
+      let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+      if !attachments.cleanups.isEmpty || attachments.publications.contains(where: {
+        snipIDs.contains($0.metadata.snipID)
+      }) { return true }
+    }
     let content = try await library.checkedSnapshot(sortedBy: .manual)
-    if content.snips.contains(where: { snipIDs.contains($0.id) && !$0.attachments.isEmpty }) {
-      return true
+    let affected = content.snips.filter { snipIDs.contains($0.id) }
+    if !affected.isEmpty {
+      let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+      let accepted = Dictionary(uniqueKeysWithValues: (stored.readyEntities + stored.deferredEntities)
+        .map { ($0.reference, $0) })
+      for snip in affected {
+        let reference = CloudEntityReference(kind: .snip, domainID: snip.id)
+        guard snip.attachments.isEmpty, let base = accepted[reference] else { return true }
+        let record = try Self.snipRecord(base)
+        if try !Self.sameSnipFields(Self.snipFields(record), Self.snipFields(snip, accepted: record)) {
+          return true
+        }
+      }
     }
     let reviews = try await library.recoverySnapshot(in: SnipRecoveryScope(rawValue: namespaceKey.rawValue))
     return reviews.promotedSnips.contains { snipIDs.contains($0.currentSnipID) }
@@ -65,7 +78,7 @@ extension CloudFullSyncPersistence {
     }) || (stored.readyEntities + stored.deferredEntities).contains(where: {
       $0.reference.kind == .snip && deletedSnipIDs.contains($0.reference.domainID)
     }) { return true }
-    return try await setupRetryHasAttachmentState(for: deletedSnipIDs)
+    return try await setupRetryHasCandidateChanges(for: deletedSnipIDs)
   }
 
   package func approveEnrollment(references: Set<CloudEntityReference>) async throws {

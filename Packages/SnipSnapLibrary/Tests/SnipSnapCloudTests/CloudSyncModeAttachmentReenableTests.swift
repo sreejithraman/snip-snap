@@ -153,6 +153,57 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(candidateState.pendingDeletes.isEmpty)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [survivor.id], "Retry silently restored the deleted snip.")
+
+        // A parent may be gone while its pointer or immutable payload remains.
+        // Its cached attachment must neither promote a recovered snip nor
+        // schedule a payload cleanup ahead of a user-approved restart.
+        let peerWriter = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let parentRemoval = try await peerWriter.send(CloudOutboundBatch(operations: [
+            .delete(deletedID, base: XCTUnwrap(stored).shadow)
+        ]))
+        guard case .deleted? = parentRemoval.items.first else {
+            return XCTFail("The peer must remove the parent record.")
+        }
+        try await peerWriter.confirmApplied(parentRemoval.id)
+        let later = try SwiftDataSyncModePersistence(rootURL: localRoot)
+        let staleTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let stale = ICloudSyncModeCoordinator(
+            persistence: later, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
+            makeTransport: { staleTransport }
+        )
+        let staleStatus = try await stale.enableOrRetry()
+        XCTAssertEqual(staleStatus.state, .needsAttention)
+        let staleEvents = await staleTransport.events()
+        XCTAssertEqual(staleEvents, [.started, .fetched])
+        let heldStorage = try await later.snapshot()
+        XCTAssertEqual(heldStorage.transition?.candidateStoreID, candidateID)
+        XCTAssertEqual(heldStorage.transition?.phase, .candidateReady)
+        let heldCandidate = try await later.libraryForTransition(storeID: candidateID)
+        let heldAttachments = try await heldCandidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertEqual(heldAttachments, attachmentStorage)
+        let review = try await heldCandidate.recoverySnapshot(in: SnipRecoveryScope(namespace.namespaceKey.rawValue))
+        XCTAssertTrue(review.promotedSnips.isEmpty)
+
+        let pointerRemoval = try await peerWriter.send(CloudOutboundBatch(operations: [
+            .delete(metadataID, base: XCTUnwrap(finalPointer).shadow)
+        ]))
+        guard case .deleted? = pointerRemoval.items.first else {
+            return XCTFail("The peer must remove the pointer record.")
+        }
+        try await peerWriter.confirmApplied(pointerRemoval.id)
+        try await later.cancelPendingICloudEnable()
+        let fresh = ICloudSyncModeCoordinator(
+            persistence: later, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        let freshStatus = try await fresh.enableOrRetry()
+        XCTAssertEqual(freshStatus.state, .on)
+        let finalLibrary = try await later.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(finalLibrary.snips.map(\.id), [survivor.id])
+        let survivingPayload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(survivingPayload)), bytes)
+        let deletionCount = await server.acceptedDeletionCount()
+        XCTAssertEqual(deletionCount, 2, "Only the peer sent a deletion.")
     }
 
     func testSecondDeviceCanEnableSyncWithAnUncachedRemoteAttachment() async throws {

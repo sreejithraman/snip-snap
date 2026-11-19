@@ -672,10 +672,12 @@ extension CloudFullSyncPersistence {
   private func applyStagedWithinMutation(_ id: UUID) async throws {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
     if let rawData = batch.rawBatchData,
-      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
-      let reason = Self.destructiveResetReason(raw.batch)
+      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData)
     {
-      observedDestructiveReset = reason
+      try await checkSetupRetryFetch(raw.batch)
+      if let reason = Self.destructiveResetReason(raw.batch) {
+        observedDestructiveReset = reason
+      }
     }
     do {
       _ = try await library.commitCloudFullBatch(batch)
@@ -762,11 +764,7 @@ extension CloudFullSyncPersistence {
   ) async throws {
     do {
       try validateResetScope(batch)
-      if case .fetched = batch, let setupRetryDeletedSnipIDs,
-        try await setupRetryHasAttachmentState(for: setupRetryDeletedSnipIDs())
-      {
-        throw CloudSetupRetryHold.attachmentState
-      }
+      try await checkSetupRetryFetch(batch)
       if let reason = Self.destructiveResetReason(batch) {
         observedDestructiveReset = reason
       }
@@ -784,6 +782,15 @@ extension CloudFullSyncPersistence {
         )
       }
       throw CloudTransportError.invalidRecord
+    }
+  }
+
+  private func checkSetupRetryFetch(_ batch: CloudSyncBatch) async throws {
+    // Applying an absent parent can promote candidate-only edits or files.
+    guard case .fetched = batch, let setupRetryDeletedSnipIDs else { return }
+    let deleted = try await setupRetryDeletedSnipIDs()
+    if try await setupRetryHasCandidateChanges(for: deleted) {
+      throw CloudSetupRetryHold.candidateState
     }
   }
 

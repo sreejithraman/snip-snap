@@ -489,20 +489,21 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let acknowledgedIDs = transition.syncProtocol == .fullRecordV1
-            ? await acknowledgedSetupSnipIDs() : []
-        if !acknowledgedIDs.isEmpty, transition.phase == .remoteFetched {
+        let retryHistory = transition.syncProtocol == .fullRecordV1
+            ? await persistence.setupRetryEvidence(namespace: namespace.binding) : nil
+        let checksSetupRetry = retryHistory?.isEmpty == false
+        if checksSetupRetry, transition.phase == .remoteFetched {
             // An interrupted setup may have committed its fetch before checking the frozen source.
             try await persistence.retryRemoteFetch()
             transition = try await currentTransition()
         }
         let bridge = try await adapter(
             storeID: transition.candidateStoreID, captureSetupRetry: true,
-            acknowledgedSetupSnipIDs: acknowledgedIDs
+            checksSetupRetry: checksSetupRetry
         )
 
         if transition.phase == .candidateReady {
-            let deletedBeforeFetch = try await deletedSetupSnipIDs(acknowledgedIDs)
+            var deletedBeforeFetch: Set<UUID> = []
             do {
                 let candidates = transition.seedSettlementCandidates
                 let settlement = try await bridge.currentModeSeedSettlement(
@@ -511,9 +512,12 @@ package actor ICloudSyncModeCoordinator {
                 )
                 let candidateIDs = Set(candidates.map(\.snipID))
                 try await bridge.prepareModeRetry(
-                    snipIDs: candidateIDs, forceInitialFetch: !acknowledgedIDs.isEmpty
+                    snipIDs: candidateIDs, forceInitialFetch: checksSetupRetry
                 ) { [persistence] in
                     try await persistence.prepareRetryFetch(settlement: settlement)
+                }
+                if checksSetupRetry {
+                    deletedBeforeFetch = try await deletedSetupSnipIDs(await acknowledgedSetupSnipIDs())
                 }
                 try await requireMatchingAccount()
                 try await bridge.fetchRemote {
@@ -568,9 +572,11 @@ package actor ICloudSyncModeCoordinator {
                 }
                 let token = try await persistence.freezeSource()
                 let source = try await persistence.finalSnapshot(using: token)
-                let deleted = acknowledgedIDs.subtracting(source.snips.map(\.id))
-                if try await bridge.setupRetryMustHold(deletedSnipIDs: deleted) {
-                    return try await holdSetupForDeletedSnip(transition)
+                if checksSetupRetry {
+                    let deleted = await acknowledgedSetupSnipIDs().subtracting(source.snips.map(\.id))
+                    if try await bridge.setupRetryMustHold(deletedSnipIDs: deleted) {
+                        return try await holdSetupForDeletedSnip(transition)
+                    }
                 }
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
@@ -798,7 +804,7 @@ package actor ICloudSyncModeCoordinator {
     private func adapter(
         storeID: UUID,
         captureSetupRetry: Bool = false,
-        acknowledgedSetupSnipIDs: Set<UUID> = []
+        checksSetupRetry: Bool = false
     ) async throws -> any ICloudSyncAdapter {
         let storage = try await persistence.snapshot()
         let isActive = storage.activeStore.id == storeID
@@ -822,7 +828,7 @@ package actor ICloudSyncModeCoordinator {
             let raw = try await fullBridge(
                 storeID: storeID,
                 validateSetupAccount: validateSetupAccount,
-                acknowledgedSetupSnipIDs: acknowledgedSetupSnipIDs
+                checksSetupRetry: checksSetupRetry
             )
             return FullRecordSyncAdapter(
                 raw: raw,
@@ -885,7 +891,7 @@ package actor ICloudSyncModeCoordinator {
     private func fullBridge(
         storeID: UUID,
         validateSetupAccount: CloudFullSyncPersistence.ApplyHook?,
-        acknowledgedSetupSnipIDs: Set<UUID>
+        checksSetupRetry: Bool
     ) async throws -> CloudFullSyncPersistence {
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
@@ -901,10 +907,14 @@ package actor ICloudSyncModeCoordinator {
         } else {
             recordResults = nil
         }
-        let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? =
-            acknowledgedSetupSnipIDs.isEmpty ? nil : { [self] in
-                try await deletedSetupSnipIDs(acknowledgedSetupSnipIDs)
+        let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
+        if checksSetupRetry {
+            deletedSnipIDs = { [self] in
+                try await deletedSetupSnipIDs(await acknowledgedSetupSnipIDs())
             }
+        } else {
+            deletedSnipIDs = nil
+        }
         return CloudFullSyncPersistence(
             library: library,
             namespace: namespace,
