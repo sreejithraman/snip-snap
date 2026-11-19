@@ -13,8 +13,15 @@ extension ICloudSyncModeCoordinatorTests {
         let localRoot = root.appendingPathComponent("local")
         let persistence = try SwiftDataSyncModePersistence(rootURL: localRoot)
         let local = try await persistence.activeLibrary()
-        try await add("acknowledged before setup stops", to: local)
-        try await add("still needs an outbound save", to: local)
+        for content in ["acknowledged before setup stops", "still needs an outbound save"] {
+            _ = try await local.perform(
+                .add(
+                    content: content, origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+                    attachmentURLs: [], requestID: UUID(), now: Date()
+                ),
+                sortedBy: .manual
+            )
+        }
         let initial = try await local.checkedSnapshot(sortedBy: .manual)
         let deleted = try XCTUnwrap(initial.snips.first { $0.content == "acknowledged before setup stops" })
         let survivor = try XCTUnwrap(initial.snips.first { $0.id != deleted.id })
