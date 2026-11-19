@@ -36,6 +36,7 @@ package struct CloudFullSyncOutcome: Sendable {
   package let blocksOutbound: Bool
   package let result: SnipSnapCloudSyncResult
   package let settled: Bool
+  let completedInitialFetchZones: Set<CloudZoneID>
 }
 
 /// Owns commit order, checkpoint durability, and the outcome of each request.
@@ -47,6 +48,7 @@ package actor CloudFullSyncCoordinator {
     var sendIssue: SyncedContentSyncIssue?
     var blocksOutbound = false
     var resetEngine = false
+    var completedInitialFetchZones: Set<CloudZoneID> = []
 
     var issue: SyncedContentSyncIssue? {
       CloudSyncIssueError.preferredIssue(from: [fetchIssue, sendIssue].compactMap { $0 })
@@ -174,15 +176,19 @@ package actor CloudFullSyncCoordinator {
   }
 
   package func prepareManualRetry(
+    forceInitialFetch: Bool = false,
     beforeApply: @escaping @Sendable () async throws -> Void = {},
     beforeStateSave: @escaping @Sendable () async throws -> Void = {}
   ) async throws {
     try await operationGate.withLease {
-      try await self.prepareManualRetrySerially(beforeApply: beforeApply, beforeStateSave: beforeStateSave)
+      try await self.prepareManualRetrySerially(
+        forceInitialFetch: forceInitialFetch, beforeApply: beforeApply, beforeStateSave: beforeStateSave
+      )
     }
   }
 
   private func prepareManualRetrySerially(
+    forceInitialFetch: Bool,
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeStateSave: @escaping @Sendable () async throws -> Void
   ) async throws {
@@ -191,7 +197,8 @@ package actor CloudFullSyncCoordinator {
     var state = RunState()
     try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeStateSave)
     try await beforeApply()
-    if try await store.prepareManualRetry() {
+    let needsInitialFetch = try await store.prepareManualRetry()
+    if forceInitialFetch || needsInitialFetch {
       // A failed record may not change again. Drop its token so Try Again fetches it.
       try await beforeStateSave()
       try await store.clearEngineState()
@@ -420,11 +427,16 @@ package actor CloudFullSyncCoordinator {
     }
     let issue = CloudSyncIssueError.issue(in: batch)
     switch batch {
-    case .fetched:
+    case .fetched(let fetched):
       state.fetched = true
       state.fetchIssue = issue
       if !CloudSyncIssueError.blocksOutbound(in: batch), batch.engineState?.requiresInitialFetch == false {
         session.completeInitialFetch()
+        if fetched.isInitialFetch, issue == nil {
+          for case .fetched(let zone) in fetched.zoneEvents {
+            state.completedInitialFetchZones.insert(zone)
+          }
+        }
       }
     case .sent(let sent):
       if sent.hasResults { state.sendIssue = issue }
@@ -514,7 +526,7 @@ package actor CloudFullSyncCoordinator {
     return CloudFullSyncOutcome(issue: issue,
       blocksOutbound: state.blocksOutbound || requiresInitialFetch || result == .iCloudDataReset,
       result: result,
-      settled: settled)
+      settled: settled, completedInitialFetchZones: state.completedInitialFetchZones)
   }
 
   private func schedulePendingChanges(beforeSchedule: @Sendable () async throws -> Void) async throws {
@@ -565,6 +577,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
   private let recordSetupRetryResults: SetupRetryResultHook?
+  private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -576,6 +589,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     now: @escaping @Sendable () -> Date = Date.init,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     recordSetupRetryResults: SetupRetryResultHook? = nil,
+    setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -589,6 +603,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.now = now
     self.diagnostics = diagnostics
     self.recordSetupRetryResults = recordSetupRetryResults
+    self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }
@@ -747,6 +762,11 @@ extension CloudFullSyncPersistence {
   ) async throws {
     do {
       try validateResetScope(batch)
+      if case .fetched = batch, let setupRetryDeletedSnipIDs,
+        try await setupRetryHasAttachmentState(for: setupRetryDeletedSnipIDs())
+      {
+        throw CloudSetupRetryHold.attachmentState
+      }
       if let reason = Self.destructiveResetReason(batch) {
         observedDestructiveReset = reason
       }

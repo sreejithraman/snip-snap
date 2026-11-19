@@ -821,7 +821,7 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  private func commitRollback(_ next: Manifest) throws {
+  func commitRollback(_ next: Manifest) throws {
     do {
       try commit(next)
     } catch {

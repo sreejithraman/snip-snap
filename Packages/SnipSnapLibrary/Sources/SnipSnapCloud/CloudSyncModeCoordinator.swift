@@ -18,6 +18,7 @@ private protocol ICloudSyncAdapter: Sendable {
     func approveModeMerge(snipIDs: Set<UUID>) async throws
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence
     func statusEvidence() async throws -> CloudTextEnrollmentEvidence
+    func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool
     func dormantAcceptedBaseTransferPayload() async throws -> Data?
     func canPrepareModeMerge() async throws -> Bool
     func prepareModeMerge(
@@ -39,8 +40,13 @@ private protocol ICloudSyncAdapter: Sendable {
     func prepareFailureRecovery(snipIDs: Set<UUID>) async throws
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialFetch: Bool,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws
+}
+
+private extension ICloudSyncAdapter {
+    func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool { false }
 }
 
 package enum ICloudAccountGateError: Error, Equatable, Sendable {
@@ -113,6 +119,7 @@ private actor LegacyTextSyncAdapter: ICloudSyncAdapter {
 
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialFetch: Bool,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws {
         try await raw.prepareModeRetry(snipIDs: snipIDs)
@@ -136,6 +143,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     private let syncDriver: CloudFullSyncCoordinator
     private let beforeApply: CloudFullSyncPersistence.ApplyHook
     private var pendingIssue: SyncedContentSyncIssue?
+    private var forceInitialFetch = false
 
     init(
         raw: CloudFullSyncPersistence,
@@ -157,6 +165,10 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         pendingIssue = nil
         let outcome = try await syncDriver.fetchRemote(beforeApply: beforeApply)
         try retainFetchIssue(outcome)
+        if forceInitialFetch, outcome.issue == nil,
+           !outcome.completedInitialFetchZones.contains(raw.dataZone) {
+            throw CloudSetupRetryHold.incompleteFetch
+        }
     }
 
     func sendPending(
@@ -198,6 +210,10 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
 
     func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
         try await raw.statusEvidence()
+    }
+
+    func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool {
+        try await raw.setupRetryMustHold(deletedSnipIDs: deletedSnipIDs)
     }
 
     func dormantAcceptedBaseTransferPayload() async throws -> Data? {
@@ -247,12 +263,16 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
 
     func prepareModeRetry(
         snipIDs: Set<UUID>,
+        forceInitialFetch: Bool,
         commitSettlement: @escaping @Sendable () async throws -> Void
     ) async throws {
         try await commitSettlement()
         // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
         _ = snipIDs
-        try await syncDriver.prepareManualRetry(beforeApply: beforeApply, beforeStateSave: beforeApply)
+        self.forceInitialFetch = forceInitialFetch
+        try await syncDriver.prepareManualRetry(
+            forceInitialFetch: forceInitialFetch, beforeApply: beforeApply, beforeStateSave: beforeApply
+        )
     }
 
     func prepareFailureRecovery(snipIDs: Set<UUID>) async throws {
@@ -469,9 +489,20 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let bridge = try await adapter(storeID: transition.candidateStoreID, captureSetupRetry: true)
+        let acknowledgedIDs = transition.syncProtocol == .fullRecordV1
+            ? await acknowledgedSetupSnipIDs() : []
+        if !acknowledgedIDs.isEmpty, transition.phase == .remoteFetched {
+            // An interrupted setup may have committed its fetch before checking the frozen source.
+            try await persistence.retryRemoteFetch()
+            transition = try await currentTransition()
+        }
+        let bridge = try await adapter(
+            storeID: transition.candidateStoreID, captureSetupRetry: true,
+            acknowledgedSetupSnipIDs: acknowledgedIDs
+        )
 
         if transition.phase == .candidateReady {
+            let deletedBeforeFetch = try await deletedSetupSnipIDs(acknowledgedIDs)
             do {
                 let candidates = transition.seedSettlementCandidates
                 let settlement = try await bridge.currentModeSeedSettlement(
@@ -479,7 +510,9 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
                 let candidateIDs = Set(candidates.map(\.snipID))
-                try await bridge.prepareModeRetry(snipIDs: candidateIDs) { [persistence] in
+                try await bridge.prepareModeRetry(
+                    snipIDs: candidateIDs, forceInitialFetch: !acknowledgedIDs.isEmpty
+                ) { [persistence] in
                     try await persistence.prepareRetryFetch(settlement: settlement)
                 }
                 try await requireMatchingAccount()
@@ -487,6 +520,9 @@ package actor ICloudSyncModeCoordinator {
                     try await self.requireMatchingAccount()
                 }
             } catch {
+                if error is CloudSetupRetryHold {
+                    return try await holdSetupForDeletedSnip(transition)
+                }
                 if error is ICloudAccountGateError {
                     return try await statusUnchecked(
                         accountState: await accountStateSource.currentAccountState()
@@ -502,7 +538,7 @@ package actor ICloudSyncModeCoordinator {
                 return try await statusUnchecked()
             }
             let fetchIssue = await bridge.takeSyncIssue()
-            let evidence = try await bridge.enrollmentEvidence()
+            let evidence = try await bridge.statusEvidence()
             if !evidence.retryableEventKeys.isEmpty {
                 try await bridge.clearRetryableEvents(evidence.retryableEventKeys)
                 return try await statusUnchecked(
@@ -517,6 +553,9 @@ package actor ICloudSyncModeCoordinator {
                 return try await statusUnchecked()
             }
             guard evidence.phase != .notEnrolled else { return try await statusUnchecked() }
+            if try await bridge.setupRetryMustHold(deletedSnipIDs: deletedBeforeFetch) {
+                return try await holdSetupForDeletedSnip(transition)
+            }
             try await persistence.recordPreparationComplete()
             transition = try await currentTransition()
         }
@@ -529,6 +568,10 @@ package actor ICloudSyncModeCoordinator {
                 }
                 let token = try await persistence.freezeSource()
                 let source = try await persistence.finalSnapshot(using: token)
+                let deleted = acknowledgedIDs.subtracting(source.snips.map(\.id))
+                if try await bridge.setupRetryMustHold(deletedSnipIDs: deleted) {
+                    return try await holdSetupForDeletedSnip(transition)
+                }
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
                 )
@@ -617,6 +660,25 @@ package actor ICloudSyncModeCoordinator {
             try await persistence.finishTransition()
             try? await persistence.cleanupRetiredStores()
         }
+        return try await statusUnchecked()
+    }
+
+    private func acknowledgedSetupSnipIDs() async -> Set<UUID> {
+        let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+        return Set(evidence?.acknowledgedSnipKeys.compactMap { key in
+            guard CloudFullSyncPersistence.recordID(key.identity).zone == textZone else { return nil }
+            return key.reference.domainID
+        } ?? [])
+    }
+
+    private func deletedSetupSnipIDs(_ acknowledged: Set<UUID>) async throws -> Set<UUID> {
+        guard !acknowledged.isEmpty else { return [] }
+        let source = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        return acknowledged.subtracting(source.snips.map(\.id))
+    }
+
+    private func holdSetupForDeletedSnip(_ transition: SyncModeTransition) async throws -> ICloudSyncModeStatus {
+        try await persistence.holdSetupForDeletedSnip(transitionID: transition.id)
         return try await statusUnchecked()
     }
 
@@ -735,7 +797,8 @@ package actor ICloudSyncModeCoordinator {
 
     private func adapter(
         storeID: UUID,
-        captureSetupRetry: Bool = false
+        captureSetupRetry: Bool = false,
+        acknowledgedSetupSnipIDs: Set<UUID> = []
     ) async throws -> any ICloudSyncAdapter {
         let storage = try await persistence.snapshot()
         let isActive = storage.activeStore.id == storeID
@@ -758,7 +821,8 @@ package actor ICloudSyncModeCoordinator {
             }
             let raw = try await fullBridge(
                 storeID: storeID,
-                validateSetupAccount: validateSetupAccount
+                validateSetupAccount: validateSetupAccount,
+                acknowledgedSetupSnipIDs: acknowledgedSetupSnipIDs
             )
             return FullRecordSyncAdapter(
                 raw: raw,
@@ -820,7 +884,8 @@ package actor ICloudSyncModeCoordinator {
 
     private func fullBridge(
         storeID: UUID,
-        validateSetupAccount: CloudFullSyncPersistence.ApplyHook?
+        validateSetupAccount: CloudFullSyncPersistence.ApplyHook?,
+        acknowledgedSetupSnipIDs: Set<UUID>
     ) async throws -> CloudFullSyncPersistence {
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
@@ -836,13 +901,18 @@ package actor ICloudSyncModeCoordinator {
         } else {
             recordResults = nil
         }
+        let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? =
+            acknowledgedSetupSnipIDs.isEmpty ? nil : { [self] in
+                try await deletedSetupSnipIDs(acknowledgedSetupSnipIDs)
+            }
         return CloudFullSyncPersistence(
             library: library,
             namespace: namespace,
             dataZone: textZone,
             payloadZone: payloadZone,
             attachmentPolicy: attachmentPolicy,
-            recordSetupRetryResults: recordResults
+            recordSetupRetryResults: recordResults,
+            setupRetryDeletedSnipIDs: deletedSnipIDs
         )
     }
 

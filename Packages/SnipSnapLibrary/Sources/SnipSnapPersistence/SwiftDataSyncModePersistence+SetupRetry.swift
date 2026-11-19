@@ -2,6 +2,23 @@ import Foundation
 import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
+  package func holdSetupForDeletedSnip(transitionID: UUID) throws {
+    guard let transition = manifest.transition,
+      transition.id == transitionID, transition.targetKind == .iCloudSync,
+      transition.sourceStoreID == manifest.activeStoreID
+    else { throw SyncModePersistenceError.transitionInProgress }
+    var next = manifest
+    try next.updateTransition {
+      if $0.phase == .sourceFrozen { try $0.unfreeze() }
+      if $0.phase == .remoteFetched { try $0.retryRemoteFetch() }
+      guard $0.phase == .candidateReady else {
+        throw SyncModePersistenceError.transitionInProgress
+      }
+    }
+    next.attentionReason = .transferConflict
+    try commitRollback(next)
+  }
+
   package func setupRetryFrozenSnapshot(candidateStoreID: UUID) async throws -> SnipLibrarySnapshot {
     guard let token = setupRetryFreezeToken(candidateStoreID: candidateStoreID) else {
       throw SyncModePersistenceError.invalidFreezeToken

@@ -84,6 +84,16 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
     records[key]?.baseline
   }
 
+  package var acknowledgedSnipKeys: Set<CloudSetupRetryRecordKey> {
+    Set(records.values.compactMap { record in
+      let key = record.key
+      guard record.baseline != nil, key.reference.kind == .snip,
+        key.identity.recordName == "s-\(key.reference.domainID.uuidString.lowercased())"
+      else { return nil }
+      return key
+    })
+  }
+
   package func requiresRecovery(for key: CloudSetupRetryRecordKey) -> Bool {
     let record = records[key]
     return record?.pending != nil || record?.earlierUnprovenSend == true

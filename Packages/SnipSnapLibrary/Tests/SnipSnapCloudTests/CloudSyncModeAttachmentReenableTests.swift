@@ -5,8 +5,6 @@ import Synchronization
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
-    // Diagnostic for the setup retry path. A base shadow in a fake send does
-    // not make the corresponding CloudKit delete conditional.
     func testSetupRetryKeepsLocalDeletionWhenPeerEditsAfterFetch() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -41,8 +39,6 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
         _ = try XCTUnwrap(evidence?.baseline(for: key))
-        _ = try await local.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
-
         let peer = try SwiftDataSyncModePersistence(rootURL: root.appendingPathComponent("peer"))
         let peerCoordinator = ICloudSyncModeCoordinator(
             persistence: peer, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
@@ -70,6 +66,7 @@ extension ICloudSyncModeCoordinatorTests {
         let payloadID = CloudAttachmentRecordCodec.recordID(pointer.payloadIdentity)
 
         let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await retryTransport.pauseNextFetch()
         let observedTransport = SetupRetryDeleteProbeTransport(retryTransport)
         let eventsBeforePeerEdit = Mutex<[FakeCloudTransportEvent]?>(nil)
         let peerText = "edited by the peer after retry fetched"
@@ -95,7 +92,7 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertEqual(peerSynced.state, .on)
         })
         let before = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
-        XCTAssertEqual(before.snips.map(\.id), [survivor.id])
+        XCTAssertEqual(Set(before.snips.map(\.id)), [deleted.id, survivor.id])
         let reopenedEvidence = await reopened.setupRetryEvidence(namespace: namespace.binding)
         XCTAssertEqual(reopenedEvidence?.baseline(for: key), evidence?.baseline(for: key))
 
@@ -103,7 +100,20 @@ extension ICloudSyncModeCoordinatorTests {
             persistence: reopened, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone,
             makeTransport: { observedTransport }
         )
-        let status = try await retry.enableOrRetry()
+        let initialStorage = try await reopened.snapshot()
+        let candidateID = try XCTUnwrap(initialStorage.transition?.candidateStoreID)
+        let candidate = try await reopened.libraryForTransition(storeID: candidateID)
+        let oldState = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        let savedToken = try JSONDecoder().decode(
+            CloudEngineStateEnvelope.self, from: XCTUnwrap(oldState.engineState)
+        )
+        XCTAssertFalse(savedToken.requiresInitialFetch)
+        let enabling = Task { try await retry.enableOrRetry() }
+        await retryTransport.waitUntilFetchPauses()
+        let editable = try await reopened.activeLibrary()
+        _ = try await editable.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
+        await retryTransport.resumeFetch()
+        let status = try await enabling.value
 
         let atPeerEdit = try XCTUnwrap(eventsBeforePeerEdit.withLock { $0 })
         let events = await retryTransport.events()
@@ -116,8 +126,12 @@ extension ICloudSyncModeCoordinatorTests {
             if case .sent = event { return true }
             return false
         })
-        XCTAssertTrue(suppliedIDs.contains(survivorID), "The probe must observe a real setup send.")
-        XCTAssertFalse(suppliedIDs.contains(deletedID))
+        XCTAssertTrue(suppliedIDs.isEmpty, "A hold must also withhold the survivor's save.")
+        XCTAssertFalse(events.contains { if case .sent = $0 { return true }; return false })
+        let resumed = await observedTransport.resumed
+        let initialOutbound = await observedTransport.receivedInitialOutbound
+        XCTAssertFalse(resumed)
+        XCTAssertFalse(initialOutbound)
         let deletes = await observedTransport.suppliedDeleteIDs
         XCTAssertEqual(deletes.intersection([deletedID, metadataID, payloadID]), [])
 
@@ -128,11 +142,15 @@ extension ICloudSyncModeCoordinatorTests {
         let payload = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(payload)), bytes)
         let storage = try await reopened.snapshot()
-        XCTAssertEqual(
-            storage.activeStore.kind, .iCloudSync,
-            "Retry returned \(status) at transition phase \(String(describing: storage.transition?.phase))."
-        )
-        XCTAssertNil(storage.transition)
+        XCTAssertEqual(status.state, .needsAttention)
+        XCTAssertEqual(storage.activeStore.id, initialStorage.activeStore.id)
+        XCTAssertEqual(storage.activeStore.kind, .localOnly)
+        XCTAssertEqual(storage.transition?.phase, .candidateReady)
+        let attachmentStorage = try await candidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertTrue(attachmentStorage.cleanups.isEmpty)
+        XCTAssertEqual(attachmentStorage.publications.map(\.metadata), [pointer])
+        let candidateState = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+        XCTAssertTrue(candidateState.pendingDeletes.isEmpty)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.map(\.id), [survivor.id], "Retry silently restored the deleted snip.")
     }
@@ -645,16 +663,29 @@ extension ICloudSyncModeCoordinatorTests {
     }
 }
 
-private actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
+actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
     let fake: FakeCloudRecordTransport
+    let omitFetchCompletion: Bool
+    private(set) var resumed = false
+    private(set) var receivedInitialOutbound = false
     private(set) var suppliedDeleteIDs: Set<CloudRecordID> = []
 
-    init(_ fake: FakeCloudRecordTransport) {
+    init(_ fake: FakeCloudRecordTransport, omitFetchCompletion: Bool = false) {
         self.fake = fake
+        self.omitFetchCompletion = omitFetchCompletion
     }
 
     func start(state: CloudEngineStateEnvelope?) async throws {
+        if state != nil { resumed = true }
         try await fake.start(state: state)
+    }
+
+    func start(
+        state: CloudEngineStateEnvelope?, initialOutbound: CloudOutboundBatch?,
+        outboundAdmission: CloudRecordOutboundAdmission
+    ) async throws {
+        if initialOutbound != nil { receivedInitialOutbound = true }
+        try await start(state: state)
     }
 
     func reset() async {
@@ -662,7 +693,12 @@ private actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
     }
 
     func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch {
-        try await fake.fetch(scope: scope)
+        let batch = try await fake.fetch(scope: scope)
+        guard omitFetchCompletion else { return batch }
+        return CloudFetchedBatch(
+            id: batch.id, items: batch.items, databaseEvents: batch.databaseEvents,
+            zoneEvents: [], engineState: batch.engineState, isInitialFetch: batch.isInitialFetch
+        )
     }
 
     func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch {

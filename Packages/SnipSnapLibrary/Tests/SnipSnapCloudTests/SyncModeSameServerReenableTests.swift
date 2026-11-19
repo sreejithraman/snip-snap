@@ -117,6 +117,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(accepted.text, .value(deleted.content), file: file, line: line)
 
         var expected = [keptID: keptText]
+        var expectedServer = stranded.originals
         switch scenario {
         case .acknowledged:
             break
@@ -140,6 +141,7 @@ extension ICloudSyncModeCoordinatorTests {
                 return XCTFail("The independent edit must reach the server.", file: file, line: line)
             }
             expected[deletedID] = changed.content
+            expectedServer[deletedID] = changed.content
         case .missingAcknowledgement:
             try stripSetupRetryEvidence(of: stranded, root: root, file: file, line: line)
             expected[deletedID] = deleted.content
@@ -168,9 +170,31 @@ extension ICloudSyncModeCoordinatorTests {
             }
         }
 
-        let result = try await sameServerCoordinator(on: reopened, server: stranded.server).enableOrRetry()
-        XCTAssertEqual(result.state, .on, file: file, line: line)
+        let transport = FakeCloudRecordTransport(server: stranded.server, namespace: namespace)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: zone, makeTransport: { transport }
+        )
+        let result = try await retry.enableOrRetry()
         let active = try await reopened.snapshot()
+        if scenario != .missingAcknowledgement {
+            XCTAssertEqual(result.state, .needsAttention, file: file, line: line)
+            XCTAssertEqual(active.activeStore.id, storage.activeStore.id, file: file, line: line)
+            XCTAssertEqual(active.activeStore.kind, .localOnly, file: file, line: line)
+            XCTAssertEqual(active.transition?.phase, .candidateReady, file: file, line: line)
+            let held = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+            XCTAssertEqual(held.snips.map(\.id), [keptID], file: file, line: line)
+            let events = await transport.events()
+            XCTAssertTrue(events.contains(.fetched), file: file, line: line)
+            XCTAssertFalse(events.contains { if case .sent = $0 { return true }; return false }, file: file, line: line)
+            try await assertSameServerSnips(stranded.server, texts: expectedServer, file: file, line: line)
+            if scenario == .acknowledged {
+                try await assertSetupRetryCompletesAfterPeerRemoval(
+                    root: root, server: stranded.server, deletedRecordID: recordID, survivorID: keptID
+                )
+            }
+            return
+        }
+        XCTAssertEqual(result.state, .on, file: file, line: line)
         XCTAssertEqual(active.activeStore.kind, .iCloudSync, file: file, line: line)
         XCTAssertNil(active.transition, file: file, line: line)
         let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
@@ -179,11 +203,75 @@ extension ICloudSyncModeCoordinatorTests {
             Dictionary(final.snips.map { ($0.id, $0.content) }, uniquingKeysWith: { first, _ in first }),
             expected, file: file, line: line
         )
-        if scenario == .acknowledged {
-            let restored = await stranded.server.fullSnapshot(for: recordID)
-            XCTAssertNil(restored, "Retry must remove the acknowledged snip from the server.", file: file, line: line)
-        }
         try await assertSameServerSnips(stranded.server, texts: expected, file: file, line: line)
+    }
+
+    private func assertSetupRetryCompletesAfterPeerRemoval(
+        root: URL, server: FakeCloudServer, deletedRecordID: CloudRecordID, survivorID: UUID
+    ) async throws {
+        let namespace = makeNamespace()
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let beforeRetry = try await reopened.snapshot()
+        let candidateID = try XCTUnwrap(beforeRetry.transition?.candidateStoreID)
+        let editedText = "edited while setup was held"
+        try await edit(survivorID, to: editedText, in: reopened)
+        let candidate = try await reopened.libraryForTransition(storeID: candidateID)
+        let before = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
+        let savedToken = try JSONDecoder().decode(
+            CloudEngineStateEnvelope.self, from: XCTUnwrap(before.engineState)
+        )
+        XCTAssertFalse(savedToken.requiresInitialFetch)
+
+        let failed = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await failed.failNextFetch()
+        let retry = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: deletedRecordID.zone,
+            makeTransport: { failed }
+        )
+        let failedResult = try await retry.enableOrRetry()
+        XCTAssertEqual(failedResult.state, .needsAttention)
+        let failedEvents = await failed.events()
+        XCTAssertEqual(failedEvents, [.started, .fetched])
+        let held = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(held.snips.map(\.id), [survivorID])
+        XCTAssertEqual(held.snips.map(\.content), [editedText])
+
+        let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let stored = await server.fullSnapshot(for: deletedRecordID)
+        let removed = try await writer.send(CloudOutboundBatch(operations: [
+            .delete(deletedRecordID, base: XCTUnwrap(stored).shadow)
+        ]))
+        guard case .deleted? = removed.items.first else { return XCTFail("The peer must remove the record.") }
+        // Older setup could persist remoteFetched before a guarded source read.
+        try await reopened.recordPreparationComplete()
+        let incompleteFake = FakeCloudRecordTransport(server: server, namespace: namespace)
+        let incomplete = SetupRetryDeleteProbeTransport(incompleteFake, omitFetchCompletion: true)
+        let incompleteRetry = ICloudSyncModeCoordinator(
+            persistence: reopened, namespace: namespace, textZone: deletedRecordID.zone,
+            makeTransport: { incomplete }
+        )
+        let incompleteResult = try await incompleteRetry.enableOrRetry()
+        XCTAssertEqual(incompleteResult.state, .needsAttention)
+        let incompleteEvents = await incompleteFake.events()
+        XCTAssertTrue(incompleteEvents.contains(.fetched))
+        XCTAssertFalse(incompleteEvents.contains { if case .sent = $0 { return true }; return false })
+        let afterIncomplete = try await reopened.snapshot()
+        XCTAssertEqual(afterIncomplete.activeStore.id, beforeRetry.activeStore.id)
+        XCTAssertEqual(afterIncomplete.transition?.phase, .candidateReady)
+
+        let survivor = try await sameServerCoordinator(
+            on: reopened, server: server
+        ).enableOrRetry()
+        XCTAssertEqual(survivor.state, .on)
+        let completed = try await reopened.snapshot()
+        XCTAssertEqual(completed.activeStore.id, candidateID)
+        XCTAssertNil(completed.transition)
+        let final = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(final.snips.map(\.id), [survivorID])
+        XCTAssertEqual(final.snips.map(\.content), [editedText])
+        try await assertSameServerSnips(server, texts: [survivorID: editedText])
+        let deletionCount = await server.acceptedDeletionCount()
+        XCTAssertEqual(deletionCount, 1, "Only the peer submitted a deletion.")
     }
 
     func testFullRecordTryAgainAfterReopeningKeepsBothDevicesEdits() async throws {
