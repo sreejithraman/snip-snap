@@ -148,6 +148,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     init(
         raw: CloudFullSyncPersistence,
         transport: any CloudRecordTransport,
+        checksSetupRetry: Bool,
         beforeApply: @escaping CloudFullSyncPersistence.ApplyHook
     ) {
         self.raw = raw
@@ -155,7 +156,8 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
-            fetchScope: .zones([raw.dataZone])
+            fetchScope: .zones([raw.dataZone]),
+            initializeOutboundOnStart: !checksSetupRetry
         )
     }
 
@@ -508,6 +510,9 @@ package actor ICloudSyncModeCoordinator {
         if transition.phase == .candidateReady {
             var deletedBeforeFetch: Set<UUID> = []
             do {
+                if checksSetupRetry {
+                    deletedBeforeFetch = try await deletedSetupSnipIDs(await acknowledgedSetupSnipIDs())
+                }
                 let candidates = transition.seedSettlementCandidates
                 let settlement = try await bridge.currentModeSeedSettlement(
                     candidates: candidates,
@@ -515,7 +520,7 @@ package actor ICloudSyncModeCoordinator {
                 )
                 let candidateIDs = Set(candidates.map(\.snipID))
                 try await bridge.prepareModeRetry(
-                    snipIDs: candidateIDs, forceInitialFetch: checksSetupRetry
+                    snipIDs: candidateIDs, forceInitialFetch: !deletedBeforeFetch.isEmpty
                 ) { [persistence] in
                     try await persistence.prepareRetryFetch(settlement: settlement)
                 }
@@ -836,6 +841,7 @@ package actor ICloudSyncModeCoordinator {
             return FullRecordSyncAdapter(
                 raw: raw,
                 transport: makeTransport(),
+                checksSetupRetry: checksSetupRetry,
                 beforeApply: validateSetupAccount ?? {}
             )
         }

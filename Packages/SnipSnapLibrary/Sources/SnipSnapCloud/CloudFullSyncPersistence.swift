@@ -101,6 +101,7 @@ package actor CloudFullSyncCoordinator {
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
+  private let initializeOutboundOnStart: Bool
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
   private let operationGate = AsyncOperationGate()
@@ -110,12 +111,14 @@ package actor CloudFullSyncCoordinator {
     store: any CloudFullSyncStore,
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
+    initializeOutboundOnStart: Bool = true,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
     self.store = store
     self.transport = transport
     self.fetchScope = fetchScope
+    self.initializeOutboundOnStart = initializeOutboundOnStart
     self.diagnostics = diagnostics
     self.reportResult = reportResult
   }
@@ -309,7 +312,8 @@ package actor CloudFullSyncCoordinator {
     let requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
     session.adoptStoredState(requiresInitialFetch: requiresInitialFetch)
     if requiresInitialFetch { try await store.prepareInitialFetch() }
-    let outbound = requiresInitialFetch ? nil : try await pendingChangesOrResetEngine()
+    let outbound = requiresInitialFetch || !initializeOutboundOnStart
+      ? nil : try await pendingChangesOrResetEngine()
     do {
       let admission = try await store.outboundAdmission()
       try await transport.start(state: requiresInitialFetch ? nil : state, initialOutbound: outbound,
