@@ -8,7 +8,7 @@ protocol IOSCloudSyncSessionHandling: Sendable {
     func retrySynchronization() async throws -> SnipSnapCloudSyncResult
     func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
         whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
-    ) async throws -> Bool
+    ) async throws -> SyncedContentEnableAcknowledgement
     func scheduleAutomaticSync() async
     func iosActiveLibrary() async throws -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> { get }
@@ -23,7 +23,7 @@ extension IOSCloudSyncSessionHandling {
 
     func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
         whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
-    ) async throws -> Bool { false }
+    ) async throws -> SyncedContentEnableAcknowledgement { .stale }
 
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> {
         AsyncStream { $0.finish() }
@@ -305,6 +305,12 @@ final class IOSAppSession {
                 issue = .iCloudAccountChanged
             }
             syncedContentSettings.recordSyncStopped(issue)
+        case .deferredICloudSyncEnabled(let completion):
+            do {
+                try await syncedContentSettings.completeScheduledEnable(completion)
+            } catch {
+                syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+            }
         case .syncIssue(let issue):
             syncedContentSettings.recordSyncFailure(issue)
             return
@@ -340,12 +346,11 @@ final class IOSAppSession {
                 settings.recordOutstandingSyncRecovered()
             case .syncScheduled:
                 break
-            case .iCloudSyncSettingUp(let issue):
-                settings.recordEnableSettingUp(issue)
-            case .iCloudSyncEnabled:
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                settings.recordEnableCompleted()
+            case .iCloudSyncSettingUp, .iCloudSyncEnabled:
+                guard try await result.applyEnableProgress(to: settings, started: syncStart, reload: {
+                    let active = try await session.iosActiveLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                }) else { return }
             case .deferredICloudSyncEnabled:
                 if try await result.applyDeferredEnableCompletion(
                     to: settings,

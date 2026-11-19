@@ -157,15 +157,25 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         raw: CloudFullSyncPersistence,
         transport: any CloudRecordTransport,
         checksSetupRetry: Bool,
+        capturesSetupRetry: Bool,
         beforeApply: @escaping CloudFullSyncPersistence.ApplyHook
     ) {
         self.raw = raw
         self.beforeApply = beforeApply
+        let retainReceivedSetupDeletes: (@Sendable (CloudSyncBatch, CloudOutboundBatch?) async throws -> Void)?
+        if capturesSetupRetry {
+            retainReceivedSetupDeletes = { batch, outbound in
+                try await raw.retainReceivedSetupDeletes(batch, outbound: outbound)
+            }
+        } else {
+            retainReceivedSetupDeletes = nil
+        }
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
             fetchScope: .zones([raw.dataZone]),
-            initializeOutboundOnStart: !checksSetupRetry
+            initializeOutboundOnStart: !checksSetupRetry,
+            retainReceivedSetupDeletes: retainReceivedSetupDeletes
         )
     }
 
@@ -621,6 +631,7 @@ package actor ICloudSyncModeCoordinator {
         }
 
         var checkedDeletedSnips: Set<UUID> = []
+        var verifiedRestore: CheckedSetupPeerCopies?
         do {
             if transition.phase == .remoteFetched {
                 guard try await bridge.canPrepareModeMerge() else {
@@ -639,6 +650,13 @@ package actor ICloudSyncModeCoordinator {
                         return try await holdSetupForDeletedSnip(transition, bridge: bridge)
                     }
                 }
+                if let consent {
+                    guard let checked = await bridge.checkedPeerCopies(), checked.offer == consent else {
+                        throw CloudSetupRetryHold()
+                    }
+                    try await verifyRestoredPeerAttachments(checked, storeID: transition.candidateStoreID)
+                    verifiedRestore = checked
+                }
                 let targetRevision = try await persistence.candidateRevision(
                     transitionID: transition.id
                 )
@@ -653,8 +671,7 @@ package actor ICloudSyncModeCoordinator {
                     _ = try await preserveIsolatedAttachmentsForLocalCopy(
                         storeID: transition.candidateStoreID,
                         setupRetry: (source, retryEvidence),
-                        additionalExclusions: Set(await bridge.checkedPeerCopies()
-                            .flatMap { $0.offer == consent ? $0.attachments.map(\.attachmentID) : nil } ?? [])
+                        additionalExclusions: Set(verifiedRestore?.attachments.map(\.attachmentID) ?? [])
                     )
                     try await requireMatchingAccount()
                 }
@@ -701,8 +718,8 @@ package actor ICloudSyncModeCoordinator {
             }
 
             if transition.phase == .firstSendStarted {
-                let restoring = await bridge.checkedPeerCopies().flatMap { $0.offer == consent ? $0 : nil }
-                try await sendUntilSettled(adapter: bridge, transition: transition, restoring: restoring)
+                guard consent == nil || verifiedRestore != nil else { throw CloudSetupRetryHold() }
+                try await sendUntilSettled(adapter: bridge, transition: transition, restoring: verifiedRestore)
                 try await persistence.recordFirstSendComplete()
                 transition = try await currentTransition()
             }
@@ -719,7 +736,10 @@ package actor ICloudSyncModeCoordinator {
                     guard try await bridge.recheckSetupMetadata(deletedSnipIDs: deleted) else {
                         throw CloudSetupRetryHold()
                     }
-                    if let consent, let checked = await bridge.checkedPeerCopies(), checked.offer == consent {
+                    if let consent {
+                        guard let checked = await bridge.checkedPeerCopies(), checked.offer == consent else {
+                            throw CloudSetupRetryHold()
+                        }
                         try await verifyRestoredPeerAttachments(checked, storeID: transition.candidateStoreID)
                     }
                     try await requireMatchingAccount()
@@ -925,6 +945,7 @@ package actor ICloudSyncModeCoordinator {
                 raw: raw,
                 transport: makeTransport(),
                 checksSetupRetry: checksSetupRetry,
+                capturesSetupRetry: validateSetupAccount != nil,
                 beforeApply: validateSetupAccount ?? {}
             )
         }
@@ -971,16 +992,29 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func verifyRestoredPeerAttachments(_ checked: CheckedSetupPeerCopies, storeID: UUID) async throws {
-        guard !checked.attachments.isEmpty, let payloadZone else { return }
+        guard !checked.attachments.isEmpty else { return }
+        guard let payloadZone else { throw CloudSetupRetryHold() }
         let library = try await persistence.libraryForTransition(storeID: storeID)
-        let transfer = CloudAttachmentTransferCoordinator(
-            library: library, namespace: namespace, payloadZone: payloadZone,
-            transport: makeTransport(), maximumCacheBytes: CloudAttachmentTransferCoordinator.standardMaximumCacheBytes
-        )
+        let staging = try await library.cloudAttachmentStagingRoot(namespaceKey: namespace.namespaceKey)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let destination = try CloudAssetDestination(validating: staging)
+        let transport = makeTransport()
         for attachment in checked.attachments {
-            let url = try await transfer.download(attachmentID: attachment.attachmentID)
-            guard try AttachmentFileIO.digest(at: url) == attachment.sha256 else { throw CloudSetupRetryHold() }
+            try await requireMatchingAccount()
+            try await checkSetupCollection()
+            let id = CloudAttachmentRecordCodec.recordID(attachment.payloadIdentity)
+            let field = CloudAttachmentRecordCodec.assetField
+            guard id.zone == payloadZone,
+                let receipt = try await transport.fetchAsset(id, field: field, destination: destination)
+            else { throw CloudAttachmentStorageError.missingPayload }
+            guard receipt.recordID == id, receipt.field == field,
+                receipt.byteCount == attachment.byteCount, receipt.sha256 == attachment.sha256,
+                try AttachmentFileIO.digest(at: receipt.fileURL) == attachment.sha256
+            else { throw CloudAttachmentStorageError.hashMismatch }
         }
+        try await requireMatchingAccount()
     }
 
     private func rawBridge(storeID: UUID) async throws -> SwiftDataCloudTextPersistence {
@@ -1015,9 +1049,10 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
             }
-            retainPointerDelete = { [persistence, namespace] binding in
+            retainPointerDelete = { [persistence, namespace] binding, receivedWhileFrozen in
                 return try await persistence.retainSetupPointerDelete(
-                    binding, candidateStoreID: storeID, namespace: namespace.binding
+                    binding, candidateStoreID: storeID, namespace: namespace.binding,
+                    receivedWhileFrozen: receivedWhileFrozen
                 )
             }
             setupPointerDeletes = { [persistence, namespace] in
@@ -1118,7 +1153,7 @@ package actor ICloudSyncModeCoordinator {
                     )
                     try await self.checkSetupCollection()
                     let receipts = await persistence.setupPointerDeletesProtectingOutbound(in: namespace.binding)
-                    if outbound.operations.contains(where: CloudSetupDeleteProtection(receipts).blocksSetupOperation) {
+                    if outbound.operations.contains(where: CloudSetupDeleteProtection(receipts).blocks) {
                         throw CloudSetupRetryHold()
                     }
                 } else {

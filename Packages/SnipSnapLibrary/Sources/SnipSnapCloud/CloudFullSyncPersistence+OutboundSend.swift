@@ -7,9 +7,10 @@ extension CloudFullSyncPersistence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let archivedIDs = corruptShadowRecovery(in: stored).blockedRecordIDs
-    let setupIDs = await setupPointerDeleteProtection().payloads.map(Self.recordID)
+    let protection = await setupPointerDeleteProtection()
     return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery)
-      .union(archivedIDs).union(setupIDs),
+      .union(archivedIDs).union(protection.payloads.map(Self.recordID)),
+      blockedDeleteIDs: Set(protection.pointers.map(Self.recordID)),
       blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
   }
 
@@ -47,8 +48,11 @@ extension CloudFullSyncPersistence {
       issues.append(.appDataIssue)
     }
     issues += attachments.publications.compactMap(\.lastFailure).map(Self.syncIssue(for:))
-    let protectedPayloads = await setupPointerDeleteProtection().payloads
-    issues += attachments.cleanups.filter { !protectedPayloads.contains($0.identity) }
+    let protection = await setupPointerDeleteProtection()
+    if attachments.publications.contains(where: { !$0.isLocallyPresent && protection.pointers.contains($0.metadataIdentity) }) {
+      issues.append(.appDataIssue)
+    }
+    issues += attachments.cleanups.filter { !protection.payloads.contains($0.identity) }
       .compactMap(\.lastFailure).map(Self.syncIssue(for:))
     return CloudSyncIssueError.preferredIssue(from: issues)
   }
@@ -374,7 +378,7 @@ extension CloudFullSyncPersistence {
       }
     }
     for publication in publications where !publication.isLocallyPresent
-      && !protection.blocksPointerRemoval(publication, dataZone: dataZone, payloadZone: payloadZone)
+      && !protection.pointers.contains(publication.metadataIdentity)
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {

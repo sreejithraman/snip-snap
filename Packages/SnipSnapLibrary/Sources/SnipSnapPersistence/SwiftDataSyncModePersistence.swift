@@ -6,12 +6,13 @@ public enum SyncModeActivationManifestReader {
     case localOnly
     case settingUp(ICloudSyncNamespaceBinding)
     case needsAttention(ICloudSyncNamespaceBinding)
+    case checkingEnable(ICloudSyncNamespaceBinding)
     case active(ICloudSyncNamespaceBinding)
 
     public var namespace: ICloudSyncNamespaceBinding? {
       switch self {
       case .localOnly: nil
-      case .settingUp(let value), .needsAttention(let value), .active(let value): value
+      case .settingUp(let value), .needsAttention(let value), .checkingEnable(let value), .active(let value): value
       }
     }
   }
@@ -86,6 +87,7 @@ public enum SyncModeActivationManifestReader {
       guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
       else { return .localOnly }
       if active.kind == .iCloudSync, let namespace = active.namespace {
+        if manifest.checkedEnableStoreID == active.id { return .checkingEnable(namespace) }
         return .active(namespace)
       }
       guard active.kind == .localOnly,

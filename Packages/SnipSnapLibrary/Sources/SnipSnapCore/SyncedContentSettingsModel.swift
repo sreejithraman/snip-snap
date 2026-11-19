@@ -190,6 +190,14 @@ public enum SyncedContentSetupCancellation: Equatable, Sendable {
   case switched(SyncedContentEnableCompletion?)
 }
 
+public enum SyncedContentEnableAcknowledgement: Equatable, Sendable {
+  case acknowledged
+  case stale
+  case reloadCurrent
+  case replaced(SyncedContentEnableCompletion)
+  case stopped(SyncedContentSyncIssue)
+}
+
 public struct SyncedContentPeerCopyOffer: Error, Equatable, Sendable {
   public struct Copy: Equatable, Identifiable, Sendable {
     public let id: UUID
@@ -243,7 +251,7 @@ public final class SyncedContentSettingsModel {
   public typealias EnableCompletionIsCurrent = @MainActor @Sendable () -> Bool
   public typealias AcknowledgeEnableAction = @Sendable (
     SyncedContentEnableCompletion, @escaping EnableCompletionIsCurrent
-  ) async throws -> Bool
+  ) async throws -> SyncedContentEnableAcknowledgement
   public typealias DisableAction = @Sendable (SyncedContentDisableChoice) async throws -> Void
   public typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
@@ -450,6 +458,7 @@ public final class SyncedContentSettingsModel {
   }
 
   private func performEnable(_ action: EnableAction) async {
+    statusSession = UUID()
     peerCopyOffer = nil
     status.state = .enabling()
     let started = recordSyncStarted()
@@ -499,12 +508,45 @@ public final class SyncedContentSettingsModel {
     _ completion: SyncedContentEnableCompletion, started: SyncedContentSyncStart,
     reload: @MainActor () async throws -> Void, acknowledge: AcknowledgeEnableAction
   ) async throws -> Bool {
-    try await reload()
     let isCurrent: EnableCompletionIsCurrent = { self.acceptsEnableCompletion(started: started) }
-    guard isCurrent(), try await acknowledge(completion, isCurrent), isCurrent() else { return true }
-    recordEnableCompleted()
-    if let issue = completion.issue { recordSyncFailure(issue) }
-    return completion.issue != nil
+    var checked = completion
+    for _ in 0..<3 {
+      try await reload()
+      guard isCurrent() else { return true }
+      switch try await acknowledge(checked, isCurrent) {
+      case .acknowledged:
+        guard isCurrent() else { return true }
+        recordEnableCompleted()
+        if let issue = checked.issue { recordSyncFailure(issue) }
+        return checked.issue != nil
+      case .stale:
+        return true
+      case .reloadCurrent:
+        try await reload()
+        return true
+      case .replaced(let current):
+        checked = current
+      case .stopped(let issue):
+        do {
+          try await reload()
+        } catch {
+          if isCurrent() { recordSyncStopped(issue) }
+          throw error
+        }
+        if isCurrent() { recordSyncStopped(issue) }
+        return true
+      }
+    }
+    try await reload()
+    return true
+  }
+
+  public func completeScheduledEnable(_ completion: SyncedContentEnableCompletion) async throws {
+    guard mode == .localOnly, case .enabling(.some) = state,
+      let enableCompletionAction, let acknowledgeEnableAction
+    else { return }
+    _ = try await completeCheckedEnable(completion, started: recordSyncStarted(),
+      reload: enableCompletionAction, acknowledge: acknowledgeEnableAction)
   }
 
   public func disableICloudSync(_ choice: SyncedContentDisableChoice) async {

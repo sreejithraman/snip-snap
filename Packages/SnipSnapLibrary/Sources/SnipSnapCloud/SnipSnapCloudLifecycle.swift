@@ -662,22 +662,57 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   package func acknowledgeDeferredEnableCompletion(
     for completion: SnipSnapDeferredEnableCompletion,
     whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent = { true }
-  ) async throws -> Bool {
-    guard let active = try await checkedEnableMatching(completion) else { return false }
+  ) async throws -> SyncedContentEnableAcknowledgement {
+    guard let active = try await checkedEnableMatching(completion) else {
+      return try await supersededEnable(completion, whileCurrent: isCurrent)
+    }
     do {
       try await checkDeferredEnable(for: active.binding)
-    } catch is CloudAccountIsolationError {
+    } catch let isolation as CloudAccountIsolationError {
       try await clearSupersededLocalEnable()
-      return false
+      return .stopped(isolation == .signedOut ? .signInRequired : .iCloudAccountChanged)
     } catch CloudCollectionError.syncNeedsAttention {
-      return false
+      guard await isCurrent() else { return .stale }
+      return try await recheckSupersedingEnable()
     }
-    guard try await checkedEnableMatching(completion) != nil else { return false }
+    guard try await checkedEnableMatching(completion) != nil else {
+      return try await supersededEnable(completion, whileCurrent: isCurrent)
+    }
     let rootURL = rootURL
     return try await MainActor.run {
-      guard isCurrent() else { return false }
+      guard isCurrent() else { return .stale }
       try PendingICloudSyncEnable.clear(at: rootURL)
-      return true
+      return .acknowledged
+    }
+  }
+
+  private func supersededEnable(
+    _ completion: SnipSnapDeferredEnableCompletion,
+    whileCurrent isCurrent: SyncedContentSettingsModel.EnableCompletionIsCurrent
+  ) async throws -> SyncedContentEnableAcknowledgement {
+    guard let mode = try openExistingModePersistence() else { return .reloadCurrent }
+    let snapshot = try await mode.snapshot()
+    if let isolation = snapshot.accountIsolation {
+      try await clearSupersededLocalEnable()
+      return .stopped(isolation.reason == .signedOut ? .signInRequired : .iCloudAccountChanged)
+    }
+    guard snapshot.activeStore.id != completion.storeID else { return .stale }
+    if snapshot.activeStore.kind == .iCloudSync,
+      PendingICloudSyncEnable.requiresDeferredCompletionCheck(at: rootURL), await isCurrent()
+    {
+      return try await recheckSupersedingEnable()
+    }
+    try await clearSupersededLocalEnable()
+    return .reloadCurrent
+  }
+
+  private func recheckSupersedingEnable() async throws -> SyncedContentEnableAcknowledgement {
+    switch try await synchronize(retryingUserRecoverableFailures: false) {
+    case .deferredICloudSyncEnabled(let current): return .replaced(current)
+    case .iCloudSignedOut: return .stopped(.signInRequired)
+    case .iCloudAccountChanged: return .stopped(.iCloudAccountChanged)
+    case .iCloudDataReset: return .stopped(.iCloudDataReset)
+    default: return .reloadCurrent
     }
   }
 
@@ -710,6 +745,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func scheduleAutomaticSync() async throws {
+    try await finishDeferredSetupEnableIfNeeded()
+    if PendingICloudSyncEnable.requiresDeferredCompletionCheck(at: rootURL) {
+      automaticResultHandler(try await synchronize(retryingUserRecoverableFailures: false))
+      return
+    }
     try await requireMatchingAccountForActiveStore()
     guard let coordinator = try await locallyActiveCollectionCoordinator(),
       let persistence,

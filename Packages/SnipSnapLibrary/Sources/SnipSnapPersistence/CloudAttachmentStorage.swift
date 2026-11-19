@@ -62,12 +62,6 @@ package struct CloudAttachmentPublication: Equatable, Sendable {
   package let lastFailure: CloudAttachmentFailure?
   package let revision: UInt64
 
-  // A fetched publication starts at revision 1. Its first local removal advances
-  // once; a fetch that rebases an already removed row has advanced at least twice.
-  package var isFirstLocalRemovalOfFetchedPublication: Bool {
-    !isLocallyPresent && metadataAccepted && revision == 2
-  }
-
   package init(
     metadata: CloudAttachmentMetadataValue,
     metadataIdentity: CloudTextStorageIdentity,

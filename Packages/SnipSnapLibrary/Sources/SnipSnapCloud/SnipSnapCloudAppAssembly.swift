@@ -142,7 +142,7 @@ public enum SnipSnapCloudAppAssembly {
     switch SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: rootURL) {
     case .settingUp, .needsAttention: true
     case .localOnly: PendingICloudSyncEnable.needsAttention(at: rootURL)
-    case .active: false
+    case .active, .checkingEnable: false
     }
   }
 
@@ -150,7 +150,13 @@ public enum SnipSnapCloudAppAssembly {
     rootURL: URL,
     startupState: SyncModeActivationManifestReader.ICloudStartupState
   ) -> (mode: SyncedContentMode, state: SyncedContentSettingsState) {
-    if case .active = startupState { return (.iCloudSync, .ready) }
+    if case .checkingEnable = startupState { return (.localOnly, .enabling(.checkingAccount)) }
+    if case .active = startupState {
+      if PendingICloudSyncEnable.requiresDeferredCompletionCheck(at: rootURL) {
+        return (.localOnly, .enabling(.checkingAccount))
+      }
+      return (.iCloudSync, .ready)
+    }
     if PendingICloudSyncEnable.needsAttention(at: rootURL) {
       return (
         .localOnly,
@@ -162,7 +168,7 @@ public enum SnipSnapCloudAppAssembly {
       return (.localOnly, .enabling(PendingICloudSyncEnable.retryIssue(at: rootURL)))
     case .needsAttention:
       return (.localOnly, .failed(.appDataIssue))
-    case .localOnly, .active:
+    case .localOnly, .active, .checkingEnable:
       return (
         .localOnly,
         PendingICloudSyncEnable.exists(at: rootURL)

@@ -116,6 +116,32 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(unconfigured.factory.calls.map(\.receivedEngineState), [false])
     }
 
+    func testProviderOmitsProtectedIDOnlyDeletesAndStillOffersPointerSaves() async throws {
+        let fixture = makeFixture()
+        let transport = fixture.transport
+        let pointer = fixture.recordID("pointer")
+        let payload = fixture.recordID("payload")
+        let unrelated = fixture.recordID("unrelated")
+        try await transport.startEngine(state: nil, initialOutbound: .init(operations: [
+            .delete(pointer, base: nil), .delete(payload, base: nil), .delete(unrelated, base: nil)
+        ]), outboundAdmission: .init(blockedRecordIDs: [payload], blockedDeleteIDs: [pointer]))
+        let engine = try fixture.engine(0)
+        await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
+        try await transport.confirmAllEvents()
+        let pointerID = CloudKitRecordMapper.recordID(for: pointer)
+        let payloadID = CloudKitRecordMapper.recordID(for: payload)
+        let unrelatedID = CloudKitRecordMapper.recordID(for: unrelated)
+        XCTAssertEqual(engine.pendingRecordZoneChanges, [.deleteRecord(unrelatedID)])
+        try await transport.scheduleAutomaticSync(.init(operations: [
+            .save(makeDraft(pointer, "same pointer, new metadata")), .delete(unrelated, base: nil)
+        ]))
+        engine.add(pendingRecordZoneChanges: [.deleteRecord(pointerID), .deleteRecord(payloadID)])
+        await transport.emit(.willSendChanges, from: engine)
+        let batch = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
+        XCTAssertEqual(batch?.recordsToSave.map(\.recordID), [pointerID])
+        XCTAssertEqual(batch?.recordIDsToDelete, [unrelatedID])
+    }
+
     // MARK: Automatic cycles
 
     func testAutomaticFetchCycleQueuesOneBatchWithTheLatestEngineStateThenACheckpoint() async throws {

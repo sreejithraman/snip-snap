@@ -362,11 +362,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .syncIssue(let issue):
                     cloudServices.syncedContentSettings.recordSyncFailure(issue)
                     return
-                case .iCloudSyncSettingUp(let issue):
-                    cloudServices.syncedContentSettings.recordEnableSettingUp(issue)
-                case .iCloudSyncEnabled:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordEnableCompleted()
+                case .iCloudSyncSettingUp, .iCloudSyncEnabled:
+                    guard try await result.applyEnableProgress(to: cloudServices.syncedContentSettings,
+                        started: syncStart, reload: reloadActiveLibrary) else { return }
                 case .deferredICloudSyncEnabled:
                     if try await result.applyDeferredEnableCompletion(
                         to: cloudServices.syncedContentSettings,
@@ -640,6 +638,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 issue = .iCloudAccountChanged
             }
             syncedContentSettings.recordSyncStopped(issue)
+        case .deferredICloudSyncEnabled(let completion):
+            do {
+                try await syncedContentSettings.completeScheduledEnable(completion)
+            } catch {
+                syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+            }
         case .syncIssue(let issue):
             syncedContentSettings.recordSyncFailure(issue)
             return

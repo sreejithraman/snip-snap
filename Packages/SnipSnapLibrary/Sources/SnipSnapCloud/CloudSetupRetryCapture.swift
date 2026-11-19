@@ -177,8 +177,22 @@ enum CloudSetupRetryCapture {
     }
   }
 
+  static func acceptedPointerDeletes(
+    in sent: CloudSentBatch, outbound: CloudOutboundBatch
+  ) -> [(CloudOutboundOperation, UUID)] {
+    let results = Dictionary(grouping: sent.items, by: \.id)
+    return outbound.operations.compactMap { operation in
+      guard case .delete(let id, _) = operation, results[id] == [.deleted(id)],
+        id.name.hasPrefix("a-"), let attachmentID = UUID(uuidString: String(id.name.dropFirst(2))),
+        id.name == "a-\(attachmentID.uuidString.lowercased())"
+      else { return nil }
+      return (operation, attachmentID)
+    }
+  }
+
   static func retainPointerDeletes(
-    in batch: CloudFullBatchCommit, retain: CloudFullSyncPersistence.RetainSetupPointerDelete
+    in batch: CloudFullBatchCommit,
+    retain: @Sendable (CloudSetupPointerDelete.Binding) async throws -> CloudSetupPointerDelete
   ) async throws -> [UUID: CloudSetupPointerDelete.Deferral] {
     guard let data = batch.rawBatchData,
       let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),
@@ -186,17 +200,10 @@ enum CloudSetupRetryCapture {
       case .sent(let sent) = raw.batch, let outbound = raw.outbound,
       CloudFullSyncPersistence.destructiveResetReason(raw.batch) == nil
     else { return [:] }
-    let results = Dictionary(grouping: sent.items, by: \.id)
     var deferred: [UUID: CloudSetupPointerDelete.Deferral] = [:]
-    for operation in outbound.operations {
-      guard case .delete(let id, let base) = operation,
-        results[id] == [.deleted(id)]
-      else { continue }
+    for (operation, attachmentID) in acceptedPointerDeletes(in: sent, outbound: outbound) {
+      guard case .delete(let id, let base) = operation else { continue }
       let identity = CloudFullSyncPersistence.storageIdentity(id)
-      guard identity.recordName.hasPrefix("a-"),
-        let attachmentID = UUID(uuidString: String(identity.recordName.dropFirst(2))),
-        identity.recordName == "a-\(attachmentID.uuidString.lowercased())"
-      else { continue }
       let binding = try CloudFullSyncPersistence.outboundBinding(operation)
       guard batch.outboundBindings.contains(binding) else { throw CloudFullStorageError.invalidBatchReplay }
       let revision = batch.attachmentTransitions.lazy.compactMap { transition -> UInt64? in
@@ -316,7 +323,7 @@ enum CloudSetupRetryCapture {
     return encoder
   }
 
-  private static func operationDigest(_ binding: CloudFullOutboundBinding) -> Data {
+  static func operationDigest(_ binding: CloudFullOutboundBinding) -> Data {
     Data(SHA256.hash(data: binding.operationData))
   }
 }

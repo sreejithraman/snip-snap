@@ -589,6 +589,7 @@ package protocol CloudRecordTransport: Sendable {
     func confirmApplied(_ batchID: UUID) async throws
     func confirmApplied(_ batchID: UUID, outboundAdmission: CloudRecordOutboundAdmission) async throws
     func pendingEvent() async -> CloudRecordTransportEvent?
+    func pendingSentBatches() async -> [CloudPendingBatch]
     func finishCurrentSyncCycle() async throws
     func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot?
     func fetchAsset(
@@ -622,6 +623,10 @@ package extension CloudRecordTransport {
         try await confirmApplied(batchID)
     }
     func pendingEvent() async -> CloudRecordTransportEvent? { nil }
+    func pendingSentBatches() async -> [CloudPendingBatch] {
+        guard case .batch(let pending) = await pendingEvent(), case .sent = pending.batch else { return [] }
+        return [pending]
+    }
     func finishCurrentSyncCycle() async throws {}
 }
 

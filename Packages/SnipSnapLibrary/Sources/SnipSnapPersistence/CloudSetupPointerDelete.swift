@@ -87,7 +87,6 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
   }
 
   package let key: Key
-  package let originalMetadataShadow: Data?
   let bindingDigest: Data
   package let snipID: UUID
   let payloads: [Payload]
@@ -98,10 +97,9 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
   private var replacements: [LegacyReplacement]? = nil
   package var payloadIdentities: Set<CloudTextStorageIdentity> { Set(payloads.map(\.identity)) }
 
-  init(key: Key, bindingDigest: Data, originalMetadataShadow: Data?, snipID: UUID, payloads: [Payload], boundReplacements: [Replacement]) {
+  init(key: Key, bindingDigest: Data, snipID: UUID, payloads: [Payload], boundReplacements: [Replacement]) {
     self.key = key
     self.bindingDigest = bindingDigest
-    self.originalMetadataShadow = originalMetadataShadow
     self.snipID = snipID
     self.payloads = payloads
     self.boundReplacements = boundReplacements
@@ -181,7 +179,7 @@ extension SwiftDataSnipLibrary {
         && $0.position == row.position && $0.lifecycle.isPresentAwaitingMetadata
     }.sorted { $0.attachmentID.uuidString < $1.attachmentID.uuidString }
     return CloudSetupPointerDelete(
-      key: binding.key, bindingDigest: binding.digest, originalMetadataShadow: binding.metadataShadow, snipID: row.snipID,
+      key: binding.key, bindingDigest: binding.digest, snipID: row.snipID,
       payloads: CloudSetupPointerDelete.payloads(for: owed),
       boundReplacements: replacements.map { .init($0.metadata) }
     )

@@ -129,7 +129,7 @@ public actor SnipSnapCloudSyncSession {
     restoreSetupPeerCopies: @escaping SyncedContentSettingsModel.RestorePeerCopiesAction = { _ in
       throw CloudCollectionError.syncNeedsAttention
     },
-    acknowledgeEnable: @escaping SyncedContentSettingsModel.AcknowledgeEnableAction = { _, _ in false },
+    acknowledgeEnable: @escaping SyncedContentSettingsModel.AcknowledgeEnableAction = { _, _ in .stale },
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = { .cancelled },
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
@@ -178,7 +178,7 @@ public actor SnipSnapCloudSyncSession {
   public func acknowledgeDeferredEnableCompletion(
     for completion: SnipSnapDeferredEnableCompletion,
     whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent = { true }
-  ) async throws -> Bool {
+  ) async throws -> SyncedContentEnableAcknowledgement {
     try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion, isCurrent) }
   }
 

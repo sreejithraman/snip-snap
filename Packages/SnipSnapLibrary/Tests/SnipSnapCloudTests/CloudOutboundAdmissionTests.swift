@@ -85,6 +85,32 @@ final class CloudOutboundAdmissionTests: XCTestCase {
     XCTAssertTrue(queue.current.operations.isEmpty)
   }
 
+  func testDurableDeleteAdmissionProtectsFrozenOffersWithoutBlockingSaves() {
+    let zone = CloudZoneID(name: "zone", ownerName: "owner")
+    let pointer = CloudRecordID(zone: zone, name: "pointer")
+    let payload = CloudRecordID(zone: zone, name: "payload")
+    let unrelated = CloudRecordID(zone: zone, name: "unrelated")
+    let admission = CloudRecordOutboundAdmission(blockedDeleteIDs: [pointer, payload])
+    let deletes = CloudOutboundBatch(operations: [
+      .delete(pointer, base: nil), .delete(payload, base: nil), .delete(unrelated, base: nil)
+    ])
+    var queue = CloudRecordOutboundQueue()
+    queue.restoreAdmission(admission)
+    _ = queue.schedule(deletes)
+    XCTAssertEqual(queue.current.operations, [.delete(unrelated, base: nil)])
+
+    var alreadyStarted = CloudRecordOutboundQueue()
+    _ = alreadyStarted.schedule(deletes)
+    alreadyStarted.beginCycle()
+    alreadyStarted.confirmAdmission(UUID(), durable: admission)
+    let frozen = alreadyStarted.cycle?.operations(pendingIDs: [pointer, payload, unrelated])
+    XCTAssertEqual(frozen, [.delete(unrelated, base: nil)])
+    let save = CloudRecordDraft(id: pointer, recordType: "Pointer",
+      schemaVersion: 1, routingFields: [:], encryptedFields: [:], base: nil)
+    _ = alreadyStarted.schedule(.init(operations: [.save(save), .delete(unrelated, base: nil)]))
+    XCTAssertEqual(Set(alreadyStarted.current.operations.map(\.id)), [pointer, unrelated])
+  }
+
   func testLegacyCommittedDeletionReleasesOnlyItsIDAndKeepsNewerFailures() {
     let zone = CloudZoneID(name: "zone", ownerName: "owner")
     let first = CloudRecordID(zone: zone, name: "first")

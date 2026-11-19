@@ -160,7 +160,8 @@ extension SwiftDataSyncModePersistence {
   package func retainSetupPointerDelete(
     _ binding: CloudSetupPointerDelete.Binding,
     candidateStoreID: UUID,
-    namespace: ICloudSyncNamespaceBinding
+    namespace: ICloudSyncNamespaceBinding,
+    receivedWhileFrozen: Bool = false
   ) async throws -> CloudSetupPointerDelete {
     guard let index = manifest.setupRetrySourceIndex, let transition = manifest.transition,
       transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
@@ -170,6 +171,14 @@ extension SwiftDataSyncModePersistence {
     }) {
       guard retained.bindingDigest == binding.digest else { throw SyncModePersistenceError.invalidManifest }
       return retained
+    }
+    if receivedWhileFrozen {
+      guard setupRetryFreezeToken(candidateStoreID: candidateStoreID) != nil,
+        transition.sendAttempt?.namespace == namespace,
+        transition.sendAttempt?.operations.contains(where: {
+          $0.kind == .delete && $0.recordIdentity == binding.key.pointer
+        }) == true
+      else { throw SyncModePersistenceError.invalidFreezeToken }
     }
     let receipt = try await libraryForTransition(storeID: candidateStoreID).setupPointerDelete(
       namespaceKey: namespace.namespaceKey, binding: binding
