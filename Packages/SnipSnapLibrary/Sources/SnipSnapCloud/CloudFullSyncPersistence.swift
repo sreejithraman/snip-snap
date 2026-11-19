@@ -702,7 +702,7 @@ extension CloudFullSyncPersistence {
     {
       committed = try await withSetupRetryFetchCommit {
         try await self.checkSetupRetryFetch(raw.batch)
-        return try await self.commitStagedBatch(batch)
+        return try await self.commitStagedBatchWithReplan(batch)
       }
     } else {
       if let raw {
@@ -711,14 +711,14 @@ extension CloudFullSyncPersistence {
           observedDestructiveReset = reason
         }
       }
-      committed = try await commitStagedBatch(batch)
+      committed = try await commitStagedBatchWithReplan(batch)
     }
     try await finishCommittedBatch(committed)
   }
 
-  private func commitStagedBatch(_ batch: CloudFullBatchCommit) async throws -> CloudFullBatchCommit {
+  private func commitStagedBatchWithReplan(_ batch: CloudFullBatchCommit) async throws -> CloudFullBatchCommit {
     do {
-      _ = try await library.commitCloudFullBatch(batch)
+      try await commitStagedBatch(batch)
       return batch
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
@@ -738,7 +738,7 @@ extension CloudFullSyncPersistence {
         rawBatchData: rawData
       )
       try await library.replaceStagedCloudFullBatch(replacement)
-      _ = try await library.commitCloudFullBatch(replacement)
+      try await commitStagedBatch(replacement)
       return replacement
     }
   }

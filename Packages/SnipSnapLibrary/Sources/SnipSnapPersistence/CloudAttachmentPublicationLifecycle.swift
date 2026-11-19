@@ -330,20 +330,34 @@ struct CloudAttachmentPublicationLifecycle {
     revision += 1
   }
 
-  /// The lifecycle of the attachment that replaces this one under a new identity after CloudKit
-  /// no longer knows its metadata record.
-  func remappedReplacement(expectedRevision: UInt64) throws -> Self {
+  /// Remaps an attachment whose metadata record is missing and transfers its payload cleanups.
+  func remappedReplacement(
+    expectedRevision: UInt64
+  ) throws -> (lifecycle: Self, cleanups: [CloudAttachmentOwedCleanup]) {
     guard revision == expectedRevision, isLocallyPresent else {
       throw CloudAttachmentStorageError.staleTransition
     }
     var replacement = self
-    if case .published(let payload) = upload {
-      replacement.upload = .metadataPending(payload: payload)
+    let cleanups: [CloudAttachmentOwedCleanup]
+    if hasPublishedMetadata, isPayloadAccepted {
+      cleanups = payloadCleanupsAfterMetadataDeletion
+      replacement.payloadIdentity = CloudTextStorageIdentity(
+        zoneName: payloadIdentity.zoneName,
+        ownerName: payloadIdentity.ownerName,
+        recordName: UUID().uuidString.lowercased()
+      )
+      replacement.upload = .payloadPending(queuedUpload: nil)
+    } else {
+      cleanups = replacedPayload.map { [$0] } ?? []
+      if case .published(let payload) = upload {
+        replacement.upload = .metadataPending(payload: payload)
+      }
     }
     replacement.metadataRecord = .unrecorded
+    replacement.replacedPayload = nil
     replacement.failure = nil
     replacement.revision = revision + 1
-    return replacement
+    return (replacement, cleanups)
   }
 
   mutating func recordFailure(
