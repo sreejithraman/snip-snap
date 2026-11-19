@@ -679,10 +679,12 @@ extension CloudFullSyncPersistence {
     guard setupRetryDeletedSnipIDs != nil else { return }
     for batch in try await stagedBatches() {
       guard let data = batch.rawBatchData,
-        let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: data)
+        let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: data),
+        case .fetched = raw.batch
       else { continue }
       do {
-        try await checkSetupRetryFetch(raw.batch)
+        let deletedSnipIDs = try await deletedSetupSnips(for: raw.batch)
+        try await checkSetupRetryFetchCommit(batch, deletedSnipIDs: deletedSnipIDs)
       } catch is CloudSetupRetryHold {
         try await library.discardStagedCloudFullFetch(batch)
       }
@@ -701,22 +703,23 @@ extension CloudFullSyncPersistence {
       Self.destructiveResetReason(raw.batch) == nil
     {
       committed = try await withSetupRetryFetchCommit {
-        try await self.checkSetupRetryFetch(raw.batch)
-        return try await self.commitStagedBatchWithReplan(batch)
+        let deletedSnipIDs = try await self.deletedSetupSnips(for: raw.batch)
+        return try await self.commitStagedBatchWithReplan(batch, deletedSnipIDs: deletedSnipIDs)
       }
     } else {
-      if let raw {
-        try await checkSetupRetryFetch(raw.batch)
-        if let reason = Self.destructiveResetReason(raw.batch) {
-          observedDestructiveReset = reason
-        }
+      if let raw, let reason = Self.destructiveResetReason(raw.batch) {
+        observedDestructiveReset = reason
       }
       committed = try await commitStagedBatchWithReplan(batch)
     }
     try await finishCommittedBatch(committed)
   }
 
-  private func commitStagedBatchWithReplan(_ batch: CloudFullBatchCommit) async throws -> CloudFullBatchCommit {
+  private func commitStagedBatchWithReplan(
+    _ batch: CloudFullBatchCommit,
+    deletedSnipIDs: Set<UUID> = []
+  ) async throws -> CloudFullBatchCommit {
+    try await checkSetupRetryFetchCommit(batch, deletedSnipIDs: deletedSnipIDs)
     do {
       try await commitStagedBatch(batch)
       return batch
@@ -737,7 +740,9 @@ extension CloudFullSyncPersistence {
         outbound: raw.outbound,
         rawBatchData: rawData
       )
+      // Keep the current plan so Try Again can recognize a held fetch and refetch it.
       try await library.replaceStagedCloudFullBatch(replacement)
+      try await checkSetupRetryFetchCommit(replacement, deletedSnipIDs: deletedSnipIDs)
       try await commitStagedBatch(replacement)
       return replacement
     }
@@ -802,7 +807,10 @@ extension CloudFullSyncPersistence {
   ) async throws {
     do {
       try validateResetScope(batch)
-      try await checkSetupRetryFetch(batch)
+      let deletedSnipIDs = try await deletedSetupSnips(for: batch)
+      if try await setupRetryHasCandidateChanges(for: deletedSnipIDs) {
+        throw CloudSetupRetryHold()
+      }
       if let reason = Self.destructiveResetReason(batch) {
         observedDestructiveReset = reason
       }
@@ -823,13 +831,19 @@ extension CloudFullSyncPersistence {
     }
   }
 
-  private func checkSetupRetryFetch(_ batch: CloudSyncBatch) async throws {
-    // Applying an absent parent can promote candidate-only edits or files.
+  private func deletedSetupSnips(for batch: CloudSyncBatch) async throws -> Set<UUID> {
     guard case .fetched = batch, let setupRetryDeletedSnipIDs,
       Self.destructiveResetReason(batch) == nil
-    else { return }
-    let deleted = try await setupRetryDeletedSnipIDs()
-    if try await setupRetryHasCandidateChanges(for: deleted) {
+    else { return [] }
+    return try await setupRetryDeletedSnipIDs()
+  }
+
+  private func checkSetupRetryFetchCommit(
+    _ batch: CloudFullBatchCommit,
+    deletedSnipIDs: Set<UUID>
+  ) async throws {
+    // Applying an absent parent can promote candidate-only edits or files.
+    if try await setupRetryHasCandidateChanges(for: deletedSnipIDs, applying: batch.attachmentTransitions) {
       throw CloudSetupRetryHold()
     }
   }

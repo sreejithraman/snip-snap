@@ -37,12 +37,20 @@ private struct ICloudReenableMergeBasis<Fields> {
 struct CloudSetupRetryHold: Error {}
 
 extension CloudFullSyncPersistence {
-  func setupRetryHasCandidateChanges(for snipIDs: Set<UUID>) async throws -> Bool {
+  func setupRetryHasCandidateChanges(
+    for snipIDs: Set<UUID>,
+    applying attachmentTransitions: [CloudAttachmentTransition] = []
+  ) async throws -> Bool {
     guard !snipIDs.isEmpty else { return false }
     if payloadZone != nil {
       let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+      // A fetched pointer tombstone can enqueue cleanup for an unrelated snip.
+      let removedPointers = Set(attachmentTransitions.compactMap { transition -> CloudTextStorageIdentity? in
+        guard case .remoteMetadataDeleted(let identity) = transition else { return nil }
+        return identity
+      })
       if !attachments.cleanups.isEmpty || attachments.publications.contains(where: {
-        snipIDs.contains($0.metadata.snipID)
+        snipIDs.contains($0.metadata.snipID) || removedPointers.contains($0.metadataIdentity)
       }) { return true }
     }
     let content = try await library.checkedSnapshot(sortedBy: .manual)
