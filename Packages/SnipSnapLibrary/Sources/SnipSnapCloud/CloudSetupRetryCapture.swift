@@ -193,7 +193,7 @@ enum CloudSetupRetryCapture {
 
   static func retainPointerDeletes(
     in batch: CloudFullBatchCommit,
-    retain: @Sendable (CloudSetupPointerDelete.Binding) async throws -> CloudSetupPointerDelete
+    retain: @Sendable ([CloudSetupPointerDelete.Binding]) async throws -> [CloudSetupPointerDelete]
   ) async throws -> [UUID: CloudSetupPointerDelete.Deferral] {
     guard let data = batch.rawBatchData,
       let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),
@@ -201,9 +201,9 @@ enum CloudSetupRetryCapture {
       case .sent(let sent) = raw.batch, let outbound = raw.outbound,
       CloudFullSyncPersistence.destructiveResetReason(raw.batch) == nil
     else { return [:] }
-    var deferred: [UUID: CloudSetupPointerDelete.Deferral] = [:]
-    for (operation, attachmentID) in acceptedPointerDeletes(in: sent, outbound: outbound) {
-      guard case .delete(let id, let base) = operation else { continue }
+    let accepted = try acceptedPointerDeletes(in: sent, outbound: outbound).map {
+      operation, attachmentID -> (binding: CloudSetupPointerDelete.Binding, defers: Bool, shadow: Data?) in
+      guard case .delete(let id, let base) = operation else { throw CloudFullStorageError.invalidBatchReplay }
       let identity = CloudFullSyncPersistence.storageIdentity(id)
       let binding = try CloudFullSyncPersistence.outboundBinding(operation)
       guard batch.outboundBindings.contains(binding) else { throw CloudFullStorageError.invalidBatchReplay }
@@ -214,11 +214,18 @@ enum CloudSetupRetryCapture {
         return revision
       }.first
       let key = CloudSetupPointerDelete.Key(batchID: sent.id, pointer: identity)
-      let receipt = try await retain(.init(
+      let proof = CloudSetupPointerDelete.Binding(
         key: key, digest: operationDigest(binding), metadataShadow: base?.data,
         attachmentID: attachmentID, revision: revision
-      ))
-      if revision != nil { deferred[attachmentID] = .init(receipt: receipt, metadataShadow: base?.data) }
+      )
+      return (proof, revision != nil, base?.data)
+    }
+    guard !accepted.isEmpty else { return [:] }
+    let receipts = try await retain(accepted.map(\.binding))
+    guard receipts.count == accepted.count else { throw CloudFullStorageError.invalidBatchReplay }
+    var deferred: [UUID: CloudSetupPointerDelete.Deferral] = [:]
+    for (proof, receipt) in zip(accepted, receipts) where proof.defers {
+      deferred[proof.binding.attachmentID] = .init(receipt: receipt, metadataShadow: proof.shadow)
     }
     return deferred
   }
@@ -240,9 +247,9 @@ enum CloudSetupRetryCapture {
     let remaps = try await candidate.setupPointerReplacementRemaps(namespaceKey: namespace.namespaceKey)
     try await persistence.preserveSetupPointerReplacementRemaps(remaps, for: transition)
     for batch in try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey) {
-      _ = try await retainPointerDeletes(in: batch) { binding in
-        try await persistence.retainSetupPointerDelete(
-          binding, candidateStoreID: transition.candidateStoreID, namespace: namespace
+      _ = try await retainPointerDeletes(in: batch) { bindings in
+        try await persistence.retainSetupPointerDeletes(
+          bindings, candidateStoreID: transition.candidateStoreID, namespace: namespace
         )
       }
     }

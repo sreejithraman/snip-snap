@@ -153,36 +153,38 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
 }
 
 extension SwiftDataSnipLibrary {
-  func setupPointerDelete(
+  func setupPointerDeletes(
     namespaceKey: CloudSyncNamespaceKey,
-    binding: CloudSetupPointerDelete.Binding
-  ) throws -> CloudSetupPointerDelete {
+    bindings: [CloudSetupPointerDelete.Binding]
+  ) throws -> [CloudSetupPointerDelete] {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     let publications = try Self.cloudAttachmentPublications(namespaceKey: namespaceKey.rawValue, context: context)
-    guard let row = publications.first(where: {
-      $0.attachmentID == binding.attachmentID && $0.metadataIdentity == binding.key.pointer
-        && $0.metadataShadowData == binding.metadataShadow
-    })
-    else { throw CloudAttachmentStorageError.staleTransition }
-    let lifecycle = row.lifecycle
-    // A single failure update advances the revision but preserves the bound publication.
-    guard let revision = binding.revision,
-      row.revision == revision
-        || (row.revision > revision && row.revision - revision == 1 && lifecycle.lastFailure != nil)
-    else { throw CloudAttachmentStorageError.staleTransition }
-    let owed = try lifecycle.acceptMetadataDeletion(expectedRevision: row.revision)
-    let replacements = publications.filter {
-      $0.attachmentID != row.attachmentID && $0.snipID == row.snipID
-        && $0.position == row.position && $0.lifecycle.isPresentAwaitingMetadata
-    }.sorted { $0.attachmentID.uuidString < $1.attachmentID.uuidString }
-    return CloudSetupPointerDelete(
-      key: binding.key, bindingDigest: binding.digest, snipID: row.snipID,
-      payloads: CloudSetupPointerDelete.payloads(for: owed),
-      boundReplacements: replacements.map { .init($0.metadata) }
-    )
+    return try bindings.map { binding in
+      guard let row = publications.first(where: {
+        $0.attachmentID == binding.attachmentID && $0.metadataIdentity == binding.key.pointer
+          && $0.metadataShadowData == binding.metadataShadow
+      })
+      else { throw CloudAttachmentStorageError.staleTransition }
+      let lifecycle = row.lifecycle
+      // A single failure update advances the revision but preserves the bound publication.
+      guard let revision = binding.revision,
+        row.revision == revision
+          || (row.revision > revision && row.revision - revision == 1 && lifecycle.lastFailure != nil)
+      else { throw CloudAttachmentStorageError.staleTransition }
+      let owed = try lifecycle.acceptMetadataDeletion(expectedRevision: row.revision)
+      let replacements = publications.filter {
+        $0.attachmentID != row.attachmentID && $0.snipID == row.snipID
+          && $0.position == row.position && $0.lifecycle.isPresentAwaitingMetadata
+      }.sorted { $0.attachmentID.uuidString < $1.attachmentID.uuidString }
+      return CloudSetupPointerDelete(
+        key: binding.key, bindingDigest: binding.digest, snipID: row.snipID,
+        payloads: CloudSetupPointerDelete.payloads(for: owed),
+        boundReplacements: replacements.map { .init($0.metadata) }
+      )
+    }
   }
 
   package func setupPointerReplacementRemaps(

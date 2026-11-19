@@ -1036,7 +1036,7 @@ package actor ICloudSyncModeCoordinator {
     ) async throws -> CloudFullSyncPersistence {
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
-        let retainPointerDelete: CloudFullSyncPersistence.RetainSetupPointerDelete?
+        let retainPointerDeletes: CloudFullSyncPersistence.RetainSetupPointerDeletes?
         let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
         let setupAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])?
         let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
@@ -1049,9 +1049,9 @@ package actor ICloudSyncModeCoordinator {
                     namespace: namespace.binding
                 )
             }
-            retainPointerDelete = { [persistence, namespace] binding, receivedWhileFrozen in
-                return try await persistence.retainSetupPointerDelete(
-                    binding, candidateStoreID: storeID, namespace: namespace.binding,
+            retainPointerDeletes = { [persistence, namespace] bindings, receivedWhileFrozen in
+                try await persistence.retainSetupPointerDeletes(
+                    bindings, candidateStoreID: storeID, namespace: namespace.binding,
                     receivedWhileFrozen: receivedWhileFrozen
                 )
             }
@@ -1072,7 +1072,7 @@ package actor ICloudSyncModeCoordinator {
             }
         } else {
             recordResults = nil
-            retainPointerDelete = nil
+            retainPointerDeletes = nil
             setupPointerDeletes = nil
             setupAllocations = nil
             preserveSetupReplacementRemaps = nil
@@ -1100,7 +1100,7 @@ package actor ICloudSyncModeCoordinator {
             modePersistence: persistence,
             attachmentPolicy: attachmentPolicy,
             recordSetupRetryResults: recordResults,
-            retainSetupPointerDelete: retainPointerDelete,
+            retainSetupPointerDeletes: retainPointerDeletes,
             setupPointerDeletes: setupPointerDeletes,
             setupReplacementAllocations: setupAllocations,
             preserveSetupReplacementRemaps: preserveSetupReplacementRemaps,

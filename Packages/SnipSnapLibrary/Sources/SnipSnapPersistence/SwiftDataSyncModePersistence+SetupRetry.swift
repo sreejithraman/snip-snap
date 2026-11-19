@@ -156,41 +156,61 @@ extension SwiftDataSyncModePersistence {
       .first { $0.namespace == namespace }
   }
 
-  /// The exact source receipt is durable before the candidate can consume the sent batch.
-  package func retainSetupPointerDelete(
-    _ binding: CloudSetupPointerDelete.Binding,
+  /// All exact source receipts from one sent batch are durable before the candidate can consume it.
+  package func retainSetupPointerDeletes(
+    _ bindings: [CloudSetupPointerDelete.Binding],
     candidateStoreID: UUID,
     namespace: ICloudSyncNamespaceBinding,
     receivedWhileFrozen: Bool = false
-  ) async throws -> CloudSetupPointerDelete {
+  ) async throws -> [CloudSetupPointerDelete] {
+    guard let batchID = bindings.first?.key.batchID else { return [] }
+    guard bindings.allSatisfy({ $0.key.batchID == batchID }),
+      Set(bindings.map(\.key)).count == bindings.count
+    else { throw SyncModePersistenceError.invalidManifest }
     guard let index = manifest.setupRetrySourceIndex, let transition = manifest.transition,
       transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
     else { throw SyncModePersistenceError.transitionInProgress }
-    if let retained = setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes.first(where: {
-      $0.key == binding.key
-    }) {
-      guard retained.bindingDigest == binding.digest else { throw SyncModePersistenceError.invalidManifest }
-      return retained
+    var retained = Dictionary(uniqueKeysWithValues:
+      (setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes ?? []).map { ($0.key, $0) })
+    let missing = try bindings.filter { binding in
+      guard let existing = retained[binding.key] else { return true }
+      guard existing.bindingDigest == binding.digest else { throw SyncModePersistenceError.invalidManifest }
+      return false
     }
-    if receivedWhileFrozen {
+    if receivedWhileFrozen, !missing.isEmpty {
       guard setupRetryFreezeToken(candidateStoreID: candidateStoreID) != nil,
-        transition.sendAttempt?.namespace == namespace,
-        transition.sendAttempt?.operations.contains(where: {
-          $0.kind == .delete && $0.recordIdentity == binding.key.pointer
-        }) == true
+        let attempt = transition.sendAttempt, attempt.namespace == namespace
+      else { throw SyncModePersistenceError.invalidFreezeToken }
+      let offeredDeletes = Set(attempt.operations.filter { $0.kind == .delete }.map(\.recordIdentity))
+      guard Set(missing.map(\.key.pointer)).isSubset(of: offeredDeletes)
       else { throw SyncModePersistenceError.invalidFreezeToken }
     }
-    let receipt = try await libraryForTransition(storeID: candidateStoreID).setupPointerDelete(
-      namespaceKey: namespace.namespaceKey, binding: binding
-    )
-    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
-    var next = manifest
-    var history = next.stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
-    try history.update(namespace: namespace) { try $0.retainPointerDelete(receipt) }
-    next.stores[index].setupRetryHistory = history
-    try commit(next)
-    try crashHook(.afterSetupPointerDeleteRetention)
-    return receipt
+    if !missing.isEmpty {
+      let receipts = try await libraryForTransition(storeID: candidateStoreID).setupPointerDeletes(
+        namespaceKey: namespace.namespaceKey, bindings: missing
+      )
+      guard manifest.transition == transition, manifest.setupRetrySourceIndex == index else {
+        throw SyncModePersistenceError.transitionInProgress
+      }
+      var next = manifest
+      let previous = next.stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
+      var history = previous
+      try history.update(namespace: namespace) { evidence in
+        for receipt in receipts { try evidence.retainPointerDelete(receipt) }
+        retained = Dictionary(uniqueKeysWithValues: evidence.acceptedPointerDeletes.map { ($0.key, $0) })
+      }
+      if history != previous {
+        next.stores[index].setupRetryHistory = history
+        try commit(next)
+        try crashHook(.afterSetupPointerDeleteRetention)
+      }
+    }
+    return try bindings.map { binding in
+      guard let receipt = retained[binding.key], receipt.bindingDigest == binding.digest else {
+        throw SyncModePersistenceError.invalidManifest
+      }
+      return receipt
+    }
   }
 
   package func pendingSetupPointerDeletes(for transition: SyncModeTransition) -> [CloudSetupPointerDelete] {
