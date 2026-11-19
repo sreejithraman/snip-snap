@@ -1,139 +1,100 @@
-name: CI
+name: SM33-F1-D3 staged attachment replay
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  changes:
-    name: Select PR checks
-    runs-on: ubuntu-latest
-    outputs:
-      mac: ${{ steps.select.outputs.mac }}
-      ios: ${{ steps.select.outputs.ios }}
+  replay:
+    if: github.ref == 'refs/heads/evidence/sm33-f1-d3-replay'
+    runs-on: xcode-27
+    timeout-minutes: 25
     steps:
-      - name: Check out source
+      - name: Check out evidence commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Check tracked inputs
-        run: ./scripts/tracked-input-policy.sh
+      - name: Select Xcode
+        uses: ./.github/actions/xcode
 
-      - name: Check release history
-        run: /usr/bin/ruby scripts/changelog-tests.rb
-
-      - name: Select affected platforms
-        id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Stage once on main and replay on both revisions
+        shell: bash
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            /usr/bin/ruby scripts/ci-changes.rb pr "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          else
-            echo "mac=true" >> "$GITHUB_OUTPUT"
-            echo "ios=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          old_sha=d49c0ecc9f480692a726d89f861c2c860c95a383
+          fixed_sha=7dce124e1709f30df4c5a6011c9e6cce98600720
+          proof_test=Packages/SnipSnapLibrary/Tests/SnipSnapCloudTests/CloudAttachmentTransferTests.swift
+          test_filter='CloudAttachmentTransferTests/testObsoletePayloadZoneFailureReplaysFromDiskEvidence$'
+
+          replay_root="$(mktemp -d "$RUNNER_TEMP/sm33-f1-d3.XXXXXXXX")"
+          replay_root="$(cd "$replay_root" && pwd -P)"
+          old_tree="$replay_root/old"
+          fixed_tree="$replay_root/fixed"
+          fixture="$replay_root/fixture"
+          staged_copy="$replay_root/staged-copy"
+          proof_patch="$replay_root/proof.patch"
+
+          cleanup() {
+            local tree
+            for tree in "$old_tree" "$fixed_tree"; do
+              if [[ -f "$tree/.git" ]]; then
+                git worktree remove --force "$tree"
+              fi
+            done
+            rm -rf -- "$replay_root"
+          }
+          trap cleanup EXIT
+
+          git merge-base --is-ancestor "$old_sha" "$GITHUB_SHA"
+          if ! git cat-file -e "$fixed_sha^{commit}"; then
+            git fetch --no-tags origin "$fixed_sha"
           fi
-
-  mac:
-    name: Mac and shared tests
-    needs: changes
-    if: needs.changes.outputs.mac == 'true'
-    runs-on: xcode-27
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Select Xcode
-        uses: ./.github/actions/xcode
-
-      - name: Run tests
-        run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/snip-snap-ci"
-          ./scripts/test.sh --mac-only 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/mac-tests.log"
-
-      - name: Preserve failed test output
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: mac-test-output
-          path: |
-            ${{ runner.temp }}/snip-snap-ci/mac-tests.log
-            artifacts/test-failures/mac.*
-          retention-days: 7
-          if-no-files-found: ignore
-
-  ios:
-    name: iOS tests and bundle checks
-    needs: changes
-    if: needs.changes.outputs.ios == 'true'
-    runs-on: xcode-27
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Select Xcode
-        uses: ./.github/actions/xcode
-
-      - name: Install Metal compiler
-        run: xcodebuild -downloadComponent MetalToolchain
-
-      - name: Run tests and check app bundles
-        run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/snip-snap-ci"
-          ./scripts/test.sh --ios-only 2>&1 | tee "$RUNNER_TEMP/snip-snap-ci/ios-tests.log"
-
-      - name: List Simulator crash reports
-        if: always()
-        run: ./scripts/ci-simulator-crash-reports.sh after-tests
-
-      - name: Preserve failed test output
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ios-test-output
-          path: |
-            ${{ runner.temp }}/snip-snap-ci/ios-tests.log
-            artifacts/test-failures/ios.*
-            artifacts/simulator-crash-reports/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  test:
-    name: Tests and iOS compile check
-    needs: [changes, mac, ios]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require selected test jobs to pass
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          MAC_REQUIRED: ${{ needs.changes.outputs.mac }}
-          IOS_REQUIRED: ${{ needs.changes.outputs.ios }}
-          MAC_RESULT: ${{ needs.mac.result }}
-          IOS_RESULT: ${{ needs.ios.result }}
-        run: |
-          test "$CHANGES_RESULT" = success
-          for platform in MAC IOS; do
-            required="${platform}_REQUIRED"
-            result="${platform}_RESULT"
-            case "${!required}:${!result}" in
-              true:success|false:skipped) ;;
-              *) exit 1 ;;
-            esac
+          git diff --binary "$old_sha" "$GITHUB_SHA" -- "$proof_test" > "$proof_patch"
+          test -s "$proof_patch"
+          git worktree add --detach "$old_tree" "$old_sha"
+          git worktree add --detach "$fixed_tree" "$fixed_sha"
+          for tree in "$old_tree" "$fixed_tree"; do
+            git -C "$tree" apply --check "$proof_patch"
+            git -C "$tree" apply "$proof_patch"
+            test "$(git -C "$tree" diff --name-only)" = "$proof_test"
           done
+          test "$(git -C "$old_tree" rev-parse HEAD)" = "$old_sha"
+          test "$(git -C "$fixed_tree" rev-parse HEAD)" = "$fixed_sha"
+
+          run_phase() {
+            local label="$1" phase="$2" tree="$3" scratch="$4"
+            local log="$replay_root/$label.log"
+            shift 4
+            echo "$label source=$(git -C "$tree" rev-parse HEAD)"
+            SNIP_SNAP_REPLAY_PHASE="$phase" \
+            SNIP_SNAP_REPLAY_ROOT="$fixture" \
+            SNIP_SNAP_DIAGNOSTICS_DIRECTORY="$replay_root/diagnostics-$label" \
+              swift test --package-path "$tree/Packages/SnipSnapLibrary" \
+                --scratch-path "$scratch" --filter "$test_filter" "$@" 2>&1 | tee "$log" || return
+            grep -q "^SM33-F1-D3 $phase " "$log"
+          }
+
+          mkdir "$fixture"
+          run_phase stage stage "$old_tree" "$replay_root/build-old"
+          test -s "$fixture/replay-manifest.json"
+          ditto "$fixture" "$staged_copy"
+          diff -qr "$fixture" "$staged_copy"
+          echo "Old replay input matches the complete staged fixture."
+
+          old_result=0
+          run_phase old-replay replay "$old_tree" "$replay_root/build-old" --skip-build || old_result=$?
+
+          # The frozen asset URL in the commit points inside the original fixture root.
+          mv "$fixture" "$replay_root/old-replayed-fixture"
+          ditto "$staged_copy" "$fixture"
+          diff -qr "$staged_copy" "$fixture"
+          echo "Fixed replay input matches the same staged fixture at the original path."
+
+          fixed_result=0
+          run_phase fixed-replay replay "$fixed_tree" "$replay_root/build-fixed" || fixed_result=$?
+
+          echo "Replay test exit status old=$old_result fixed=$fixed_result"
+          [[ "$old_result" == 0 && "$fixed_result" == 0 ]]
