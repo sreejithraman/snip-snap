@@ -269,6 +269,10 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
         // Full-record recovery is batch scoped, so seed IDs cannot narrow it.
         _ = snipIDs
         checkedSetupMetadata = false
+        if forceInitialFetch {
+            try await beforeApply()
+            try await raw.discardHeldSetupRetryFetches()
+        }
         try await syncDriver.prepareManualRetry(
             forceInitialFetch: forceInitialFetch, beforeApply: beforeApply, beforeStateSave: beforeApply
         )

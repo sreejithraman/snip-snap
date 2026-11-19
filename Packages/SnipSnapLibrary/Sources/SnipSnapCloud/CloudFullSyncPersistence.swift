@@ -665,6 +665,20 @@ extension CloudFullSyncPersistence {
     try await library.stagedCloudFullBatches(namespaceKey: namespaceKey)
   }
 
+  func discardHeldSetupRetryFetches() async throws {
+    guard setupRetryDeletedSnipIDs != nil else { return }
+    for batch in try await stagedBatches() {
+      guard let data = batch.rawBatchData,
+        let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: data)
+      else { continue }
+      do {
+        try await checkSetupRetryFetch(raw.batch)
+      } catch is CloudSetupRetryHold {
+        try await library.discardStagedCloudFullFetch(batch)
+      }
+    }
+  }
+
   package func applyStaged(_ id: UUID) async throws {
     try await mutate { try await self.applyStagedWithinMutation(id) }
   }

@@ -200,6 +200,16 @@ extension ICloudSyncModeCoordinatorTests {
             return XCTFail("The peer must remove the parent record.")
         }
         try await peerWriter.confirmApplied(parentRemoval.id)
+        let oldFetch = FakeCloudRecordTransport(
+            server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
+        )
+        try await oldFetch.start(state: nil)
+        let fetched = try await oldFetch.fetch(scope: .zones([metadataZone]))
+        XCTAssertTrue(fetched.items.contains { if case .deleted(deletedID) = $0 { return true }; return false })
+        let oldPersistence = CloudFullSyncPersistence(
+            library: candidate, namespace: namespace, dataZone: metadataZone, payloadZone: payloadZone
+        )
+        try await oldPersistence.stage(.fetched(fetched))
         let later = try SwiftDataSyncModePersistence(rootURL: localRoot)
         let staleTransport = FakeCloudRecordTransport(
             server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
@@ -216,6 +226,8 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(heldStorage.transition?.candidateStoreID, candidateID)
         XCTAssertEqual(heldStorage.transition?.phase, .candidateReady)
         let heldCandidate = try await later.libraryForTransition(storeID: candidateID)
+        let staged = try await heldCandidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey)
+        XCTAssertTrue(staged.isEmpty)
         let heldAttachments = try await heldCandidate.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
         XCTAssertEqual(heldAttachments, attachmentStorage)
         let review = try await heldCandidate.recoverySnapshot(in: SnipRecoveryScope(namespace.namespaceKey.rawValue))
