@@ -4158,6 +4158,165 @@ final class CloudAttachmentTransferTests: XCTestCase {
     }
   }
 
+  func testMissingZoneForAnObsoletePayloadSaveDoesNotBlockItsReplacement() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+    let oldPayloadID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+
+    let durableFile = try XCTUnwrap(original.localSourceURL, "The attachment must keep its local file.")
+    let replacementBytes = Data("replacement bytes after the first send".utf8)
+    try replacementBytes.write(to: durableFile)
+    let replacementPlan = try await client.store.pendingChanges()
+    let reconciled = try await snapshot(client.library, client.namespace)
+    let replacement = try publication(of: original.metadata.attachmentID, in: reconciled)
+    let replacementPayloadID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
+    XCTAssertNotEqual(replacementPayloadID, oldPayloadID)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertTrue(replacementPlan.operations.contains { operation in
+      guard case .save = operation else { return false }
+      return operation.id == replacementPayloadID
+    }, "The replacement payload must be pending upload.")
+    XCTAssertFalse(
+      replacementPlan.operations.contains { $0.id == oldPayloadID },
+      "The submitted payload must be absent from the current plan."
+    )
+
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    try await client.store.applyStaged(sent.id)
+    try await client.transport.confirmApplied(sent.id)
+
+    let storage = try await snapshot(client.library, client.namespace)
+    let pending = try publication(of: original.metadata.attachmentID, in: storage)
+    XCTAssertEqual(pending.metadata.payloadIdentity, replacement.metadata.payloadIdentity)
+    XCTAssertFalse(pending.payloadAccepted)
+    XCTAssertNil(pending.lastFailure)
+    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    guard full.namespaceState.phase == .active else {
+      return XCTFail("The obsolete payload failure must leave the namespace active, got \(full.namespaceState.phase).")
+    }
+
+    let settled = try await client.sync.sendPendingUntilSettled()
+    XCTAssertTrue(settled.settled)
+    let metadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let metadata = try await serverAttachmentMetadata(metadataID, on: client.server)
+    XCTAssertEqual(metadata.attachmentID, original.metadata.attachmentID)
+    XCTAssertEqual(metadata.payloadIdentity, replacement.metadata.payloadIdentity)
+    let asset = await client.server.asset(for: replacementPayloadID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(asset)), replacementBytes)
+    let oldPayload = await client.server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNil(oldPayload)
+  }
+
+  func testMissingZoneForTheCurrentPayloadSaveKeepsItRecoverable() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+    let payloadID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    try await client.store.applyStaged(sent.id)
+    try await client.transport.confirmApplied(sent.id)
+
+    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    XCTAssertEqual(full.namespaceState.phase, .active)
+    let storage = try await snapshot(client.library, client.namespace)
+    let failed = try publication(of: original.metadata.attachmentID, in: storage)
+    XCTAssertEqual(failed.metadata.payloadIdentity, original.metadata.payloadIdentity)
+    XCTAssertEqual(failed.lastFailure, .zoneMissing)
+    XCTAssertFalse(failed.payloadAccepted)
+    XCTAssertFalse(failed.metadataAccepted)
+    let accepted = await client.server.acceptedOperationCount(for: payloadID)
+    XCTAssertEqual(accepted, 0)
+
+    try await client.sync.prepareManualRetry()
+    let retry = try await client.store.pendingChanges()
+    XCTAssertTrue(retry.operations.contains { operation in
+      guard case .save = operation else { return false }
+      return operation.id == payloadID
+    }, "Try Again must replan the same payload save.")
+  }
+
+  func testSentMissingZoneEventBlocksAttachmentNamespace() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await settleEmptySnip(in: client)
+    let zone = try XCTUnwrap(client.store.payloadZone)
+    let sent = CloudSentBatch(
+      id: UUID(),
+      items: [],
+      zoneEvents: [.failed(zone, .zoneMissing)],
+      engineState: try await client.store.loadEngineState()
+    )
+
+    try await client.store.stage(.sent(sent), outbound: CloudOutboundBatch(operations: []))
+    try await client.store.applyStaged(sent.id)
+
+    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    XCTAssertEqual(full.namespaceState.phase, .blocked)
+  }
+
+  func testMissingZoneForADataZoneSnipSaveBlocksAttachmentNamespace() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    try await settleEmptySnip(in: client)
+    try await editText(ofSnip: client.snipID, to: "edit after enrollment", in: client.library)
+    let snipRecordID = CloudRecordID.snip(client.snipID, in: client.store.dataZone)
+    let outbound = try await client.store.pendingChanges()
+    XCTAssertEqual(outbound.operations.map(\.id), [snipRecordID])
+    await client.transport.failNextSentItem(snipRecordID, failure: .zoneMissing)
+    let sent = try await client.transport.send(outbound)
+    XCTAssertEqual(sent.items, [.failed(snipRecordID, .zoneMissing)])
+
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    try await client.store.applyStaged(sent.id)
+    try await client.transport.confirmApplied(sent.id)
+
+    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    XCTAssertEqual(full.namespaceState.phase, .blocked)
+  }
+
+  private func sendFirstPayloadWithMissingZone(
+    in client: AttachmentClient
+  ) async throws -> (CloudAttachmentPublication, CloudOutboundBatch, CloudSentBatch) {
+    try await settleEmptySnip(in: client)
+    let source = client.root.appendingPathComponent("first-upload.txt")
+    let bytes = Data("first upload bytes".utf8)
+    try bytes.write(to: source)
+    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(local.snips.first { $0.id == client.snipID })
+    _ = try await client.library.perform(.editAttachments(
+      snipID: snip.id,
+      content: snip.content,
+      edits: [.added(sourceURL: source)],
+      expectedUpdatedAt: snip.updatedAt,
+      now: Date(timeIntervalSince1970: 1)
+    ), sortedBy: .manual)
+    let pending = try await client.store.pendingChanges()
+    let storage = try await snapshot(client.library, client.namespace)
+    let publication = try XCTUnwrap(storage.publications.first, "The fixture must queue its first upload.")
+    let payloadID = CloudAttachmentRecordCodec.recordID(publication.metadata.payloadIdentity)
+    let draft = try XCTUnwrap(pending.operations.compactMap { operation -> CloudRecordDraft? in
+      guard case .save(let draft) = operation, draft.id == payloadID else { return nil }
+      return draft
+    }.first, "The first plan must save the payload.")
+    XCTAssertEqual(draft.recordType, CloudAttachmentRecordCodec.payloadRecordType)
+    let asset = try XCTUnwrap(draft.assetFields[CloudAttachmentRecordCodec.assetField])
+    XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes)
+    let outbound = CloudOutboundBatch(operations: [.save(draft)], zonesToSave: pending.zonesToSave)
+    await client.transport.failNextSentItem(payloadID, failure: .zoneMissing)
+    let sent = try await client.transport.send(outbound)
+    XCTAssertEqual(sent.items, [.failed(payloadID, .zoneMissing)])
+    XCTAssertTrue(sent.zoneEvents.isEmpty)
+    return (publication, outbound, sent)
+  }
+
+  private func settleEmptySnip(in client: AttachmentClient) async throws {
+    try await client.sync.sync()
+    let settled = try await client.store.isSyncSettled()
+    XCTAssertTrue(settled, "The empty snip must sync before the test sends a change.")
+  }
+
   // 9: the user replaces a published attachment's bytes, then removes it before the new bytes
   // upload. CloudKit still holds metadata that names the old payload.
   func testRemovingAnAttachmentAfterItsFileWasReplacedDeletesItsMetadataAndBothPayloads() async throws {
