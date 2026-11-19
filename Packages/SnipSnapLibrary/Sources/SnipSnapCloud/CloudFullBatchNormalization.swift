@@ -55,7 +55,7 @@ extension CloudFullBatchPlanner {
     rawBatchData: Data
   ) throws -> NormalizedBatch {
     let operations = try CloudFullSyncPersistence.uniqueOperations(outbound.operations)
-    let attachmentOperationIDs: Set<CloudRecordID> = if let payloadZone {
+    var attachmentOperationIDs: Set<CloudRecordID> = if let payloadZone {
       Set(operations.keys).intersection(
         CloudFullSyncPersistence.plannedAttachmentOperationIDs(
           attachmentStorage,
@@ -68,9 +68,17 @@ extension CloudFullBatchPlanner {
     }
     var sentResults: [CloudRecordID: CloudSendItemResult] = [:]
     for result in sent.items {
-      guard operations[result.id] != nil,
+      guard let operation = operations[result.id],
         sentResults.updateValue(result, forKey: result.id) == nil
       else { throw CloudTransportError.invalidRecord }
+      if case .failed(let id, .zoneMissing) = result,
+        let payloadZone, payloadZone != dataZone,
+        case .save(let draft) = operation,
+        draft.id.zone == payloadZone,
+        draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
+      {
+        attachmentOperationIDs.insert(id)
+      }
     }
     guard Set(sentResults.keys) == Set(operations.keys) else {
       throw CloudTransportError.invalidRecord
