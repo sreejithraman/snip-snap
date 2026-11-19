@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 286
+
+## Mac
+
+- Keep sync active after an obsolete attachment upload reports a missing zone
+
+## iOS
+
+- Keep sync active after an obsolete attachment upload reports a missing zone
