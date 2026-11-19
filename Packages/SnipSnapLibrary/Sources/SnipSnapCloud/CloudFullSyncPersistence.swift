@@ -609,6 +609,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
+  private let modePersistence: SwiftDataSyncModePersistence?
   private let recordSetupRetryResults: SetupRetryResultHook?
   private let retainSetupPointerDelete: RetainSetupPointerDelete?
   private let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
@@ -623,6 +624,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID? = nil,
     mutationLease: SyncModeActiveMutationLease? = nil,
+    modePersistence: SwiftDataSyncModePersistence? = nil,
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
@@ -642,6 +644,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.dataZone = dataZone
     self.payloadZone = payloadZone
     self.mutationLease = mutationLease
+    self.modePersistence = modePersistence
     self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.diagnostics = diagnostics
@@ -656,8 +659,9 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     namespaceKey = namespace.namespaceKey
   }
 
-  func protectedSetupIdentities() async -> Set<CloudTextStorageIdentity> {
-    CloudSetupPointerDelete.protectedIdentities(await setupPointerDeletes?() ?? [])
+  func setupPointerDeleteProtection() async -> (pointers: Set<CloudTextStorageIdentity>, payloads: Set<CloudTextStorageIdentity>) {
+    let receipts = await modePersistence?.setupPointerDeletesProtectingOutbound(in: namespace.binding) ?? []
+    return (Set(receipts.map(\.key.pointer)), Set(receipts.flatMap(\.payloadIdentities)))
   }
 }
 

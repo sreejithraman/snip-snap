@@ -97,12 +97,6 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
   private var replacements: [LegacyReplacement]? = nil
   package var payloadIdentities: Set<CloudTextStorageIdentity> { Set(payloads.map(\.identity)) }
 
-  package static func protectedIdentities(_ receipts: [Self]) -> Set<CloudTextStorageIdentity> {
-    var protected = Set(receipts.map(\.key.pointer))
-    for receipt in receipts { protected.formUnion(receipt.payloadIdentities) }
-    return protected
-  }
-
   init(key: Key, bindingDigest: Data, snipID: UUID, payloads: [Payload], boundReplacements: [Replacement]) {
     self.key = key
     self.bindingDigest = bindingDigest
@@ -245,24 +239,4 @@ extension SwiftDataSnipLibrary {
     )).filter { $0.id.hasPrefix(prefix) }
   }
 
-  func installSetupPointerDeleteCleanups(
-    _ receipts: [CloudSetupPointerDelete], namespaceKey: CloudSyncNamespaceKey
-  ) throws {
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    var queue = try CloudAttachmentCleanupQueue(namespaceKey: namespaceKey.rawValue, context: context)
-    for receipt in receipts {
-      for payload in receipt.payloads {
-        queue.installAuthorizedSetupCleanup(CloudAttachmentOwedCleanup(identity: payload.identity, shadowData: payload.shadowData))
-      }
-    }
-    for row in try Self.setupPointerReplacementReceipts(namespaceKey: namespaceKey.rawValue, context: context) {
-      context.delete(row)
-    }
-    try afterMutationBeforeSave()
-    try lock.check()
-    try context.save()
-  }
 }

@@ -317,7 +317,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func enableICloudSync() async throws -> SyncedContentEnableOutcome {
-    try await finishDeferredSetupCleanupIfNeeded()
+    try await finishDeferredSetupEnableIfNeeded()
     if case .checkingDeferredCompletion(let expected) = PendingICloudSyncEnable.phase(at: rootURL) {
       guard let active = try await finishedICloudSwitch(), matches(active, expected) else {
         throw CloudCollectionError.syncNeedsAttention
@@ -385,7 +385,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     if let activePersistence {
       let snapshot = try await activePersistence.snapshot()
       if let transition = snapshot.transition, transition.phase == .pointerSwapped,
-        await !activePersistence.deferredSetupPointerDeletes(for: transition).isEmpty
+        await !activePersistence.pendingSetupPointerDeletes(for: transition).isEmpty
       {
         throw CloudCollectionError.syncNeedsAttention
       }
@@ -490,7 +490,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   private func synchronize(
     retryingUserRecoverableFailures: Bool
   ) async throws -> SnipSnapCloudSyncResult {
-    try await finishDeferredSetupCleanupIfNeeded()
+    try await finishDeferredSetupEnableIfNeeded()
     let enablePhase = PendingICloudSyncEnable.phase(at: rootURL)
     let finished = if enablePhase != nil {
       try await finishedICloudSwitch()
@@ -583,14 +583,14 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return result
   }
 
-  private func finishDeferredSetupCleanupIfNeeded() async throws {
+  private func finishDeferredSetupEnableIfNeeded() async throws {
     guard SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: rootURL) != nil
     else { return }
     let modePersistence = try persistence ?? SwiftDataSyncModePersistence(
       rootURL: rootURL, attachmentCacheRootURL: attachmentCacheRootURL
     )
     persistence = modePersistence
-    if try await modePersistence.finishDeferredSetupCleanupIfNeeded() {
+    if try await modePersistence.finishDeferredSetupEnableIfNeeded() {
       await clearCollectionCoordinator()
     }
   }

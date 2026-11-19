@@ -49,7 +49,7 @@ extension CloudFullSyncPersistence {
         guard case .remoteMetadataDeleted(let identity) = transition else { return nil }
         return identity
       })
-      let protected = await protectedSetupIdentities()
+      let protected = await setupPointerDeleteProtection().payloads
       if attachments.cleanups.contains(where: { !protected.contains($0.identity) }) || attachments.publications.contains(where: {
         snipIDs.contains($0.metadata.snipID) || removedPointers.contains($0.metadataIdentity)
       }) { return true }
@@ -73,20 +73,10 @@ extension CloudFullSyncPersistence {
     return reviews.promotedSnips.contains { snipIDs.contains($0.currentSnipID) }
   }
 
-  func setupRetryMustHold(
-    deletedSnipIDs: Set<UUID>, pointerDeletes: [CloudSetupPointerDelete]
-  ) async throws -> Bool {
+  func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard let inventory = stored.namespaceState.initialFetchInventory, inventory.canProveAbsence else {
       return true
-    }
-    if !pointerDeletes.isEmpty {
-      let pointers = Set(pointerDeletes.map(\.key.pointer))
-      if !inventory.observed.isDisjoint(with: pointers) { return true }
-      let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
-      if attachments.publications.contains(where: { pointers.contains($0.metadataIdentity) }) {
-        return true
-      }
     }
     if deletedSnipIDs.contains(where: { id in
       inventory.observed.contains(Self.storageIdentity(.snip(id, in: dataZone)))
@@ -94,60 +84,6 @@ extension CloudFullSyncPersistence {
       $0.reference.kind == .snip && deletedSnipIDs.contains($0.reference.domainID)
     }) { return true }
     return try await setupRetryHasCandidateChanges(for: deletedSnipIDs)
-  }
-
-  func canReleaseSetupPointerCleanup(
-    deletedSnipIDs: Set<UUID>, receipts: [CloudSetupPointerDelete]
-  ) async throws -> Bool {
-    guard try await setupRetryMustHold(deletedSnipIDs: deletedSnipIDs, pointerDeletes: receipts) == false else {
-      return false
-    }
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    guard let inventory = stored.namespaceState.initialFetchInventory, let payloadZone else { return false }
-    let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
-    let owed = Set(receipts.flatMap(\.payloadIdentities))
-    // Absence can leave a cached alias without a tombstone. Keep its local state
-    // and the source receipt until the alias is reconciled with safe authority.
-    guard !attachments.publications.contains(where: { publication in
-      !inventory.observed.contains(publication.metadataIdentity)
-        && (owed.contains(publication.metadata.payloadIdentity)
-          || publication.priorPayloadIdentity.map(owed.contains) == true)
-    }) else { return false }
-    let publications = Dictionary(grouping: attachments.publications, by: \.metadataIdentity)
-    let observedPointers = inventory.observed.filter {
-      $0.recordName.hasPrefix("a-") || publications[$0] != nil
-    }
-    var namedPayloads: Set<CloudTextStorageIdentity> = []
-    var checkedReplacements: Set<CloudSetupPointerDelete.Replacement> = []
-    for pointer in observedPointers {
-      guard let rows = publications[pointer], rows.count == 1,
-        let publication = rows.first, let bytes = publication.metadataShadowData,
-        let shadow = try? CloudRecordShadow(data: bytes),
-        let snapshot = try? CloudKitRecordMapper.snapshot(shadow.record()),
-        snapshot.id == Self.recordID(pointer),
-        let metadata = try? CloudAttachmentRecordCodec.metadata(
-          from: snapshot, metadataZone: dataZone, payloadZone: payloadZone
-        )
-      else { return false }
-      namedPayloads.insert(metadata.payloadIdentity)
-      if pointer.recordName == "a-\(metadata.attachmentID.uuidString.lowercased())" {
-        checkedReplacements.insert(.init(metadata))
-      }
-    }
-    let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
-    return try receipts.allSatisfy { receipt in
-      guard receipt.payloadIdentities.isDisjoint(with: namedPayloads) else { return false }
-      // Checked parent absence plus the frozen source deletion releases the
-      // replacement dependency. Otherwise its published bytes must be proved.
-      if deletedSnipIDs.contains(receipt.snipID) {
-        return !inventory.observed.contains(Self.storageIdentity(.snip(receipt.snipID, in: dataZone)))
-      }
-      guard let replacements = receipt.replacementDependencies else { return false }
-      return try replacements.allSatisfy { original in
-        let current = try CloudSetupPointerDelete.currentReplacement(original, remaps: remaps)
-        return checkedReplacements.contains(current)
-      }
-    }
   }
 
   package func approveEnrollment(references: Set<CloudEntityReference>) async throws {

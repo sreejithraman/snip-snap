@@ -1,6 +1,16 @@
 import Foundation
 import SnipSnapCore
 
+struct CloudRetainedSetupPointerDeletes: Codable, Equatable {
+  let namespace: ICloudSyncNamespaceBinding
+  var receipts: [CloudSetupPointerDelete]
+
+  var isValid: Bool {
+    !receipts.isEmpty && Set(receipts.map(\.key)).count == receipts.count
+      && receipts.allSatisfy { $0.isValid(in: namespace) }
+  }
+}
+
 package struct SyncModeDeferredEnableCompletion: Codable, Equatable, Sendable {
   package static let prefix = "checking-deferred-completion:"
   package let binding: ICloudSyncNamespaceBinding
@@ -177,12 +187,20 @@ extension SwiftDataSyncModePersistence {
     return receipt
   }
 
-  package func deferredSetupPointerDeletes(for transition: SyncModeTransition) -> [CloudSetupPointerDelete] {
+  package func pendingSetupPointerDeletes(for transition: SyncModeTransition) -> [CloudSetupPointerDelete] {
     guard transition.targetKind == .iCloudSync, let namespace = transition.namespace,
       let evidence = store(id: transition.sourceStoreID)?.setupRetryHistory?.namespaces
         .first(where: { $0.namespace == namespace })
     else { return [] }
     return evidence.acceptedPointerDeletes
+  }
+
+  package func retainedSetupPointerDeletes(in namespace: ICloudSyncNamespaceBinding) -> [CloudSetupPointerDelete] {
+    manifest.retainedSetupPointerDeletes.first { $0.namespace == namespace }?.receipts ?? []
+  }
+
+  package func setupPointerDeletesProtectingOutbound(in namespace: ICloudSyncNamespaceBinding) -> [CloudSetupPointerDelete] {
+    retainedSetupPointerDeletes(in: namespace) + (setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes ?? [])
   }
 
   package func preserveSetupPointerReplacementRemaps(
@@ -202,9 +220,9 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  package func finishDeferredSetupCleanupIfNeeded() async throws -> Bool {
+  package func finishDeferredSetupEnableIfNeeded() async throws -> Bool {
     guard let transition = manifest.transition, transition.phase == .pointerSwapped,
-      !deferredSetupPointerDeletes(for: transition).isEmpty
+      !pendingSetupPointerDeletes(for: transition).isEmpty
     else { return false }
     try await finishTransition()
     try? cleanupRetiredStores()
@@ -224,6 +242,24 @@ extension SwiftDataSyncModePersistence {
 }
 
 extension SwiftDataSyncModePersistence.Manifest {
+  mutating func retainSetupPointerDeletes(
+    _ receipts: [CloudSetupPointerDelete], in namespace: ICloudSyncNamespaceBinding?
+  ) throws {
+    guard !receipts.isEmpty else { return }
+    guard let namespace else { throw SyncModePersistenceError.invalidManifest }
+    guard let index = retainedSetupPointerDeletes.firstIndex(where: { $0.namespace == namespace }) else {
+      retainedSetupPointerDeletes.append(.init(namespace: namespace, receipts: receipts))
+      return
+    }
+    for receipt in receipts {
+      if let retained = retainedSetupPointerDeletes[index].receipts.first(where: { $0.key == receipt.key }) {
+        guard retained == receipt else { throw SyncModePersistenceError.invalidManifest }
+      } else {
+        retainedSetupPointerDeletes[index].receipts.append(receipt)
+      }
+    }
+  }
+
   fileprivate var setupRetrySourceIndex: Int? {
     guard let transition,
       transition.targetKind == .iCloudSync,

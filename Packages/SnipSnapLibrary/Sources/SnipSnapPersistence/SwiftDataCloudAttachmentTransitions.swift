@@ -417,16 +417,6 @@ extension SwiftDataSnipLibrary {
             deferral.metadataShadow == row.metadataShadowData,
             receipt.payloads == CloudSetupPointerDelete.payloads(for: owedCleanups)
           else { throw CloudAttachmentStorageError.staleTransition }
-          if let replacementAttachmentID {
-            let bound = try receipt.replacementDependencies?.map {
-              try CloudSetupPointerDelete.currentReplacement($0, remaps: setupRemaps)
-            }
-            guard let actual = byAttachment[replacementAttachmentID],
-              bound?.contains(CloudSetupPointerDelete.Replacement(actual.metadata)) == true
-            else {
-              throw CloudAttachmentStorageError.staleTransition
-            }
-          }
         } else {
           for cleanup in owedCleanups {
             cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)

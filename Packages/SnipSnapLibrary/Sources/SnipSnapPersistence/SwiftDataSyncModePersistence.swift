@@ -147,7 +147,7 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case beforeRetryFetchSettlementCommit
   case duringRetryBasePromotionStaging
   case afterSetupPointerDeleteRetention
-  case afterSetupPointerDeleteCleanupInstall
+  case afterSetupPointerDeleteHandoff
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
@@ -191,10 +191,11 @@ package actor SwiftDataSyncModePersistence {
     var accountIsolation: ICloudAccountIsolation?
     var attentionReason: ICloudSyncAttentionReason?
     var writeReservation: SyncModeWriteReservation?
+    var retainedSetupPointerDeletes: [CloudRetainedSetupPointerDeletes] = []
 
     private enum CodingKeys: String, CodingKey {
       case version, activeStoreID, stores, transition, accountIsolation
-      case attentionReason, writeReservation
+      case attentionReason, writeReservation, retainedSetupPointerDeletes
     }
 
     init(
@@ -233,6 +234,9 @@ package actor SwiftDataSyncModePersistence {
         SyncModeWriteReservation.self,
         forKey: .writeReservation
       )
+      retainedSetupPointerDeletes = try values.decodeIfPresent(
+        [CloudRetainedSetupPointerDeletes].self, forKey: .retainedSetupPointerDeletes
+      ) ?? []
     }
 
     mutating func updateTransition(
@@ -530,9 +534,7 @@ package actor SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func swapPointer(
-    authorizedSetupPointerDeletes: Set<CloudSetupPointerDelete.Key> = []
-  ) throws {
+  package func swapPointer() throws {
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,
@@ -541,10 +543,8 @@ package actor SwiftDataSyncModePersistence {
     guard hasStoreFile(id: transition.candidateStoreID) else {
       throw SyncModePersistenceError.missingStore
     }
-    let deferred = deferredSetupPointerDeletes(for: transition)
-    guard Set(deferred.map(\.key)) == authorizedSetupPointerDeletes else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
+    let deferred = pendingSetupPointerDeletes(for: transition)
+    try next.retainSetupPointerDeletes(deferred, in: transition.namespace)
     try crashHook(.beforePointerSwap)
     next.activeStoreID = transition.candidateStoreID
     let sourceIndex = try storeIndex(id: transition.sourceStoreID)
@@ -558,24 +558,14 @@ package actor SwiftDataSyncModePersistence {
     guard let transition = manifest.transition, transition.phase == .pointerSwapped else {
       throw SyncModePersistenceError.transitionInProgress
     }
-    let deferred = deferredSetupPointerDeletes(for: transition)
-    let installsCleanup = !deferred.isEmpty
-    if installsCleanup { try beginStoreReplacement() }
-    defer { if installsCleanup { finishStoreReplacement() } }
-    if let namespace = transition.namespace, installsCleanup {
-      // The pointer swap durably authorizes cleanup. Sync admission still waits for
-      // the transition to finish, so replay can coalesce rows by payload identity.
-      try await libraryForTransition(storeID: transition.candidateStoreID)
-        .installSetupPointerDeleteCleanups(deferred, namespaceKey: namespace.namespaceKey)
-      try crashHook(.afterSetupPointerDeleteCleanupInstall)
-      guard manifest.transition == transition else {
-        throw SyncModePersistenceError.transitionInProgress
-      }
+    let deferred = pendingSetupPointerDeletes(for: transition)
+    var next = manifest
+    if let namespace = transition.namespace, !deferred.isEmpty {
+      // Also handles a swap written by an older draft, before activation carried the receipts.
+      try next.retainSetupPointerDeletes(deferred, in: namespace)
+      try crashHook(.afterSetupPointerDeleteHandoff)
       try SyncModeDeferredEnableCompletion(binding: namespace, storeID: transition.candidateStoreID, issue: nil)
         .record(at: rootURL)
-    }
-    var next = manifest
-    if installsCleanup {
       next.stores[try storeIndex(id: transition.sourceStoreID)].setupRetryHistory = nil
     }
     next.transition = nil
