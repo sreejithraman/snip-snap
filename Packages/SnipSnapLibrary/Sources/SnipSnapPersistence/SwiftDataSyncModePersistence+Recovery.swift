@@ -114,8 +114,15 @@ extension SwiftDataSyncModePersistence {
     guard value.version == 2,
       let active = value.stores.first(where: { $0.id == value.activeStoreID }),
       active.lifecycle == .ready || active.lifecycle == .retired,
-      Set(value.stores.map(\.id)).count == value.stores.count
+      Set(value.stores.map(\.id)).count == value.stores.count,
+      Set(value.retainedSetupPointerDeletes.map(\.namespace.namespaceKey)).count == value.retainedSetupPointerDeletes.count,
+      value.retainedSetupPointerDeletes.allSatisfy(\.isValid)
     else { throw SyncModePersistenceError.invalidManifest }
+    if let checked = value.checkedEnableStoreID {
+      guard checked == active.id, value.transition?.phase == .pointerSwapped,
+        value.transition?.candidateStoreID == checked, active.kind == .iCloudSync
+      else { throw SyncModePersistenceError.invalidManifest }
+    }
     for store in value.stores {
       guard (store.kind == .iCloudSync) == (store.namespace != nil),
         (store.kind == .localOnly || store.quarantinedNamespace == nil),

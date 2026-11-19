@@ -285,7 +285,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
 
     setMarkerLocked(true)
     await assertMarkerRemovalFails("A cancel whose pending marker remains must not succeed") {
-      try await lifecycle.cancelPendingEnable()
+      _ = try await lifecycle.cancelPendingEnable()
     }
     XCTAssertEqual(startupSettings().state, .enabling(.waitingForConnection))
 
@@ -613,17 +613,23 @@ private actor PendingMarkerProbe {
   }
 }
 
-private actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
+actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
   private let base: FakeCloudControlTransport
   private var isOffline = true
+  private var shouldFailNextFetch = false
 
   init(server: FakeCloudServer) {
     base = FakeCloudControlTransport(server: server)
   }
 
   func goOnline() { isOffline = false }
+  func failNextFetch() { shouldFailNextFetch = true }
 
   func fetchControl() async throws -> CloudCollectionControlRecord? {
+    if shouldFailNextFetch {
+      shouldFailNextFetch = false
+      throw CloudSyncIssueError(.waitingForConnection)
+    }
     guard !isOffline else { throw CloudSyncIssueError(.waitingForConnection) }
     return await base.fetchControl()
   }

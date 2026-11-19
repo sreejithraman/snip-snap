@@ -34,7 +34,81 @@ private struct ICloudReenableMergeBasis<Fields> {
   let conflictVersion: Data
 }
 
+struct CloudSetupRetryHold: Error {}
+
 extension CloudFullSyncPersistence {
+  func setupRetryHasCandidateChanges(
+    for snipIDs: Set<UUID>,
+    allowingCheckedPeers authorized: Set<UUID> = [],
+    applying attachmentTransitions: [CloudAttachmentTransition] = []
+  ) async throws -> Bool {
+    guard !snipIDs.isEmpty else { return false }
+    if payloadZone != nil {
+      let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+      // A fetched pointer tombstone can enqueue cleanup for an unrelated snip.
+      let removedPointers = Set(attachmentTransitions.compactMap { transition -> CloudTextStorageIdentity? in
+        guard case .remoteMetadataDeleted(let identity) = transition else { return nil }
+        return identity
+      })
+      let protected = await setupPointerDeleteProtection().payloads
+      if attachments.cleanups.contains(where: { !protected.contains($0.identity) }) { return true }
+      for publication in attachments.publications {
+        let removesPointer = removedPointers.contains(publication.metadataIdentity)
+        guard removesPointer || snipIDs.contains(publication.metadata.snipID) else { continue }
+        guard authorized.contains(publication.metadata.snipID), publication.isLocallyPresent,
+          publication.metadataAccepted, let data = publication.metadataShadowData,
+          let shadow = try? CloudRecordShadow(data: data),
+          let record = try? CloudKitRecordMapper.snapshot(shadow.record()),
+          Self.storageIdentity(record.id) == publication.metadataIdentity,
+          let metadata = try? CloudAttachmentRecordCodec.metadata(from: record, metadataZone: dataZone, payloadZone: payloadZone),
+          metadata == publication.metadata
+        else { return true }
+        if removesPointer {
+          guard publication.localSourceURL == nil, protected.contains(metadata.payloadIdentity),
+            publication.priorPayloadIdentity.map(protected.contains) ?? true
+          else { return true }
+        }
+        if let file = publication.localSourceURL {
+          guard (try? AttachmentFileIO.digest(at: file)) == metadata.sha256 else { return true }
+        }
+      }
+    }
+    let content = try await library.checkedSnapshot(sortedBy: .manual)
+    let affected = content.snips.filter { snipIDs.contains($0.id) }
+    if !affected.isEmpty {
+      let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+      let accepted = Dictionary(uniqueKeysWithValues: (stored.readyEntities + stored.deferredEntities)
+        .map { ($0.reference, $0) })
+      for snip in affected {
+        let reference = CloudEntityReference(kind: .snip, domainID: snip.id)
+        guard snip.attachments.isEmpty || authorized.contains(snip.id), let base = accepted[reference] else { return true }
+        let record = try Self.snipRecord(base)
+        if try !Self.sameSnipFields(Self.snipFields(record), Self.snipFields(snip, accepted: record)) {
+          return true
+        }
+      }
+    }
+    let reviews = try await library.recoverySnapshot(in: SnipRecoveryScope(rawValue: namespaceKey.rawValue))
+    return reviews.promotedSnips.contains { snipIDs.contains($0.currentSnipID) }
+  }
+
+  func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool {
+    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    guard let inventory = stored.namespaceState.initialFetchInventory, inventory.canProveAbsence else {
+      return true
+    }
+    let authorized = authorizedSetupPeers(for: deletedSnipIDs)
+    if setupPeerRestore?.consent != nil, authorized.isEmpty { return true }
+    if !authorized.isEmpty, try await !confirmedSetupPeerCopyMatchesCandidate() { return true }
+    let held = deletedSnipIDs.subtracting(authorized)
+    if held.contains(where: { id in
+      inventory.observed.contains(Self.storageIdentity(.snip(id, in: dataZone)))
+    }) || (stored.readyEntities + stored.deferredEntities).contains(where: {
+      $0.reference.kind == .snip && held.contains($0.reference.domainID)
+    }) { return true }
+    return try await setupRetryHasCandidateChanges(for: deletedSnipIDs, allowingCheckedPeers: authorized)
+  }
+
   package func approveEnrollment(references: Set<CloudEntityReference>) async throws {
     let local = try await library.checkedSnapshot(sortedBy: .manual)
     let dependencies = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0.listID) })

@@ -315,12 +315,20 @@ extension SwiftDataSnipLibrary {
 
     var createdDirectories: [URL] = []
     var transferredSnips = plan.snips
+    let currentAttachments = Dictionary(
+      currentSnips.flatMap(\.attachments).map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
     do {
       for snipIndex in transferredSnips.indices {
         try lock.check()
         for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
           try lock.check()
           var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
+          // The exact same remote-only attachment can stay remote through activation.
+          if attachment.relativePath.hasPrefix("CloudDownloads/"),
+            currentAttachments[attachment.id] == attachment
+          { continue }
           guard let bytes = plan.attachmentData[attachment.id] else {
             throw SnipLibraryError.attachmentCopyFailed
           }

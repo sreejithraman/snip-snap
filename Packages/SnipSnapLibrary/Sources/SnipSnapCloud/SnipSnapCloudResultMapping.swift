@@ -1,5 +1,43 @@
 import SnipSnapCore
 
+extension SnipSnapCloudSyncResult {
+  @MainActor
+  @discardableResult
+  public func applyEnableProgress(
+    to settings: SyncedContentSettingsModel, started: SyncedContentSyncStart,
+    reload: @MainActor () async throws -> Void
+  ) async throws -> Bool {
+    switch self {
+    case .iCloudSyncSettingUp(let issue):
+      guard settings.acceptsEnableCompletion(started: started) else { return false }
+      settings.recordEnableSettingUp(issue)
+    case .iCloudSyncEnabled:
+      do {
+        try await reload()
+      } catch {
+        guard settings.acceptsEnableCompletion(started: started) else { return false }
+        throw error
+      }
+      guard settings.acceptsEnableCompletion(started: started) else { return false }
+      settings.recordEnableCompleted()
+    default:
+      return false
+    }
+    return true
+  }
+
+  @MainActor
+  public func applyDeferredEnableCompletion(
+    to settings: SyncedContentSettingsModel,
+    started: SyncedContentSyncStart,
+    reload: @MainActor () async throws -> Void,
+    acknowledge: SyncedContentSettingsModel.AcknowledgeEnableAction
+  ) async throws -> Bool {
+    guard case .deferredICloudSyncEnabled(let completion) = self else { return false }
+    return try await settings.completeCheckedEnable(completion, started: started, reload: reload, acknowledge: acknowledge)
+  }
+}
+
 package enum CloudAccountIsolationError: Error, Equatable, Sendable {
   case signedOut
   case accountChanged

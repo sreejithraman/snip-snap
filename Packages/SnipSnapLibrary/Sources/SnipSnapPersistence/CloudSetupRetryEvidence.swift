@@ -58,6 +58,7 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
   private var records: [CloudSetupRetryRecordKey: Record] = [:]
   private var unidentifiedLegacySend = false
   private var legacyIdentities: Set<CloudTextStorageIdentity> = []
+  package private(set) var acceptedPointerDeletes: [CloudSetupPointerDelete] = []
 
   private struct Pending: Codable, Equatable, Sendable {
     let candidateStoreID: UUID
@@ -84,6 +85,16 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
     records[key]?.baseline
   }
 
+  package var acknowledgedSnipKeys: Set<CloudSetupRetryRecordKey> {
+    Set(records.values.compactMap { record in
+      let key = record.key
+      guard record.baseline != nil, key.reference.kind == .snip,
+        key.identity.recordName == "s-\(key.reference.domainID.uuidString.lowercased())"
+      else { return nil }
+      return key
+    })
+  }
+
   package func requiresRecovery(for key: CloudSetupRetryRecordKey) -> Bool {
     let record = records[key]
     return record?.pending != nil || record?.earlierUnprovenSend == true
@@ -94,6 +105,22 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
 
   package var isEmpty: Bool {
     records.isEmpty && legacyIdentities.isEmpty && !unidentifiedLegacySend
+      && acceptedPointerDeletes.isEmpty
+  }
+
+  mutating func retainPointerDelete(_ receipt: CloudSetupPointerDelete) throws {
+    guard receipt.isValid(in: namespace) else { throw SyncModePersistenceError.invalidManifest }
+    if let retained = acceptedPointerDeletes.first(where: { $0.key == receipt.key }) {
+      guard retained == receipt else { throw SyncModePersistenceError.invalidManifest }
+    } else {
+      acceptedPointerDeletes.append(receipt)
+    }
+  }
+
+  mutating func applyPointerReplacementRemaps(_ remaps: CloudSetupPointerDelete.ReplacementRemaps) throws {
+    for index in acceptedPointerDeletes.indices {
+      try acceptedPointerDeletes[index].applyReplacementRemaps(remaps)
+    }
   }
 
   mutating func recordOffers(_ offers: [CloudSetupRetryOffer], candidateStoreID: UUID) {
@@ -167,7 +194,7 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case namespace, records, unidentifiedLegacySend, legacyIdentities
+    case namespace, records, unidentifiedLegacySend, legacyIdentities, acceptedPointerDeletes
   }
 
   package init(from decoder: any Decoder) throws {
@@ -184,6 +211,11 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
         records.updateValue(entry, forKey: entry.key) == nil
       else { throw SyncModePersistenceError.invalidManifest }
     }
+    let deletes = try values.decodeIfPresent([CloudSetupPointerDelete].self, forKey: .acceptedPointerDeletes) ?? []
+    guard Set(deletes.map(\.key)).count == deletes.count, deletes.allSatisfy({ $0.isValid(in: namespace) }) else {
+      throw SyncModePersistenceError.invalidManifest
+    }
+    acceptedPointerDeletes = deletes
   }
 
   package func encode(to encoder: any Encoder) throws {
@@ -195,6 +227,9 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
       ($0.key.reference.kind.rawValue, $0.key.reference.domainID.uuidString, $0.key.identity.key)
         < ($1.key.reference.kind.rawValue, $1.key.reference.domainID.uuidString, $1.key.identity.key)
     }, forKey: .records)
+    if !acceptedPointerDeletes.isEmpty {
+      try values.encode(acceptedPointerDeletes, forKey: .acceptedPointerDeletes)
+    }
   }
 }
 
@@ -219,7 +254,7 @@ struct CloudSetupRetryHistory: Codable, Equatable, Sendable {
 }
 
 extension ICloudSyncNamespaceBinding {
-  fileprivate func contains(_ identity: CloudTextStorageIdentity) -> Bool {
+  func contains(_ identity: CloudTextStorageIdentity) -> Bool {
     zones.contains(ICloudSyncZoneBinding(name: identity.zoneName, ownerName: identity.ownerName))
   }
 }

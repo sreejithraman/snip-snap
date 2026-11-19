@@ -13,6 +13,8 @@ public actor SnipSnapCloudSyncSession {
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
+  private let restoreSetupPeerCopiesAction: SyncedContentSettingsModel.RestorePeerCopiesAction
+  private let acknowledgeEnableAction: SyncedContentSettingsModel.AcknowledgeEnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
@@ -120,45 +122,15 @@ public actor SnipSnapCloudSyncSession {
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
   package init(
-    coordinator: CloudCollectionCoordinator,
-    persistence: SwiftDataSyncModePersistence,
-    operationGate: AsyncOperationGate = AsyncOperationGate(),
-    automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
-  ) {
-    self.operationGate = operationGate
-    self.automaticSyncResults = automaticSyncResults
-    automaticErrorHandler = { _ in }
-    synchronizeAction = {
-      syncResult(for: try await coordinator.synchronize())
-    }
-    retryAction = {
-      syncResult(for: try await coordinator.retrySynchronization())
-    }
-    scheduleAction = {}
-    enableAction = {
-      _ = try await coordinator.enableSync()
-      return .enabled
-    }
-    cancelEnableAction = {}
-    disableAction = { _ in throw CloudCollectionError.noActiveCollection }
-    deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
-    libraryAction = {
-      let snapshot = try await persistence.snapshot()
-      return SnipSnapCloudActiveLibrary(
-        library: try await persistence.activeLibrary(),
-        recoveryScope: SnipRecoveryScopeFactory.scope(
-          forActiveCloudNamespace: snapshot.activeStore.namespace
-        )
-      )
-    }
-  }
-
-  package init(
     synchronize: @escaping SynchronizeAction,
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
-    cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
+    restoreSetupPeerCopies: @escaping SyncedContentSettingsModel.RestorePeerCopiesAction = { _ in
+      throw CloudCollectionError.syncNeedsAttention
+    },
+    acknowledgeEnable: @escaping SyncedContentSettingsModel.AcknowledgeEnableAction = { _, _ in .stale },
+    cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = { .cancelled },
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
     },
@@ -174,6 +146,8 @@ public actor SnipSnapCloudSyncSession {
     retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
+    restoreSetupPeerCopiesAction = restoreSetupPeerCopies
+    acknowledgeEnableAction = acknowledgeEnable
     cancelEnableAction = cancelEnable
     disableAction = disable
     deleteAction = delete
@@ -197,7 +171,19 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease(enableAction)
   }
 
-  public func cancelICloudSyncSetup() async throws {
+  package func restoreSetupPeerCopies(_ offer: SyncedContentPeerCopyOffer) async throws -> SyncedContentEnableOutcome {
+    try await operationGate.withLease { [restoreSetupPeerCopiesAction] in try await restoreSetupPeerCopiesAction(offer) }
+  }
+
+  public func acknowledgeDeferredEnableCompletion(
+    for completion: SnipSnapDeferredEnableCompletion,
+    whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent = { true }
+  ) async throws -> SyncedContentEnableAcknowledgement {
+    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion, isCurrent) }
+  }
+
+  @discardableResult
+  public func cancelICloudSyncSetup() async throws -> SyncedContentSetupCancellation {
     try await operationGate.withLease(cancelEnableAction)
   }
 

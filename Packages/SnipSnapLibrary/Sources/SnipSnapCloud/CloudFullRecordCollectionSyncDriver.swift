@@ -99,13 +99,14 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let lease = try await persistence.activeCloudMutationLease(storeID: context.storeID)
     let store = CloudFullSyncPersistence(
       library: library, namespace: collection.namespace,
-      dataZone: collection.metadataZone, payloadZone: collection.payloadZone, mutationLease: lease
+      dataZone: collection.metadataZone, payloadZone: collection.payloadZone,
+      mutationLease: lease, modePersistence: persistence
     )
     let transport = makeTransport(collection)
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport) { [weak self] result in
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport, reportResult: { [weak self] result in
       guard let self else { return }
       try await self.deliver(result, from: context)
-    }
+    })
     if let automatic = transport as? any CloudAutomaticSyncConfiguring {
       await automatic.configureAutomaticSync(
         workAvailableHandler: { [weak self, weak coordinator] in

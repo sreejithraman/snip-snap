@@ -391,7 +391,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
       enableAction: { .settingUp() },
-      cancelEnableAction: { await calls.record("cancel") }
+      cancelEnableAction: { await calls.record("cancel"); return .cancelled }
     )
 
     await model.enableICloudSync()
@@ -415,6 +415,41 @@ final class SyncedContentSettingsModelTests: XCTestCase {
 
     XCTAssertEqual(model.mode, .iCloudSync)
     XCTAssertEqual(model.state, .ready)
+  }
+
+  @MainActor
+  func testUnrelatedFailuresKeepTheirSyncControls() async {
+    let calls = DeleteEventRecorder()
+    let local = SyncedContentSettingsModel(
+      mode: .localOnly, initialState: .failed(.appDataIssue),
+      enableAction: { .enabled }, cancelEnableAction: { await calls.record("cancel"); return .cancelled }
+    )
+    let synced = SyncedContentSettingsModel(
+      mode: .iCloudSync, initialState: .failed(.appDataIssue),
+      enableAction: { throw CocoaError(.fileReadUnknown) },
+      cancelEnableAction: { await calls.record("cancel"); return .cancelled },
+      hasFailedPendingEnable: { true }, disableAction: { _ in }
+    )
+    XCTAssertTrue(local.canEnable)
+    XCTAssertFalse(local.isSyncRequested)
+    XCTAssertTrue(synced.canDisable)
+    XCTAssertTrue(synced.isSyncRequested)
+    XCTAssertFalse(local.canCancelEnable)
+    XCTAssertFalse(synced.canCancelEnable)
+    await local.cancelICloudSyncSetup()
+    await synced.cancelICloudSyncSetup()
+    let events = await calls.values()
+    XCTAssertTrue(events.isEmpty)
+
+    await synced.disableICloudSync(.useCurrentCache)
+    XCTAssertEqual(synced.mode, .localOnly)
+    XCTAssertFalse(synced.canCancelEnable)
+    await synced.enableICloudSync()
+    XCTAssertEqual(synced.state, .failed(.appDataIssue))
+    XCTAssertTrue(synced.canCancelEnable)
+    await synced.cancelICloudSyncSetup()
+    let afterCancel = await calls.values()
+    XCTAssertEqual(afterCancel, ["cancel"])
   }
 
   @MainActor
@@ -683,7 +718,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
       initialState: .enabling(),
-      cancelEnableAction: { await gate.wait() }
+      cancelEnableAction: { await gate.wait(); return .cancelled }
     )
 
     let cancel = Task { @MainActor in await model.cancelICloudSyncSetup() }
@@ -697,7 +732,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   }
 
   @MainActor
-  func testSetupCancelDuringEnableStillLetsBothResultsApplyInOrder() async {
+  func testSuccessfulSetupCancelInvalidatesTheEarlierPendingEnable() async {
     let gate = SyncedContentActionGate()
     let model = SyncedContentSettingsModel(
       mode: .localOnly,
@@ -705,7 +740,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
         await gate.wait()
         return .settingUp()
       },
-      cancelEnableAction: {}
+      cancelEnableAction: { .cancelled }
     )
 
     let enable = Task { @MainActor in await model.enableICloudSync() }
@@ -718,7 +753,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     await enable.value
 
     XCTAssertEqual(model.mode, .localOnly)
-    XCTAssertEqual(model.state, .enabling())
+    XCTAssertEqual(model.state, .ready)
   }
 
   @MainActor

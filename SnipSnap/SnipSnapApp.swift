@@ -313,7 +313,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
-            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
+            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted(refreshingSetupOffer: retry)
             var stopIssue: SyncedContentSyncIssue?
             do {
                 let result: SnipSnapCloudSyncResult
@@ -362,11 +362,16 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .syncIssue(let issue):
                     cloudServices.syncedContentSettings.recordSyncFailure(issue)
                     return
-                case .iCloudSyncSettingUp(let issue):
-                    cloudServices.syncedContentSettings.recordEnableSettingUp(issue)
-                case .iCloudSyncEnabled:
-                    try await reloadActiveLibrary()
-                    cloudServices.syncedContentSettings.recordEnableCompleted()
+                case .iCloudSyncSettingUp, .iCloudSyncEnabled:
+                    guard try await result.applyEnableProgress(to: cloudServices.syncedContentSettings,
+                        started: syncStart, reload: reloadActiveLibrary) else { return }
+                case .deferredICloudSyncEnabled:
+                    if try await result.applyDeferredEnableCompletion(
+                        to: cloudServices.syncedContentSettings,
+                        started: syncStart,
+                        reload: reloadActiveLibrary,
+                        acknowledge: { try await session.acknowledgeDeferredEnableCompletion(for: $0, whileCurrent: $1) }
+                    ) { return }
                 case .oldSyncedContentRemovalPending:
                     try await reloadActiveLibrary()
                     cloudServices.syncedContentSettings.recordRemovalPending()
@@ -378,6 +383,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
                 }
                 await model.clipboardHistory.syncNow()
+            } catch let offer as SyncedContentPeerCopyOffer {
+                cloudServices.syncedContentSettings.recordSetupPeerCopyOffer(offer, started: syncStart)
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
                     SnipSnapCloudSyncIssueMapper.issue(for: error)
@@ -631,6 +638,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 issue = .iCloudAccountChanged
             }
             syncedContentSettings.recordSyncStopped(issue)
+        case .deferredICloudSyncEnabled(let completion):
+            do {
+                try await syncedContentSettings.completeScheduledEnable(completion)
+            } catch {
+                syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+            }
         case .syncIssue(let issue):
             syncedContentSettings.recordSyncFailure(issue)
             return

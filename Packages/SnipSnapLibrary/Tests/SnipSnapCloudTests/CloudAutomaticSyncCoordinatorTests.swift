@@ -587,11 +587,11 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     let pause = AutomaticSyncPause()
     let reports = AutomaticSyncReports()
     let failureReported = expectation(description: "Newer failure reaches the user")
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport) { result in
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport, reportResult: { result in
       await reports.append(result)
       if await reports.takePause() { await pause.suspend() }
       if result == .syncIssue(.waitingForConnection) { failureReported.fulfill() }
-    }
+    })
     try await coordinator.prepareAutomaticSync()
     await reports.pauseNext()
     await transport.setWorkAvailable { _ = try? await coordinator.processAutomaticChanges() }

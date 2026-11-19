@@ -6,6 +6,9 @@ import SnipSnapPersistence
 protocol IOSCloudSyncSessionHandling: Sendable {
     func synchronize() async throws -> SnipSnapCloudSyncResult
     func retrySynchronization() async throws -> SnipSnapCloudSyncResult
+    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
+        whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
+    ) async throws -> SyncedContentEnableAcknowledgement
     func scheduleAutomaticSync() async
     func iosActiveLibrary() async throws -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> { get }
@@ -17,6 +20,10 @@ extension IOSCloudSyncSessionHandling {
     }
 
     func scheduleAutomaticSync() async {}
+
+    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
+        whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
+    ) async throws -> SyncedContentEnableAcknowledgement { .stale }
 
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> {
         AsyncStream { $0.finish() }
@@ -298,6 +305,12 @@ final class IOSAppSession {
                 issue = .iCloudAccountChanged
             }
             syncedContentSettings.recordSyncStopped(issue)
+        case .deferredICloudSyncEnabled(let completion):
+            do {
+                try await syncedContentSettings.completeScheduledEnable(completion)
+            } catch {
+                syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+            }
         case .syncIssue(let issue):
             syncedContentSettings.recordSyncFailure(issue)
             return
@@ -314,7 +327,7 @@ final class IOSAppSession {
         retryingUserRecoverableFailures: Bool = false
     ) async throws {
         guard let session else { return }
-        let syncStart = settings.recordSyncStarted()
+        let syncStart = settings.recordSyncStarted(refreshingSetupOffer: retryingUserRecoverableFailures)
         var stopIssue: SyncedContentSyncIssue?
         do {
             let result: SnipSnapCloudSyncResult
@@ -333,12 +346,21 @@ final class IOSAppSession {
                 settings.recordOutstandingSyncRecovered()
             case .syncScheduled:
                 break
-            case .iCloudSyncSettingUp(let issue):
-                settings.recordEnableSettingUp(issue)
-            case .iCloudSyncEnabled:
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                settings.recordEnableCompleted()
+            case .iCloudSyncSettingUp, .iCloudSyncEnabled:
+                guard try await result.applyEnableProgress(to: settings, started: syncStart, reload: {
+                    let active = try await session.iosActiveLibrary()
+                    await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                }) else { return }
+            case .deferredICloudSyncEnabled:
+                if try await result.applyDeferredEnableCompletion(
+                    to: settings,
+                    started: syncStart,
+                    reload: {
+                        let active = try await session.iosActiveLibrary()
+                        await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
+                    },
+                    acknowledge: { try await session.acknowledgeDeferredEnableCompletion(for: $0, whileCurrent: $1) }
+                ) { return }
             case .libraryReplaced, .oldSyncedContentRemovalPending,
                     .oldSyncedContentRemovalCompleted:
                 let active = try await session.iosActiveLibrary()
@@ -384,6 +406,8 @@ final class IOSAppSession {
             if result != .oldSyncedContentRemovalPending {
                 settings.recordSyncCompleted(syncStart)
             }
+        } catch let offer as SyncedContentPeerCopyOffer {
+            settings.recordSetupPeerCopyOffer(offer, started: syncStart)
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
             if let stopIssue { settings.recordSyncStopped(stopIssue) }

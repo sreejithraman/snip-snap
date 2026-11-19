@@ -36,6 +36,7 @@ package struct CloudFullSyncOutcome: Sendable {
   package let blocksOutbound: Bool
   package let result: SnipSnapCloudSyncResult
   package let settled: Bool
+  let completedInitialFetchZones: Set<CloudZoneID>
 }
 
 /// Owns commit order, checkpoint durability, and the outcome of each request.
@@ -47,6 +48,7 @@ package actor CloudFullSyncCoordinator {
     var sendIssue: SyncedContentSyncIssue?
     var blocksOutbound = false
     var resetEngine = false
+    var completedInitialFetchZones: Set<CloudZoneID> = []
 
     var issue: SyncedContentSyncIssue? {
       CloudSyncIssueError.preferredIssue(from: [fetchIssue, sendIssue].compactMap { $0 })
@@ -99,6 +101,8 @@ package actor CloudFullSyncCoordinator {
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
+  private let initializeOutboundOnStart: Bool
+  private let retainReceivedSetupDeletes: (@Sendable (CloudSentBatch, CloudOutboundBatch) async throws -> Void)?
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
   private let operationGate = AsyncOperationGate()
@@ -108,12 +112,16 @@ package actor CloudFullSyncCoordinator {
     store: any CloudFullSyncStore,
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
+    initializeOutboundOnStart: Bool = true,
+    retainReceivedSetupDeletes: (@Sendable (CloudSentBatch, CloudOutboundBatch) async throws -> Void)? = nil,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
     self.store = store
     self.transport = transport
     self.fetchScope = fetchScope
+    self.initializeOutboundOnStart = initializeOutboundOnStart
+    self.retainReceivedSetupDeletes = retainReceivedSetupDeletes
     self.diagnostics = diagnostics
     self.reportResult = reportResult
   }
@@ -174,15 +182,19 @@ package actor CloudFullSyncCoordinator {
   }
 
   package func prepareManualRetry(
+    forceInitialFetch: Bool = false,
     beforeApply: @escaping @Sendable () async throws -> Void = {},
     beforeStateSave: @escaping @Sendable () async throws -> Void = {}
   ) async throws {
     try await operationGate.withLease {
-      try await self.prepareManualRetrySerially(beforeApply: beforeApply, beforeStateSave: beforeStateSave)
+      try await self.prepareManualRetrySerially(
+        forceInitialFetch: forceInitialFetch, beforeApply: beforeApply, beforeStateSave: beforeStateSave
+      )
     }
   }
 
   private func prepareManualRetrySerially(
+    forceInitialFetch: Bool,
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeStateSave: @escaping @Sendable () async throws -> Void
   ) async throws {
@@ -191,7 +203,8 @@ package actor CloudFullSyncCoordinator {
     var state = RunState()
     try await drainEvents(state: &state, beforeApply: beforeApply, beforeStateSave: beforeStateSave)
     try await beforeApply()
-    if try await store.prepareManualRetry() {
+    let needsInitialFetch = try await store.prepareManualRetry()
+    if forceInitialFetch || needsInitialFetch {
       // A failed record may not change again. Drop its token so Try Again fetches it.
       try await beforeStateSave()
       try await store.clearEngineState()
@@ -277,6 +290,8 @@ package actor CloudFullSyncCoordinator {
       guard sendCount < 16 else { break }
       try await beforeSend(outbound)
       let sent = try await transport.send(outbound)
+      // Earlier mailbox events may stop the ordered drain at an account check.
+      try await retainReceivedSetupDeletes?(sent, outbound)
       try await applyReturned(.sent(sent), outbound: outbound, state: &state, beforeApply: beforeApply)
       sendCount += 1
       guard drainOutbound else { break }
@@ -302,7 +317,8 @@ package actor CloudFullSyncCoordinator {
     let requiresInitialFetch = state == nil || state?.requiresInitialFetch == true
     session.adoptStoredState(requiresInitialFetch: requiresInitialFetch)
     if requiresInitialFetch { try await store.prepareInitialFetch() }
-    let outbound = requiresInitialFetch ? nil : try await pendingChangesOrResetEngine()
+    let outbound = requiresInitialFetch || !initializeOutboundOnStart
+      ? nil : try await pendingChangesOrResetEngine()
     do {
       let admission = try await store.outboundAdmission()
       try await transport.start(state: requiresInitialFetch ? nil : state, initialOutbound: outbound,
@@ -331,9 +347,10 @@ package actor CloudFullSyncCoordinator {
     for batch in staged {
       let observed = diagnosticBatch(in: batch)
       do {
+        if retainReceivedSetupDeletes != nil { try await beforeApply() }
         try await store.applyStaged(batch.batchID)
         if await transport.pendingEvent()?.id == batch.batchID {
-          try await transport.confirmApplied(batch.batchID, outboundAdmission: store.outboundAdmission())
+          try await confirmBatch(batch.batchID, beforeApply: beforeApply)
         }
       } catch {
         if !CloudSyncDiagnostics.isCancellation(error) {
@@ -367,10 +384,14 @@ package actor CloudFullSyncCoordinator {
         try await beforeStateSave()
         try await store.saveEngineState(checkpoint)
         session.adoptStoredState(requiresInitialFetch: checkpoint.requiresInitialFetch)
+        if retainReceivedSetupDeletes != nil { try await beforeStateSave() }
         try await transport.confirmApplied(event.id)
       case .batch(let pending):
+        if case .sent(let sent) = pending.batch, let outbound = pending.outbound {
+          try await retainReceivedSetupDeletes?(sent, outbound)
+        }
         try await beforeApply()
-        try await commit(pending.batch, outbound: pending.outbound, state: &state)
+        try await commit(pending.batch, outbound: pending.outbound, state: &state, beforeApply: beforeApply)
       }
       state.processedEvents = true
       if event.id == lastID { return true }
@@ -389,7 +410,7 @@ package actor CloudFullSyncCoordinator {
       beforeApply: beforeApply, beforeStateSave: beforeApply)
     if !committed {
       try await beforeApply()
-      try await commit(batch, outbound: outbound, state: &state)
+      try await commit(batch, outbound: outbound, state: &state, beforeApply: beforeApply)
       state.processedEvents = true
     }
   }
@@ -397,13 +418,15 @@ package actor CloudFullSyncCoordinator {
   private func commit(
     _ batch: CloudSyncBatch,
     outbound: CloudOutboundBatch?,
-    state: inout RunState
+    state: inout RunState,
+    beforeApply: @Sendable () async throws -> Void
   ) async throws {
     let operation = diagnosticOperation(for: batch)
     do {
       try await store.stage(batch, outbound: outbound)
+      if retainReceivedSetupDeletes != nil { try await beforeApply() }
       try await store.applyStaged(batch.id)
-      try await transport.confirmApplied(batch.id, outboundAdmission: store.outboundAdmission())
+      try await confirmBatch(batch.id, beforeApply: beforeApply)
     } catch {
       if !CloudSyncDiagnostics.isCancellation(error) {
         diagnostics.record(.failure(operation: operation, error: error, visibility: .background))
@@ -420,16 +443,27 @@ package actor CloudFullSyncCoordinator {
     }
     let issue = CloudSyncIssueError.issue(in: batch)
     switch batch {
-    case .fetched:
+    case .fetched(let fetched):
       state.fetched = true
       state.fetchIssue = issue
       if !CloudSyncIssueError.blocksOutbound(in: batch), batch.engineState?.requiresInitialFetch == false {
         session.completeInitialFetch()
+        for case .fetched(let zone) in fetched.zoneEvents
+          where CloudFullSyncPersistence.isCleanInitialMetadataFetch(batch, dataZone: zone)
+        {
+          state.completedInitialFetchZones.insert(zone)
+        }
       }
     case .sent(let sent):
       if sent.hasResults { state.sendIssue = issue }
     }
     state.blocksOutbound = state.blocksOutbound || CloudSyncIssueError.blocksOutbound(in: batch)
+  }
+
+  private func confirmBatch(_ id: UUID, beforeApply: @Sendable () async throws -> Void) async throws {
+    let admission = try await store.outboundAdmission()
+    if retainReceivedSetupDeletes != nil { try await beforeApply() }
+    try await transport.confirmApplied(id, outboundAdmission: admission)
   }
 
   private func diagnosticBatch(in commit: CloudFullBatchCommit) -> CloudSyncBatch? {
@@ -514,7 +548,7 @@ package actor CloudFullSyncCoordinator {
     return CloudFullSyncOutcome(issue: issue,
       blocksOutbound: state.blocksOutbound || requiresInitialFetch || result == .iCloudDataReset,
       result: result,
-      settled: settled)
+      settled: settled, completedInitialFetchZones: state.completedInitialFetchZones)
   }
 
   private func schedulePendingChanges(beforeSchedule: @Sendable () async throws -> Void) async throws {
@@ -540,6 +574,12 @@ package actor CloudFullSyncCoordinator {
 package actor CloudFullSyncPersistence: CloudFullSyncStore {
   package typealias ApplyHook = @Sendable () async throws -> Void
   package typealias SetupRetryResultHook = @Sendable ([CloudSetupRetryResult]) async throws -> Void
+  package typealias RetainSetupPointerDeletes = @Sendable (
+    [CloudSetupPointerDelete.Binding], _ receivedWhileFrozen: Bool
+  ) async throws -> [CloudSetupPointerDelete]
+  package typealias SetupRetryBatchCommit = @Sendable (
+    @Sendable () async throws -> CloudFullBatchCommit
+  ) async throws -> CloudFullBatchCommit
 
   struct RawStagedBatch: Codable, Equatable, Sendable {
     let storageVersion: Int
@@ -550,6 +590,29 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
       storageVersion = 1
       self.batch = batch
       self.outbound = outbound
+    }
+
+    var needsSetupCommitAdmission: Bool {
+      if case .fetched = batch { return true }
+      return outbound?.operations.contains {
+        guard case .delete(let id, _) = $0 else { return false }
+        return id.name.hasPrefix("a-")
+      } == true
+    }
+
+    var unknownPointerDeletes: Set<UUID> {
+      guard case .sent(let sent) = batch, let outbound else { return [] }
+      let unknowns = Set(sent.items.compactMap { item -> CloudRecordID? in
+        guard case .unknownItem(let id) = item else { return nil }
+        return id
+      })
+      return Set(outbound.operations.compactMap { operation -> UUID? in
+        guard case .delete(let id, _) = operation, unknowns.contains(id), id.name.hasPrefix("a-"),
+          let attachmentID = UUID(uuidString: String(id.name.dropFirst(2))),
+          id.name == "a-\(attachmentID.uuidString.lowercased())"
+        else { return nil }
+        return attachmentID
+      })
     }
   }
 
@@ -564,7 +627,16 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
   private let mutationLease: SyncModeActiveMutationLease?
+  private let modePersistence: SwiftDataSyncModePersistence?
   private let recordSetupRetryResults: SetupRetryResultHook?
+  private let retainSetupPointerDeletes: RetainSetupPointerDeletes?
+  private let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
+  let setupReplacementAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])?
+  private let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
+  private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
+  private let withSetupRetryBatchCommit: SetupRetryBatchCommit?
+  let setupPeerRestore: CloudSetupPeerRestoreScope?
+  var checkedSetupPeerCopies: CheckedSetupPeerCopies?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -572,10 +644,18 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID? = nil,
     mutationLease: SyncModeActiveMutationLease? = nil,
+    modePersistence: SwiftDataSyncModePersistence? = nil,
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     recordSetupRetryResults: SetupRetryResultHook? = nil,
+    retainSetupPointerDeletes: RetainSetupPointerDeletes? = nil,
+    setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])? = nil,
+    setupReplacementAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])? = nil,
+    preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)? = nil,
+    setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
+    withSetupRetryBatchCommit: SetupRetryBatchCommit? = nil,
+    setupPeerRestore: CloudSetupPeerRestoreScope? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -585,12 +665,24 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.dataZone = dataZone
     self.payloadZone = payloadZone
     self.mutationLease = mutationLease
+    self.modePersistence = modePersistence
     self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.diagnostics = diagnostics
     self.recordSetupRetryResults = recordSetupRetryResults
+    self.retainSetupPointerDeletes = retainSetupPointerDeletes
+    self.setupPointerDeletes = setupPointerDeletes
+    self.setupReplacementAllocations = setupReplacementAllocations
+    self.preserveSetupReplacementRemaps = preserveSetupReplacementRemaps
+    self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
+    self.withSetupRetryBatchCommit = withSetupRetryBatchCommit
+    self.setupPeerRestore = setupPeerRestore
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
+  }
+
+  func setupPointerDeleteProtection() async -> CloudSetupDeleteProtection {
+    await modePersistence?.setupDeleteProtection(in: namespace.binding) ?? CloudSetupDeleteProtection()
   }
 }
 
@@ -650,21 +742,69 @@ extension CloudFullSyncPersistence {
     try await library.stagedCloudFullBatches(namespaceKey: namespaceKey)
   }
 
+  func discardHeldSetupRetryFetches() async throws {
+    guard setupRetryDeletedSnipIDs != nil else { return }
+    for batch in try await stagedBatches() {
+      guard let data = batch.rawBatchData,
+        let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: data),
+        case .fetched = raw.batch
+      else { continue }
+      do {
+        let deletedSnipIDs = try await deletedSetupSnips(for: raw.batch)
+        try await checkSetupRetryFetchCommit(batch, deletedSnipIDs: deletedSnipIDs)
+      } catch is CloudSetupRetryHold {
+        try await library.discardStagedCloudFullFetch(batch)
+      }
+    }
+  }
+
   package func applyStaged(_ id: UUID) async throws {
     try await mutate { try await self.applyStagedWithinMutation(id) }
   }
 
   private func applyStagedWithinMutation(_ id: UUID) async throws {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
-    if let rawData = batch.rawBatchData,
-      let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: rawData),
-      let reason = Self.destructiveResetReason(raw.batch)
+    let raw = batch.rawBatchData.flatMap { try? JSONDecoder().decode(RawStagedBatch.self, from: $0) }
+    let committed: CloudFullBatchCommit
+    if let withSetupRetryBatchCommit, let raw, raw.needsSetupCommitAdmission,
+      Self.destructiveResetReason(raw.batch) == nil
     {
-      observedDestructiveReset = reason
+      committed = try await withSetupRetryBatchCommit {
+        switch raw.batch {
+        case .fetched:
+          let deletedSnipIDs = try await self.deletedSetupSnips(for: raw.batch)
+          return try await self.commitStagedBatchWithReplan(batch, deletedSnipIDs: deletedSnipIDs)
+        case .sent:
+          let deletedSnipIDs = try await self.setupRetryDeletedSnipIDs?() ?? []
+          return try await self.commitStagedBatchWithReplan(
+            batch, holdPointerDeleteConflicts: !deletedSnipIDs.isEmpty,
+            unknownPointerDeletes: raw.unknownPointerDeletes
+          )
+        }
+      }
+    } else {
+      if let raw, let reason = Self.destructiveResetReason(raw.batch) {
+        observedDestructiveReset = reason
+      }
+      committed = try await commitStagedBatchWithReplan(
+        batch, unknownPointerDeletes: retainSetupPointerDeletes == nil ? [] : raw?.unknownPointerDeletes ?? []
+      )
     }
+    try await finishCommittedBatch(committed)
+  }
+
+  private func commitStagedBatchWithReplan(
+    _ batch: CloudFullBatchCommit,
+    deletedSnipIDs: Set<UUID> = [],
+    holdPointerDeleteConflicts: Bool = false,
+    unknownPointerDeletes: Set<UUID> = []
+  ) async throws -> CloudFullBatchCommit {
+    try await checkSetupRetryFetchCommit(batch, deletedSnipIDs: deletedSnipIDs)
     do {
-      try await commitStagedBatch(batch)
-      try await finishCommittedBatch(batch)
+      try await commitSetupCheckedBatch(
+        batch, holdPointerDeleteConflicts: holdPointerDeleteConflicts, unknownPointerDeletes: unknownPointerDeletes
+      )
+      return batch
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
       || (error as? CloudAttachmentStorageError) == .staleTransition
@@ -674,7 +814,7 @@ extension CloudFullSyncPersistence {
       // the fresh commit must still validate.
       guard let rawData = batch.rawBatchData else { throw error }
       let raw = try JSONDecoder().decode(RawStagedBatch.self, from: rawData)
-      guard raw.storageVersion == 1, raw.batch.id == id else {
+      guard raw.storageVersion == 1, raw.batch.id == batch.batchID else {
         throw CloudFullStorageError.invalidBatchReplay
       }
       let replacement = try await makeCommit(
@@ -682,9 +822,13 @@ extension CloudFullSyncPersistence {
         outbound: raw.outbound,
         rawBatchData: rawData
       )
+      // Keep the current plan so Try Again can recognize a held fetch and refetch it.
       try await library.replaceStagedCloudFullBatch(replacement)
-      try await commitStagedBatch(replacement)
-      try await finishCommittedBatch(replacement)
+      try await checkSetupRetryFetchCommit(replacement, deletedSnipIDs: deletedSnipIDs)
+      try await commitSetupCheckedBatch(
+        replacement, holdPointerDeleteConflicts: holdPointerDeleteConflicts, unknownPointerDeletes: unknownPointerDeletes
+      )
+      return replacement
     }
   }
 
@@ -747,12 +891,19 @@ extension CloudFullSyncPersistence {
   ) async throws {
     do {
       try validateResetScope(batch)
+      let deletedSnipIDs = try await deletedSetupSnips(for: batch)
+      try await inspectSetupPeerCopies(in: batch, deletedIDs: deletedSnipIDs)
+      let authorized = authorizedSetupPeers(for: deletedSnipIDs, batchID: batch.id)
+      if try await setupRetryHasCandidateChanges(for: deletedSnipIDs, allowingCheckedPeers: authorized) {
+        throw CloudSetupRetryHold()
+      }
       if let reason = Self.destructiveResetReason(batch) {
         observedDestructiveReset = reason
       }
       let rawData = try Self.rawBatchData(batch, outbound: outbound)
       let commit = try await makeCommit(batch, outbound: outbound, rawBatchData: rawData)
       try await library.stageCloudFullBatch(commit)
+      _ = try await retainAcceptedSetupPointerDeletes(in: commit)
     } catch CloudTransportError.invalidRecord {
       if case .sent(let sent) = batch, let outbound {
         try await library.recordCloudFullRecovery(
@@ -764,6 +915,95 @@ extension CloudFullSyncPersistence {
         )
       }
       throw CloudTransportError.invalidRecord
+    }
+  }
+
+  private func commitSetupCheckedBatch(
+    _ batch: CloudFullBatchCommit, holdPointerDeleteConflicts: Bool, unknownPointerDeletes: Set<UUID>
+  ) async throws {
+    let deferrals = try await retainAcceptedSetupPointerDeletes(in: batch)
+    if retainSetupPointerDeletes != nil, batch.attachmentTransitions.contains(where: {
+      switch $0 {
+      case .metadataDeleteAccepted(let id, _): deferrals[id] == nil
+      case .metadataUnknown(let id, _, _, _): holdPointerDeleteConflicts || unknownPointerDeletes.contains(id)
+      case .metadataDeleteConflict: holdPointerDeleteConflicts
+      default: false
+      }
+    }) { throw CloudSetupRetryHold() }
+    let receipts = await setupPointerDeletes?() ?? []
+    let replacements = Set(receipts.flatMap { $0.replacementDependencies ?? [] })
+    try await commitStagedBatch(
+      batch, deferredSetupPointerDeletes: deferrals, setupReplacements: replacements
+    )
+    if let preserveSetupReplacementRemaps, !replacements.isEmpty,
+      batch.attachmentTransitions.contains(where: {
+        switch $0 {
+        case .metadataUnknown, .payloadCollision: true
+        default: false
+        }
+      })
+    {
+      let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
+      try await preserveSetupReplacementRemaps(remaps)
+    }
+  }
+
+  func retainReceivedSetupDeletes(_ sent: CloudSentBatch, outbound: CloudOutboundBatch) async throws {
+    let batch = CloudSyncBatch.sent(sent)
+    guard let retainSetupPointerDeletes,
+      Self.destructiveResetReason(batch) == nil
+    else { return }
+    let accepted = CloudSetupRetryCapture.acceptedPointerDeletes(in: sent, outbound: outbound)
+    guard !accepted.isEmpty else { return }
+    try validateResetScope(batch)
+    let publications = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey).publications
+    let bindings = try accepted.compactMap { operation, attachmentID -> CloudSetupPointerDelete.Binding? in
+      guard case .delete(let id, let base) = operation, id.zone == dataZone else { return nil }
+      let identity = Self.storageIdentity(id)
+      let revision = publications.first {
+        $0.metadataIdentity == identity && $0.metadata.attachmentID == attachmentID
+      }?.revision
+      return .init(
+        key: .init(batchID: sent.id, pointer: identity),
+        digest: CloudSetupRetryCapture.operationDigest(try Self.outboundBinding(operation)),
+        metadataShadow: base?.data, attachmentID: attachmentID, revision: revision
+      )
+    }
+    _ = try await retainSetupPointerDeletes(bindings, true)
+  }
+
+  private func retainAcceptedSetupPointerDeletes(
+    in batch: CloudFullBatchCommit
+  ) async throws -> [UUID: CloudSetupPointerDelete.Deferral] {
+    guard let retainSetupPointerDeletes else { return [:] }
+    return try await CloudSetupRetryCapture.retainPointerDeletes(in: batch) {
+      try await retainSetupPointerDeletes($0, false)
+    }
+  }
+
+  private func deletedSetupSnips(for batch: CloudSyncBatch) async throws -> Set<UUID> {
+    guard case .fetched = batch, let setupRetryDeletedSnipIDs,
+      Self.destructiveResetReason(batch) == nil
+    else { return [] }
+    return try await setupRetryDeletedSnipIDs()
+  }
+
+  private func checkSetupRetryFetchCommit(
+    _ batch: CloudFullBatchCommit,
+    deletedSnipIDs: Set<UUID>
+  ) async throws {
+    // Applying an absent parent can promote candidate-only edits or files.
+    let authorized = authorizedSetupPeers(for: deletedSnipIDs, batchID: batch.batchID)
+    if try await setupRetryHasCandidateChanges(
+      for: deletedSnipIDs, allowingCheckedPeers: authorized, applying: batch.attachmentTransitions
+    ) {
+      if let checkedSetupPeerCopies, checkedSetupPeerCopies.batchID == batch.batchID,
+        try await setupRetryHasCandidateChanges(for: deletedSnipIDs, allowingCheckedPeers: checkedSetupPeerCopies.snipIDs,
+          applying: batch.attachmentTransitions)
+      {
+        self.checkedSetupPeerCopies = nil
+      }
+      throw CloudSetupRetryHold()
     }
   }
 
@@ -799,7 +1039,7 @@ extension CloudFullSyncPersistence {
     return nil
   }
 
-  private static func destructiveResetReason(
+  static func destructiveResetReason(
     _ batch: CloudSyncBatch
   ) -> CloudZoneDeletionReason? {
     let events: [CloudDatabaseEvent] = switch batch {

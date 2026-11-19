@@ -44,8 +44,9 @@ struct SyncedContentSettingsView: View {
                         }
                         .disabled(!canChangeSync || isRetryingSync || isRetryingClipboardSync)
                         .accessibilityIdentifier("icloud-sync-toggle")
-                        syncMessage
-                            .padding(.leading, settingsIconWidth + 12)
+                        if model.peerCopyOffer == nil {
+                            syncMessage.padding(.leading, settingsIconWidth + 12)
+                        }
                     }
                     if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
                         Button {
@@ -97,6 +98,29 @@ struct SyncedContentSettingsView: View {
                             .accessibilityIdentifier("retry-clipboard-sync")
                         }
                     }
+                }
+
+                if let offer = model.peerCopyOffer {
+                    Section("Restore from iCloud") {
+                        Text("These snips were deleted on this device and are still in iCloud.")
+                        ForEach(offer.copies) { copy in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(copy.content)
+                                Text(copy.listName).foregroundStyle(.secondary)
+                                ForEach(copy.attachmentNames.indices, id: \.self) { index in
+                                    Label(copy.attachmentNames[index], systemImage: "paperclip")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        Button("Restore and Enable Sync") {
+                            Task { await model.restoreSetupPeerCopies(offer) }
+                        }
+                        Button("Cancel Setup") {
+                            Task { await model.cancelICloudSyncSetup() }
+                        }
+                    }
+                    .disabled(isRetryingSync || isRetryingClipboardSync)
                 }
 
                 if let library {
@@ -499,10 +523,7 @@ struct SyncedContentSettingsView: View {
 
     private var syncEnabled: Binding<Bool> {
         Binding(
-            get: {
-                if case .enabling = model.state { return true }
-                return model.mode == .iCloudSync
-            },
+            get: { model.isSyncRequested },
             set: { enabled in
                 if !enabled { clipboard?.stop() }
                 Task {
