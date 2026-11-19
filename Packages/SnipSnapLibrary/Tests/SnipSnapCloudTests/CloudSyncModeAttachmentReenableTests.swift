@@ -223,13 +223,15 @@ extension ICloudSyncModeCoordinatorTests {
         let descriptor = CloudCollectionDescriptor(
             generation: namespace.generation, metadataZone: metadataZone, payloadZone: payloadZone
         )
+        await server.seedControl(descriptor)
+        let legacySource = try JSONSnipLibrary(fileURL: root.appendingPathComponent("legacy.json"))
         func settings(
             persistence: SwiftDataSyncModePersistence,
             transport: FakeCloudRecordTransport
-        ) async throws -> SyncedContentSettingsModel {
+        ) -> SyncedContentSettingsModel {
             let lifecycle = SnipSnapICloudSyncLifecycle(
                 rootURL: localRoot,
-                sourceLibrary: try await persistence.activeLibrary(),
+                sourceLibrary: legacySource,
                 syncModeStore: SnipSyncModeStore(persistence),
                 cloudScope: "private", accountLineage: "account", ownerName: "owner",
                 controlTransport: FakeCloudControlTransport(server: server),
@@ -251,12 +253,13 @@ extension ICloudSyncModeCoordinatorTests {
                 hasFailedPendingEnable: { SnipSnapCloudAppAssembly.hasPendingSetup(rootURL: localRoot) }
             )
         }
-        let heldSettings = try await settings(persistence: later, transport: staleTransport)
+        let heldSettings = settings(persistence: later, transport: staleTransport)
         await heldSettings.enableICloudSync()
         XCTAssertEqual(heldSettings.state, .failed(.appDataIssue))
         XCTAssertTrue(heldSettings.canCancelEnable)
         XCTAssertTrue(heldSettings.isSyncRequested)
         XCTAssertTrue(heldSettings.canEnable)
+        XCTAssertTrue(heldSettings.canRetryFailedSync)
         let staleEvents = await staleTransport.events()
         XCTAssertEqual(staleEvents, [.started, .fetched])
         let heldStorage = try await later.snapshot()
@@ -279,7 +282,7 @@ extension ICloudSyncModeCoordinatorTests {
         let freshTransport = FakeCloudRecordTransport(
             server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]
         )
-        let restartedSettings = try await settings(persistence: afterRestart, transport: freshTransport)
+        let restartedSettings = settings(persistence: afterRestart, transport: freshTransport)
         XCTAssertEqual(restartedSettings.state, .failed(.appDataIssue))
         XCTAssertTrue(restartedSettings.canCancelEnable)
         XCTAssertTrue(restartedSettings.isSyncRequested)
@@ -409,6 +412,7 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let editable = try await reopened.activeLibrary()
         racingSource.withLock { $0 = editable }
+        defer { racingSource.withLock { $0 = nil } }
         let retry = ICloudSyncModeCoordinator(
             persistence: reopened, namespace: namespace, textZone: zone, payloadZone: payloadZone,
             makeTransport: { probe }
