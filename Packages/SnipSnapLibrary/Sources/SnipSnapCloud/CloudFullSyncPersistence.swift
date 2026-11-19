@@ -617,6 +617,8 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
   private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
   private let withSetupRetryBatchCommit: SetupRetryBatchCommit?
+  let setupPeerRestore: CloudSetupPeerRestoreScope?
+  var checkedSetupPeerCopies: CheckedSetupPeerCopies?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -635,6 +637,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)? = nil,
     setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
     withSetupRetryBatchCommit: SetupRetryBatchCommit? = nil,
+    setupPeerRestore: CloudSetupPeerRestoreScope? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -655,6 +658,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.preserveSetupReplacementRemaps = preserveSetupReplacementRemaps
     self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
     self.withSetupRetryBatchCommit = withSetupRetryBatchCommit
+    self.setupPeerRestore = setupPeerRestore
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }
@@ -871,7 +875,9 @@ extension CloudFullSyncPersistence {
     do {
       try validateResetScope(batch)
       let deletedSnipIDs = try await deletedSetupSnips(for: batch)
-      if try await setupRetryHasCandidateChanges(for: deletedSnipIDs) {
+      try await inspectSetupPeerCopies(in: batch, deletedIDs: deletedSnipIDs)
+      let authorized = authorizedSetupPeers(for: deletedSnipIDs, batchID: batch.id)
+      if try await setupRetryHasCandidateChanges(for: deletedSnipIDs, allowingCheckedPeers: authorized) {
         throw CloudSetupRetryHold()
       }
       if let reason = Self.destructiveResetReason(batch) {
@@ -946,7 +952,16 @@ extension CloudFullSyncPersistence {
     deletedSnipIDs: Set<UUID>
   ) async throws {
     // Applying an absent parent can promote candidate-only edits or files.
-    if try await setupRetryHasCandidateChanges(for: deletedSnipIDs, applying: batch.attachmentTransitions) {
+    let authorized = authorizedSetupPeers(for: deletedSnipIDs, batchID: batch.batchID)
+    if try await setupRetryHasCandidateChanges(
+      for: deletedSnipIDs, allowingCheckedPeers: authorized, applying: batch.attachmentTransitions
+    ) {
+      if let checkedSetupPeerCopies, checkedSetupPeerCopies.batchID == batch.batchID,
+        try await setupRetryHasCandidateChanges(for: deletedSnipIDs, allowingCheckedPeers: checkedSetupPeerCopies.snipIDs,
+          applying: batch.attachmentTransitions)
+      {
+        self.checkedSetupPeerCopies = nil
+      }
       throw CloudSetupRetryHold()
     }
   }

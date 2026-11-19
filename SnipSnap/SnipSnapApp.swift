@@ -313,7 +313,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let performSync: @MainActor @Sendable (Bool) async -> Void = { retry in
             guard let session = cloudServices.syncSession else { return }
-            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted()
+            let syncStart = cloudServices.syncedContentSettings.recordSyncStarted(refreshingSetupOffer: retry)
             var stopIssue: SyncedContentSyncIssue?
             do {
                 let result: SnipSnapCloudSyncResult
@@ -385,6 +385,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     cloudServices.syncedContentSettings.recordSyncCompleted(syncStart)
                 }
                 await model.clipboardHistory.syncNow()
+            } catch let offer as SyncedContentPeerCopyOffer {
+                cloudServices.syncedContentSettings.recordSetupPeerCopyOffer(offer, started: syncStart)
             } catch {
                 cloudServices.syncedContentSettings.recordSyncFailure(
                     SnipSnapCloudSyncIssueMapper.issue(for: error)

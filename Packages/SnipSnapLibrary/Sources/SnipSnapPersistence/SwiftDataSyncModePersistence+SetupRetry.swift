@@ -42,7 +42,7 @@ package struct SyncModeDeferredEnableCompletion: Codable, Equatable, Sendable {
 }
 
 extension SwiftDataSyncModePersistence {
-  func hasDeletedSetupSnip(in transition: SyncModeTransition) async throws -> Bool {
+  package func hasDeletedSetupSnip(in transition: SyncModeTransition) async throws -> Bool {
     guard manifest.setupRetrySourceIndex != nil, let namespace = transition.namespace,
       let evidence = setupRetryEvidence(namespace: namespace)
     else { return false }

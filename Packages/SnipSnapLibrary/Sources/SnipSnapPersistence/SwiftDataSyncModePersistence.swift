@@ -535,6 +535,7 @@ package actor SwiftDataSyncModePersistence {
   }
 
   package func swapPointer() throws {
+    try Task.checkCancellation()
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,

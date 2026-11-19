@@ -13,6 +13,7 @@ public actor SnipSnapCloudSyncSession {
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
+  private let restoreSetupPeerCopiesAction: SyncedContentSettingsModel.RestorePeerCopiesAction
   private let acknowledgeEnableAction: @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
@@ -160,6 +161,9 @@ public actor SnipSnapCloudSyncSession {
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
+    restoreSetupPeerCopies: @escaping SyncedContentSettingsModel.RestorePeerCopiesAction = { _ in
+      throw CloudCollectionError.syncNeedsAttention
+    },
     acknowledgeEnable: @escaping @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool = { _ in false },
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
@@ -177,6 +181,7 @@ public actor SnipSnapCloudSyncSession {
     retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
+    restoreSetupPeerCopiesAction = restoreSetupPeerCopies
     acknowledgeEnableAction = acknowledgeEnable
     cancelEnableAction = cancelEnable
     disableAction = disable
@@ -199,6 +204,10 @@ public actor SnipSnapCloudSyncSession {
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
     try await operationGate.withLease(enableAction)
+  }
+
+  package func restoreSetupPeerCopies(_ offer: SyncedContentPeerCopyOffer) async throws -> SyncedContentEnableOutcome {
+    try await operationGate.withLease { [restoreSetupPeerCopiesAction] in try await restoreSetupPeerCopiesAction(offer) }
   }
 
   public func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool {

@@ -317,7 +317,7 @@ final class IOSAppSession {
         retryingUserRecoverableFailures: Bool = false
     ) async throws {
         guard let session else { return }
-        let syncStart = settings.recordSyncStarted()
+        let syncStart = settings.recordSyncStarted(refreshingSetupOffer: retryingUserRecoverableFailures)
         var stopIssue: SyncedContentSyncIssue?
         do {
             let result: SnipSnapCloudSyncResult
@@ -397,6 +397,8 @@ final class IOSAppSession {
             if result != .oldSyncedContentRemovalPending {
                 settings.recordSyncCompleted(syncStart)
             }
+        } catch let offer as SyncedContentPeerCopyOffer {
+            settings.recordSetupPeerCopyOffer(offer, started: syncStart)
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
             if let stopIssue { settings.recordSyncStopped(stopIssue) }

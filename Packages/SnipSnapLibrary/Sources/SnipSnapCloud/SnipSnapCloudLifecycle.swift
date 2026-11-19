@@ -316,7 +316,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     self.automaticResultHandler = automaticResultHandler
   }
 
-  package func enableICloudSync() async throws -> SyncedContentEnableOutcome {
+  package func enableICloudSync(offerPeerCopies: Bool = false) async throws -> SyncedContentEnableOutcome {
     try await finishDeferredSetupEnableIfNeeded()
     if case .checkingDeferredCompletion(let expected) = PendingICloudSyncEnable.phase(at: rootURL) {
       guard let active = try await finishedICloudSwitch(), matches(active, expected) else {
@@ -326,16 +326,25 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       return .enabled
     }
     try PendingICloudSyncEnable.mark(at: rootURL)
-    return try await resumePendingEnable()
+    return try await resumePendingEnable(offerPeerCopies: offerPeerCopies)
   }
 
-  private func resumePendingEnable() async throws -> SyncedContentEnableOutcome {
+  package func restoreSetupPeerCopies(_ offer: SyncedContentPeerCopyOffer) async throws -> SyncedContentEnableOutcome {
+    guard PendingICloudSyncEnable.exists(at: rootURL) || PendingICloudSyncEnable.needsAttention(at: rootURL),
+      SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: rootURL) == nil
+    else { throw CloudCollectionError.syncNeedsAttention }
+    return try await resumePendingEnable(offerPeerCopies: true, restoring: offer)
+  }
+
+  private func resumePendingEnable(
+    offerPeerCopies: Bool = false, restoring consent: SyncedContentPeerCopyOffer? = nil
+  ) async throws -> SyncedContentEnableOutcome {
     let wasICloudActive = SyncModeActivationManifestReader.activeCloudNamespace(
       atSyncModeRootURL: rootURL
     ) != nil
     let outcome: SyncedContentEnableOutcome
     do {
-      outcome = try await finishPendingEnable()
+      outcome = try await finishPendingEnable(offerPeerCopies: offerPeerCopies, restoring: consent)
     } catch where Self.isRetryableSetupError(error) {
       let issue = SnipSnapCloudSyncIssueMapper.issue(for: error)
       PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
@@ -397,39 +406,54 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     await clearCollectionCoordinator()
   }
 
-  private func finishPendingEnable() async throws -> SyncedContentEnableOutcome {
+  private func finishPendingEnable(
+    offerPeerCopies: Bool, restoring consent: SyncedContentPeerCopyOffer?
+  ) async throws -> SyncedContentEnableOutcome {
     try await requireAvailableAccount()
     if let accountLineageProvider {
       accountLineage = try await accountLineageProvider()
     }
     try await requireAccountLineage(accountLineage)
     let modePersistence = try await modePersistenceAndImportedSource()
-    let collectionLocal = try SwiftDataCloudCollectionLocalStore(
-      rootURL: rootURL,
-      persistence: modePersistence
-    )
-    if try await collectionLocal.state().encryptedDataReset != nil {
-      try await collectionLocal.markPurged()
-    }
     let enableLineage = accountLineage
-    let enableGuard: @Sendable () async throws -> Void = { [weak self] in
-      guard let self else { return }
-      try await self.requireAccountLineage(enableLineage)
+    let descriptor: CloudCollectionDescriptor
+    if let consent {
+      let expected = try JSONDecoder().decode(CloudSetupPeerRestoreScope.Binding.self, from: consent.scope)
+      let storage = try await modePersistence.snapshot()
+      guard let transition = storage.transition, expected.matches(transition),
+        storage.activeStore.kind == .localOnly, storage.activeStore.id == expected.sourceStoreID,
+        let current = try await controlTransport.fetchControl()?.descriptor,
+        current.namespace(cloudScope: cloudScope, accountLineage: enableLineage).namespaceKey == expected.namespaceKey
+      else { throw CloudCollectionError.syncNeedsAttention }
+      try current.validate(ownerName: ownerName, reservedZones: reservedZones)
+      descriptor = current
+    } else {
+      let collectionLocal = try SwiftDataCloudCollectionLocalStore(
+        rootURL: rootURL,
+        persistence: modePersistence
+      )
+      if try await collectionLocal.state().encryptedDataReset != nil {
+        try await collectionLocal.markPurged()
+      }
+      let enableGuard: @Sendable () async throws -> Void = { [weak self] in
+        guard let self else { return }
+        try await self.requireAccountLineage(enableLineage)
+      }
+      let bootstrap = CloudCollectionBootstrapper(
+        ownerName: ownerName,
+        localStore: AccountGuardedCollectionLocalStore(
+          base: collectionLocal,
+          accountGuard: enableGuard
+        ),
+        transport: AccountGuardedCollectionTransport(
+          base: controlTransport,
+          accountGuard: enableGuard
+        ),
+        makeDescriptor: makeDescriptor,
+        reservedZones: reservedZones
+      )
+      descriptor = try await bootstrap.activeOrCreate()
     }
-    let bootstrap = CloudCollectionBootstrapper(
-      ownerName: ownerName,
-      localStore: AccountGuardedCollectionLocalStore(
-        base: collectionLocal,
-        accountGuard: enableGuard
-      ),
-      transport: AccountGuardedCollectionTransport(
-        base: controlTransport,
-        accountGuard: enableGuard
-      ),
-      makeDescriptor: makeDescriptor,
-      reservedZones: reservedZones
-    )
-    let descriptor = try await bootstrap.activeOrCreate()
     try await requireAccountLineage(accountLineage)
     let namespace = descriptor.namespace(
       cloudScope: cloudScope,
@@ -457,7 +481,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
         try await self.requireAccountLineage(enableLineage)
       }
     )
-    let status = try await mode.enableOrRetry()
+    let status = try await mode.enableOrRetry(restoring: consent, offerPeerCopies: offerPeerCopies)
     switch status.state {
     case .on:
       break
@@ -467,11 +491,19 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       )
     case .needsAttention:
       if let error = Self.accountGateError(for: status.attentionReason) { throw error }
+      if status.attentionReason == .transferConflict,
+        let offer = await mode.peerCopyOffer
+      {
+        try await requireAccountLineage(enableLineage)
+        try await requireControlRecord(for: namespace.binding)
+        try await requireAccountLineage(enableLineage)
+        throw offer
+      }
       throw CloudCollectionError.syncNeedsAttention
     case .off:
       throw CloudCollectionError.syncNeedsAttention
     }
-    if PendingICloudSyncEnable.requiresDeferredCompletionCheck(at: rootURL) {
+    if consent != nil || PendingICloudSyncEnable.requiresDeferredCompletionCheck(at: rootURL) {
       try await checkDeferredEnable(for: namespace.binding)
     }
     await clearCollectionCoordinator()
@@ -497,6 +529,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     } else {
       SnipSnapDeferredEnableCompletion?.none
     }
+    let retryHeldSetup = if retryingUserRecoverableFailures, finished == nil,
+      PendingICloudSyncEnable.needsAttention(at: rootURL)
+    {
+      try await hasHeldSetupPeerCopy()
+    } else { false }
     if let finished {
       guard case .checkingDeferredCompletion(let expected) = enablePhase else {
         try PendingICloudSyncEnable.clear(at: rootURL)
@@ -514,8 +551,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       } catch CloudCollectionError.syncNeedsAttention {
         // The normal collection path below handles a reset of the switched store.
       }
-    } else if enablePhase?.resumesSetup == true {
-      switch try await resumePendingEnable() {
+    } else if enablePhase?.resumesSetup == true || retryHeldSetup {
+      switch try await resumePendingEnable(offerPeerCopies: retryingUserRecoverableFailures) {
       case .settingUp(let issue): return .iCloudSyncSettingUp(issue)
       case .enabled:
         if case .checkingDeferredCompletion(let expected?) = PendingICloudSyncEnable.phase(at: rootURL) {
@@ -581,6 +618,20 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     }
     if result == .iCloudDataReset { await clearCollectionCoordinator() }
     return result
+  }
+
+  private func hasHeldSetupPeerCopy() async throws -> Bool {
+    guard persistence != nil || FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("activation.json").path)
+    else { return false }
+    let mode = try persistence ?? SwiftDataSyncModePersistence(
+      rootURL: rootURL, attachmentCacheRootURL: attachmentCacheRootURL
+    )
+    persistence = mode
+    let storage = try await mode.snapshot()
+    guard storage.activeStore.kind == .localOnly, storage.attentionReason == .transferConflict,
+      let transition = storage.transition, transition.targetKind == .iCloudSync
+    else { return false }
+    return try await mode.hasDeletedSetupSnip(in: transition)
   }
 
   private func finishDeferredSetupEnableIfNeeded() async throws {
