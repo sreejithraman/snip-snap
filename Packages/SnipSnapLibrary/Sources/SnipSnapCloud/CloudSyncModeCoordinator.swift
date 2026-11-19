@@ -162,7 +162,7 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
     ) {
         self.raw = raw
         self.beforeApply = beforeApply
-        let retainReceivedSetupDeletes: (@Sendable (CloudSyncBatch, CloudOutboundBatch?) async throws -> Void)?
+        let retainReceivedSetupDeletes: (@Sendable (CloudSentBatch, CloudOutboundBatch) async throws -> Void)?
         if capturesSetupRetry {
             retainReceivedSetupDeletes = { batch, outbound in
                 try await raw.retainReceivedSetupDeletes(batch, outbound: outbound)

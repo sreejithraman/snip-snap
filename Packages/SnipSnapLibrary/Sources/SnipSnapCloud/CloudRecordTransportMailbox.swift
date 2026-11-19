@@ -4,27 +4,14 @@ import Synchronization
 /// Durable admission comes from the store. Scheduling cannot loosen it.
 package struct CloudRecordOutboundAdmission: Equatable, Sendable {
   package let blockedRecordIDs: Set<CloudRecordID>
-  package let blockedDeleteIDs: Set<CloudRecordID>
   package let blocksAll: Bool
 
-  package init(
-    blockedRecordIDs: Set<CloudRecordID> = [], blockedDeleteIDs: Set<CloudRecordID> = [], blocksAll: Bool = false
-  ) {
+  package init(blockedRecordIDs: Set<CloudRecordID> = [], blocksAll: Bool = false) {
     self.blockedRecordIDs = blockedRecordIDs
-    self.blockedDeleteIDs = blockedDeleteIDs
     self.blocksAll = blocksAll
   }
 
   package static let open = Self()
-
-  package func blocks(_ id: CloudRecordID, deleting: Bool) -> Bool {
-    blocksAll || blockedRecordIDs.contains(id) || (deleting && blockedDeleteIDs.contains(id))
-  }
-
-  package func blocks(_ operation: CloudOutboundOperation) -> Bool {
-    if case .delete = operation { return blocks(operation.id, deleting: true) }
-    return blocks(operation.id, deleting: false)
-  }
 }
 
 /// Records and checkpoints share one order. A checkpoint cannot pass uncommitted records.
@@ -99,12 +86,6 @@ package final class CloudRecordTransportMailbox: Sendable {
   private let state = Mutex(State())
 
   package var first: CloudRecordTransportEvent? { state.withLock { $0.events.first } }
-  package var pendingSentBatches: [CloudPendingBatch] {
-    state.withLock { $0.events.compactMap { event in
-      guard case .batch(let pending) = event, case .sent = pending.batch else { return nil }
-      return pending
-    } }
-  }
   package var diagnosticCounts: (events: Int, downloads: Int) {
     state.withLock {
       ($0.events.count, $0.events.reduce(0) { count, event in
@@ -216,7 +197,6 @@ package struct CloudRecordOutboundQueue: Sendable {
 
     private var phase = Phase.admitting
     private var durableBlocks: Set<CloudRecordID> = []
-    private var durableDeleteBlocks: Set<CloudRecordID> = []
     private var observedBlocks: [UUID: Set<CloudRecordID>] = [:]
 
     var blocksAll: Bool { phase == .stopped }
@@ -224,13 +204,11 @@ package struct CloudRecordOutboundQueue: Sendable {
       observedBlocks.values.reduce(into: durableBlocks) { $0.formUnion($1) }
     }
     var admission: CloudRecordOutboundAdmission {
-      CloudRecordOutboundAdmission(blockedRecordIDs: blockedRecordIDs,
-        blockedDeleteIDs: durableDeleteBlocks, blocksAll: blocksAll)
+      CloudRecordOutboundAdmission(blockedRecordIDs: blockedRecordIDs, blocksAll: blocksAll)
     }
 
     mutating func restore(_ value: CloudRecordOutboundAdmission) {
       durableBlocks = value.blockedRecordIDs
-      durableDeleteBlocks = value.blockedDeleteIDs
       if value.blocksAll { phase = .stopped }
     }
 
@@ -288,7 +266,7 @@ package struct CloudRecordOutboundQueue: Sendable {
   /// Replaces all unsent work, including omissions and an empty snapshot.
   package mutating func schedule(_ batch: CloudOutboundBatch) -> CloudOutboundBatch? {
     guard !gate.blocksAll else { return nil }
-    desired = Self.snapshot(batch, admission: gate.admission)
+    desired = Self.snapshot(batch, excluding: gate.blockedRecordIDs)
     let scheduled = Dictionary(desired.operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     // A provider may still be building an older batch across an await. Keep these
     // withdrawals for the whole cycle, even if a later snapshot restores the ID.
@@ -346,9 +324,9 @@ package struct CloudRecordOutboundQueue: Sendable {
       sendCycle.withholdUnsupplied { _ in true }
       desired = CloudOutboundBatch(operations: [])
     } else {
-      let admission = gate.admission
-      sendCycle.withholdUnsupplied { admission.blocks($0) }
-      desired = CloudOutboundBatch(operations: desired.operations.filter { !admission.blocks($0) },
+      let blocked = gate.blockedRecordIDs
+      sendCycle.withholdUnsupplied { blocked.contains($0.id) }
+      desired = CloudOutboundBatch(operations: desired.operations.filter { !blocked.contains($0.id) },
         zonesToSave: desired.zonesToSave)
     }
   }
@@ -390,11 +368,11 @@ package struct CloudRecordOutboundQueue: Sendable {
 
   /// Each record keeps its first position and its last operation.
   private static func snapshot(
-    _ batch: CloudOutboundBatch, admission: CloudRecordOutboundAdmission
+    _ batch: CloudOutboundBatch, excluding blocked: Set<CloudRecordID>
   ) -> CloudOutboundBatch {
     var operations: [CloudOutboundOperation] = []
     var positions: [CloudRecordID: Int] = [:]
-    for operation in batch.operations where !admission.blocks(operation) {
+    for operation in batch.operations where !blocked.contains(operation.id) {
       if let position = positions[operation.id] {
         operations[position] = operation
       } else {

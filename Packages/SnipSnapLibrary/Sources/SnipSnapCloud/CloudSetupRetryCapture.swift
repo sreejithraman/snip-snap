@@ -181,8 +181,9 @@ enum CloudSetupRetryCapture {
     in sent: CloudSentBatch, outbound: CloudOutboundBatch
   ) -> [(CloudOutboundOperation, UUID)] {
     let results = Dictionary(grouping: sent.items, by: \.id)
+    let offered = Dictionary(grouping: outbound.operations, by: \.id)
     return outbound.operations.compactMap { operation in
-      guard case .delete(let id, _) = operation, results[id] == [.deleted(id)],
+      guard case .delete(let id, _) = operation, offered[id]?.count == 1, results[id] == [.deleted(id)],
         id.name.hasPrefix("a-"), let attachmentID = UUID(uuidString: String(id.name.dropFirst(2))),
         id.name == "a-\(attachmentID.uuidString.lowercased())"
       else { return nil }

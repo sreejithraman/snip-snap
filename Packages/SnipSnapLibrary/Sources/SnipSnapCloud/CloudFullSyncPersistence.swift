@@ -102,7 +102,7 @@ package actor CloudFullSyncCoordinator {
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
   private let initializeOutboundOnStart: Bool
-  private let retainReceivedSetupDeletes: (@Sendable (CloudSyncBatch, CloudOutboundBatch?) async throws -> Void)?
+  private let retainReceivedSetupDeletes: (@Sendable (CloudSentBatch, CloudOutboundBatch) async throws -> Void)?
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
   private let operationGate = AsyncOperationGate()
@@ -113,7 +113,7 @@ package actor CloudFullSyncCoordinator {
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
     initializeOutboundOnStart: Bool = true,
-    retainReceivedSetupDeletes: (@Sendable (CloudSyncBatch, CloudOutboundBatch?) async throws -> Void)? = nil,
+    retainReceivedSetupDeletes: (@Sendable (CloudSentBatch, CloudOutboundBatch) async throws -> Void)? = nil,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
@@ -289,13 +289,9 @@ package actor CloudFullSyncCoordinator {
       guard !outbound.operations.isEmpty || !outbound.zonesToSave.isEmpty else { break }
       guard sendCount < 16 else { break }
       try await beforeSend(outbound)
-      let sent: CloudSentBatch
-      do {
-        sent = try await transport.send(outbound)
-      } catch {
-        try await retainQueuedSetupDeletes()
-        throw error
-      }
+      let sent = try await transport.send(outbound)
+      // Earlier mailbox events may stop the ordered drain at an account check.
+      try await retainReceivedSetupDeletes?(sent, outbound)
       try await applyReturned(.sent(sent), outbound: outbound, state: &state, beforeApply: beforeApply)
       sendCount += 1
       guard drainOutbound else { break }
@@ -345,7 +341,6 @@ package actor CloudFullSyncCoordinator {
   }
 
   private func recoverStaged(beforeApply: @escaping @Sendable () async throws -> Void) async throws {
-    try await retainQueuedSetupDeletes()
     let staged = try await store.stagedBatches()
     guard !staged.isEmpty else { return }
     try await beforeApply()
@@ -380,7 +375,6 @@ package actor CloudFullSyncCoordinator {
     beforeApply: @escaping @Sendable () async throws -> Void,
     beforeStateSave: @escaping @Sendable () async throws -> Void
   ) async throws -> Bool {
-    try await retainQueuedSetupDeletes()
     while let event = await transport.pendingEvent() {
       switch event {
       case .accountChange:
@@ -393,7 +387,9 @@ package actor CloudFullSyncCoordinator {
         if retainReceivedSetupDeletes != nil { try await beforeStateSave() }
         try await transport.confirmApplied(event.id)
       case .batch(let pending):
-        try await retainReceivedSetupDeletes?(pending.batch, pending.outbound)
+        if case .sent(let sent) = pending.batch, let outbound = pending.outbound {
+          try await retainReceivedSetupDeletes?(sent, outbound)
+        }
         try await beforeApply()
         try await commit(pending.batch, outbound: pending.outbound, state: &state, beforeApply: beforeApply)
       }
@@ -409,13 +405,6 @@ package actor CloudFullSyncCoordinator {
     state: inout RunState,
     beforeApply: @escaping @Sendable () async throws -> Void
   ) async throws {
-    if case .sent = batch, let retainReceivedSetupDeletes {
-      if let received = await transport.pendingSentBatches().first(where: { $0.batch.id == batch.id }) {
-        try await retainReceivedSetupDeletes(received.batch, received.outbound)
-      } else {
-        try await retainReceivedSetupDeletes(batch, outbound)
-      }
-    }
     // Adapters may return a batch directly while queuing earlier checkpoints.
     let committed = try await drainEvents(through: batch.id, state: &state,
       beforeApply: beforeApply, beforeStateSave: beforeApply)
@@ -423,13 +412,6 @@ package actor CloudFullSyncCoordinator {
       try await beforeApply()
       try await commit(batch, outbound: outbound, state: &state, beforeApply: beforeApply)
       state.processedEvents = true
-    }
-  }
-
-  private func retainQueuedSetupDeletes() async throws {
-    guard let retainReceivedSetupDeletes else { return }
-    for received in await transport.pendingSentBatches() {
-      try await retainReceivedSetupDeletes(received.batch, received.outbound)
     }
   }
 
@@ -967,8 +949,9 @@ extension CloudFullSyncPersistence {
     }
   }
 
-  func retainReceivedSetupDeletes(_ batch: CloudSyncBatch, outbound: CloudOutboundBatch?) async throws {
-    guard let retainSetupPointerDelete, case .sent(let sent) = batch, let outbound,
+  func retainReceivedSetupDeletes(_ sent: CloudSentBatch, outbound: CloudOutboundBatch) async throws {
+    let batch = CloudSyncBatch.sent(sent)
+    guard let retainSetupPointerDelete,
       Self.destructiveResetReason(batch) == nil
     else { return }
     let accepted = CloudSetupRetryCapture.acceptedPointerDeletes(in: sent, outbound: outbound)

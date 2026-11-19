@@ -228,7 +228,6 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
     }
 
     package func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
-    package func pendingSentBatches() async -> [CloudPendingBatch] { mailbox.pendingSentBatches }
 
     package func fetchRecord(
         _ id: CloudRecordID,
@@ -487,7 +486,7 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         guard let sendCycle = outboundQueue.cycle else { return nil }
         let pendingChanges: [CKSyncEngine.PendingRecordZoneChange] = sendCycle.operations(
             pendingIDs: pendingIDs
-        ).filter { !outboundQueue.admission.blocks($0) }.map { operation in
+        ).map { operation in
             let id = CloudKitRecordMapper.recordID(for: operation.id)
             return switch operation {
             case .save: .saveRecord(id)
@@ -509,10 +508,6 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         )
         guard let batch, isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
               !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
-        let admission = outboundQueue.admission
-        guard !batch.recordIDsToDelete.contains(where: {
-            admission.blocks(CloudKitRecordMapper.id(for: $0), deleting: true)
-        }) else { return nil }
         let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
             .map(CloudKitRecordMapper.id(for:)))
         guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs
@@ -591,11 +586,12 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         let engine = running.engine
         let admission = outboundQueue.admission
         let blockedChanges = engine.pendingRecordZoneChanges.filter { change in
+            let id: CKRecord.ID
             switch change {
-            case .saveRecord(let id): return admission.blocks(CloudKitRecordMapper.id(for: id), deleting: false)
-            case .deleteRecord(let id): return admission.blocks(CloudKitRecordMapper.id(for: id), deleting: true)
+            case .saveRecord(let recordID), .deleteRecord(let recordID): id = recordID
             @unknown default: return admission.blocksAll
             }
+            return admission.blocksAll || admission.blockedRecordIDs.contains(CloudKitRecordMapper.id(for: id))
         }
         if !blockedChanges.isEmpty { engine.remove(pendingRecordZoneChanges: blockedChanges) }
         if admission.blocksAll, !engine.pendingDatabaseChanges.isEmpty {

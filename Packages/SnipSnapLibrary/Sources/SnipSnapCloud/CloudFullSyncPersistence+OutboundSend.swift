@@ -10,7 +10,6 @@ extension CloudFullSyncPersistence {
     let protection = await setupPointerDeleteProtection()
     return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery)
       .union(archivedIDs).union(protection.payloads.map(Self.recordID)),
-      blockedDeleteIDs: Set(protection.pointers.map(Self.recordID)),
       blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
   }
 

@@ -1319,7 +1319,6 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertFalse(settled)
         let issue = try await raw.unresolvedSyncIssue()
         XCTAssertEqual(issue, .appDataIssue)
-        XCTAssertEqual(admission.blockedDeleteIDs, [fixture.pointerID])
 
         // The peer revives the original pointer after the local removal was planned.
         let current = await fixture.server.fullSnapshot(for: fixture.pointerID)
@@ -1333,17 +1332,11 @@ extension ICloudSyncModeCoordinatorTests {
         let initial = await startup.suppliedInitialOperations
         let offered = try await startup.checkedInitialOffer()
         try Self.refuseDeletes(in: .init(operations: initial + offered), for: [fixture.pointerID, fixture.payloadID])
-        let deleteBlocks = await startup.blockedDeleteIDs
-        XCTAssertEqual(deleteBlocks, [fixture.pointerID])
+        let blockedPayloads = await startup.blockedRecordIDs
+        XCTAssertEqual(blockedPayloads, [fixture.payloadID])
         let startupEvents = await startup.fake.events()
         XCTAssertFalse(startupEvents.contains(.fetched))
 
-        // Even an obsolete engine delete request cannot become an ID-only wire deletion.
-        let staleDeletion = CloudOutboundBatch(operations: [
-            .delete(fixture.pointerID, base: nil), .delete(fixture.payloadID, base: nil)
-        ])
-        let fromQueue = await startup.checkedStaleOperations(staleDeletion)
-        XCTAssertTrue(fromQueue.isEmpty)
         let idOnly = SetupRetryDeleteProbeTransport(fixture.transport(), idOnlyDeleteServer: fixture.server,
             beforeSending: { batch in try Self.refuseDeletes(in: batch, for: [fixture.pointerID, fixture.payloadID]) })
         if !offered.isEmpty { _ = try await idOnly.send(.init(operations: offered)) }
@@ -1356,7 +1349,7 @@ extension ICloudSyncModeCoordinatorTests {
     }
 
     func testReceivedPointerDeleteIsRetainedBeforeAccountGateAndEarlierEvents() async throws {
-        for (queued, throwsAfterReceipt) in [(false, false), (true, false), (true, true)] {
+        for queued in [false, true] {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
             let fixture = try await Self.setupRetryPointerFixture(root: root, pointerOnDeletedSnip: true, sourceOwnsPointer: true)
@@ -1379,7 +1372,6 @@ extension ICloudSyncModeCoordinatorTests {
                     guard sent.items.contains(.deleted(fixture.pointerID)) else { return }
                     received.withLock { $0 = sent.id }
                     await account.set(.temporarilyUnavailable)
-                    if throwsAfterReceipt { throw ICloudAccountGateError.temporarilyUnavailable }
                 })
             let first = try fixture.lifecycle(fixture.persistence, transport: probe, account: account)
             do {
@@ -3702,13 +3694,6 @@ actor SetupRetryDeleteProbeTransport: CloudRecordTransport {
 
     func pendingEvent() async -> CloudRecordTransportEvent? { receivedEvents.first }
 
-    func pendingSentBatches() async -> [CloudPendingBatch] {
-        receivedEvents.compactMap {
-            if case .batch(let value) = $0 { return value }
-            return nil
-        }
-    }
-
     func confirmApplied(_ batchID: UUID) async throws {
         if interruptConfirmation { throw CloudTransportError.fetchFailed }
         if let event = receivedEvents.first, event.id == batchID {
@@ -3747,14 +3732,6 @@ private actor ResumedAttachmentOfferTransport: CloudRecordTransport, CloudAutoma
 
     var suppliedInitialOperations: [CloudOutboundOperation] { initial?.operations ?? [] }
     var blockedRecordIDs: Set<CloudRecordID> { admission.blockedRecordIDs }
-    var blockedDeleteIDs: Set<CloudRecordID> { admission.blockedDeleteIDs }
-
-    func checkedStaleOperations(_ old: CloudOutboundBatch) -> [CloudOutboundOperation] {
-        var queue = CloudRecordOutboundQueue()
-        queue.restoreAdmission(admission)
-        _ = queue.schedule(old)
-        return queue.current.operations
-    }
 
     init(_ fake: FakeCloudRecordTransport) { self.fake = fake }
 
@@ -3782,7 +3759,7 @@ private actor ResumedAttachmentOfferTransport: CloudRecordTransport, CloudAutoma
             !admission.blocksAll, let initial, let scheduled else { throw CloudTransportError.invalidEngineState }
         try await sendGate()
         return initial.operations.filter {
-            scheduled.operations.contains($0) && !admission.blocks($0)
+            scheduled.operations.contains($0) && !admission.blockedRecordIDs.contains($0.id)
         }
     }
 
