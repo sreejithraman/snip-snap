@@ -1414,6 +1414,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testReceivedPointerDeleteBatchSurvivesFirstRetentionCrashAndCandidateReplacement() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let extraFile = root.appendingPathComponent("second.txt")
         let extraBytes = Data("different bytes from the second attachment".utf8)
         try extraBytes.write(to: extraFile)
