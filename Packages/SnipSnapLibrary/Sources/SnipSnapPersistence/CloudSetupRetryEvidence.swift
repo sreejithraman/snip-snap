@@ -117,6 +117,12 @@ package struct CloudSetupRetryEvidence: Codable, Equatable, Sendable {
     }
   }
 
+  mutating func applyPointerReplacementRemaps(_ remaps: [UUID: UUID]) throws {
+    for index in acceptedPointerDeletes.indices {
+      try acceptedPointerDeletes[index].applyReplacementRemaps(remaps)
+    }
+  }
+
   mutating func recordOffers(_ offers: [CloudSetupRetryOffer], candidateStoreID: UUID) {
     for offer in offers {
       let pending = Pending(

@@ -229,6 +229,8 @@ enum CloudSetupRetryCapture {
       // remains in source history when setup declares a replacement.
       return
     }
+    let remaps = try await candidate.setupPointerReplacementRemaps(namespaceKey: namespace.namespaceKey)
+    try await persistence.preserveSetupPointerReplacementRemaps(remaps, for: transition)
     for batch in try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey) {
       _ = try await retainPointerDeletes(in: batch) { binding in
         try await persistence.retainSetupPointerDelete(

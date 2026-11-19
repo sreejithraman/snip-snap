@@ -613,7 +613,7 @@ private actor PendingMarkerProbe {
   }
 }
 
-private actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
+actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
   private let base: FakeCloudControlTransport
   private var isOffline = true
 

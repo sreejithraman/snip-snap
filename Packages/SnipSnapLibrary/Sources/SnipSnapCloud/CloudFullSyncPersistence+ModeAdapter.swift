@@ -108,10 +108,11 @@ extension CloudFullSyncPersistence {
     let observedPointers = inventory.observed.filter {
       $0.recordName.hasPrefix("a-") || publications[$0] != nil
     }
-    var published: [CloudAttachmentMetadataValue] = []
+    var namedPayloads: Set<CloudTextStorageIdentity> = []
+    var checkedReplacementIDs: Set<UUID> = []
     for pointer in observedPointers {
       guard let rows = publications[pointer], rows.count == 1,
-        let bytes = rows.first?.metadataShadowData,
+        let publication = rows.first, let bytes = publication.metadataShadowData,
         let shadow = try? CloudRecordShadow(data: bytes),
         let snapshot = try? CloudKitRecordMapper.snapshot(shadow.record()),
         snapshot.id == Self.recordID(pointer),
@@ -119,32 +120,29 @@ extension CloudFullSyncPersistence {
           from: snapshot, metadataZone: dataZone, payloadZone: payloadZone
         )
       else { return false }
-      published.append(metadata)
+      namedPayloads.insert(metadata.payloadIdentity)
+      // Local order or name edits can leave metadata pending even though the
+      // checked server pointer already publishes this replacement's payload.
+      if publication.payloadAccepted, publication.metadata.attachmentID == metadata.attachmentID,
+        publication.metadata.payloadIdentity == metadata.payloadIdentity,
+        publication.metadata.sha256 == metadata.sha256, publication.metadata.byteCount == metadata.byteCount,
+        pointer.recordName == "a-\(metadata.attachmentID.uuidString.lowercased())"
+      {
+        checkedReplacementIDs.insert(metadata.attachmentID)
+      }
     }
-    let namedPayloads = Set(published.map(\.payloadIdentity))
-    return receipts.allSatisfy { receipt in
+    let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
+    return try receipts.allSatisfy { receipt in
       guard receipt.payloadIdentities.isDisjoint(with: namedPayloads) else { return false }
       // Checked parent absence plus the frozen source deletion releases the
       // replacement dependency. Otherwise its published bytes must be proved.
       if deletedSnipIDs.contains(receipt.snipID) {
         return !inventory.observed.contains(Self.storageIdentity(.snip(receipt.snipID, in: dataZone)))
       }
-      guard let position = receipt.position, let replacements = receipt.replacements,
-        !attachments.publications.contains(where: {
-          guard $0.metadata.snipID == receipt.snipID, $0.isLocallyPresent, !$0.metadataAccepted else {
-            return false
-          }
-          let fingerprint = CloudSetupPointerDelete.Replacement(
-            sha256: $0.metadata.sha256, byteCount: $0.metadata.byteCount
-          )
-          return $0.metadata.position == position || replacements.contains(fingerprint)
-        })
-      else { return false }
-      return replacements.allSatisfy { replacement in
-        published.contains {
-          $0.snipID == receipt.snipID && $0.position == position && $0.sha256 == replacement.sha256
-            && $0.byteCount == replacement.byteCount
-        }
+      guard let replacements = receipt.replacementIDs else { return false }
+      return try replacements.allSatisfy { original in
+        let current = try CloudSetupPointerDelete.currentReplacementID(original, remaps: remaps)
+        return checkedReplacementIDs.contains(current)
       }
     }
   }

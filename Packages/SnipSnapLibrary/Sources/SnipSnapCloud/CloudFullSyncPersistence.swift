@@ -559,7 +559,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   package typealias RetainSetupPointerDelete = @Sendable (
     CloudSetupPointerDelete.Binding
   ) async throws -> CloudSetupPointerDelete
-  package typealias SetupRetryFetchCommit = @Sendable (
+  package typealias SetupRetryBatchCommit = @Sendable (
     @Sendable () async throws -> CloudFullBatchCommit
   ) async throws -> CloudFullBatchCommit
 
@@ -581,6 +581,21 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
         return id.name.hasPrefix("a-")
       } == true
     }
+
+    var unknownPointerDeletes: Set<UUID> {
+      guard case .sent(let sent) = batch, let outbound else { return [] }
+      let unknowns = Set(sent.items.compactMap { item -> CloudRecordID? in
+        guard case .unknownItem(let id) = item else { return nil }
+        return id
+      })
+      return Set(outbound.operations.compactMap { operation -> UUID? in
+        guard case .delete(let id, _) = operation, unknowns.contains(id), id.name.hasPrefix("a-"),
+          let attachmentID = UUID(uuidString: String(id.name.dropFirst(2))),
+          id.name == "a-\(attachmentID.uuidString.lowercased())"
+        else { return nil }
+        return attachmentID
+      })
+    }
   }
 
   let library: SwiftDataSnipLibrary
@@ -596,8 +611,10 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private let mutationLease: SyncModeActiveMutationLease?
   private let recordSetupRetryResults: SetupRetryResultHook?
   private let retainSetupPointerDelete: RetainSetupPointerDelete?
+  private let setupReplacementIDs: (@Sendable () async -> Set<UUID>)?
+  private let preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)?
   private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
-  private let withSetupRetryFetchCommit: SetupRetryFetchCommit?
+  private let withSetupRetryBatchCommit: SetupRetryBatchCommit?
 
   package init(
     library: SwiftDataSnipLibrary,
@@ -610,8 +627,10 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
     recordSetupRetryResults: SetupRetryResultHook? = nil,
     retainSetupPointerDelete: RetainSetupPointerDelete? = nil,
+    setupReplacementIDs: (@Sendable () async -> Set<UUID>)? = nil,
+    preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)? = nil,
     setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
-    withSetupRetryFetchCommit: SetupRetryFetchCommit? = nil,
+    withSetupRetryBatchCommit: SetupRetryBatchCommit? = nil,
     afterCommitHook: @escaping ApplyHook = {}
   ) {
     precondition(namespace.zones.contains(dataZone))
@@ -626,8 +645,10 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.diagnostics = diagnostics
     self.recordSetupRetryResults = recordSetupRetryResults
     self.retainSetupPointerDelete = retainSetupPointerDelete
+    self.setupReplacementIDs = setupReplacementIDs
+    self.preserveSetupReplacementRemaps = preserveSetupReplacementRemaps
     self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
-    self.withSetupRetryFetchCommit = withSetupRetryFetchCommit
+    self.withSetupRetryBatchCommit = withSetupRetryBatchCommit
     self.afterCommitHook = afterCommitHook
     namespaceKey = namespace.namespaceKey
   }
@@ -713,10 +734,10 @@ extension CloudFullSyncPersistence {
     guard let batch = try await stagedBatches().first(where: { $0.batchID == id }) else { return }
     let raw = batch.rawBatchData.flatMap { try? JSONDecoder().decode(RawStagedBatch.self, from: $0) }
     let committed: CloudFullBatchCommit
-    if let withSetupRetryFetchCommit, let raw, raw.needsSetupCommitAdmission,
+    if let withSetupRetryBatchCommit, let raw, raw.needsSetupCommitAdmission,
       Self.destructiveResetReason(raw.batch) == nil
     {
-      committed = try await withSetupRetryFetchCommit {
+      committed = try await withSetupRetryBatchCommit {
         switch raw.batch {
         case .fetched:
           let deletedSnipIDs = try await self.deletedSetupSnips(for: raw.batch)
@@ -724,7 +745,8 @@ extension CloudFullSyncPersistence {
         case .sent:
           let deletedSnipIDs = try await self.setupRetryDeletedSnipIDs?() ?? []
           return try await self.commitStagedBatchWithReplan(
-            batch, holdUnprovenPointerDeletes: !deletedSnipIDs.isEmpty
+            batch, holdPointerDeleteConflicts: !deletedSnipIDs.isEmpty,
+            unknownPointerDeletes: raw.unknownPointerDeletes
           )
         }
       }
@@ -732,7 +754,9 @@ extension CloudFullSyncPersistence {
       if let raw, let reason = Self.destructiveResetReason(raw.batch) {
         observedDestructiveReset = reason
       }
-      committed = try await commitStagedBatchWithReplan(batch)
+      committed = try await commitStagedBatchWithReplan(
+        batch, unknownPointerDeletes: retainSetupPointerDelete == nil ? [] : raw?.unknownPointerDeletes ?? []
+      )
     }
     try await finishCommittedBatch(committed)
   }
@@ -740,11 +764,14 @@ extension CloudFullSyncPersistence {
   private func commitStagedBatchWithReplan(
     _ batch: CloudFullBatchCommit,
     deletedSnipIDs: Set<UUID> = [],
-    holdUnprovenPointerDeletes: Bool = false
+    holdPointerDeleteConflicts: Bool = false,
+    unknownPointerDeletes: Set<UUID> = []
   ) async throws -> CloudFullBatchCommit {
     try await checkSetupRetryFetchCommit(batch, deletedSnipIDs: deletedSnipIDs)
     do {
-      try await commitSetupCheckedBatch(batch, holdUnprovenPointerDeletes: holdUnprovenPointerDeletes)
+      try await commitSetupCheckedBatch(
+        batch, holdPointerDeleteConflicts: holdPointerDeleteConflicts, unknownPointerDeletes: unknownPointerDeletes
+      )
       return batch
     } catch let error where (error as? CloudFullStorageError) == .staleLocalEntity
       || (error as? CloudFullStorageError) == .invalidEnrollment
@@ -766,7 +793,9 @@ extension CloudFullSyncPersistence {
       // Keep the current plan so Try Again can recognize a held fetch and refetch it.
       try await library.replaceStagedCloudFullBatch(replacement)
       try await checkSetupRetryFetchCommit(replacement, deletedSnipIDs: deletedSnipIDs)
-      try await commitSetupCheckedBatch(replacement, holdUnprovenPointerDeletes: holdUnprovenPointerDeletes)
+      try await commitSetupCheckedBatch(
+        replacement, holdPointerDeleteConflicts: holdPointerDeleteConflicts, unknownPointerDeletes: unknownPointerDeletes
+      )
       return replacement
     }
   }
@@ -856,17 +885,27 @@ extension CloudFullSyncPersistence {
   }
 
   private func commitSetupCheckedBatch(
-    _ batch: CloudFullBatchCommit, holdUnprovenPointerDeletes: Bool
+    _ batch: CloudFullBatchCommit, holdPointerDeleteConflicts: Bool, unknownPointerDeletes: Set<UUID>
   ) async throws {
     let deferrals = try await retainAcceptedSetupPointerDeletes(in: batch)
-    if holdUnprovenPointerDeletes, batch.attachmentTransitions.contains(where: {
+    if retainSetupPointerDelete != nil, batch.attachmentTransitions.contains(where: {
       switch $0 {
       case .metadataDeleteAccepted(let id, _): deferrals[id] == nil
-      case .metadataDeleteConflict, .metadataUnknown: true
+      case .metadataUnknown(let id, _, _, _): holdPointerDeleteConflicts || unknownPointerDeletes.contains(id)
+      case .metadataDeleteConflict: holdPointerDeleteConflicts
       default: false
       }
     }) { throw CloudSetupRetryHold() }
-    try await commitStagedBatch(batch, deferredSetupPointerDeletes: deferrals)
+    let replacementIDs = await setupReplacementIDs?() ?? []
+    try await commitStagedBatch(
+      batch, deferredSetupPointerDeletes: deferrals, setupReplacementIDs: replacementIDs
+    )
+    if let preserveSetupReplacementRemaps, !replacementIDs.isEmpty,
+      batch.attachmentTransitions.contains(where: { if case .metadataUnknown = $0 { true } else { false } })
+    {
+      let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
+      try await preserveSetupReplacementRemaps(remaps)
+    }
   }
 
   private func retainAcceptedSetupPointerDeletes(

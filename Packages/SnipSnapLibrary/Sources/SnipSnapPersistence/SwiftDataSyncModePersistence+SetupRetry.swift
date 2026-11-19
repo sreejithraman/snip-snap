@@ -14,7 +14,7 @@ extension SwiftDataSyncModePersistence {
     return !acknowledged.subtracting(source.snips.map(\.id)).isEmpty
   }
 
-  package func withSetupRetryFetchCommit<Value: Sendable>(
+  package func withSetupRetryBatchCommit<Value: Sendable>(
     candidateStoreID: UUID,
     namespace: ICloudSyncNamespaceBinding,
     _ commit: @Sendable () async throws -> Value
@@ -22,8 +22,8 @@ extension SwiftDataSyncModePersistence {
     guard manifest.setupRetrySourceIndex != nil, let transition = manifest.transition,
       transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
     else { throw SyncModePersistenceError.transitionInProgress }
-    // Setup fetches can apply a pointer tombstone to the candidate and queue
-    // payload cleanup. Keep source writes out of the check and commit.
+    // Fetched tombstones and sent pointer results can queue payload cleanup.
+    // Keep source writes out of the check and commit.
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
     return try await commit()
@@ -124,10 +124,30 @@ extension SwiftDataSyncModePersistence {
     return evidence.acceptedPointerDeletes
   }
 
-  package func finishDeferredSetupCleanupIfNeeded() async throws -> Bool {
+  package func preserveSetupPointerReplacementRemaps(
+    _ remaps: [UUID: UUID], for transition: SyncModeTransition
+  ) throws {
+    guard !remaps.isEmpty, let namespace = transition.namespace else { return }
+    guard manifest.transition == transition, let index = manifest.setupRetrySourceIndex else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
+    guard let history = manifest.stores[index].setupRetryHistory else { return }
+    var updated = history
+    try updated.update(namespace: namespace) { try $0.applyPointerReplacementRemaps(remaps) }
+    if updated != history {
+      var next = manifest
+      next.stores[index].setupRetryHistory = updated
+      try commit(next)
+    }
+  }
+
+  package func finishDeferredSetupCleanupIfNeeded(
+    beforeFinish: @Sendable (ICloudSyncNamespaceBinding) throws -> Void
+  ) async throws -> Bool {
     guard let transition = manifest.transition, transition.phase == .pointerSwapped,
-      !deferredSetupPointerDeletes(for: transition).isEmpty
+      let binding = transition.namespace, !deferredSetupPointerDeletes(for: transition).isEmpty
     else { return false }
+    try beforeFinish(binding)
     try await finishTransition()
     try? cleanupRetiredStores()
     return true

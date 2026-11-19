@@ -8,6 +8,7 @@ extension SwiftDataSnipLibrary {
     transitions: [CloudAttachmentTransition],
     resolveMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
     deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
+    setupReplacementIDs: Set<UUID> = [],
     context: ModelContext
   ) throws -> Set<UUID> {
     guard !transitions.isEmpty else { return [] }
@@ -26,6 +27,12 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       context: context
     )
+    var setupRemaps = setupReplacementIDs.isEmpty ? [:] : try Self.setupPointerReplacementRemaps(
+      namespaceKey: namespaceKey, context: context
+    )
+    var trackedReplacements = Set(try setupReplacementIDs.map {
+      try CloudSetupPointerDelete.currentReplacementID($0, remaps: setupRemaps)
+    })
     var materializedAttachmentIDs: Set<UUID> = []
     var fetchedOrderSnips: Set<UUID> = []
     var fetchedMetadata: [UUID: CloudAttachmentMetadataValue] = [:]
@@ -379,6 +386,14 @@ extension SwiftDataSnipLibrary {
           $0.uuidString < $1.uuidString
         }
         cleanupQueue.remapBlockers(from: attachmentID, to: replacementAttachmentID)
+        if trackedReplacements.remove(attachmentID) != nil {
+          // Commit the exact remap with the publication, without adding a cleanup row.
+          Self.recordSetupPointerReplacementRemap(
+            from: attachmentID, to: replacementAttachmentID, namespaceKey: namespaceKey, context: context
+          )
+          setupRemaps[attachmentID] = replacementAttachmentID
+          trackedReplacements.insert(replacementAttachmentID)
+        }
       case .operationFailed(let attachmentID, let expected, let failure):
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
@@ -397,18 +412,14 @@ extension SwiftDataSnipLibrary {
         if let deferral = deferredSetupPointerDeletes[attachmentID] {
           let receipt = deferral.receipt
           guard receipt.key.pointer == row.metadataIdentity, receipt.snipID == row.snipID,
-            receipt.position.map({ $0 == row.position }) ?? true,
             deferral.metadataShadow == row.metadataShadowData,
             receipt.payloads == CloudSetupPointerDelete.payloads(for: owedCleanups)
           else { throw CloudAttachmentStorageError.staleTransition }
           if let replacementAttachmentID {
-            guard let replacement = byAttachment[replacementAttachmentID] else {
-              throw CloudAttachmentStorageError.staleTransition
+            let boundIDs = try receipt.replacementIDs?.map {
+              try CloudSetupPointerDelete.currentReplacementID($0, remaps: setupRemaps)
             }
-            let expected = CloudSetupPointerDelete.Replacement(
-              sha256: replacement.sha256, byteCount: replacement.byteCount
-            )
-            guard receipt.replacements?.contains(expected) == true else {
+            guard boundIDs?.contains(replacementAttachmentID) == true else {
               throw CloudAttachmentStorageError.staleTransition
             }
           }

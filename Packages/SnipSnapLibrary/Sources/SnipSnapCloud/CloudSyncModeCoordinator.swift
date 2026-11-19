@@ -961,6 +961,8 @@ package actor ICloudSyncModeCoordinator {
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
         let retainPointerDelete: CloudFullSyncPersistence.RetainSetupPointerDelete?
+        let setupReplacementIDs: (@Sendable () async -> Set<UUID>)?
+        let preserveSetupReplacementRemaps: (@Sendable ([UUID: UUID]) async throws -> Void)?
         if let validateSetupAccount {
             recordResults = { [persistence, namespace] results in
                 try await validateSetupAccount()
@@ -975,24 +977,38 @@ package actor ICloudSyncModeCoordinator {
                     binding, candidateStoreID: storeID, namespace: namespace.binding
                 )
             }
+            setupReplacementIDs = { [persistence, namespace] in
+                let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
+                return Set(evidence?.acceptedPointerDeletes.flatMap { $0.replacementIDs ?? [] } ?? [])
+            }
+            preserveSetupReplacementRemaps = { [persistence, namespace] remaps in
+                guard !remaps.isEmpty else { return }
+                let storage = try await persistence.snapshot()
+                guard let transition = storage.transition, transition.candidateStoreID == storeID,
+                      transition.namespace == namespace.binding
+                else { throw SyncModePersistenceError.transitionInProgress }
+                try await persistence.preserveSetupPointerReplacementRemaps(remaps, for: transition)
+            }
         } else {
             recordResults = nil
             retainPointerDelete = nil
+            setupReplacementIDs = nil
+            preserveSetupReplacementRemaps = nil
         }
         let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
-        let withFetchCommit: CloudFullSyncPersistence.SetupRetryFetchCommit?
+        let withBatchCommit: CloudFullSyncPersistence.SetupRetryBatchCommit?
         if checksSetupRetry {
             deletedSnipIDs = { [self] in
                 try await deletedSetupSnipIDs(await acknowledgedSetupSnipIDs())
             }
-            withFetchCommit = { [persistence, namespace] commit in
-                try await persistence.withSetupRetryFetchCommit(
+            withBatchCommit = { [persistence, namespace] commit in
+                try await persistence.withSetupRetryBatchCommit(
                     candidateStoreID: storeID, namespace: namespace.binding, commit
                 )
             }
         } else {
             deletedSnipIDs = nil
-            withFetchCommit = nil
+            withBatchCommit = nil
         }
         return CloudFullSyncPersistence(
             library: library,
@@ -1002,8 +1018,10 @@ package actor ICloudSyncModeCoordinator {
             attachmentPolicy: attachmentPolicy,
             recordSetupRetryResults: recordResults,
             retainSetupPointerDelete: retainPointerDelete,
+            setupReplacementIDs: setupReplacementIDs,
+            preserveSetupReplacementRemaps: preserveSetupReplacementRemaps,
             setupRetryDeletedSnipIDs: deletedSnipIDs,
-            withSetupRetryFetchCommit: withFetchCommit
+            withSetupRetryBatchCommit: withBatchCommit
         )
     }
 
