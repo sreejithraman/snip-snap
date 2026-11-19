@@ -40,6 +40,10 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
       sha256 = metadata.sha256
       byteCount = metadata.byteCount
     }
+
+    func matchesSource(snipID: UUID, sha256: Data, byteCount: Int64) -> Bool {
+      self.snipID == snipID && self.sha256 == sha256 && self.byteCount == byteCount
+    }
   }
 
   package struct ReplacementRemap: Codable, Equatable, Sendable {
@@ -47,14 +51,14 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
     let target: Replacement
 
     var isValid: Bool {
-      source.attachmentID != target.attachmentID && source.snipID == target.snipID
+      source != target && source.snipID == target.snipID
         && source.sha256 == target.sha256 && source.byteCount == target.byteCount
         && source.payloadIdentity.zoneName == target.payloadIdentity.zoneName
         && source.payloadIdentity.ownerName == target.payloadIdentity.ownerName
     }
   }
 
-  package typealias ReplacementRemaps = [UUID: ReplacementRemap]
+  package typealias ReplacementRemaps = [Replacement: ReplacementRemap]
 
   package struct Binding: Sendable {
     let key: Key
@@ -113,19 +117,19 @@ package struct CloudSetupPointerDelete: Codable, Equatable, Sendable {
     return replacements?.isEmpty == true ? [] : nil
   }
 
-  mutating func applyReplacementRemaps(_ remaps: [UUID: ReplacementRemap]) throws {
+  mutating func applyReplacementRemaps(_ remaps: ReplacementRemaps) throws {
     if let boundReplacements {
       self.boundReplacements = try boundReplacements.map { try Self.currentReplacement($0, remaps: remaps) }
     }
   }
 
   package static func currentReplacement(
-    _ dependency: Replacement, remaps: [UUID: ReplacementRemap]
+    _ dependency: Replacement, remaps: ReplacementRemaps
   ) throws -> Replacement {
     var current = dependency
-    var visited: Set<UUID> = []
-    while let remap = remaps[current.attachmentID], remap.source == current {
-      guard visited.insert(current.attachmentID).inserted else { throw SyncModePersistenceError.invalidManifest }
+    var visited: Set<Replacement> = []
+    while let remap = remaps[current] {
+      guard visited.insert(current).inserted else { throw SyncModePersistenceError.invalidManifest }
       current = remap.target
     }
     return current
@@ -189,7 +193,7 @@ extension SwiftDataSnipLibrary {
 
   package func setupPointerReplacementRemaps(
     namespaceKey: CloudSyncNamespaceKey
-  ) throws -> [UUID: CloudSetupPointerDelete.ReplacementRemap] {
+  ) throws -> CloudSetupPointerDelete.ReplacementRemaps {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -200,9 +204,9 @@ extension SwiftDataSnipLibrary {
 
   static func setupPointerReplacementRemaps(
     namespaceKey: String, context: ModelContext
-  ) throws -> [UUID: CloudSetupPointerDelete.ReplacementRemap] {
+  ) throws -> CloudSetupPointerDelete.ReplacementRemaps {
     let prefix = "\(namespaceKey)|setup-replacement-v2-"
-    var remaps: [UUID: CloudSetupPointerDelete.ReplacementRemap] = [:]
+    var remaps: CloudSetupPointerDelete.ReplacementRemaps = [:]
     for row in try setupPointerReplacementReceipts(namespaceKey: namespaceKey, context: context) {
       guard row.id.hasPrefix(prefix) else { continue }
       let fields = row.id.dropFirst(prefix.count).split(separator: "|")
@@ -212,7 +216,7 @@ extension SwiftDataSnipLibrary {
         CloudFullReceiptOperation.setupReplacementRemap(from: row.batchID, proof: String(fields[0]))
           .matches(row, namespaceKey: namespaceKey),
         row.digest == Data(SHA256.hash(data: Data(row.id.utf8))),
-        remaps.updateValue(remap, forKey: row.batchID) == nil
+        remaps.updateValue(remap, forKey: remap.source) == nil
       else { throw SyncModePersistenceError.invalidManifest }
     }
     return remaps

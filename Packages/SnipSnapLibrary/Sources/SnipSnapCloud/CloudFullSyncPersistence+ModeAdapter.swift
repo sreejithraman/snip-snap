@@ -105,6 +105,14 @@ extension CloudFullSyncPersistence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard let inventory = stored.namespaceState.initialFetchInventory, let payloadZone else { return false }
     let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+    let owed = Set(receipts.flatMap(\.payloadIdentities))
+    // Absence can leave a cached alias without a tombstone. Keep its local state
+    // and the source receipt until the alias is reconciled with safe authority.
+    guard !attachments.publications.contains(where: { publication in
+      !inventory.observed.contains(publication.metadataIdentity)
+        && (owed.contains(publication.metadata.payloadIdentity)
+          || publication.priorPayloadIdentity.map(owed.contains) == true)
+    }) else { return false }
     let publications = Dictionary(grouping: attachments.publications, by: \.metadataIdentity)
     let observedPointers = inventory.observed.filter {
       $0.recordName.hasPrefix("a-") || publications[$0] != nil

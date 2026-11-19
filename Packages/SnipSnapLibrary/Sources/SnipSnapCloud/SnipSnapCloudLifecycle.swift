@@ -99,6 +99,18 @@ public final class SnipSnapCloudLifecycleHooks {
   }
 }
 
+public struct SnipSnapDeferredEnableCompletion: Equatable, Sendable {
+  package let binding: ICloudSyncNamespaceBinding
+  package let storeID: UUID
+  package let issue: SyncedContentSyncIssue?
+
+  package init(binding: ICloudSyncNamespaceBinding, storeID: UUID, issue: SyncedContentSyncIssue? = nil) {
+    self.binding = binding
+    self.storeID = storeID
+    self.issue = issue
+  }
+}
+
 public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case noChange
   case contentUpdated
@@ -114,7 +126,7 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case syncScheduled
   case iCloudSyncSettingUp(SyncedContentSyncIssue? = nil)
   case iCloudSyncEnabled
-  case deferredICloudSyncEnabled(ICloudSyncNamespaceBinding, issue: SyncedContentSyncIssue?)
+  case deferredICloudSyncEnabled(SnipSnapDeferredEnableCompletion)
   case oldSyncedContentRemovalPending
   case oldSyncedContentRemovalCompleted
 }
@@ -126,7 +138,7 @@ enum PendingICloudSyncEnable {
     case pending
     case retrying(SyncedContentSyncIssue)
     case needsAttention(SyncedContentSyncIssue)
-    case checkingDeferredCompletion(ICloudSyncNamespaceBinding?)
+    case checkingDeferredCompletion(SyncModeDeferredEnableCompletion?)
 
     var resumesSetup: Bool {
       switch self {
@@ -194,8 +206,7 @@ enum PendingICloudSyncEnable {
     if data == legacyFailedValue { return .needsAttention(.appDataIssue) }
     guard let value = String(data: data, encoding: .utf8) else { return .pending }
     if value.hasPrefix(SyncModeDeferredEnableCompletion.prefix) {
-      let data = Data(base64Encoded: String(value.dropFirst(SyncModeDeferredEnableCompletion.prefix.count)))
-      return .checkingDeferredCompletion(data.flatMap { try? JSONDecoder().decode(ICloudSyncNamespaceBinding.self, from: $0) })
+      return .checkingDeferredCompletion(SyncModeDeferredEnableCompletion.decode(value))
     }
     if value.hasPrefix(failurePrefix) {
       return .needsAttention(issue(in: value, after: failurePrefix) ?? .appDataIssue)
@@ -210,9 +221,9 @@ enum PendingICloudSyncEnable {
     let value: String
     switch phase {
     case .pending: value = pendingValue
-    case .checkingDeferredCompletion(let binding):
-      guard let binding else { throw CloudCollectionError.syncNeedsAttention }
-      return try SyncModeDeferredEnableCompletion.record(binding, at: rootURL)
+    case .checkingDeferredCompletion(let completion):
+      guard let completion else { throw CloudCollectionError.syncNeedsAttention }
+      return try completion.record(at: rootURL)
     case .retrying(let issue): value = try retryPrefix + payload(for: issue)
     case .needsAttention(let issue): value = try failurePrefix + payload(for: issue)
     }
@@ -308,10 +319,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   package func enableICloudSync() async throws -> SyncedContentEnableOutcome {
     try await finishDeferredSetupCleanupIfNeeded()
     if case .checkingDeferredCompletion(let expected) = PendingICloudSyncEnable.phase(at: rootURL) {
-      guard let binding = try await finishedICloudSwitchBinding(), binding == expected else {
+      guard let active = try await finishedICloudSwitch(), matches(active, expected) else {
         throw CloudCollectionError.syncNeedsAttention
       }
-      try await checkDeferredEnable(for: binding)
+      try await checkDeferredEnable(for: active.binding)
       return .enabled
     }
     try PendingICloudSyncEnable.mark(at: rootURL)
@@ -481,20 +492,22 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   ) async throws -> SnipSnapCloudSyncResult {
     try await finishDeferredSetupCleanupIfNeeded()
     let enablePhase = PendingICloudSyncEnable.phase(at: rootURL)
-    let finishedBinding = if enablePhase != nil {
-      try await finishedICloudSwitchBinding()
+    let finished = if enablePhase != nil {
+      try await finishedICloudSwitch()
     } else {
-      ICloudSyncNamespaceBinding?.none
+      SnipSnapDeferredEnableCompletion?.none
     }
-    if let binding = finishedBinding {
+    if let finished {
       guard case .checkingDeferredCompletion(let expected) = enablePhase else {
         try PendingICloudSyncEnable.clear(at: rootURL)
         return .iCloudSyncEnabled
       }
       do {
-        guard binding == expected else { throw CloudCollectionError.syncNeedsAttention }
-        try await checkDeferredEnable(for: binding)
-        return .deferredICloudSyncEnabled(binding, issue: nil)
+        guard matches(finished, expected) else { throw CloudCollectionError.syncNeedsAttention }
+        if !retryingUserRecoverableFailures || expected?.issue == nil {
+          try await checkDeferredEnable(for: finished.binding)
+          return try await deferredEnableResult(for: finished.binding, issue: expected?.issue, storeID: finished.storeID)
+        }
       } catch let isolation as CloudAccountIsolationError {
         try PendingICloudSyncEnable.clear(at: rootURL)
         return isolation.syncResult
@@ -505,8 +518,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       switch try await resumePendingEnable() {
       case .settingUp(let issue): return .iCloudSyncSettingUp(issue)
       case .enabled:
-        if case .checkingDeferredCompletion(let binding?) = PendingICloudSyncEnable.phase(at: rootURL) {
-          return .deferredICloudSyncEnabled(binding, issue: nil)
+        if case .checkingDeferredCompletion(let expected?) = PendingICloudSyncEnable.phase(at: rootURL) {
+          return try await deferredEnableResult(for: expected.binding, issue: expected.issue)
         }
         return .iCloudSyncEnabled
       }
@@ -558,9 +571,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       case .on(let namespace), .settled(let namespace), .scheduled(let namespace),
         .enabled(let namespace), .adoptedRemoteCollection(let namespace),
         .adoptedRemoteCollectionSettled(let namespace), .adoptedRemoteCollectionScheduled(let namespace):
-        return try deferredEnableResult(for: namespace.binding, issue: nil)
+        return try await deferredEnableResult(for: namespace.binding, issue: nil)
       case .adoptedRemoteCollectionWithIssue(let namespace, let issue):
-        return try deferredEnableResult(for: namespace.binding, issue: issue)
+        return try await deferredEnableResult(for: namespace.binding, issue: issue)
       case .purged:
         try PendingICloudSyncEnable.clear(at: rootURL)
       default: break
@@ -589,23 +602,36 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   private func deferredEnableResult(
-    for binding: ICloudSyncNamespaceBinding, issue: SyncedContentSyncIssue?
-  ) throws -> SnipSnapCloudSyncResult {
-    try SyncModeDeferredEnableCompletion.record(binding, at: rootURL)
-    return .deferredICloudSyncEnabled(binding, issue: issue)
+    for binding: ICloudSyncNamespaceBinding, issue: SyncedContentSyncIssue?, storeID: UUID? = nil
+  ) async throws -> SnipSnapCloudSyncResult {
+    guard let active = try await finishedICloudSwitch(), active.binding == binding,
+      storeID.map({ $0 == active.storeID }) ?? true
+    else {
+      throw CloudCollectionError.syncNeedsAttention
+    }
+    try SyncModeDeferredEnableCompletion(binding: binding, storeID: active.storeID, issue: issue).record(at: rootURL)
+    return .deferredICloudSyncEnabled(.init(binding: binding, storeID: active.storeID, issue: issue))
   }
 
-  package func acknowledgeDeferredEnableCompletion(for binding: ICloudSyncNamespaceBinding) async throws {
-    guard case .checkingDeferredCompletion(let expected?) = PendingICloudSyncEnable.phase(at: rootURL),
-      expected == binding, try await finishedICloudSwitchBinding() == binding
-    else { return }
+  package func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool {
+    guard let active = try await finishedICloudSwitch(), active.storeID == completion.storeID,
+      active.binding == completion.binding,
+      case .checkingDeferredCompletion(let expected?) = PendingICloudSyncEnable.phase(at: rootURL),
+      expected.storeID == completion.storeID, expected.binding == completion.binding, expected.issue == completion.issue
+    else { return false }
     try PendingICloudSyncEnable.clear(at: rootURL)
+    return true
+  }
+
+  private func matches(_ active: SnipSnapDeferredEnableCompletion, _ marker: SyncModeDeferredEnableCompletion?) -> Bool {
+    guard let marker, marker.binding == active.binding else { return false }
+    return marker.storeID.map { $0 == active.storeID } ?? true
   }
 
   /// iCloud is the active store, its enable transition is finished, and no account
   /// isolation is in progress. Any other state, such as a crash right after the
   /// pointer swap, needs the enable to resume.
-  private func finishedICloudSwitchBinding() async throws -> ICloudSyncNamespaceBinding? {
+  private func finishedICloudSwitch() async throws -> SnipSnapDeferredEnableCompletion? {
     guard SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: rootURL) != nil
     else { return nil }
     let modePersistence = try persistence ?? SwiftDataSyncModePersistence(
@@ -615,9 +641,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     persistence = modePersistence
     let snapshot = try await modePersistence.snapshot()
     guard snapshot.activeStore.kind == .iCloudSync, snapshot.transition == nil,
-      snapshot.accountIsolation == nil
+      snapshot.accountIsolation == nil, let binding = snapshot.activeStore.namespace
     else { return nil }
-    return snapshot.activeStore.namespace
+    return SnipSnapDeferredEnableCompletion(binding: binding, storeID: snapshot.activeStore.id)
   }
 
   package func scheduleAutomaticSync() async throws {

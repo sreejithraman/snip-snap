@@ -962,6 +962,7 @@ package actor ICloudSyncModeCoordinator {
         let recordResults: CloudFullSyncPersistence.SetupRetryResultHook?
         let retainPointerDelete: CloudFullSyncPersistence.RetainSetupPointerDelete?
         let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
+        let setupAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])?
         let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
         if let validateSetupAccount {
             recordResults = { [persistence, namespace] results in
@@ -981,6 +982,9 @@ package actor ICloudSyncModeCoordinator {
                 let evidence = await persistence.setupRetryEvidence(namespace: namespace.binding)
                 return evidence?.acceptedPointerDeletes ?? []
             }
+            setupAllocations = { [persistence, namespace] in
+                try await persistence.setupReplacementAllocations(candidateStoreID: storeID, namespace: namespace.binding)
+            }
             preserveSetupReplacementRemaps = { [persistence, namespace] remaps in
                 guard !remaps.isEmpty else { return }
                 let storage = try await persistence.snapshot()
@@ -993,6 +997,7 @@ package actor ICloudSyncModeCoordinator {
             recordResults = nil
             retainPointerDelete = nil
             setupPointerDeletes = nil
+            setupAllocations = nil
             preserveSetupReplacementRemaps = nil
         }
         let deletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
@@ -1019,6 +1024,7 @@ package actor ICloudSyncModeCoordinator {
             recordSetupRetryResults: recordResults,
             retainSetupPointerDelete: retainPointerDelete,
             setupPointerDeletes: setupPointerDeletes,
+            setupReplacementAllocations: setupAllocations,
             preserveSetupReplacementRemaps: preserveSetupReplacementRemaps,
             setupRetryDeletedSnipIDs: deletedSnipIDs,
             withSetupRetryBatchCommit: withBatchCommit

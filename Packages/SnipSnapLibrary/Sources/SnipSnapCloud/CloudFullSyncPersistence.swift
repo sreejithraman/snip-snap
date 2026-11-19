@@ -612,6 +612,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   private let recordSetupRetryResults: SetupRetryResultHook?
   private let retainSetupPointerDelete: RetainSetupPointerDelete?
   private let setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])?
+  let setupReplacementAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])?
   private let preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)?
   private let setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)?
   private let withSetupRetryBatchCommit: SetupRetryBatchCommit?
@@ -628,6 +629,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     recordSetupRetryResults: SetupRetryResultHook? = nil,
     retainSetupPointerDelete: RetainSetupPointerDelete? = nil,
     setupPointerDeletes: (@Sendable () async -> [CloudSetupPointerDelete])? = nil,
+    setupReplacementAllocations: (@Sendable () async throws -> [UUID: CloudSetupPointerDelete.Replacement])? = nil,
     preserveSetupReplacementRemaps: (@Sendable (CloudSetupPointerDelete.ReplacementRemaps) async throws -> Void)? = nil,
     setupRetryDeletedSnipIDs: (@Sendable () async throws -> Set<UUID>)? = nil,
     withSetupRetryBatchCommit: SetupRetryBatchCommit? = nil,
@@ -646,6 +648,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.recordSetupRetryResults = recordSetupRetryResults
     self.retainSetupPointerDelete = retainSetupPointerDelete
     self.setupPointerDeletes = setupPointerDeletes
+    self.setupReplacementAllocations = setupReplacementAllocations
     self.preserveSetupReplacementRemaps = preserveSetupReplacementRemaps
     self.setupRetryDeletedSnipIDs = setupRetryDeletedSnipIDs
     self.withSetupRetryBatchCommit = withSetupRetryBatchCommit
@@ -906,7 +909,12 @@ extension CloudFullSyncPersistence {
       batch, deferredSetupPointerDeletes: deferrals, setupReplacements: replacements
     )
     if let preserveSetupReplacementRemaps, !replacements.isEmpty,
-      batch.attachmentTransitions.contains(where: { if case .metadataUnknown = $0 { true } else { false } })
+      batch.attachmentTransitions.contains(where: {
+        switch $0 {
+        case .metadataUnknown, .payloadCollision: true
+        default: false
+        }
+      })
     {
       let remaps = try await library.setupPointerReplacementRemaps(namespaceKey: namespaceKey)
       try await preserveSetupReplacementRemaps(remaps)

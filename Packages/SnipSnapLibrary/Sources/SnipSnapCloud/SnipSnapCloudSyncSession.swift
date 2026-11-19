@@ -13,7 +13,7 @@ public actor SnipSnapCloudSyncSession {
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
-  private let acknowledgeEnableAction: @Sendable (ICloudSyncNamespaceBinding) async throws -> Void
+  private let acknowledgeEnableAction: @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
@@ -140,7 +140,7 @@ public actor SnipSnapCloudSyncSession {
       _ = try await coordinator.enableSync()
       return .enabled
     }
-    acknowledgeEnableAction = { _ in }
+    acknowledgeEnableAction = { _ in false }
     cancelEnableAction = {}
     disableAction = { _ in throw CloudCollectionError.noActiveCollection }
     deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
@@ -160,7 +160,7 @@ public actor SnipSnapCloudSyncSession {
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
-    acknowledgeEnable: @escaping @Sendable (ICloudSyncNamespaceBinding) async throws -> Void = { _ in },
+    acknowledgeEnable: @escaping @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool = { _ in false },
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
@@ -201,8 +201,8 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease(enableAction)
   }
 
-  public func acknowledgeDeferredEnableCompletion(for binding: ICloudSyncNamespaceBinding) async throws {
-    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(binding) }
+  public func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool {
+    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion) }
   }
 
   public func cancelICloudSyncSetup() async throws {

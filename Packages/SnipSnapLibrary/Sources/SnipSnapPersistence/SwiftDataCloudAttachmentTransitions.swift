@@ -33,6 +33,13 @@ extension SwiftDataSnipLibrary {
     var trackedReplacements = Set(try setupReplacements.map {
       try CloudSetupPointerDelete.currentReplacement($0, remaps: setupRemaps)
     })
+    func trackReplacement(from prior: CloudSetupPointerDelete.Replacement, to row: StoredCloudAttachmentPublication) throws {
+      guard trackedReplacements.remove(prior) != nil else { return }
+      let remap = CloudSetupPointerDelete.ReplacementRemap(source: prior, target: .init(row.metadata))
+      try Self.recordSetupPointerReplacementRemap(remap, namespaceKey: namespaceKey, context: context)
+      setupRemaps[prior] = remap
+      trackedReplacements.insert(remap.target)
+    }
     var materializedAttachmentIDs: Set<UUID> = []
     var fetchedOrderSnips: Set<UUID> = []
     var fetchedMetadata: [UUID: CloudAttachmentMetadataValue] = [:]
@@ -295,10 +302,12 @@ extension SwiftDataSnipLibrary {
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition
         }
+        let prior = CloudSetupPointerDelete.Replacement(row.metadata)
         try row.lifecycle.adoptCollisionReplacement(
           replacementIdentity,
           expectedRevision: expected
         )
+        try trackReplacement(from: prior, to: row)
       case .metadataUnknown(
         let attachmentID,
         let expected,
@@ -386,16 +395,7 @@ extension SwiftDataSnipLibrary {
           $0.uuidString < $1.uuidString
         }
         cleanupQueue.remapBlockers(from: attachmentID, to: replacementAttachmentID)
-        let prior = CloudSetupPointerDelete.Replacement(row.metadata)
-        if trackedReplacements.remove(prior) != nil {
-          // Commit the exact remap with the publication, without adding a cleanup row.
-          let remap = CloudSetupPointerDelete.ReplacementRemap(source: prior, target: .init(replacement.metadata))
-          try Self.recordSetupPointerReplacementRemap(
-            remap, namespaceKey: namespaceKey, context: context
-          )
-          setupRemaps[attachmentID] = remap
-          trackedReplacements.insert(remap.target)
-        }
+        try trackReplacement(from: .init(row.metadata), to: replacement)
       case .operationFailed(let attachmentID, let expected, let failure):
         guard let row = byAttachment[attachmentID] else {
           throw CloudAttachmentStorageError.staleTransition

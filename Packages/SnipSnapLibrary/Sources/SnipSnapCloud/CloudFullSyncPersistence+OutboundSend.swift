@@ -115,7 +115,8 @@ extension CloudFullSyncPersistence {
         metadataZoneName: dataZone.name,
         metadataOwnerName: dataZone.ownerName,
         payloadZoneName: payloadZone.name,
-        payloadOwnerName: payloadZone.ownerName
+        payloadOwnerName: payloadZone.ownerName,
+        setupReplacementAllocations: try await setupReplacementAllocations?() ?? [:]
       )
     }
     let local = try await library.checkedSnapshot(sortedBy: .manual)

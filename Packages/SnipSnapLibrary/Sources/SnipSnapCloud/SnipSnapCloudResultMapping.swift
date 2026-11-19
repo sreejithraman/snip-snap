@@ -1,19 +1,22 @@
 import SnipSnapCore
-import SnipSnapPersistence
 
 extension SnipSnapCloudSyncResult {
   @MainActor
   public func applyDeferredEnableCompletion(
     to settings: SyncedContentSettingsModel,
+    started: SyncedContentSyncStart,
     reload: @MainActor () async throws -> Void,
-    acknowledge: @MainActor (ICloudSyncNamespaceBinding) async throws -> Void
+    acknowledge: @MainActor (SnipSnapDeferredEnableCompletion) async throws -> Bool
   ) async throws -> Bool {
-    guard case .deferredICloudSyncEnabled(let binding, let issue) = self else { return false }
+    guard case .deferredICloudSyncEnabled(let completion) = self else { return false }
+    guard settings.acceptsEnableCompletion(started: started) else { return true }
     try await reload()
+    guard settings.acceptsEnableCompletion(started: started),
+      try await acknowledge(completion), settings.acceptsEnableCompletion(started: started)
+    else { return true }
     settings.recordEnableCompleted()
-    if let issue { settings.recordSyncFailure(issue) }
-    try await acknowledge(binding)
-    return issue != nil
+    if let issue = completion.issue { settings.recordSyncFailure(issue) }
+    return completion.issue != nil
   }
 }
 

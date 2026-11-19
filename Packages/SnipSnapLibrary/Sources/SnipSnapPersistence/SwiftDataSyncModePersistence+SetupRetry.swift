@@ -1,16 +1,33 @@
 import Foundation
 import SnipSnapCore
 
-package enum SyncModeDeferredEnableCompletion {
+package struct SyncModeDeferredEnableCompletion: Codable, Equatable, Sendable {
   package static let prefix = "checking-deferred-completion:"
+  package let binding: ICloudSyncNamespaceBinding
+  package let storeID: UUID?
+  package let issue: SyncedContentSyncIssue?
+
+  package init(binding: ICloudSyncNamespaceBinding, storeID: UUID?, issue: SyncedContentSyncIssue?) {
+    self.binding = binding
+    self.storeID = storeID
+    self.issue = issue
+  }
 
   package static func markerURL(at rootURL: URL) -> URL {
     rootURL.appendingPathComponent("icloud-sync-enable-pending", isDirectory: false)
   }
 
-  package static func record(_ binding: ICloudSyncNamespaceBinding, at rootURL: URL) throws {
-    let encoded = try JSONEncoder().encode(binding).base64EncodedString()
-    try DurableFile.write(Data((prefix + encoded).utf8), to: markerURL(at: rootURL))
+  package func record(at rootURL: URL) throws {
+    let encoded = try JSONEncoder().encode(self).base64EncodedString()
+    try DurableFile.write(Data((Self.prefix + encoded).utf8), to: Self.markerURL(at: rootURL))
+  }
+
+  package static func decode(_ value: String) -> Self? {
+    guard let data = Data(base64Encoded: String(value.dropFirst(prefix.count))) else { return nil }
+    let decoder = JSONDecoder()
+    if let record = try? decoder.decode(Self.self, from: data) { return record }
+    guard let legacy = try? decoder.decode(ICloudSyncNamespaceBinding.self, from: data) else { return nil }
+    return Self(binding: legacy, storeID: nil, issue: nil)
   }
 }
 
@@ -74,6 +91,37 @@ extension SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.invalidFreezeToken
     }
     return snapshot
+  }
+
+  package func setupReplacementAllocations(
+    candidateStoreID: UUID, namespace: ICloudSyncNamespaceBinding
+  ) async throws -> [UUID: CloudSetupPointerDelete.Replacement] {
+    guard let token = setupRetryFreezeToken(candidateStoreID: candidateStoreID),
+      manifest.transition?.namespace == namespace
+    else { return [:] }
+    let dependencies = Set(setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes
+      .flatMap { $0.replacementDependencies ?? [] } ?? [])
+    guard !dependencies.isEmpty else { return [:] }
+    // A rebuilt candidate may reuse an unpublished allocation only for the
+    // same attachment and bytes in the frozen source.
+    let source = try await libraryForTransition(storeID: token.sourceStoreID).checkedSnapshot(sortedBy: .manual)
+    guard setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token else {
+      throw SyncModePersistenceError.invalidFreezeToken
+    }
+    let groups = Dictionary(grouping: dependencies, by: \.attachmentID)
+    var result: [UUID: CloudSetupPointerDelete.Replacement] = [:]
+    for snip in source.snips {
+      for attachment in snip.attachments {
+        let id = attachment.id
+        guard let bindings = groups[id], bindings.count == 1, let binding = bindings.first,
+          let url = source.attachmentURLs[id],
+          let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+          binding.matchesSource(snipID: snip.id, sha256: try AttachmentFileIO.digest(at: url), byteCount: Int64(size))
+        else { continue }
+        result[id] = binding
+      }
+    }
+    return result
   }
 
   package func recordSetupRetryResults(

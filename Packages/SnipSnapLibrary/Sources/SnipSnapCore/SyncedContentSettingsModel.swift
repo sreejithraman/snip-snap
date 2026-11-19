@@ -185,6 +185,7 @@ public enum SyncedContentDeleteOutcome: Equatable, Sendable {
 /// What Settings showed when a sync request started. A request can finish only a removal
 /// that was already pending then. A removal that began later may still be running.
 public struct SyncedContentSyncStart: Sendable {
+  fileprivate let session: UUID
   fileprivate let pendingRemoval: Int?
 }
 
@@ -478,7 +479,7 @@ public final class SyncedContentSettingsModel {
   }
 
   public func recordSyncStarted() -> SyncedContentSyncStart {
-    let start = SyncedContentSyncStart(pendingRemoval: state == .removalPending ? removalID : nil)
+    let start = SyncedContentSyncStart(session: statusSession, pendingRemoval: state == .removalPending ? removalID : nil)
     guard mode == .iCloudSync else { return start }
     switch state {
     case .ready:
@@ -556,6 +557,14 @@ public final class SyncedContentSettingsModel {
 
   public func recordEnableCompleted() {
     status = Status(mode: .iCloudSync, state: .ready)
+  }
+
+  package func acceptsEnableCompletion(started: SyncedContentSyncStart) -> Bool {
+    guard started.session == statusSession else { return false }
+    switch state {
+    case .ready, .enabling, .syncing, .failed: return true
+    case .disabling, .deleting, .removalPending, .deleted: return false
+    }
   }
 
   public func deleteSyncedContent() async {
