@@ -1152,20 +1152,14 @@ package actor ICloudSyncModeCoordinator {
                         return .init(pointer: pointer, metadataShadow: base?.data)
                     }
                     try await self.requireMatchingAccount()
-                    let newlyProtected = try await persistence.recordSetupSendAttempt(
+                    try await self.checkSetupCollection()
+                    try await persistence.recordSetupSendAttempt(
                         attempt,
                         offers: offers,
                         pointerDeletes: pointerDeletes,
                         candidateStoreID: candidateStoreID,
                         using: freezeToken
                     )
-                    try await self.checkSetupCollection()
-                    let protection = try await persistence.requireCurrentSetupSend(
-                        candidateStoreID: candidateStoreID, namespace: namespace.binding, using: freezeToken
-                    )
-                    if attempt.operations.contains(where: { protection.blocks($0, allowingNewPointerDeletes: newlyProtected) }) {
-                        throw CloudSetupRetryHold()
-                    }
                 } else {
                     try await persistence.recordSendAttempt(attempt)
                 }

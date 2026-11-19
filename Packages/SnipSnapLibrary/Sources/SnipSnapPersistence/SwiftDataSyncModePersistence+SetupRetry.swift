@@ -24,13 +24,9 @@ package struct CloudSetupDeleteProtection: Sendable {
     self.payloads = payloads
   }
 
-  package func blocks(
-    _ operation: SyncModeSendOperation,
-    allowingNewPointerDeletes allowed: Set<CloudTextStorageIdentity> = []
-  ) -> Bool {
+  func blocks(_ operation: SyncModeSendOperation) -> Bool {
     payloads.contains(operation.recordIdentity)
-      || (operation.kind == .delete && pointers.contains(operation.recordIdentity)
-        && !allowed.contains(operation.recordIdentity))
+      || (operation.kind == .delete && pointers.contains(operation.recordIdentity))
   }
 }
 
@@ -265,7 +261,7 @@ extension SwiftDataSyncModePersistence {
     pointerDeletes: [CloudSetupPointerDeleteOffer],
     candidateStoreID: UUID,
     using token: SyncModeFreezeToken
-  ) async throws -> Set<CloudTextStorageIdentity> {
+  ) async throws {
     guard let transition = manifest.transition, transition.namespace == attempt.namespace,
       setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token
     else { throw SyncModePersistenceError.invalidFreezeToken }
@@ -286,20 +282,12 @@ extension SwiftDataSyncModePersistence {
       )
     }
     let previousProtection = setupDeleteProtection(in: attempt.namespace)
+    let newlyHeldPayloads = Set(holds.flatMap(\.payloads))
     guard manifest.transition == transition, setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token,
-      !attempt.operations.contains(where: { previousProtection.blocks($0) })
+      !attempt.operations.contains(where: previousProtection.blocks),
+      newlyHeldPayloads.isDisjoint(with: attempt.operations.map(\.recordIdentity))
     else { throw SyncModePersistenceError.transitionInProgress }
     try commitSendAttempt(attempt, setupRetryOffers: offers, holding: holds)
-    return pointers
-  }
-
-  package func requireCurrentSetupSend(
-    candidateStoreID: UUID, namespace: ICloudSyncNamespaceBinding, using token: SyncModeFreezeToken
-  ) throws -> CloudSetupDeleteProtection {
-    guard let transition = manifest.transition, transition.phase == .firstSendStarted,
-      transition.namespace == namespace, setupRetryFreezeToken(candidateStoreID: candidateStoreID) == token
-    else { throw SyncModePersistenceError.invalidFreezeToken }
-    return setupDeleteProtection(in: namespace)
   }
 
   package func preserveSetupPointerReplacementRemaps(
