@@ -72,11 +72,20 @@ extension CloudFullSyncPersistence {
     return reviews.promotedSnips.contains { snipIDs.contains($0.currentSnipID) }
   }
 
-  func setupRetryMustHold(deletedSnipIDs: Set<UUID>) async throws -> Bool {
-    guard !deletedSnipIDs.isEmpty else { return false }
+  func setupRetryMustHold(
+    deletedSnipIDs: Set<UUID>, pointerDeletes: [CloudSetupPointerDelete]
+  ) async throws -> Bool {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard let inventory = stored.namespaceState.initialFetchInventory, inventory.canProveAbsence else {
       return true
+    }
+    if !pointerDeletes.isEmpty {
+      let pointers = Set(pointerDeletes.map(\.key.pointer))
+      if !inventory.observed.isDisjoint(with: pointers) { return true }
+      let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
+      if attachments.publications.contains(where: { pointers.contains($0.metadataIdentity) }) {
+        return true
+      }
     }
     if deletedSnipIDs.contains(where: { id in
       inventory.observed.contains(Self.storageIdentity(.snip(id, in: dataZone)))

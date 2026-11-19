@@ -3,9 +3,12 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
-  func commitStagedBatch(_ batch: CloudFullBatchCommit) async throws {
+  func commitStagedBatch(
+    _ batch: CloudFullBatchCommit, deferredSetupPointerDeletes: Set<UUID> = []
+  ) async throws {
     _ = try await library.commitCloudFullBatch(
-      batch, resolveAttachmentMetadata: attachmentMetadataRebase(for: batch)
+      batch, resolveAttachmentMetadata: attachmentMetadataRebase(for: batch),
+      deferredSetupPointerDeletes: deferredSetupPointerDeletes
     )
   }
 

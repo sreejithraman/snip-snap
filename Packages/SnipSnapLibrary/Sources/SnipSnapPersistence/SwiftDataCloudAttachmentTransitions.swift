@@ -7,6 +7,7 @@ extension SwiftDataSnipLibrary {
     namespaceKey: String,
     transitions: [CloudAttachmentTransition],
     resolveMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
+    deferredSetupPointerDeletes: Set<UUID> = [],
     context: ModelContext
   ) throws -> Set<UUID> {
     guard !transitions.isEmpty else { return [] }
@@ -392,8 +393,11 @@ extension SwiftDataSnipLibrary {
         let replacementAttachmentID = pendingReplacementIDsByLocation[locationKey]?.first(where: {
           $0 != attachmentID
         })
-        for cleanup in owedCleanups {
-          cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
+        // Setup has already durably retained the exact cleanup authority for these deletes.
+        if !deferredSetupPointerDeletes.contains(attachmentID) {
+          for cleanup in owedCleanups {
+            cleanupQueue.queue(cleanup, blockedBy: replacementAttachmentID)
+          }
         }
         removeCache(for: attachmentID)
         context.delete(row)

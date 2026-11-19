@@ -329,7 +329,6 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func cancelPendingEnable() async throws {
-    try PendingICloudSyncEnable.clear(at: rootURL)
     let activePersistence: SwiftDataSyncModePersistence?
     if let persistence {
       activePersistence = persistence
@@ -341,6 +340,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
           attachmentCacheRootURL: attachmentCacheRootURL
         ) : nil
     }
+    if let activePersistence {
+      try await CloudSetupRetryCapture.retainStagedPointerDeletes(in: activePersistence)
+    }
+    try PendingICloudSyncEnable.clear(at: rootURL)
     try await activePersistence?.cancelPendingICloudEnable()
     persistence = activePersistence
     await clearCollectionCoordinator()
@@ -430,6 +433,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   private func synchronize(
     retryingUserRecoverableFailures: Bool
   ) async throws -> SnipSnapCloudSyncResult {
+    if try await finishDeferredSetupCleanupIfNeeded() {
+      try PendingICloudSyncEnable.clear(at: rootURL)
+      return .iCloudSyncEnabled
+    }
     if PendingICloudSyncEnable.exists(at: rootURL) {
       if try await hasFinishedICloudSwitch() {
         // Only the enable's marker cleanup is left; setup must not run again.
@@ -485,6 +492,12 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let result = syncResult(for: status)
     if result == .iCloudDataReset { await clearCollectionCoordinator() }
     return result
+  }
+
+  private func finishDeferredSetupCleanupIfNeeded() async throws -> Bool {
+    guard let persistence, try await persistence.finishDeferredSetupCleanupIfNeeded() else { return false }
+    await clearCollectionCoordinator()
+    return true
   }
 
   /// iCloud is the active store, its enable transition is finished, and no account

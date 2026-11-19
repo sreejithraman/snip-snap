@@ -146,6 +146,8 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case afterRetryBasePromotion
   case beforeRetryFetchSettlementCommit
   case duringRetryBasePromotionStaging
+  case afterSetupPointerDeleteRetention
+  case afterSetupPointerDeleteCleanupInstall
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
@@ -528,7 +530,9 @@ package actor SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func swapPointer() throws {
+  package func swapPointer(
+    authorizedSetupPointerDeletes: Set<CloudSetupPointerDelete.Key> = []
+  ) throws {
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,
@@ -537,20 +541,41 @@ package actor SwiftDataSyncModePersistence {
     guard hasStoreFile(id: transition.candidateStoreID) else {
       throw SyncModePersistenceError.missingStore
     }
+    let deferred = deferredSetupPointerDeletes(for: transition)
+    guard Set(deferred.map(\.key)) == authorizedSetupPointerDeletes else {
+      throw SyncModePersistenceError.transitionInProgress
+    }
     try crashHook(.beforePointerSwap)
     next.activeStoreID = transition.candidateStoreID
     let sourceIndex = try storeIndex(id: transition.sourceStoreID)
     next.stores[sourceIndex].lifecycle = .retired
-    next.stores[sourceIndex].setupRetryHistory = nil
+    if deferred.isEmpty { next.stores[sourceIndex].setupRetryHistory = nil }
     try commit(next)
     try crashHook(.afterPointerSwap)
   }
 
-  package func finishTransition() throws {
-    guard manifest.transition?.phase == .pointerSwapped else {
+  package func finishTransition() async throws {
+    guard let transition = manifest.transition, transition.phase == .pointerSwapped else {
       throw SyncModePersistenceError.transitionInProgress
     }
+    let deferred = deferredSetupPointerDeletes(for: transition)
+    let installsCleanup = !deferred.isEmpty
+    if installsCleanup { try beginStoreReplacement() }
+    defer { if installsCleanup { finishStoreReplacement() } }
+    if let namespace = transition.namespace, installsCleanup {
+      // The pointer swap durably authorizes cleanup. Sync admission still waits for
+      // the transition to finish, so replay can coalesce rows by payload identity.
+      try await libraryForTransition(storeID: transition.candidateStoreID)
+        .installSetupPointerDeleteCleanups(deferred, namespaceKey: namespace.namespaceKey)
+      try crashHook(.afterSetupPointerDeleteCleanupInstall)
+      guard manifest.transition == transition else {
+        throw SyncModePersistenceError.transitionInProgress
+      }
+    }
     var next = manifest
+    if installsCleanup {
+      next.stores[try storeIndex(id: transition.sourceStoreID)].setupRetryHistory = nil
+    }
     next.transition = nil
     next.attentionReason = nil
     for index in next.stores.indices where next.stores[index].lifecycle == .retired {

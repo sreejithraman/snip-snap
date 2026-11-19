@@ -8,6 +8,7 @@ extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
     resolveAttachmentMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
+    deferredSetupPointerDeletes: Set<UUID> = [],
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
@@ -459,6 +460,7 @@ extension SwiftDataSnipLibrary {
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
         resolveMetadata: resolveAttachmentMetadata,
+        deferredSetupPointerDeletes: deferredSetupPointerDeletes,
         context: context
       )
       try lock.check()

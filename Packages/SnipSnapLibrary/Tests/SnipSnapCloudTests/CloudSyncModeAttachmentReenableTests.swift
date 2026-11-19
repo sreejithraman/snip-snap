@@ -538,10 +538,191 @@ extension ICloudSyncModeCoordinatorTests {
         try await fixture.assertPayloadSurvives()
     }
 
-    func testSetupRetryReportsOutstandingStagedPointerDeleteAcknowledgementGap() async throws {
+    func testSetupRetryRetainsPointerDeleteAcrossCrashCancelReplacementAndRelease() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try await setupRetryPointerFixture(root: root, pointerOnDeletedSnip: true)
+        let staged = try await stageOldPointerDelete(fixture)
+        let candidate = try await fixture.persistence.libraryForTransition(storeID: fixture.candidateID)
+        let beforeEngine = try await candidate.cloudTextSyncSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+        let crash = CrashInjector(point: .afterSetupPointerDeleteRetention)
+        let crashing = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
+        let crashProbe = SetupRetryDeleteProbeTransport(fixture.transport())
+        do {
+            _ = try await fixture.coordinator(crashing, transport: crashProbe).enableOrRetry()
+            XCTFail("Expected the crash after source retention.")
+        } catch CrashInjector.Failure.injected {}
+        let retained = try await fixture.assertRetainedPointerDelete(crashing, batchID: staged.batchID)
+        let stagedAfterCrash = try await fixture.raw.stagedBatches()
+        XCTAssertEqual(stagedAfterCrash, [staged])
+        let engineAfterCrash = try await candidate.cloudTextSyncSnapshot(
+            namespaceKey: fixture.namespace.namespaceKey
+        )
+        XCTAssertEqual(engineAfterCrash.engineState, beforeEngine.engineState)
+        let crashEvents = await crashProbe.fake.events()
+        XCTAssertTrue(crashEvents.isEmpty)
+        try await fixture.assertPayloadSurvives()
+
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let local = try await reopened.activeLibrary()
+        _ = try await local.perform(.delete(ids: [fixture.deleted.id]), sortedBy: .manual)
+        let probe = SetupRetryDeleteProbeTransport(fixture.transport())
+        let held = try await fixture.coordinator(reopened, transport: probe).enableOrRetry()
+        XCTAssertEqual(held.state, .needsAttention)
+        try await fixture.assertHeld(reopened, transport: probe, checkLedger: false)
+        let retryEvents = await probe.fake.events()
+        XCTAssertTrue(retryEvents.contains(.fetched))
+        XCTAssertTrue(retryEvents.contains { if case .confirmed = $0 { return true }; return false })
+        let replayed = try await candidate.commitCloudFullBatch(staged)
+        XCTAssertEqual(replayed, .replayed)
+        let afterRetry = try await fixture.assertRetainedPointerDelete(reopened, batchID: staged.batchID)
+        XCTAssertEqual(afterRetry, retained)
+        let heldLedger = try await candidate.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+        XCTAssertTrue(heldLedger.cleanups.isEmpty)
+
+        let editable = try await local.checkedSnapshot(sortedBy: .manual)
+        let survivor = try XCTUnwrap(editable.snips.first { $0.content == "unrelated" })
+        _ = try await local.perform(.update(
+            id: survivor.id, content: "edited while setup held", attachmentURLs: nil,
+            expectedUpdatedAt: survivor.updatedAt, now: survivor.updatedAt.addingTimeInterval(1)
+        ), sortedBy: .manual)
+        let cancellation = try fixture.lifecycle(reopened, transport: SetupRetryDeleteProbeTransport(fixture.transport()))
+        try await cancellation.cancelPendingEnable()
+        let cancelled = try await reopened.snapshot()
+        XCTAssertNil(cancelled.transition)
+        XCTAssertEqual(cancelled.activeStore.id, fixture.sourceStoreID)
+        _ = try await fixture.assertRetainedPointerDelete(reopened, batchID: staged.batchID)
+
+        let replacement = try SwiftDataSyncModePersistence(rootURL: root)
+        let replacementProbe = SetupRetryDeleteProbeTransport(fixture.transport())
+        let replacementHold = try await fixture.coordinator(replacement, transport: replacementProbe).enableOrRetry()
+        XCTAssertEqual(replacementHold.state, .needsAttention)
+        let replacementStatus = try await replacement.snapshot()
+        let replacedID = try XCTUnwrap(replacementStatus.transition?.candidateStoreID)
+        XCTAssertNotEqual(replacedID, fixture.candidateID)
+        let replacementStore = try await replacement.libraryForTransition(storeID: replacedID)
+        let replacementLedger = try await replacementStore.cloudAttachmentStorageSnapshot(
+            namespaceKey: fixture.namespace.namespaceKey
+        )
+        XCTAssertTrue(replacementLedger.cleanups.isEmpty)
+        let replacementDeletes = await replacementProbe.suppliedDeleteIDs
+        XCTAssertTrue(replacementDeletes.isEmpty)
+        try await fixture.assertPayloadSurvives()
+
+        let peerParent = await fixture.server.fullSnapshot(for: fixture.deletedID)
+        let removed = try await fixture.server.send(CloudOutboundBatch(operations: [
+            .delete(fixture.deletedID, base: try XCTUnwrap(peerParent).shadow)
+        ]), failures: [:])
+        XCTAssertEqual(removed.items, [.deleted(fixture.deletedID)])
+        let incompleteProbe = SetupRetryDeleteProbeTransport(fixture.transport(), omitFetchCompletion: true)
+        _ = try await fixture.coordinator(replacement, transport: incompleteProbe).enableOrRetry()
+        let stillLocal = try await replacement.snapshot()
+        XCTAssertEqual(stillLocal.activeStore.id, fixture.sourceStoreID)
+        let incompleteLedger = try await replacementStore.cloudAttachmentStorageSnapshot(
+            namespaceKey: fixture.namespace.namespaceKey
+        )
+        XCTAssertTrue(incompleteLedger.cleanups.isEmpty)
+        _ = try await fixture.assertRetainedPointerDelete(replacement, batchID: staged.batchID)
+        let installCrash = CrashInjector(point: .afterSetupPointerDeleteCleanupInstall)
+        let releasing = try SwiftDataSyncModePersistence(rootURL: root, crashHook: installCrash.hit)
+        let releaseProbe = SetupRetryDeleteProbeTransport(fixture.transport())
+        let releaseLifecycle = try fixture.lifecycle(releasing, transport: releaseProbe)
+        do {
+            _ = try await releaseLifecycle.enableICloudSync()
+            XCTFail("Expected the crash after the authorized cleanup handoff.")
+        } catch CrashInjector.Failure.injected {}
+        let beforeFinish = try await releasing.snapshot()
+        XCTAssertEqual(beforeFinish.transition?.phase, .pointerSwapped)
+        XCTAssertEqual(beforeFinish.activeStore.id, replacedID)
+        let installLedger = try await replacementStore.cloudAttachmentStorageSnapshot(
+            namespaceKey: fixture.namespace.namespaceKey
+        )
+        XCTAssertEqual(installLedger.cleanups.map(\.identity), retained.payloads.map(\.identity))
+
+        let final = try SwiftDataSyncModePersistence(rootURL: root)
+        let finalProbe = SetupRetryDeleteProbeTransport(fixture.transport())
+        let finalLifecycle = try fixture.lifecycle(final, transport: finalProbe)
+        let enabled = try await finalLifecycle.retrySynchronization()
+        XCTAssertEqual(enabled, .iCloudSyncEnabled)
+        let finalStatus = try await final.snapshot()
+        XCTAssertNil(finalStatus.transition)
+        let finalLibrary = try await final.libraryForTransition(storeID: finalStatus.activeStore.id)
+        let finalLedger = try await finalLibrary.cloudAttachmentStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+        XCTAssertEqual(finalLedger.cleanups, installLedger.cleanups)
+        let finalContent = try await finalLibrary.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(finalContent.snips.map(\.id)), fixture.remainingIDs)
+        XCTAssertEqual(finalContent.snips.first(where: { $0.id == survivor.id })?.content, "edited while setup held")
+        for transport in [probe, replacementProbe, incompleteProbe, releaseProbe, finalProbe] {
+            let deletes = await transport.suppliedDeleteIDs
+            XCTAssertTrue(deletes.isEmpty)
+        }
+        try await fixture.assertPayloadSurvives()
+        let acceptedDeletes = await fixture.server.acceptedDeletionCount()
+        XCTAssertEqual(acceptedDeletes, 2, "Only the original pointer delete and the peer's parent deletion.")
+    }
+
+    func testSetupRetryKeepsTheRetainedReceiptWhenCandidateFilesAreMissing() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await setupRetryPointerFixture(root: root, pointerOnDeletedSnip: true)
+        let staged = try await stageOldPointerDelete(fixture)
+        let crash = CrashInjector(point: .afterSetupPointerDeleteRetention)
+        let capturing = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
+        do {
+            _ = try await fixture.coordinator(
+                capturing, transport: SetupRetryDeleteProbeTransport(fixture.transport())
+            ).enableOrRetry()
+            XCTFail("Expected the receipt to be durable before the old candidate is consumed.")
+        } catch CrashInjector.Failure.injected {}
+        _ = try await fixture.assertRetainedPointerDelete(capturing, batchID: staged.batchID)
+        let candidateRoot = root.appendingPathComponent(
+            "stores/iCloudSync-\(fixture.candidateID.uuidString.lowercased())"
+        )
+        try FileManager.default.moveItem(at: candidateRoot, to: root.appendingPathComponent("offline-candidate"))
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await reopened.activeLibrary()
+        _ = try await source.perform(.delete(ids: [fixture.deleted.id]), sortedBy: .manual)
+        let probe = SetupRetryDeleteProbeTransport(fixture.transport())
+        let held = try await fixture.coordinator(reopened, transport: probe).enableOrRetry()
+        XCTAssertEqual(held.state, .needsAttention)
+        let replaced = try await reopened.snapshot()
+        let replacementID = try XCTUnwrap(replaced.transition?.candidateStoreID)
+        XCTAssertNotEqual(replacementID, fixture.candidateID)
+        XCTAssertEqual(replaced.activeStore.id, fixture.sourceStoreID)
+        _ = try await fixture.assertRetainedPointerDelete(reopened, batchID: staged.batchID)
+        let events = await probe.fake.events()
+        XCTAssertFalse(events.contains { if case .sent = $0 { return true }; return false })
+        try await fixture.assertPayloadSurvives()
+    }
+
+    func testSetupCancelRetainsAnUnconsumedLegacyReceiptButIgnoresAnUnknownPointer() async throws {
+        for accepted in [true, false] {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let fixture = try await setupRetryPointerFixture(root: root, pointerOnDeletedSnip: true)
+            if !accepted {
+                _ = try await fixture.server.send(CloudOutboundBatch(operations: [
+                    .delete(fixture.pointerID, base: fixture.shadow)
+                ]), failures: [:])
+            }
+            let staged = try await stageOldPointerDelete(fixture, accepted: accepted)
+            let restarted = try SwiftDataSyncModePersistence(rootURL: root)
+            let probe = SetupRetryDeleteProbeTransport(fixture.transport())
+            try await fixture.lifecycle(restarted, transport: probe).cancelPendingEnable()
+            let afterCancel = try SwiftDataSyncModePersistence(rootURL: root)
+            let history = await afterCancel.setupRetryEvidence(namespace: fixture.namespace.binding)
+            XCTAssertEqual(history?.acceptedPointerDeletes.map(\.key.batchID), accepted ? [staged.batchID] : [])
+            let cancelled = try await afterCancel.snapshot()
+            XCTAssertNil(cancelled.transition)
+            let events = await probe.fake.events()
+            XCTAssertTrue(events.isEmpty)
+            try await fixture.assertPayloadSurvives()
+        }
+    }
+
+    private func stageOldPointerDelete(
+        _ fixture: SetupRetryPointerFixture, accepted: Bool = true
+    ) async throws -> CloudFullBatchCommit {
         let candidate = try await fixture.persistence.libraryForTransition(storeID: fixture.candidateID)
         let before = try await candidate.checkedSnapshot(sortedBy: .manual)
         let attached = try XCTUnwrap(before.snips.first { $0.id == fixture.deleted.id })
@@ -562,38 +743,23 @@ extension ICloudSyncModeCoordinatorTests {
         let oldTransport = fixture.transport()
         try await oldTransport.start(state: nil)
         let sent = try await oldTransport.send(outbound)
-        XCTAssertEqual(sent.items, [.deleted(fixture.pointerID)])
+        XCTAssertEqual(sent.items, accepted ? [.deleted(fixture.pointerID)] : [.unknownItem(fixture.pointerID)])
         try await fixture.raw.stage(.sent(sent), outbound: outbound)
         let staged = try await fixture.raw.stagedBatches()
         XCTAssertEqual(staged.map(\.batchID), [sent.id])
-        XCTAssertTrue(staged.first?.attachmentTransitions.contains {
-            if case .metadataDeleteAccepted = $0 { return true }
-            return false
-        } == true)
+        let commit = try XCTUnwrap(staged.first)
+        if accepted {
+            XCTAssertTrue(commit.attachmentTransitions.contains {
+                if case .metadataDeleteAccepted = $0 { return true }
+                return false
+            })
+        }
         let initialLedger = try await candidate.cloudAttachmentStorageSnapshot(
             namespaceKey: fixture.namespace.namespaceKey
         )
         XCTAssertTrue(initialLedger.cleanups.isEmpty)
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
-        let local = try await reopened.activeLibrary()
-        _ = try await local.perform(.delete(ids: [fixture.deleted.id]), sortedBy: .manual)
-        let probe = SetupRetryDeleteProbeTransport(fixture.transport())
-        let held = try await fixture.coordinator(reopened, transport: probe).enableOrRetry()
-        XCTAssertEqual(held.state, .needsAttention)
-        try await fixture.assertHeld(reopened, transport: probe, checkLedger: false)
-        let later = try SwiftDataSyncModePersistence(rootURL: root)
-        let reopenedCandidate = try await later.libraryForTransition(storeID: fixture.candidateID)
-        let ledger = try await reopenedCandidate.cloudAttachmentStorageSnapshot(
-            namespaceKey: fixture.namespace.namespaceKey
-        )
-        let queued = ledger.cleanups.map { CloudAttachmentRecordCodec.recordID($0.identity) }
-        XCTAssertTrue(queued.allSatisfy { $0 == fixture.payloadID })
-        await MainActor.run {
-            XCTExpectFailure("The sent receipt commits its cleanup before the fresh setup fetch.") {
-                XCTAssertTrue(queued.isEmpty, "A staged acknowledgement enqueued payload cleanup while held.")
-            }
-        }
+        return commit
     }
 
     private func setupRetryPointerFixture(
@@ -1255,6 +1421,19 @@ private struct SetupRetryPointerFixture {
     func assertPayloadSurvives() async throws {
         let asset = await server.asset(for: payloadID, field: CloudAttachmentRecordCodec.assetField)
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(asset)), bytes)
+    }
+
+    func assertRetainedPointerDelete(
+        _ persistence: SwiftDataSyncModePersistence, batchID: UUID
+    ) async throws -> CloudSetupPointerDelete {
+        let history = await persistence.setupRetryEvidence(namespace: namespace.binding)
+        let receipts = try XCTUnwrap(history).acceptedPointerDeletes
+        XCTAssertEqual(receipts.count, 1)
+        let receipt = try XCTUnwrap(receipts.first)
+        XCTAssertEqual(receipt.key.batchID, batchID)
+        XCTAssertEqual(receipt.key.pointer, CloudAttachmentRecordCodec.identity(pointerID))
+        XCTAssertEqual(receipt.payloads.map(\.identity), [CloudAttachmentRecordCodec.identity(payloadID)])
+        return receipt
     }
 }
 

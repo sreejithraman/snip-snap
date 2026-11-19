@@ -88,6 +88,59 @@ extension SwiftDataSyncModePersistence {
       .first { $0.namespace == namespace }
   }
 
+  /// Runs before the candidate can consume the sent batch. Retention alone is also used by
+  /// cancellation and by staging, where the candidate has not taken ownership of cleanup.
+  package func retainSetupPointerDelete(
+    key: CloudSetupPointerDelete.Key,
+    bindingDigest: Data,
+    metadataShadowData: Data?,
+    attachmentID: UUID,
+    expectedRevision: UInt64,
+    candidateStoreID: UUID,
+    namespace: ICloudSyncNamespaceBinding,
+    applying: Bool
+  ) async throws -> Bool {
+    guard let index = manifest.setupRetrySourceIndex, let transition = manifest.transition,
+      transition.candidateStoreID == candidateStoreID, transition.namespace == namespace
+    else { throw SyncModePersistenceError.transitionInProgress }
+    let retained = setupRetryEvidence(namespace: namespace)?.acceptedPointerDeletes.first { $0.key == key }
+    if let retained, !applying {
+      guard retained.bindingDigest == bindingDigest else { throw SyncModePersistenceError.invalidManifest }
+      return false
+    }
+    let receipt = try await libraryForTransition(storeID: candidateStoreID).setupPointerDelete(
+      namespaceKey: namespace.namespaceKey, key: key, attachmentID: attachmentID,
+      expectedRevision: expectedRevision, bindingDigest: bindingDigest, metadataShadowData: metadataShadowData
+    )
+    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
+    if receipt != retained {
+      var next = manifest
+      var history = next.stores[index].setupRetryHistory ?? CloudSetupRetryHistory()
+      try history.update(namespace: namespace) { try $0.retainPointerDelete(receipt) }
+      next.stores[index].setupRetryHistory = history
+      try commit(next)
+      try crashHook(.afterSetupPointerDeleteRetention)
+    }
+    return applying
+  }
+
+  package func deferredSetupPointerDeletes(for transition: SyncModeTransition) -> [CloudSetupPointerDelete] {
+    guard transition.targetKind == .iCloudSync, let namespace = transition.namespace,
+      let evidence = store(id: transition.sourceStoreID)?.setupRetryHistory?.namespaces
+        .first(where: { $0.namespace == namespace })
+    else { return [] }
+    return evidence.acceptedPointerDeletes
+  }
+
+  package func finishDeferredSetupCleanupIfNeeded() async throws -> Bool {
+    guard let transition = manifest.transition, transition.phase == .pointerSwapped,
+      !deferredSetupPointerDeletes(for: transition).isEmpty
+    else { return false }
+    try await finishTransition()
+    try? cleanupRetiredStores()
+    return true
+  }
+
   private func setupRetryFreezeToken(candidateStoreID: UUID) -> SyncModeFreezeToken? {
     guard manifest.setupRetrySourceIndex != nil,
       let transition = manifest.transition,

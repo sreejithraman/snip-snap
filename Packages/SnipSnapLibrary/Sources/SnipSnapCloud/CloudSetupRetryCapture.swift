@@ -177,6 +177,65 @@ enum CloudSetupRetryCapture {
     }
   }
 
+  static func retainPointerDeletes(
+    in batch: CloudFullBatchCommit, applying: Bool, retain: CloudFullSyncPersistence.RetainSetupPointerDelete
+  ) async throws -> Set<UUID> {
+    guard let data = batch.rawBatchData,
+      let raw = try? JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: data),
+      raw.storageVersion == 1, raw.batch.id == batch.batchID,
+      case .sent(let sent) = raw.batch, let outbound = raw.outbound,
+      CloudFullSyncPersistence.destructiveResetReason(raw.batch) == nil
+    else { return [] }
+    let results = Dictionary(grouping: sent.items, by: \.id)
+    let bindings = Set(batch.outboundBindings.map(\.identity))
+    var deferred: Set<UUID> = []
+    for operation in outbound.operations {
+      guard case .delete(let id, let base) = operation,
+        results[id] == [.deleted(id)]
+      else { continue }
+      let identity = CloudFullSyncPersistence.storageIdentity(id)
+      guard bindings.contains(identity), identity.recordName.hasPrefix("a-"),
+        let attachmentID = UUID(uuidString: String(identity.recordName.dropFirst(2))),
+        identity.recordName == "a-\(attachmentID.uuidString.lowercased())",
+        let effect = batch.attachmentTransitions.first(where: {
+          guard case .metadataDeleteAccepted(let plannedID, _) = $0 else { return false }
+          return plannedID == attachmentID
+        }), case .metadataDeleteAccepted(_, let revision) = effect
+      else { continue }
+      let binding = try CloudFullSyncPersistence.outboundBinding(operation)
+      guard batch.outboundBindings.contains(binding) else { throw CloudFullStorageError.invalidBatchReplay }
+      let key = CloudSetupPointerDelete.Key(batchID: sent.id, pointer: identity)
+      if try await retain(key, operationDigest(binding), base?.data, attachmentID, revision, applying) {
+        deferred.insert(attachmentID)
+      }
+    }
+    return deferred
+  }
+
+  static func retainStagedPointerDeletes(in persistence: SwiftDataSyncModePersistence) async throws {
+    let storage = try await persistence.snapshot()
+    guard let transition = storage.transition, transition.syncProtocol == .fullRecordV1,
+      transition.targetKind == .iCloudSync, transition.sourceStoreID == storage.activeStore.id,
+      let namespace = transition.namespace
+    else { return }
+    let candidate: SwiftDataSnipLibrary
+    do {
+      candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
+    } catch SyncModePersistenceError.missingStore {
+      // A missing candidate has no staged result to recover. A retained receipt
+      // remains in source history when setup declares a replacement.
+      return
+    }
+    for batch in try await candidate.stagedCloudFullBatches(namespaceKey: namespace.namespaceKey) {
+      _ = try await retainPointerDeletes(in: batch, applying: false) { key, digest, base, id, revision, applying in
+        try await persistence.retainSetupPointerDelete(
+          key: key, bindingDigest: digest, metadataShadowData: base, attachmentID: id, expectedRevision: revision,
+          candidateStoreID: transition.candidateStoreID, namespace: namespace, applying: applying
+        )
+      }
+    }
+  }
+
   private static func attachmentKey(
     _ metadata: CloudAttachmentMetadataValue,
     identity: CloudTextStorageIdentity
