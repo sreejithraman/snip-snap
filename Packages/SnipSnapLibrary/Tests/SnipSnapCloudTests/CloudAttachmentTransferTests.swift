@@ -4241,7 +4241,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let client = try await makeAttachmentClient(fileNames: [])
     defer { try? FileManager.default.removeItem(at: client.root) }
     try await settleEmptySnip(in: client)
-    let zone = try XCTUnwrap(client.store.payloadZone)
+    let payloadZone = await client.store.payloadZone
+    let zone = try XCTUnwrap(payloadZone)
     let sent = CloudSentBatch(
       id: UUID(),
       items: [],
@@ -4261,7 +4262,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: client.root) }
     try await settleEmptySnip(in: client)
     try await editText(ofSnip: client.snipID, to: "edit after enrollment", in: client.library)
-    let snipRecordID = CloudRecordID.snip(client.snipID, in: client.store.dataZone)
+    let dataZone = await client.store.dataZone
+    let snipRecordID = CloudRecordID.snip(client.snipID, in: dataZone)
     let outbound = try await client.store.pendingChanges()
     XCTAssertEqual(outbound.operations.map(\.id), [snipRecordID])
     await client.transport.failNextSentItem(snipRecordID, failure: .zoneMissing)
