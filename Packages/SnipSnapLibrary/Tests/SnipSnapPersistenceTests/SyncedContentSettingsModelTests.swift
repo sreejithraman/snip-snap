@@ -426,6 +426,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     )
     let synced = SyncedContentSettingsModel(
       mode: .iCloudSync, initialState: .failed(.appDataIssue),
+      enableAction: { throw CocoaError(.fileReadUnknown) },
       cancelEnableAction: { await calls.record("cancel") },
       hasFailedPendingEnable: { true }, disableAction: { _ in }
     )
@@ -439,6 +440,16 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     await synced.cancelICloudSyncSetup()
     let events = await calls.values()
     XCTAssertTrue(events.isEmpty)
+
+    await synced.disableICloudSync(.useCurrentCache)
+    XCTAssertEqual(synced.mode, .localOnly)
+    XCTAssertFalse(synced.canCancelEnable)
+    await synced.enableICloudSync()
+    XCTAssertEqual(synced.state, .failed(.appDataIssue))
+    XCTAssertTrue(synced.canCancelEnable)
+    await synced.cancelICloudSyncSetup()
+    let afterCancel = await calls.values()
+    XCTAssertEqual(afterCancel, ["cancel"])
   }
 
   @MainActor

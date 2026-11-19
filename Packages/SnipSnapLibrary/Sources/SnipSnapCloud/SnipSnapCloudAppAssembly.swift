@@ -118,22 +118,9 @@ public enum SnipSnapCloudAppAssembly {
         syncWhenPossible: sync, retrySyncWhenPossible: retry,
         scheduleSyncAfterLocalChange: schedule)
     }
-    if settingsStartup.mode == .iCloudSync {
-      return SnipSnapCloudAppServices(
-        syncedContentSettings: SyncedContentSettingsModel(
-          mode: .iCloudSync,
-          issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
-          enableAction: { try await session.enableICloudSync() },
-          disableAction: { choice in try await session.disableICloudSync(choice) },
-          deleteAction: { try await session.deleteSyncedContent() }
-        ),
-        syncSession: session,
-        accountHandlerFactory: accountHandlerFactory
-      )
-    }
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
-        mode: .localOnly,
+        mode: settingsStartup.mode,
         initialState: settingsStartup.state,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
