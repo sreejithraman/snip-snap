@@ -672,8 +672,9 @@ package actor ICloudSyncModeCoordinator {
             }
 
             if transition.phase == .firstSendComplete {
+                let receipts = await persistence.deferredSetupPointerDeletes(for: transition)
                 var authorizedPointerDeletes: Set<CloudSetupPointerDelete.Key> = []
-                if let pointerRelease {
+                if let pointerRelease, !receipts.isEmpty {
                     try await requireMatchingAccount()
                     if try await bridge.setupRetryMustHold(
                         deletedSnipIDs: pointerRelease.deletedSnipIDs, pointerDeletes: pointerRelease.receipts
@@ -682,7 +683,6 @@ package actor ICloudSyncModeCoordinator {
                     }
                     // Older receipts passed the fresh check. Receipts added by this
                     // attempt were accepted while the checked source stayed frozen.
-                    let receipts = await persistence.deferredSetupPointerDeletes(for: transition)
                     authorizedPointerDeletes = Set(receipts.map(\.key))
                 }
                 try await persistence.swapPointer(authorizedSetupPointerDeletes: authorizedPointerDeletes)
