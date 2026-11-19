@@ -130,6 +130,8 @@ struct CheckedSetupPeerCopies: Sendable {
 }
 
 extension CloudFullSyncPersistence {
+  func clearCheckedSetupPeerCopies() { checkedSetupPeerCopies = nil }
+
   func inspectSetupPeerCopies(in batch: CloudSyncBatch, deletedIDs: Set<UUID>) async throws {
     guard case .fetched(let fetched) = batch, let setupPeerRestore, let payloadZone else { return }
     checkedSetupPeerCopies = nil

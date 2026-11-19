@@ -6,17 +6,10 @@ extension SnipSnapCloudSyncResult {
     to settings: SyncedContentSettingsModel,
     started: SyncedContentSyncStart,
     reload: @MainActor () async throws -> Void,
-    acknowledge: @MainActor (SnipSnapDeferredEnableCompletion) async throws -> Bool
+    acknowledge: SyncedContentSettingsModel.AcknowledgeEnableAction
   ) async throws -> Bool {
     guard case .deferredICloudSyncEnabled(let completion) = self else { return false }
-    guard settings.acceptsEnableCompletion(started: started) else { return true }
-    try await reload()
-    guard settings.acceptsEnableCompletion(started: started),
-      try await acknowledge(completion), settings.acceptsEnableCompletion(started: started)
-    else { return true }
-    settings.recordEnableCompleted()
-    if let issue = completion.issue { settings.recordSyncFailure(issue) }
-    return completion.issue != nil
+    return try await settings.completeCheckedEnable(completion, started: started, reload: reload, acknowledge: acknowledge)
   }
 }
 

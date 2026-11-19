@@ -233,8 +233,15 @@ private actor FullRecordSyncAdapter: ICloudSyncAdapter {
             forceInitialFetch: true, beforeApply: beforeApply, beforeStateSave: beforeApply
         )
         try await fetchRemote(beforeApply: beforeApply)
-        guard checkedSetupMetadata, pendingIssue == nil else { return false }
-        return try await !raw.setupRetryMustHold(deletedSnipIDs: deletedSnipIDs)
+        let evidence = try await raw.statusEvidence()
+        guard pendingIssue == nil, evidence.phase == .active, !evidence.needsAttention,
+            !evidence.hasRetryableRecordFailures, evidence.retryableEventKeys.isEmpty,
+            try await raw.isReenableReady()
+        else {
+            await raw.clearCheckedSetupPeerCopies()
+            return false
+        }
+        return try await !setupRetryMustHold(deletedSnipIDs: deletedSnipIDs, requiresCheckedFetch: true)
     }
 
     func checkedPeerCopies() async -> CheckedSetupPeerCopies? { await raw.checkedSetupPeerCopies }
@@ -602,9 +609,10 @@ package actor ICloudSyncModeCoordinator {
                 return try await statusUnchecked()
             }
             guard evidence.phase != .notEnrolled else { return try await statusUnchecked() }
+            let pendingReceipts = await persistence.pendingSetupPointerDeletes(for: transition)
             if try await bridge.setupRetryMustHold(
                 deletedSnipIDs: deletedBeforeFetch,
-                requiresCheckedFetch: consent != nil || !persistence.pendingSetupPointerDeletes(for: transition).isEmpty
+                requiresCheckedFetch: consent != nil || !pendingReceipts.isEmpty
             ) {
                 return try await holdSetupForDeletedSnip(transition, bridge: bridge)
             }
@@ -718,7 +726,7 @@ package actor ICloudSyncModeCoordinator {
                     try await checkSetupCollection()
                 }
                 try Task.checkCancellation()
-                try await persistence.swapPointer()
+                try await persistence.swapPointer(requiresCheckedEnable: consent != nil)
                 transition = try await currentTransition()
             }
         } catch {
@@ -1109,13 +1117,10 @@ package actor ICloudSyncModeCoordinator {
                         expectedSetupFreezeToken: freezeToken
                     )
                     try await self.checkSetupCollection()
-                    let protected = await persistence.setupPointerDeletesProtectingOutbound(in: namespace.binding)
-                    let pointers = Set(protected.map(\.key.pointer))
-                    let payloads = Set(protected.flatMap(\.payloadIdentities))
-                    if outbound.operations.contains(where: {
-                        if case .delete = $0, pointers.contains(CloudFullSyncPersistence.storageIdentity($0.id)) { return true }
-                        return payloads.contains(CloudFullSyncPersistence.storageIdentity($0.id))
-                    }) { throw CloudSetupRetryHold() }
+                    let receipts = await persistence.setupPointerDeletesProtectingOutbound(in: namespace.binding)
+                    if outbound.operations.contains(where: CloudSetupDeleteProtection(receipts).blocksSetupOperation) {
+                        throw CloudSetupRetryHold()
+                    }
                 } else {
                     try await persistence.recordSendAttempt(attempt)
                 }

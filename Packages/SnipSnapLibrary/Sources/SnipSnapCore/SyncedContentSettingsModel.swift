@@ -169,7 +169,25 @@ public enum SyncedContentSettingsState: Equatable, Sendable {
 
 public enum SyncedContentEnableOutcome: Equatable, Sendable {
   case enabled
+  case checked(SyncedContentEnableCompletion)
   case settingUp(SyncedContentSyncIssue? = nil)
+}
+
+public struct SyncedContentEnableCompletion: Equatable, Sendable {
+  package let namespaceKey: String
+  package let storeID: UUID
+  package let issue: SyncedContentSyncIssue?
+
+  package init(namespaceKey: String, storeID: UUID, issue: SyncedContentSyncIssue?) {
+    self.namespaceKey = namespaceKey
+    self.storeID = storeID
+    self.issue = issue
+  }
+}
+
+public enum SyncedContentSetupCancellation: Equatable, Sendable {
+  case cancelled
+  case switched(SyncedContentEnableCompletion?)
 }
 
 public struct SyncedContentPeerCopyOffer: Error, Equatable, Sendable {
@@ -221,7 +239,11 @@ public final class SyncedContentSettingsModel {
   public typealias IssueMapper = @Sendable (any Error) -> SyncedContentSyncIssue
   public typealias EnableAction = @Sendable () async throws -> SyncedContentEnableOutcome
   public typealias RestorePeerCopiesAction = @Sendable (SyncedContentPeerCopyOffer) async throws -> SyncedContentEnableOutcome
-  public typealias CancelEnableAction = @Sendable () async throws -> Void
+  public typealias CancelEnableAction = @Sendable () async throws -> SyncedContentSetupCancellation
+  public typealias EnableCompletionIsCurrent = @MainActor @Sendable () -> Bool
+  public typealias AcknowledgeEnableAction = @Sendable (
+    SyncedContentEnableCompletion, @escaping EnableCompletionIsCurrent
+  ) async throws -> Bool
   public typealias DisableAction = @Sendable (SyncedContentDisableChoice) async throws -> Void
   public typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   public typealias DeleteCompletionAction = @MainActor @Sendable () async throws -> Void
@@ -247,6 +269,7 @@ public final class SyncedContentSettingsModel {
   private let restorePeerCopiesAction: RestorePeerCopiesAction?
   private let issueMapper: IssueMapper
   private let cancelEnableAction: CancelEnableAction?
+  private let acknowledgeEnableAction: AcknowledgeEnableAction?
   private let hasFailedPendingEnable: @MainActor () -> Bool
   private let disableAction: DisableAction?
   private let deleteAction: DeleteAction?
@@ -262,6 +285,7 @@ public final class SyncedContentSettingsModel {
     enableAction: EnableAction? = nil,
     restorePeerCopiesAction: RestorePeerCopiesAction? = nil,
     cancelEnableAction: CancelEnableAction? = nil,
+    acknowledgeEnableAction: AcknowledgeEnableAction? = nil,
     hasFailedPendingEnable: @escaping @MainActor () -> Bool = { false },
     disableAction: DisableAction? = nil,
     deleteAction: DeleteAction? = nil,
@@ -272,6 +296,7 @@ public final class SyncedContentSettingsModel {
     self.enableAction = enableAction
     self.restorePeerCopiesAction = restorePeerCopiesAction
     self.cancelEnableAction = cancelEnableAction
+    self.acknowledgeEnableAction = acknowledgeEnableAction
     self.hasFailedPendingEnable = hasFailedPendingEnable
     self.disableAction = disableAction
     self.deleteAction = deleteAction
@@ -427,21 +452,19 @@ public final class SyncedContentSettingsModel {
   private func performEnable(_ action: EnableAction) async {
     peerCopyOffer = nil
     status.state = .enabling()
-    let session = statusSession
+    let started = recordSyncStarted()
     do {
-      switch try await action() {
-      case .enabled:
-        guard session == statusSession else { return }
-        try await enableCompletionAction?()
-        guard session == statusSession else { return }
-        status = Status(mode: .iCloudSync, state: .ready)
+      let outcome = try await action()
+      switch outcome {
+      case .enabled, .checked:
+        try await applyEnabledStore(outcome, started: started)
       case .settingUp(let issue):
-        guard session == statusSession else { return }
+        guard started.session == statusSession else { return }
         if let issue { record(issue, operation: "sync.setup") }
         status = Status(mode: .localOnly, state: .enabling(issue))
       }
     } catch let offer as SyncedContentPeerCopyOffer where restorePeerCopiesAction != nil {
-      guard session == statusSession else { return }
+      guard started.session == statusSession else { return }
       recordSetupPeerCopyOffer(offer)
     } catch {
       diagnostics.record(.failure(
@@ -449,9 +472,39 @@ public final class SyncedContentSettingsModel {
         error: error,
         visibility: .user
       ))
-      guard session == statusSession else { return }
+      guard started.session == statusSession else { return }
       status.state = .failed(issueMapper(error))
     }
+  }
+
+  private func applyEnabledStore(_ outcome: SyncedContentEnableOutcome, started: SyncedContentSyncStart) async throws {
+    if case .checked(let completion) = outcome {
+      guard let enableCompletionAction, let acknowledgeEnableAction else {
+        try await enableCompletionAction?()
+        return
+      }
+      _ = try await completeCheckedEnable(completion, started: started, reload: enableCompletionAction,
+        acknowledge: acknowledgeEnableAction)
+      if started.session == statusSession, mode == .localOnly {
+        status.state = .failed(.appDataIssue)
+      }
+    } else {
+      try await enableCompletionAction?()
+      guard started.session == statusSession else { return }
+      recordEnableCompleted()
+    }
+  }
+
+  package func completeCheckedEnable(
+    _ completion: SyncedContentEnableCompletion, started: SyncedContentSyncStart,
+    reload: @MainActor () async throws -> Void, acknowledge: AcknowledgeEnableAction
+  ) async throws -> Bool {
+    try await reload()
+    let isCurrent: EnableCompletionIsCurrent = { self.acceptsEnableCompletion(started: started) }
+    guard isCurrent(), try await acknowledge(completion, isCurrent), isCurrent() else { return true }
+    recordEnableCompleted()
+    if let issue = completion.issue { recordSyncFailure(issue) }
+    return completion.issue != nil
   }
 
   public func disableICloudSync(_ choice: SyncedContentDisableChoice) async {
@@ -478,18 +531,22 @@ public final class SyncedContentSettingsModel {
     guard canCancelEnable, let cancelEnableAction else { return }
     statusSession = UUID()
     peerCopyOffer = nil
-    let session = statusSession
+    let started = recordSyncStarted()
     do {
-      try await cancelEnableAction()
-      guard session == statusSession else { return }
-      status = Status(mode: .localOnly, state: .ready)
+      switch try await cancelEnableAction() {
+      case .cancelled:
+        guard started.session == statusSession else { return }
+        status = Status(mode: .localOnly, state: .ready)
+      case .switched(let completion):
+        try await applyEnabledStore(completion.map(SyncedContentEnableOutcome.checked) ?? .enabled, started: started)
+      }
     } catch {
       diagnostics.record(.failure(
         operation: "sync.cancel_setup",
         error: error,
         visibility: .user
       ))
-      guard session == statusSession else { return }
+      guard started.session == statusSession else { return }
       status.state = .failed(issueMapper(error))
     }
   }
@@ -594,6 +651,9 @@ public final class SyncedContentSettingsModel {
       record(issue, operation: "sync.setup")
       status.state = .enabling(issue)
     case (.localOnly, .enabling):
+      record(issue, operation: "sync.setup")
+      status.state = .failed(issue)
+    case (.localOnly, .failed(let previous)) where isPerformingExplicitSync && previous != issue:
       record(issue, operation: "sync.setup")
       status.state = .failed(issue)
     default:

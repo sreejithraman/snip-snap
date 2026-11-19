@@ -14,10 +14,10 @@ struct CloudRetainedSetupPointerDeletes: Codable, Equatable {
 package struct SyncModeDeferredEnableCompletion: Codable, Equatable, Sendable {
   package static let prefix = "checking-deferred-completion:"
   package let binding: ICloudSyncNamespaceBinding
-  package let storeID: UUID?
+  package let storeID: UUID
   package let issue: SyncedContentSyncIssue?
 
-  package init(binding: ICloudSyncNamespaceBinding, storeID: UUID?, issue: SyncedContentSyncIssue?) {
+  package init(binding: ICloudSyncNamespaceBinding, storeID: UUID, issue: SyncedContentSyncIssue?) {
     self.binding = binding
     self.storeID = storeID
     self.issue = issue
@@ -34,10 +34,7 @@ package struct SyncModeDeferredEnableCompletion: Codable, Equatable, Sendable {
 
   package static func decode(_ value: String) -> Self? {
     guard let data = Data(base64Encoded: String(value.dropFirst(prefix.count))) else { return nil }
-    let decoder = JSONDecoder()
-    if let record = try? decoder.decode(Self.self, from: data) { return record }
-    guard let legacy = try? decoder.decode(ICloudSyncNamespaceBinding.self, from: data) else { return nil }
-    return Self(binding: legacy, storeID: nil, issue: nil)
+    return try? JSONDecoder().decode(Self.self, from: data)
   }
 }
 
@@ -220,11 +217,11 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  package func finishDeferredSetupEnableIfNeeded() async throws -> Bool {
+  package func finishDeferredSetupEnableIfNeeded() throws -> Bool {
     guard let transition = manifest.transition, transition.phase == .pointerSwapped,
-      !pendingSetupPointerDeletes(for: transition).isEmpty
+      manifest.checkedEnableStoreID == transition.candidateStoreID
     else { return false }
-    try await finishTransition()
+    try finishTransition()
     try? cleanupRetiredStores()
     return true
   }

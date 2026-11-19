@@ -14,7 +14,7 @@ public actor SnipSnapCloudSyncSession {
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
   private let restoreSetupPeerCopiesAction: SyncedContentSettingsModel.RestorePeerCopiesAction
-  private let acknowledgeEnableAction: @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool
+  private let acknowledgeEnableAction: SyncedContentSettingsModel.AcknowledgeEnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
@@ -122,41 +122,6 @@ public actor SnipSnapCloudSyncSession {
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
   package init(
-    coordinator: CloudCollectionCoordinator,
-    persistence: SwiftDataSyncModePersistence,
-    operationGate: AsyncOperationGate = AsyncOperationGate(),
-    automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() }
-  ) {
-    self.operationGate = operationGate
-    self.automaticSyncResults = automaticSyncResults
-    automaticErrorHandler = { _ in }
-    synchronizeAction = {
-      syncResult(for: try await coordinator.synchronize())
-    }
-    retryAction = {
-      syncResult(for: try await coordinator.retrySynchronization())
-    }
-    scheduleAction = {}
-    enableAction = {
-      _ = try await coordinator.enableSync()
-      return .enabled
-    }
-    acknowledgeEnableAction = { _ in false }
-    cancelEnableAction = {}
-    disableAction = { _ in throw CloudCollectionError.noActiveCollection }
-    deleteAction = { deleteOutcome(for: try await coordinator.deleteSyncedContent()) }
-    libraryAction = {
-      let snapshot = try await persistence.snapshot()
-      return SnipSnapCloudActiveLibrary(
-        library: try await persistence.activeLibrary(),
-        recoveryScope: SnipRecoveryScopeFactory.scope(
-          forActiveCloudNamespace: snapshot.activeStore.namespace
-        )
-      )
-    }
-  }
-
-  package init(
     synchronize: @escaping SynchronizeAction,
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
@@ -164,8 +129,8 @@ public actor SnipSnapCloudSyncSession {
     restoreSetupPeerCopies: @escaping SyncedContentSettingsModel.RestorePeerCopiesAction = { _ in
       throw CloudCollectionError.syncNeedsAttention
     },
-    acknowledgeEnable: @escaping @Sendable (SnipSnapDeferredEnableCompletion) async throws -> Bool = { _ in false },
-    cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = {},
+    acknowledgeEnable: @escaping SyncedContentSettingsModel.AcknowledgeEnableAction = { _, _ in false },
+    cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = { .cancelled },
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
     },
@@ -210,11 +175,15 @@ public actor SnipSnapCloudSyncSession {
     try await operationGate.withLease { [restoreSetupPeerCopiesAction] in try await restoreSetupPeerCopiesAction(offer) }
   }
 
-  public func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool {
-    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion) }
+  public func acknowledgeDeferredEnableCompletion(
+    for completion: SnipSnapDeferredEnableCompletion,
+    whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent = { true }
+  ) async throws -> Bool {
+    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion, isCurrent) }
   }
 
-  public func cancelICloudSyncSetup() async throws {
+  @discardableResult
+  public func cancelICloudSyncSetup() async throws -> SyncedContentSetupCancellation {
     try await operationGate.withLease(cancelEnableAction)
   }
 

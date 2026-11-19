@@ -199,7 +199,7 @@ final class CloudSyncSessionTests: XCTestCase {
     let session = SnipSnapCloudSyncSession(
       synchronize: { .noChange },
       enable: { try await probe.run("enable"); return .enabled },
-      cancelEnable: { try await probe.run("cancel setup") },
+      cancelEnable: { try await probe.run("cancel setup"); return .cancelled },
       disable: { _ in try await probe.run("disable") },
       delete: { .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore }

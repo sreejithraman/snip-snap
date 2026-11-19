@@ -53,8 +53,8 @@ extension CloudFullSyncPersistence {
       let protected = await setupPointerDeleteProtection().payloads
       if attachments.cleanups.contains(where: { !protected.contains($0.identity) }) { return true }
       for publication in attachments.publications {
-        if removedPointers.contains(publication.metadataIdentity) { return true }
-        guard snipIDs.contains(publication.metadata.snipID) else { continue }
+        let removesPointer = removedPointers.contains(publication.metadataIdentity)
+        guard removesPointer || snipIDs.contains(publication.metadata.snipID) else { continue }
         guard authorized.contains(publication.metadata.snipID), publication.isLocallyPresent,
           publication.metadataAccepted, let data = publication.metadataShadowData,
           let shadow = try? CloudRecordShadow(data: data),
@@ -63,6 +63,11 @@ extension CloudFullSyncPersistence {
           let metadata = try? CloudAttachmentRecordCodec.metadata(from: record, metadataZone: dataZone, payloadZone: payloadZone),
           metadata == publication.metadata
         else { return true }
+        if removesPointer {
+          guard publication.localSourceURL == nil, protected.contains(metadata.payloadIdentity),
+            publication.priorPayloadIdentity.map(protected.contains) ?? true
+          else { return true }
+        }
         if let file = publication.localSourceURL {
           guard (try? AttachmentFileIO.digest(at: file)) == metadata.sha256 else { return true }
         }

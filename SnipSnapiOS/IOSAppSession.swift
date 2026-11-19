@@ -6,7 +6,9 @@ import SnipSnapPersistence
 protocol IOSCloudSyncSessionHandling: Sendable {
     func synchronize() async throws -> SnipSnapCloudSyncResult
     func retrySynchronization() async throws -> SnipSnapCloudSyncResult
-    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool
+    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
+        whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
+    ) async throws -> Bool
     func scheduleAutomaticSync() async
     func iosActiveLibrary() async throws -> (library: any SnipLibrary, recoveryScope: SnipRecoveryScope?)
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> { get }
@@ -19,7 +21,9 @@ extension IOSCloudSyncSessionHandling {
 
     func scheduleAutomaticSync() async {}
 
-    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion) async throws -> Bool { false }
+    func acknowledgeDeferredEnableCompletion(for completion: SnipSnapDeferredEnableCompletion,
+        whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent
+    ) async throws -> Bool { false }
 
     var automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> {
         AsyncStream { $0.finish() }
@@ -350,7 +354,7 @@ final class IOSAppSession {
                         let active = try await session.iosActiveLibrary()
                         await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                     },
-                    acknowledge: { try await session.acknowledgeDeferredEnableCompletion(for: $0) }
+                    acknowledge: { try await session.acknowledgeDeferredEnableCompletion(for: $0, whileCurrent: $1) }
                 ) { return }
             case .libraryReplaced, .oldSyncedContentRemovalPending,
                     .oldSyncedContentRemovalCompleted:

@@ -285,7 +285,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
 
     setMarkerLocked(true)
     await assertMarkerRemovalFails("A cancel whose pending marker remains must not succeed") {
-      try await lifecycle.cancelPendingEnable()
+      _ = try await lifecycle.cancelPendingEnable()
     }
     XCTAssertEqual(startupSettings().state, .enabling(.waitingForConnection))
 

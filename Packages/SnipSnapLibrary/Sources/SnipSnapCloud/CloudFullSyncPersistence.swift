@@ -436,10 +436,10 @@ package actor CloudFullSyncCoordinator {
       state.fetchIssue = issue
       if !CloudSyncIssueError.blocksOutbound(in: batch), batch.engineState?.requiresInitialFetch == false {
         session.completeInitialFetch()
-        if fetched.isInitialFetch, issue == nil {
-          for case .fetched(let zone) in fetched.zoneEvents {
-            state.completedInitialFetchZones.insert(zone)
-          }
+        for case .fetched(let zone) in fetched.zoneEvents
+          where CloudFullSyncPersistence.isCleanInitialMetadataFetch(batch, dataZone: zone)
+        {
+          state.completedInitialFetchZones.insert(zone)
         }
       }
     case .sent(let sent):
@@ -663,9 +663,9 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     namespaceKey = namespace.namespaceKey
   }
 
-  func setupPointerDeleteProtection() async -> (pointers: Set<CloudTextStorageIdentity>, payloads: Set<CloudTextStorageIdentity>) {
+  func setupPointerDeleteProtection() async -> CloudSetupDeleteProtection {
     let receipts = await modePersistence?.setupPointerDeletesProtectingOutbound(in: namespace.binding) ?? []
-    return (Set(receipts.map(\.key.pointer)), Set(receipts.flatMap(\.payloadIdentities)))
+    return CloudSetupDeleteProtection(receipts, allowsFreshLocalRemoval: retainSetupPointerDelete == nil)
   }
 }
 
