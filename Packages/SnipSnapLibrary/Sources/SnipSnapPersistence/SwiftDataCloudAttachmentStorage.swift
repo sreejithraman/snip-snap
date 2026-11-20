@@ -117,7 +117,7 @@ extension SwiftDataSnipLibrary {
               ),
               queuedUpload: upload.relativePath
             ) {
-              cleanupQueue.queue(owedCleanup)
+              cleanupQueue.queue(owedCleanup, blockedBy: row.attachmentID)
             }
           } else if !row.lifecycle.isPayloadAccepted {
             try lock.check()

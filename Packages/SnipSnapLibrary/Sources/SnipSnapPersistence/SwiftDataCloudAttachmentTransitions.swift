@@ -186,7 +186,14 @@ extension SwiftDataSnipLibrary {
           guard row.metadataIdentity == metadataIdentity else {
             throw CloudAttachmentStorageError.staleTransition
           }
-          if case .fetched(let base?)? = resolveMetadata?(metadataIdentity, row.metadataShadowData, shadow),
+          let rebase = resolveMetadata?(metadataIdentity, row.metadataShadowData, shadow)
+          if case .fetched(base: nil)? = rebase,
+            row.metadata.namesSamePayload(as: metadata),
+            let cleanup = row.lifecycle.releaseReplacedPayloadAfterFirstMetadataFetch()
+          {
+            cleanupQueue.queue(cleanup)
+          }
+          if case .fetched(let base?)? = rebase,
             row.lifecycle.isPayloadAccepted,
             row.metadata.namesSamePayload(as: metadata), base.namesSamePayload(as: metadata)
           {

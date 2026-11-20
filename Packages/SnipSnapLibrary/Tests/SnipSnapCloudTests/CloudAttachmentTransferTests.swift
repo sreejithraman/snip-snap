@@ -4042,6 +4042,200 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await assertRemovalDuringTheFirstMetadataSaveLeavesNoAttachment(relaunching: true)
   }
 
+  func testRemovalAfterReplacingBytesDuringFirstMetadataSaveDeletesMetadataBeforePayload() async throws {
+    let owner = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    let accepted = try await snapshot(owner.library, owner.namespace)
+    let original = try XCTUnwrap(accepted.publications.first)
+    let attachmentID = original.metadata.attachmentID
+    let metadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let oldPayloadID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+    let durableFile = try XCTUnwrap(original.localSourceURL)
+    let originalBytes = Data("original payload".utf8)
+    XCTAssertTrue(original.payloadAccepted)
+    XCTAssertFalse(original.metadataAccepted)
+
+    let outbound = try await owner.store.pendingChanges()
+    guard case .save(let draft)? = outbound.operations.first(where: { $0.id == metadataID }) else {
+      return XCTFail("Expected the first metadata save.")
+    }
+    XCTAssertNil(draft.base)
+    let sent = try await owner.transport.send(outbound)
+    guard case .saved? = sent.items.first(where: { $0.id == metadataID }) else {
+      return XCTFail("The server must accept the first metadata save before the local edits.")
+    }
+
+    let replacementBytes = Data("replacement payload".utf8)
+    try replacementBytes.write(to: durableFile)
+    _ = try await owner.store.pendingChanges()
+    let queued = try await snapshot(owner.library, owner.namespace)
+    let replacement = try publication(of: attachmentID, in: queued)
+    let replacementPayloadID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
+    XCTAssertNotEqual(replacementPayloadID, oldPayloadID)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(replacement.sourceURL)), replacementBytes)
+
+    try await keepAttachments([], ofSnip: owner.snipID, in: owner.library)
+    _ = try await owner.store.pendingChanges()
+    try await owner.store.stage(.sent(sent), outbound: outbound)
+    try await owner.store.applyStaged(sent.id)
+    try await owner.transport.confirmApplied(sent.id)
+
+    let wireMetadata = try await serverAttachmentMetadata(metadataID, on: owner.server)
+    XCTAssertEqual(wireMetadata.payloadIdentity, original.metadata.payloadIdentity)
+    let originalPayload = await owner.server.fullSnapshot(for: oldPayloadID)
+    XCTAssertNotNil(originalPayload)
+    let originalAsset = await owner.server.asset(for: oldPayloadID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(originalAsset)), originalBytes)
+
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
+    )
+    try await peer.sync.fetchRemote()
+    let visible = try await snapshot(peer.library, peer.namespace)
+    XCTAssertEqual(visible.publications.map(\.metadata.attachmentID), [attachmentID])
+    XCTAssertNil(visible.publications.first?.localSourceURL)
+    XCTAssertTrue(visible.cacheEntries.isEmpty)
+
+    try await owner.sync.sendPending()
+
+    let metadataAfterSend = await owner.server.fullSnapshot(for: metadataID)
+    let oldPayloadAfterSend = await owner.server.fullSnapshot(for: oldPayloadID)
+    let replacementAfterSend = await owner.server.fullSnapshot(for: replacementPayloadID)
+    XCTAssertNil(metadataAfterSend, "The first send must delete the published metadata.")
+    XCTAssertNotNil(oldPayloadAfterSend, "The original payload must survive the metadata delete batch.")
+    XCTAssertNil(replacementAfterSend, "The abandoned replacement must never upload.")
+
+    try await peer.sync.fetchRemote()
+    let afterFirstSend = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    let peerSnip = try XCTUnwrap(afterFirstSend.snips.first { $0.id == peer.snipID })
+    if peerSnip.attachments.contains(where: { $0.id == attachmentID }) {
+      let transfers = CloudAttachmentTransferCoordinator(
+        library: peer.library,
+        namespace: peer.namespace,
+        payloadZone: oldPayloadID.zone,
+        transport: peer.transport,
+        maximumCacheBytes: 1_024
+      )
+      do {
+        let opened = try await transfers.prepare(attachmentID: attachmentID, for: .open)
+        XCTAssertEqual(try Data(contentsOf: opened), originalBytes)
+      } catch CloudAttachmentStorageError.missingPayload {
+        XCTFail("The peer could still see the attachment, but opening it failed with missingPayload.")
+      }
+    }
+
+    try await owner.sync.sendPendingUntilSettled()
+    try await peer.sync.fetchRemote()
+
+    for id in [metadataID, oldPayloadID, replacementPayloadID] {
+      let record = await owner.server.fullSnapshot(for: id)
+      XCTAssertNil(record, "The removed attachment's records must all be gone after cleanup.")
+    }
+    let replacementOperations = await owner.server.acceptedOperationCount(for: replacementPayloadID)
+    XCTAssertEqual(replacementOperations, 0)
+    let settledOwner = try await snapshot(owner.library, owner.namespace)
+    let settledPeer = try await snapshot(peer.library, peer.namespace)
+    XCTAssertTrue(settledOwner.publications.isEmpty)
+    XCTAssertTrue(settledOwner.cleanups.isEmpty)
+    XCTAssertTrue(settledPeer.publications.isEmpty)
+    let peerLibrary = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(peerLibrary.snips.first { $0.id == peer.snipID }?.attachments, [])
+  }
+
+  func testFetchingFirstMetadataAfterLostAcknowledgementReleasesTheReplacedPayload() async throws {
+    enum Interruption: Error { case beforeStaging }
+
+    let owner = try await makeAttachmentClient(fileNames: ["original"])
+    defer { try? FileManager.default.removeItem(at: owner.root) }
+    try await owner.sync.sync()
+    let firstUpload = try await snapshot(owner.library, owner.namespace)
+    let original = try XCTUnwrap(firstUpload.publications.first)
+    let attachmentID = original.metadata.attachmentID
+    let metadataID = CloudAttachmentRecordCodec.recordID(original.metadataIdentity)
+    let oldPayload = original.metadata.payloadIdentity
+    let oldPayloadID = CloudAttachmentRecordCodec.recordID(oldPayload)
+    let oldShadow = try XCTUnwrap(original.payloadShadowData)
+    let durableFile = try XCTUnwrap(original.localSourceURL)
+    XCTAssertTrue(original.payloadAccepted)
+    XCTAssertFalse(original.metadataAccepted)
+    let metadataBeforeReplacement = await owner.server.fullSnapshot(for: metadataID)
+    XCTAssertNil(metadataBeforeReplacement)
+
+    let replacementBytes = Data("replacement payload".utf8)
+    try replacementBytes.write(to: durableFile)
+    try await owner.sync.sendPending()
+    let secondUpload = try await snapshot(owner.library, owner.namespace)
+    let replacement = try publication(of: attachmentID, in: secondUpload)
+    let replacementPayload = replacement.metadata.payloadIdentity
+    XCTAssertNotEqual(replacementPayload, oldPayload)
+    XCTAssertTrue(replacement.payloadAccepted)
+    XCTAssertFalse(replacement.metadataAccepted)
+    XCTAssertEqual(replacement.priorPayloadIdentity, oldPayload)
+    XCTAssertEqual(replacement.priorPayloadShadowData, oldShadow)
+    XCTAssertTrue(secondUpload.cleanups.isEmpty)
+
+    do {
+      try await owner.sync.sendPending(beforeApply: { throw Interruption.beforeStaging })
+      XCTFail("Expected to lose the first metadata acknowledgement before staging.")
+    } catch Interruption.beforeStaging {}
+    let staged = try await owner.store.stagedBatches()
+    XCTAssertTrue(staged.isEmpty)
+    let saved = try await serverAttachmentMetadata(metadataID, on: owner.server)
+    XCTAssertEqual(saved.payloadIdentity, replacementPayload)
+
+    let relaunched = try reopened(owner)
+    try await relaunched.sync.fetchRemote()
+
+    let fetched = try await snapshot(relaunched.library, relaunched.namespace)
+    let adopted = fetched.publications.first { $0.metadata.attachmentID == attachmentID }
+    XCTAssertTrue(adopted?.metadataAccepted == true)
+    XCTAssertEqual(adopted?.metadata.payloadIdentity, replacementPayload)
+    XCTAssertEqual(adopted?.localSourceURL, durableFile)
+    XCTAssertNil(adopted?.priorPayloadIdentity, "Fetched metadata naming the replacement must release the prior payload.")
+    XCTAssertEqual(fetched.cleanups.map(\.identity), [oldPayload])
+    XCTAssertEqual(fetched.cleanups.first { $0.identity == oldPayload }?.shadowData, oldShadow)
+
+    let oldAssetBeforeCleanup = await owner.server.asset(for: oldPayloadID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertNotNil(oldAssetBeforeCleanup)
+    try await relaunched.sync.sendPending()
+
+    let oldRecord = await owner.server.fullSnapshot(for: oldPayloadID)
+    let oldAsset = await owner.server.asset(for: oldPayloadID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertNil(oldRecord, "The normal cleanup send must delete the replaced payload record.")
+    XCTAssertNil(oldAsset, "The normal cleanup send must delete the replaced payload asset.")
+    let wireRecord = await owner.server.fullSnapshot(for: metadataID)
+    let wireMetadata = wireRecord.flatMap { try? CloudAttachmentRecordCodec.metadata(from: $0) }
+    XCTAssertEqual(wireMetadata?.payloadIdentity, replacementPayload)
+
+    let peer = try attachmentClient(
+      root: owner.root,
+      storeURL: owner.root.appendingPathComponent("peer.store"),
+      namespace: owner.namespace,
+      server: owner.server,
+      snipID: owner.snipID
+    )
+    try await peer.sync.fetchRemote()
+    let peerStorage = try await snapshot(peer.library, peer.namespace)
+    XCTAssertTrue(peerStorage.cacheEntries.isEmpty)
+    XCTAssertNil(peerStorage.publications.first?.localSourceURL)
+    let transfers = CloudAttachmentTransferCoordinator(
+      library: peer.library,
+      namespace: peer.namespace,
+      payloadZone: oldPayloadID.zone,
+      transport: peer.transport,
+      maximumCacheBytes: 1_024
+    )
+    let opened = try await transfers.prepare(attachmentID: attachmentID, for: .open)
+    XCTAssertEqual(try Data(contentsOf: opened), replacementBytes)
+    XCTAssertEqual(try Data(contentsOf: durableFile), replacementBytes)
+  }
+
   // 5, unknown item: the removed attachment's first save finds no record, so CloudKit holds no
   // metadata for it.
   func testRemovingAnAttachmentWhoseFirstMetadataSaveCameBackUnknownSettlesItsCleanup() async throws {
