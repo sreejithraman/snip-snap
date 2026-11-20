@@ -4408,14 +4408,18 @@ final class CloudAttachmentTransferTests: XCTestCase {
   }
 
   func testLegacyStagedPayloadFailureStaysBlockedWithoutAnUnambiguousObsoleteSave() async throws {
-    enum FrozenSave { case mismatchedBinding, currentPayload, priorPayload, queuedCleanup }
-    for frozenSave in [FrozenSave.mismatchedBinding, .currentPayload, .priorPayload, .queuedCleanup] {
+    enum FrozenSave: CaseIterable {
+      case mismatchedBinding, missingAsset, emptyEngineState, currentPayload, priorPayload, queuedCleanup
+    }
+    for frozenSave in FrozenSave.allCases {
       let client = try await makeAttachmentClient(fileNames: [])
       defer { try? FileManager.default.removeItem(at: client.root) }
       let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
       let key = client.namespace.namespaceKey
       let identity = original.metadata.payloadIdentity
       let attachmentID = original.metadata.attachmentID
+      var submitted = outbound
+      var reported = sent
       let bindings: [CloudFullOutboundBinding]?
       switch frozenSave {
       case .mismatchedBinding:
@@ -4424,6 +4428,24 @@ final class CloudAttachmentTransferTests: XCTestCase {
         bindings = [CloudFullOutboundBinding(
           identity: identity, action: .delete, operationData: try JSONEncoder().encode(delete)
         )]
+      case .missingAsset:
+        _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        guard case .save(let draft)? = outbound.operations.first else {
+          return XCTFail("Expected a frozen payload save.")
+        }
+        submitted = CloudOutboundBatch(operations: [.save(CloudRecordDraft(
+          id: draft.id, recordType: draft.recordType, schemaVersion: draft.schemaVersion,
+          routingFields: draft.routingFields, encryptedFields: draft.encryptedFields
+        ))], zonesToSave: outbound.zonesToSave)
+        bindings = nil
+      case .emptyEngineState:
+        _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        reported = CloudSentBatch(
+          id: sent.id, items: sent.items, databaseEvents: sent.databaseEvents,
+          zoneEvents: sent.zoneEvents,
+          engineState: CloudEngineStateEnvelope(namespace: client.namespace, serialization: Data())
+        )
+        bindings = nil
       case .currentPayload:
         let pending = try await snapshot(client.library, client.namespace)
         XCTAssertEqual(try publication(of: attachmentID, in: pending).metadata.payloadIdentity, identity)
@@ -4449,7 +4471,9 @@ final class CloudAttachmentTransferTests: XCTestCase {
         XCTAssertTrue(pending.operations.contains(.delete(CloudAttachmentRecordCodec.recordID(identity), base: nil)))
         bindings = nil
       }
-      let staged = try await persistLegacyPayloadZoneFailure(sent, outbound: outbound, in: client, bindings: bindings)
+      let staged = try await persistLegacyPayloadZoneFailure(
+        reported, outbound: submitted, in: client, bindings: bindings
+      )
       let upgraded = try await reopenLegacyPayloadReplay(staged, in: client)
       try await upgraded.sync.processAutomaticChanges()
       let full = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)

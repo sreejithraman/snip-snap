@@ -19,7 +19,7 @@ extension CloudFullSyncPersistence {
   private func legacyStagedPayloadReplayProof(
     for batch: CloudFullBatchCommit
   ) -> SwiftDataSnipLibrary.LegacyStagedPayloadReplayProof? {
-    guard batch.nextNamespaceState?.phase == .blocked,
+    guard batch.hasPlannedDeferredReleases, batch.nextNamespaceState?.phase == .blocked,
       batch.namespaceKey == namespaceKey.rawValue, batch.attachmentTransitions.isEmpty,
       let payloadZone, let data = batch.rawBatchData
     else { return nil }
@@ -29,6 +29,7 @@ extension CloudFullSyncPersistence {
       let outbound = raw.outbound, outbound.operations.count == 1,
       let operation = outbound.operations.first,
       CloudFullBatchPlanner.isSubmittedPayloadSave(operation, dataZone: dataZone, payloadZone: payloadZone),
+      case .save(let draft) = operation, Self.hasLegacyPayloadDraftFields(draft),
       sent.items == [.failed(operation.id, .zoneMissing)],
       outbound.zonesToSave.isSubset(of: [payloadZone]), sent.zoneEvents.isEmpty,
       sent.databaseEvents.isEmpty
@@ -38,9 +39,20 @@ extension CloudFullSyncPersistence {
       let expected = try? decoder.decode(CloudEngineStateEnvelope.self, from: expectedData),
       let next = try? decoder.decode(CloudEngineStateEnvelope.self, from: nextData),
       expected.namespace == namespace, next.namespace == namespace,
+      !expected.serialization.isEmpty, !next.serialization.isEmpty,
       !expected.requiresInitialFetch, !next.requiresInitialFetch, next == sent.engineState
     else { return nil }
     return .init(payloadIdentity: binding.identity)
+  }
+
+  private static func hasLegacyPayloadDraftFields(_ draft: CloudRecordDraft) -> Bool {
+    let version = CloudAttachmentRecordCodec.schemaVersion
+    return draft.schemaVersion == version
+      && draft.routingFields == ["schemaVersion": .int64(Int64(version))]
+      && draft.encryptedFields.isEmpty && draft.removedRoutingFields.isEmpty
+      && draft.removedEncryptedFields.isEmpty && draft.base == nil
+      && draft.assetFields.count == 1
+      && draft.assetFields[CloudAttachmentRecordCodec.assetField]?.fileURL.isFileURL == true
   }
 
   private func attachmentMetadataRebase(
