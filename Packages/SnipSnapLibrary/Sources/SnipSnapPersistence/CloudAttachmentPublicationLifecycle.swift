@@ -54,8 +54,8 @@ struct CloudAttachmentPublicationLifecycle {
   private(set) var payloadIdentity: CloudTextStorageIdentity
   /// The base for the next metadata write, kept in every upload phase.
   private var metadataRecord: CloudAttachmentAcceptedRecord
-  /// The payload a published attachment replaced. It is owed a cleanup once the new metadata
-  /// publishes.
+  /// An accepted payload that published or in-flight metadata may still name. Keep its cleanup
+  /// obligation until replacement metadata is confirmed or the metadata is deleted.
   private(set) var replacedPayload: CloudAttachmentOwedCleanup?
   /// Raw, so failure codes from newer builds survive a write.
   private var failure: String?
@@ -260,6 +260,15 @@ struct CloudAttachmentPublicationLifecycle {
   }
 
   // MARK: CloudKit events
+
+  /// Takes the prior cleanup before adopting the first fetched metadata that names the current payload.
+  mutating func releaseReplacedPayloadAfterFirstMetadataFetch() -> CloudAttachmentOwedCleanup? {
+    guard !hasPublishedMetadata, isPayloadAccepted, let cleanup = replacedPayload,
+      cleanup.identity != payloadIdentity
+    else { return nil }
+    replacedPayload = nil
+    return cleanup
+  }
 
   /// Adopts metadata CloudKit holds. The payload it names is accepted, so any queued upload is
   /// released. The payload record and the replaced payload stay as they were.
