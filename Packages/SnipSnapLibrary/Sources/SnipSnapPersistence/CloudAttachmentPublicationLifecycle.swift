@@ -208,8 +208,8 @@ struct CloudAttachmentPublicationLifecycle {
     presence = .present(localSource: relativePath)
   }
 
-  /// Queues new local bytes. A payload published by metadata waits until that metadata changes;
-  /// an accepted payload never published by metadata is owed a cleanup now.
+  /// An in-flight metadata save may already name an accepted payload. Keep the first on the
+  /// publication and return any additional accepted payload for blocked cleanup.
   mutating func replacePayload(
     with identity: CloudTextStorageIdentity,
     queuedUpload: String
@@ -218,14 +218,12 @@ struct CloudAttachmentPublicationLifecycle {
     switch upload {
     case .payloadPending:
       break
-    case .metadataPending:
-      if hasPublishedMetadata && replacedPayload == nil {
+    case .metadataPending, .published:
+      if replacedPayload == nil {
         replacedPayload = payloadCleanup
       } else {
         owedCleanup = payloadCleanup
       }
-    case .published:
-      replacedPayload = payloadCleanup
     }
     payloadIdentity = identity
     upload = .payloadPending(queuedUpload: queuedUpload)
@@ -253,7 +251,7 @@ struct CloudAttachmentPublicationLifecycle {
         cleanup: payloadCleanup,
         queuedUpload: queuedUpload
       )
-      if hasPublishedMetadata {
+      if hasPublishedMetadata || replacedPayload != nil {
         upload = .payloadPending(queuedUpload: nil)
         return .awaitMetadataDeletion(abandonedUpload: abandoned)
       }

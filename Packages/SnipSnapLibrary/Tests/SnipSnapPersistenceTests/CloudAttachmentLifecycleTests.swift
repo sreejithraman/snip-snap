@@ -544,17 +544,17 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertNil(republished.priorPayloadShadowData)
   }
 
-  // Before its first metadata publish, no metadata names an accepted payload, so new bytes queue
-  // the old payload's cleanup at once instead of keeping it as the replaced payload.
-  func testChangedBytesBeforeTheMetadataPublishesQueueTheOldPayloadCleanupAtOnce() async throws {
+  func testChangedBytesBeforeFirstMetadataPublishesDeferAcceptedPayloadCleanups() async throws {
     let fixture = try await makeLocalAttachmentFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let pending = fixture.publication
+    let attachmentID = pending.metadata.attachmentID
     let oldPayload = pending.metadata.payloadIdentity
+    let oldShadow = Data("old-payload-shadow".utf8)
     try await commit(fixture.library, [.payloadAccepted(
-      attachmentID: pending.metadata.attachmentID,
+      attachmentID: attachmentID,
       expectedRevision: pending.revision,
-      shadowData: Data("old-payload-shadow".utf8),
+      shadowData: oldShadow,
       systemFields: Data("old-payload-fields".utf8)
     )])
     let acceptedStorage = try await attachmentStorage(fixture.library)
@@ -568,15 +568,60 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
 
     let changedStorage = try await attachmentStorage(fixture.library)
     let changed = try XCTUnwrap(changedStorage.publications.first)
-    XCTAssertNotEqual(changed.metadata.payloadIdentity, oldPayload)
+    let replacementPayload = changed.metadata.payloadIdentity
+    XCTAssertNotEqual(replacementPayload, oldPayload)
     XCTAssertFalse(changed.payloadAccepted)
     XCTAssertNotNil(changed.sourceURL, "The new bytes must queue an upload.")
-    XCTAssertNil(changed.priorPayloadIdentity, "Only published metadata defers the cleanup.")
-    XCTAssertEqual(changedStorage.cleanups.map(\.identity), [oldPayload])
-    let cleanup = try XCTUnwrap(changedStorage.cleanups.first)
-    XCTAssertEqual(cleanup.shadowData, Data("old-payload-shadow".utf8))
-    XCTAssertNil(cleanup.blockedByAttachmentID)
-    XCTAssertNil(cleanup.lastFailure)
+    XCTAssertEqual(changed.priorPayloadIdentity, oldPayload)
+    XCTAssertEqual(changed.priorPayloadShadowData, oldShadow)
+    XCTAssertTrue(changedStorage.cleanups.isEmpty, "A first metadata save may already name the old payload.")
+
+    let replacementShadow = Data("replacement-payload-shadow".utf8)
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: changed.revision,
+      shadowData: replacementShadow,
+      systemFields: Data()
+    )])
+    let latestBytes = Data("bytes from a second edit".utf8)
+    try latestBytes.write(to: durableFile)
+    try await reconcile(fixture.library)
+
+    let latestStorage = try await attachmentStorage(fixture.library)
+    let latest = try XCTUnwrap(latestStorage.publications.first)
+    XCTAssertNotEqual(latest.metadata.payloadIdentity, replacementPayload)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(latest.sourceURL)), latestBytes)
+    XCTAssertEqual(latest.priorPayloadIdentity, oldPayload)
+    XCTAssertEqual(latest.priorPayloadShadowData, oldShadow)
+    XCTAssertEqual(latestStorage.cleanups.map(\.identity), [replacementPayload])
+    let blockedCleanup = try XCTUnwrap(latestStorage.cleanups.first)
+    XCTAssertEqual(blockedCleanup.shadowData, replacementShadow)
+    XCTAssertEqual(blockedCleanup.blockedByAttachmentID, attachmentID)
+
+    try await commit(fixture.library, [.payloadAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: latest.revision,
+      shadowData: Data("latest-payload-shadow".utf8),
+      systemFields: Data()
+    )])
+    let beforePublish = try await attachmentStorage(fixture.library)
+    let uploaded = try XCTUnwrap(beforePublish.publications.first)
+    XCTAssertEqual(beforePublish.cleanups, [blockedCleanup])
+    XCTAssertEqual(uploaded.priorPayloadIdentity, oldPayload)
+    try await commit(fixture.library, [.metadataAccepted(
+      attachmentID: attachmentID,
+      expectedRevision: uploaded.revision,
+      shadowData: Data("latest-metadata-shadow".utf8),
+      systemFields: Data()
+    )])
+
+    let published = try await attachmentStorage(fixture.library)
+    XCTAssertTrue(published.publications.first?.metadataAccepted == true)
+    XCTAssertNil(published.publications.first?.priorPayloadIdentity)
+    XCTAssertEqual(Set(published.cleanups.map(\.identity)), Set([oldPayload, replacementPayload]))
+    let oldCleanup = try XCTUnwrap(published.cleanups.first { $0.identity == oldPayload })
+    XCTAssertEqual(oldCleanup.shadowData, oldShadow)
+    XCTAssertNil(oldCleanup.blockedByAttachmentID)
   }
 
   // MARK: Cache install
