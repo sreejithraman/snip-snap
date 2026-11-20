@@ -4402,6 +4402,384 @@ final class CloudAttachmentTransferTests: XCTestCase {
     XCTAssertNil(oldPayload)
   }
 
+  func testLegacyStagedObsoletePayloadZoneFailureReplaysAfterReopen() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+    let oldID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+    let durableFile = try XCTUnwrap(original.localSourceURL)
+    let frozenSave = try XCTUnwrap(outbound.operations.first)
+    guard case .save(let draft) = frozenSave else { return XCTFail("Expected a frozen payload save.") }
+    let frozenAsset = try XCTUnwrap(draft.assetFields[CloudAttachmentRecordCodec.assetField])
+    XCTAssertNotEqual(frozenAsset.fileURL, durableFile)
+    let replacement = try await reconcileLegacyReplayReplacement(of: original, in: client)
+    let replacementID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
+    let key = client.namespace.namespaceKey
+    let before = try await client.library.cloudFullStorageSnapshot(namespaceKey: key)
+    let beforeEngine = try await client.library.cloudTextSyncSnapshot(namespaceKey: key).engineState
+    let beforeAttachments = try await snapshot(client.library, client.namespace)
+    XCTAssertEqual(sent.databaseEvents, [.zoneSaved(oldID.zone)])
+    XCTAssertNil(replacement.priorPayloadIdentity)
+    XCTAssertFalse(replacement.payloadAccepted)
+    XCTAssertFalse(replacement.metadataAccepted)
+    XCTAssertNil(replacement.lastFailure)
+
+    let legacy = try await persistLegacyPayloadZoneFailure(sent, outbound: outbound, in: client)
+    XCTAssertTrue(legacy.items.isEmpty)
+    XCTAssertTrue(legacy.attachmentTransitions.isEmpty)
+    XCTAssertEqual(legacy.expectedEngineState, try XCTUnwrap(beforeEngine))
+    let nextEngine = try JSONDecoder().decode(
+      CloudEngineStateEnvelope.self, from: XCTUnwrap(legacy.nextEngineState)
+    )
+    XCTAssertEqual(nextEngine, sent.engineState)
+    XCTAssertFalse(nextEngine.requiresInitialFetch)
+    XCTAssertEqual(legacy.outboundBindings.map(\.identity), [original.metadata.payloadIdentity])
+    let binding = try XCTUnwrap(legacy.outboundBindings.first)
+    XCTAssertEqual(binding.action, .save)
+    XCTAssertEqual(
+      try JSONDecoder().decode(CloudOutboundOperation.self, from: binding.operationData), frozenSave
+    )
+
+    enum InterruptedReplay: Error { case beforeSave }
+    let faultingLibrary = try SwiftDataSnipLibrary(
+      storeURL: client.storeURL, afterMutationBeforeSave: { throw InterruptedReplay.beforeSave }
+    )
+    let faulting = attachmentClient(
+      root: client.root, storeURL: client.storeURL, library: faultingLibrary,
+      namespace: client.namespace, server: client.server, snipID: client.snipID
+    )
+    let beforeInterruption = try await faulting.store.stagedBatches()
+    XCTAssertEqual(beforeInterruption, [legacy])
+    do {
+      try await faulting.sync.processAutomaticChanges()
+      XCTFail("The injected error must interrupt replay before saving.")
+    } catch InterruptedReplay.beforeSave {}
+    let afterInterruption = try await faulting.store.stagedBatches()
+    XCTAssertEqual(afterInterruption, [legacy])
+
+    let upgraded = try await reopenLegacyPayloadReplay(legacy, in: client)
+    let rolledBack = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+    let rolledBackEngine = try await upgraded.library.cloudTextSyncSnapshot(namespaceKey: key).engineState
+    let rolledBackAttachments = try await snapshot(upgraded.library, upgraded.namespace)
+    XCTAssertEqual(rolledBack, before)
+    XCTAssertEqual(rolledBackEngine, beforeEngine)
+    XCTAssertEqual(rolledBackAttachments, beforeAttachments)
+    try await upgraded.sync.processAutomaticChanges()
+
+    let remaining = try await upgraded.store.stagedBatches()
+    let applied = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+    let appliedEngine = try await upgraded.library.cloudTextSyncSnapshot(namespaceKey: key).engineState
+    let appliedAttachments = try await snapshot(upgraded.library, upgraded.namespace)
+    XCTAssertTrue(remaining.isEmpty)
+    XCTAssertEqual(appliedEngine, legacy.nextEngineState)
+    XCTAssertEqual(appliedAttachments, beforeAttachments)
+    guard applied.namespaceState.phase == .active else {
+      return XCTFail("The obsolete staged save must leave the namespace active, got \(applied.namespaceState.phase).")
+    }
+    XCTAssertEqual(applied.namespaceState.revision, before.namespaceState.revision + 1)
+    XCTAssertEqual(applied.enrolledEntities, before.enrolledEntities)
+
+    // Redelivering the same receipt must leave no stage to apply on the next send.
+    try await upgraded.library.stageCloudFullBatch(legacy)
+    let duplicate = try await upgraded.store.stagedBatches()
+    XCTAssertTrue(duplicate.isEmpty)
+    try await upgraded.sync.processAutomaticChanges()
+    let replayed = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+    XCTAssertEqual(replayed, applied)
+
+    let outcome = try await upgraded.sync.sendPendingUntilSettled()
+    XCTAssertTrue(outcome.settled)
+    let metadata = try await serverAttachmentMetadata(
+      CloudAttachmentRecordCodec.recordID(original.metadataIdentity), on: upgraded.server
+    )
+    XCTAssertEqual(metadata, replacement.metadata)
+    let asset = await upgraded.server.asset(for: replacementID, field: CloudAttachmentRecordCodec.assetField)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(asset)), Self.legacyReplayReplacementBytes)
+    let acceptedReplacement = await upgraded.server.acceptedOperationCount(for: replacementID)
+    let acceptedObsolete = await upgraded.server.acceptedOperationCount(for: oldID)
+    XCTAssertEqual(acceptedReplacement, 1)
+    XCTAssertEqual(acceptedObsolete, 0)
+    let local = try await upgraded.library.checkedSnapshot(sortedBy: .manual)
+    let attachmentID = original.metadata.attachmentID
+    XCTAssertEqual(local.snips.first(where: { $0.id == client.snipID })?.attachments.map(\.id), [attachmentID])
+    XCTAssertEqual(local.attachmentURLs[attachmentID], durableFile)
+    XCTAssertEqual(try Data(contentsOf: durableFile), Self.legacyReplayReplacementBytes)
+
+    let receiver = try attachmentClient(
+      root: client.root, storeURL: client.root.appendingPathComponent("receiver.store"),
+      namespace: client.namespace, server: client.server, snipID: client.snipID
+    )
+    try await receiver.sync.fetchRemote()
+    let received = try await receiver.library.checkedSnapshot(sortedBy: .manual)
+    let receivedSnip = try XCTUnwrap(received.snips.first { $0.id == receiver.snipID })
+    XCTAssertEqual(receivedSnip.attachments.map(\.id), [attachmentID])
+    XCTAssertNil(received.attachmentURLs[attachmentID])
+    let receivedStorage = try await snapshot(receiver.library, receiver.namespace)
+    let remote = try publication(of: attachmentID, in: receivedStorage)
+    XCTAssertEqual(remote.metadataIdentity, original.metadataIdentity)
+    XCTAssertEqual(remote.metadata.payloadIdentity, replacement.metadata.payloadIdentity)
+    let downloads = CloudAttachmentTransferCoordinator(
+      library: receiver.library, namespace: receiver.namespace, payloadZone: replacementID.zone,
+      transport: receiver.transport, maximumCacheBytes: 1_024
+    )
+    let downloaded = try await downloads.download(attachmentID: attachmentID)
+    XCTAssertEqual(try Data(contentsOf: downloaded), Self.legacyReplayReplacementBytes)
+  }
+
+  func testLegacyStagedPayloadFailureWithAnOwnedZoneEventStaysBlocked() async throws {
+    enum Failure { case zone, database, reset(CloudZoneDeletionReason) }
+    for failure in [Failure.zone, .database, .reset(.purged), .reset(.encryptedDataReset)] {
+      let client = try await makeAttachmentClient(fileNames: [])
+      defer { try? FileManager.default.removeItem(at: client.root) }
+      let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+      _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+      let zone = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity).zone
+      let (databaseEvents, zoneEvents): ([CloudDatabaseEvent], [CloudZoneEvent]) = switch failure {
+      case .zone: (sent.databaseEvents, [.failed(zone, .zoneMissing)])
+      case .database: ([.failed(zone, .zoneMissing)], [])
+      case .reset(let reason): ([.zoneDeleted(zone, reason: reason)], [])
+      }
+      let reported = CloudSentBatch(
+        id: sent.id, items: sent.items, databaseEvents: databaseEvents,
+        zoneEvents: zoneEvents, engineState: sent.engineState
+      )
+      let staged = try await persistLegacyPayloadZoneFailure(
+        reported, outbound: outbound, in: client, currentDecision: .blocked
+      )
+      let upgraded = try await reopenLegacyPayloadReplay(staged, in: client)
+      let outcome = try await upgraded.sync.processAutomaticChanges()
+      let key = client.namespace.namespaceKey
+      let full = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+      XCTAssertEqual(full.namespaceState.phase, .blocked, "Failure: \(failure)")
+      if case .reset(let reason) = failure {
+        XCTAssertEqual(outcome.result, .iCloudDataReset)
+        XCTAssertTrue(outcome.blocksOutbound)
+        XCTAssertFalse(outcome.settled)
+        let restarted = try reopened(upgraded)
+        let retained = try await restarted.library.cloudFullRecoveryEvents(namespaceKey: key)
+        XCTAssertEqual(retained, staged.recoveryInputs)
+        XCTAssertEqual(retained.map(\.kind), [.destructiveReset])
+        XCTAssertEqual(try XCTUnwrap(retained.first).resultData, try XCTUnwrap(staged.rawBatchData))
+        let persistedReason = try await restarted.store.destructiveResetSignal()
+        XCTAssertEqual(persistedReason, reason)
+      }
+    }
+  }
+
+  func testLegacyStagedObsoletePayloadFailureStillChecksEngineAndNamespaceCAS() async throws {
+    for mismatch in [CloudFullStorageError.engineStateMismatch, .namespaceStateMismatch] {
+      let client = try await makeAttachmentClient(fileNames: [])
+      defer { try? FileManager.default.removeItem(at: client.root) }
+      let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+      _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+      let staged = try await persistLegacyPayloadZoneFailure(sent, outbound: outbound, in: client)
+      let key = client.namespace.namespaceKey
+      let before = try await client.library.cloudFullStorageSnapshot(namespaceKey: key)
+      if mismatch == .engineStateMismatch {
+        let dataZone = await client.store.dataZone
+        try await client.store.saveEngineState(CloudEngineStateEnvelope(
+          namespace: client.namespace, serialization: JSONEncoder().encode([dataZone: 999])
+        ))
+      } else {
+        try await client.library.setCloudEnrollment(namespaceKey: key, references: before.enrolledEntities)
+      }
+      let changed = try await client.library.cloudFullStorageSnapshot(namespaceKey: key)
+      let changedEngine = try await client.library.cloudTextSyncSnapshot(namespaceKey: key).engineState
+      let upgraded = try await reopenLegacyPayloadReplay(staged, in: client)
+      do {
+        try await upgraded.sync.processAutomaticChanges()
+        XCTFail("The legacy stage must reject \(mismatch).")
+      } catch let error as CloudFullStorageError {
+        XCTAssertEqual(error, mismatch)
+      }
+      let remaining = try await upgraded.store.stagedBatches()
+      let after = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+      let afterEngine = try await upgraded.library.cloudTextSyncSnapshot(namespaceKey: key).engineState
+      XCTAssertEqual(remaining, [staged])
+      XCTAssertEqual(after, changed)
+      XCTAssertEqual(afterEngine, changedEngine)
+    }
+  }
+
+  func testLegacyStagedPayloadFailureStaysBlockedWithoutAnUnambiguousObsoleteSave() async throws {
+    enum FrozenSave: CaseIterable {
+      case mismatchedBinding, missingAsset, emptyEngineState, currentPayload, priorPayload, queuedCleanup
+    }
+    for frozenSave in FrozenSave.allCases {
+      let client = try await makeAttachmentClient(fileNames: [])
+      defer { try? FileManager.default.removeItem(at: client.root) }
+      let (original, outbound, sent) = try await sendFirstPayloadWithMissingZone(in: client)
+      let key = client.namespace.namespaceKey
+      let identity = original.metadata.payloadIdentity
+      let attachmentID = original.metadata.attachmentID
+      var submitted = outbound
+      var reported = sent
+      let bindings: [CloudFullOutboundBinding]?
+      switch frozenSave {
+      case .mismatchedBinding:
+        _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        let delete = CloudOutboundOperation.delete(CloudAttachmentRecordCodec.recordID(identity), base: nil)
+        bindings = [CloudFullOutboundBinding(
+          identity: identity, action: .delete, operationData: try JSONEncoder().encode(delete)
+        )]
+      case .missingAsset:
+        _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        guard case .save(let draft)? = outbound.operations.first else {
+          return XCTFail("Expected a frozen payload save.")
+        }
+        submitted = CloudOutboundBatch(operations: [.save(CloudRecordDraft(
+          id: draft.id, recordType: draft.recordType, schemaVersion: draft.schemaVersion,
+          routingFields: draft.routingFields, encryptedFields: draft.encryptedFields
+        ))], zonesToSave: outbound.zonesToSave)
+        bindings = nil
+      case .emptyEngineState:
+        _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        reported = CloudSentBatch(
+          id: sent.id, items: sent.items, databaseEvents: sent.databaseEvents,
+          zoneEvents: sent.zoneEvents,
+          engineState: CloudEngineStateEnvelope(namespace: client.namespace, serialization: Data())
+        )
+        bindings = nil
+      case .currentPayload:
+        let pending = try await snapshot(client.library, client.namespace)
+        XCTAssertEqual(try publication(of: attachmentID, in: pending).metadata.payloadIdentity, identity)
+        bindings = nil
+      case .priorPayload:
+        let payload = try payloadShadow(identity)
+        let metadata = try metadataShadow(original.metadataIdentity)
+        try await client.library.commitCloudAttachmentTransitions(namespaceKey: key, transitions: [
+          .payloadAccepted(attachmentID: attachmentID, expectedRevision: original.revision,
+            shadowData: payload.data, systemFields: payload.systemFields),
+          .metadataAccepted(attachmentID: attachmentID, expectedRevision: original.revision + 1,
+            shadowData: metadata.data, systemFields: metadata.systemFields),
+        ])
+        let replacement = try await reconcileLegacyReplayReplacement(of: original, in: client)
+        XCTAssertEqual(replacement.priorPayloadIdentity, identity)
+        bindings = nil
+      case .queuedCleanup:
+        try await keepAttachments([], ofSnip: client.snipID, in: client.library)
+        let pending = try await client.store.pendingChanges()
+        let removed = try await snapshot(client.library, client.namespace)
+        XCTAssertTrue(removed.publications.isEmpty)
+        XCTAssertEqual(removed.cleanups.map(\.identity), [identity])
+        XCTAssertTrue(pending.operations.contains(.delete(CloudAttachmentRecordCodec.recordID(identity), base: nil)))
+        bindings = nil
+      }
+      let staged = try await persistLegacyPayloadZoneFailure(
+        reported, outbound: submitted, in: client, bindings: bindings
+      )
+      let upgraded = try await reopenLegacyPayloadReplay(staged, in: client)
+      try await upgraded.sync.processAutomaticChanges()
+      let full = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: key)
+      XCTAssertEqual(full.namespaceState.phase, .blocked, "Frozen save: \(frozenSave)")
+      if case .queuedCleanup = frozenSave {
+        let remaining = try await snapshot(upgraded.library, upgraded.namespace)
+        XCTAssertTrue(remaining.publications.isEmpty)
+        XCTAssertEqual(remaining.cleanups.map(\.identity), [identity])
+        XCTAssertNil(remaining.cleanups.first?.lastFailure)
+      }
+    }
+  }
+
+  func testLegacyStagedMixedSendKeepsItsBlockAndCommitsItsAcceptedWrite() async throws {
+    let client = try await makeAttachmentClient(fileNames: [])
+    defer { try? FileManager.default.removeItem(at: client.root) }
+    let (original, outbound, firstSend) = try await sendFirstPayloadWithMissingZone(in: client)
+    let oldID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+    let dataZone = await client.store.dataZone
+    let snipID = CloudRecordID.snip(client.snipID, in: dataZone)
+    try await editText(ofSnip: client.snipID, to: "accepted beside a failed payload", in: client.library)
+    let pending = try await client.store.pendingChanges()
+    let snipSave = try XCTUnwrap(pending.operations.first { $0.id == snipID })
+    let mixed = CloudOutboundBatch(operations: outbound.operations + [snipSave], zonesToSave: outbound.zonesToSave)
+    let sending = FakeCloudRecordTransport(server: client.server, namespace: client.namespace)
+    try await sending.start(state: firstSend.engineState)
+    await sending.failNextSentItem(oldID, failure: .zoneMissing)
+    let sent = try await sending.send(mixed)
+    guard sent.items.contains(.failed(oldID, .zoneMissing)),
+      case .saved(let acceptedSnip)? = sent.items.first(where: { $0.id == snipID })
+    else { return XCTFail("The mixed receipt must contain the failed payload and the accepted snip.") }
+
+    _ = try await reconcileLegacyReplayReplacement(of: original, in: client)
+    let staged = try await persistLegacyPayloadZoneFailure(sent, outbound: mixed, in: client)
+    let upgraded = try await reopenLegacyPayloadReplay(staged, in: client)
+    try await upgraded.sync.processAutomaticChanges()
+    let full = try await upgraded.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    XCTAssertEqual(full.namespaceState.phase, .blocked)
+    let accepted = try XCTUnwrap(full.readyEntities.first { $0.reference.domainID == client.snipID })
+    XCTAssertEqual(accepted.shadowData, acceptedSnip.shadow.data)
+  }
+
+  private static let legacyReplayReplacementBytes = Data("replacement bytes after the first send".utf8)
+
+  private func reconcileLegacyReplayReplacement(
+    of original: CloudAttachmentPublication, in client: AttachmentClient
+  ) async throws -> CloudAttachmentPublication {
+    let durableFile = try XCTUnwrap(original.localSourceURL)
+    try Self.legacyReplayReplacementBytes.write(to: durableFile)
+    let pending = try await client.store.pendingChanges()
+    let storage = try await snapshot(client.library, client.namespace)
+    let replacement = try publication(of: original.metadata.attachmentID, in: storage)
+    let oldID = CloudAttachmentRecordCodec.recordID(original.metadata.payloadIdentity)
+    let replacementID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
+    XCTAssertNotEqual(replacementID, oldID)
+    XCTAssertFalse(pending.operations.contains { $0.id == oldID })
+    guard case .save(let draft)? = pending.operations.first(where: { $0.id == replacementID }) else {
+      throw CloudTransportError.invalidRecord
+    }
+    let asset = try XCTUnwrap(draft.assetFields[CloudAttachmentRecordCodec.assetField])
+    XCTAssertEqual(try Data(contentsOf: asset.fileURL), Self.legacyReplayReplacementBytes)
+    return replacement
+  }
+
+  private func persistLegacyPayloadZoneFailure(
+    _ sent: CloudSentBatch, outbound: CloudOutboundBatch, in client: AttachmentClient,
+    currentDecision: CloudNamespaceBootstrapPhase = .active,
+    bindings: [CloudFullOutboundBinding]? = nil
+  ) async throws -> CloudFullBatchCommit {
+    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
+    try await client.store.stage(.sent(sent), outbound: outbound)
+    let staged = try await client.store.stagedBatches()
+    let fresh = try XCTUnwrap(staged.first)
+    XCTAssertEqual(staged.map(\.batchID), [sent.id])
+    XCTAssertEqual(fresh.storageVersion, 1)
+    XCTAssertTrue(fresh.hasPlannedDeferredReleases)
+    XCTAssertEqual(fresh.expectedNamespaceRevision, full.namespaceState.revision)
+    XCTAssertEqual(fresh.nextNamespaceState?.phase, currentDecision)
+    let raw = try JSONDecoder().decode(
+      CloudFullSyncPersistence.RawStagedBatch.self, from: XCTUnwrap(fresh.rawBatchData)
+    )
+    XCTAssertEqual(raw.storageVersion, 1)
+    XCTAssertEqual(raw.batch, .sent(sent))
+    XCTAssertEqual(raw.outbound, outbound)
+
+    // The old planner treated this payload result as an owned-zone failure.
+    let legacyDecision = full.namespaceState.committingSend(.ownedZoneMissing)
+    XCTAssertEqual(legacyDecision.phase, .blocked)
+    let legacy = CloudFullBatchCommit(
+      namespaceKey: fresh.namespaceKey, batchID: fresh.batchID,
+      expectedEngineState: fresh.expectedEngineState, nextEngineState: fresh.nextEngineState,
+      nextEnrollment: fresh.nextEnrollment, expectedNamespaceRevision: fresh.expectedNamespaceRevision,
+      nextNamespaceState: legacyDecision, rawBatchData: fresh.rawBatchData,
+      outboundBindings: bindings ?? fresh.outboundBindings,
+      recoveryInputs: fresh.recoveryInputs, recoveryChanges: fresh.recoveryChanges,
+      recoveryReviews: fresh.recoveryReviews, graphRepairs: fresh.graphRepairs,
+      settledDeleteIdentities: fresh.settledDeleteIdentities,
+      attachmentTransitions: fresh.attachmentTransitions, items: fresh.items
+    )
+    try await client.library.replaceStagedCloudFullBatch(legacy)
+    return legacy
+  }
+
+  private func reopenLegacyPayloadReplay(
+    _ legacy: CloudFullBatchCommit, in client: AttachmentClient
+  ) async throws -> AttachmentClient {
+    let upgraded = try reopened(client)
+    let persisted = try await upgraded.store.stagedBatches()
+    XCTAssertEqual(persisted, [legacy], "Reopen must read the exact legacy v1 stage and raw bytes.")
+    return upgraded
+  }
+
   func testMissingZoneForTheCurrentPayloadSaveKeepsItRecoverable() async throws {
     let client = try await makeAttachmentClient(fileNames: [])
     defer { try? FileManager.default.removeItem(at: client.root) }
