@@ -17,107 +17,29 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let staged: CloudFullBatchCommit
   }
 
-  private enum ObsoletePayloadReplayPhase: String {
-    case stage
-    case replay
-  }
-
-  private static let firstUploadBytes = Data("first upload bytes".utf8)
   private static let replacementUploadBytes = Data("replacement bytes after the first send".utf8)
 
   func testObsoletePayloadZoneFailureReplaysFromDiskEvidence() async throws {
     let environment = ProcessInfo.processInfo.environment
     guard let phaseName = environment["SNIP_SNAP_REPLAY_PHASE"] else {
-      throw XCTSkip("The hosted replay experiment runs this test in three separate processes.")
+      throw XCTSkip("The hosted replay experiment supplies the staged fixture and expected phase.")
     }
-    let phase = try XCTUnwrap(ObsoletePayloadReplayPhase(rawValue: phaseName))
+    let expectedPhase = try XCTUnwrap(CloudNamespaceBootstrapPhase(rawValue: phaseName))
+    guard expectedPhase == .blocked || expectedPhase == .active else {
+      return XCTFail("The replay expectation must be blocked or active.")
+    }
     let path = try XCTUnwrap(environment["SNIP_SNAP_REPLAY_ROOT"])
     guard path.hasPrefix("/") else { return XCTFail("The replay root must be an absolute path.") }
     let root = URL(fileURLWithPath: path, isDirectory: true)
-    let manifestURL = root.appendingPathComponent("replay-manifest.json")
-    switch phase {
-    case .stage:
-      guard try FileManager.default.contentsOfDirectory(atPath: path).isEmpty else {
-        return XCTFail("The stage process requires an empty fixture root.")
-      }
-      let manifest = try await stageObsoletePayloadFailure(root: root)
-      try JSONEncoder().encode(manifest).write(to: manifestURL, options: .atomic)
-      logObsoletePayloadEvidence("stage", manifest: manifest, result: "manifest=saved")
-    case .replay:
-      let manifest = try JSONDecoder().decode(
-        ObsoletePayloadReplayManifest.self, from: Data(contentsOf: manifestURL)
-      )
-      try await replayObsoletePayloadFailure(root: root, manifest: manifest)
-    }
-  }
-
-  private func stageObsoletePayloadFailure(root: URL) async throws -> ObsoletePayloadReplayManifest {
-    let client = try await makeAttachmentClient(fileNames: [], root: root)
-    try await client.sync.sync()
-    let settled = try await client.store.isSyncSettled()
-    XCTAssertTrue(settled, "The snip must finish enrolling before the upload.")
-
-    let source = root.appendingPathComponent("first-upload.txt")
-    try Self.firstUploadBytes.write(to: source)
-    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
-    let snip = try XCTUnwrap(local.snips.first { $0.id == client.snipID })
-    _ = try await client.library.perform(.editAttachments(
-      snipID: snip.id,
-      content: snip.content,
-      edits: [.added(sourceURL: source)],
-      expectedUpdatedAt: snip.updatedAt,
-      now: Date(timeIntervalSince1970: 1)
-    ), sortedBy: .manual)
-    let firstPlan = try await client.store.pendingChanges()
-    let firstStorage = try await snapshot(client.library, client.namespace)
-    let original = try XCTUnwrap(firstStorage.publications.first)
-    let obsoletePayload = original.metadata.payloadIdentity
-    let obsoleteID = CloudAttachmentRecordCodec.recordID(obsoletePayload)
-    let frozen = try XCTUnwrap(firstPlan.operations.first { $0.id == obsoleteID })
-    let frozenAsset = try payloadAsset(for: frozen)
-    let durableFile = try XCTUnwrap(original.localSourceURL)
-    XCTAssertNotEqual(frozenAsset, durableFile)
-    XCTAssertEqual(try Data(contentsOf: frozenAsset), Self.firstUploadBytes)
-    let outbound = CloudOutboundBatch(operations: [frozen], zonesToSave: firstPlan.zonesToSave)
-    await client.transport.failNextSentItem(obsoleteID, failure: .zoneMissing)
-    let sent = try await client.transport.send(outbound)
-    let eventsAfterSend = await client.transport.events()
-    XCTAssertEqual(eventsAfterSend.last, .sent([obsoleteID]))
-    let accepted = await client.server.acceptedOperationCount(for: obsoleteID)
-    XCTAssertEqual(accepted, 0)
-
-    try Self.replacementUploadBytes.write(to: durableFile)
-    let replacementPlan = try await client.store.pendingChanges()
-    let replacementStorage = try await snapshot(client.library, client.namespace)
-    let replacement = try publication(of: original.metadata.attachmentID, in: replacementStorage)
-    let replacementID = CloudAttachmentRecordCodec.recordID(replacement.metadata.payloadIdentity)
-    XCTAssertNotEqual(replacementID, obsoleteID)
-    XCTAssertFalse(replacementPlan.operations.contains { $0.id == obsoleteID })
-    let replacementOperation = try XCTUnwrap(replacementPlan.operations.first { $0.id == replacementID })
-    XCTAssertEqual(try Data(contentsOf: payloadAsset(for: replacementOperation)), Self.replacementUploadBytes)
-
-    // Commit the stage, then let this process exit before applying or confirming this result.
-    try await client.store.stage(.sent(sent), outbound: outbound)
-    let batches = try await client.store.stagedBatches()
-    XCTAssertEqual(batches.map(\.batchID), [sent.id])
-    let staged = try XCTUnwrap(batches.first)
-    let manifest = ObsoletePayloadReplayManifest(
-      namespace: client.namespace,
-      snipID: client.snipID,
-      obsoletePayload: obsoletePayload,
-      replacementMetadata: replacement.metadata,
-      metadataIdentity: original.metadataIdentity,
-      staged: staged
+    let manifest = try JSONDecoder().decode(
+      ObsoletePayloadReplayManifest.self, from: Data(contentsOf: root.appendingPathComponent("replay-manifest.json"))
     )
-    let raw = try await verifyObsoletePayloadStage(manifest, in: client)
-    XCTAssertEqual(raw.batch, .sent(sent))
-    XCTAssertEqual(raw.outbound, outbound)
-    let eventsAfterStage = await client.transport.events()
-    XCTAssertEqual(eventsAfterStage, eventsAfterSend)
-    return manifest
+    try await replayObsoletePayloadFailure(root: root, manifest: manifest, expectedPhase: expectedPhase)
   }
 
-  private func replayObsoletePayloadFailure(root: URL, manifest: ObsoletePayloadReplayManifest) async throws {
+  private func replayObsoletePayloadFailure(
+    root: URL, manifest: ObsoletePayloadReplayManifest, expectedPhase: CloudNamespaceBootstrapPhase
+  ) async throws {
     let storeURL = root.appendingPathComponent("store")
     guard FileManager.default.fileExists(atPath: storeURL.path) else {
       return XCTFail("The staged store must exist before reopening.")
@@ -130,58 +52,99 @@ final class CloudAttachmentTransferTests: XCTestCase {
     guard persisted == [manifest.staged] else {
       return XCTFail("Reopening must load the exact old staged commit from the manifest.")
     }
-    _ = try await verifyObsoletePayloadStage(manifest, in: client)
+    let staged = try XCTUnwrap(persisted.first)
+    let key = client.namespace.namespaceKey
+    let before = try await client.library.cloudFullStorageSnapshot(namespaceKey: key)
+    let beforeRecovery = try await client.library.cloudFullRecoveryEvents(namespaceKey: key)
+    let beforeAttachments = try await snapshot(client.library, client.namespace)
+    let beforeLocal = try await client.library.checkedSnapshot(sortedBy: .manual)
+    let rawDigest = try await verifyObsoletePayloadStage(
+      staged, obsoletePayload: manifest.obsoletePayload, current: before.namespaceState, in: client
+    )
+    try verifyObsoletePayloadReplacement(manifest, attachments: beforeAttachments, local: beforeLocal)
+    print("SM33-LEGACY-STAGED-REPLAY input raw=\(rawDigest)")
 
-    let outcome = try await client.sync.sendPending()
+    let outcome = try await client.sync.processAutomaticChanges()
 
     let remaining = try await client.store.stagedBatches()
     XCTAssertTrue(remaining.isEmpty, "Recovery must consume the stage.")
-    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: client.namespace.namespaceKey)
-    XCTAssertEqual(full.namespaceState.phase, .blocked)
-    XCTAssertEqual(full.namespaceState, manifest.staged.nextNamespaceState)
-    let wire = try await client.library.cloudTextSyncSnapshot(namespaceKey: client.namespace.namespaceKey)
-    XCTAssertEqual(wire.engineState, manifest.staged.nextEngineState)
+    let after = try await client.library.cloudFullStorageSnapshot(namespaceKey: key)
+    XCTAssertEqual(after.namespaceState.phase, expectedPhase)
+    XCTAssertEqual(after.namespaceState.revision, before.namespaceState.revision + 1)
+    XCTAssertEqual(after.namespaceState.storageVersion, before.namespaceState.storageVersion)
+    XCTAssertEqual(after.namespaceState.initialFetchInventory, before.namespaceState.initialFetchInventory)
+    XCTAssertEqual(after.namespaceState.zoneCreationPending, before.namespaceState.zoneCreationPending)
+    XCTAssertEqual(after.enrolledEntities, before.enrolledEntities)
+    XCTAssertEqual(after.readyEntities, before.readyEntities)
+    XCTAssertEqual(after.deferredEntities, before.deferredEntities)
+    XCTAssertEqual(after.pendingDeletes, before.pendingDeletes)
+    XCTAssertEqual(after.conflicts, before.conflicts)
+    XCTAssertEqual(after.quarantines, before.quarantines)
+    let afterRecovery = try await client.library.cloudFullRecoveryEvents(namespaceKey: key)
+    XCTAssertEqual(afterRecovery, beforeRecovery)
+    let wire = try await client.library.cloudTextSyncSnapshot(namespaceKey: key)
+    XCTAssertEqual(wire.engineState, staged.nextEngineState)
+
+    let obsoleteID = CloudAttachmentRecordCodec.recordID(manifest.obsoletePayload)
+    let replacementID = CloudAttachmentRecordCodec.recordID(manifest.replacementMetadata.payloadIdentity)
     let admission = try await client.store.outboundAdmission()
-    XCTAssertTrue(admission.blocksAll)
     let outbound = try await client.store.pendingChanges()
-    XCTAssertEqual(outbound, CloudOutboundBatch(operations: []))
-    let status = try await client.store.syncStatus()
-    guard case .issue(.appDataIssue) = status else {
-      return XCTFail("Expected blocked sync status to report an app data issue, got \(status).")
+    let replacementOperation = outbound.operations.first { $0.id == replacementID }
+    if expectedPhase == .blocked {
+      XCTAssertEqual(after.namespaceState, staged.nextNamespaceState)
+      XCTAssertTrue(admission.blocksAll)
+      XCTAssertEqual(outbound, CloudOutboundBatch(operations: []))
+      XCTAssertEqual(outcome.result, .syncIssue(.appDataIssue))
+    } else {
+      XCTAssertEqual(admission, .open)
+      XCTAssertEqual(outcome.result, .syncScheduled)
+      XCTAssertFalse(outbound.operations.contains { $0.id == obsoleteID })
+      let replacement = try XCTUnwrap(replacementOperation)
+      XCTAssertEqual(try Data(contentsOf: payloadAsset(for: replacement)), Self.replacementUploadBytes)
     }
     XCTAssertFalse(outcome.settled)
-    try await verifyObsoletePayloadReplacement(manifest, in: client)
 
+    let afterAttachments = try await snapshot(client.library, client.namespace)
+    let afterLocal = try await client.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(afterAttachments, beforeAttachments)
+    XCTAssertEqual(afterLocal, beforeLocal)
+    try verifyObsoletePayloadReplacement(manifest, attachments: afterAttachments, local: afterLocal)
     let events = await client.transport.events()
-    XCTAssertEqual(events, [.started], "Recovery must not fetch, send, or confirm on the new transport.")
-    for identity in [manifest.obsoletePayload, manifest.replacementMetadata.payloadIdentity, manifest.metadataIdentity] {
-      let id = CloudAttachmentRecordCodec.recordID(identity)
+    XCTAssertTrue(events.isEmpty, "Recovery must leave the fresh transport idle.")
+    for zone in client.namespace.zones {
+      let types = await client.server.storedRecordTypes(in: zone)
+      XCTAssertTrue(types.isEmpty)
+    }
+    for id in [obsoleteID, replacementID, CloudAttachmentRecordCodec.recordID(manifest.metadataIdentity)] {
       let record = await client.server.fullSnapshot(for: id)
       let accepted = await client.server.acceptedOperationCount(for: id)
       XCTAssertNil(record)
       XCTAssertEqual(accepted, 0)
     }
-    logObsoletePayloadEvidence("replay", manifest: manifest, result:
-      "actual=\(full.namespaceState.phase) status=\(status) coordinator=\(outcome.result) " +
-      "stageCount=\(remaining.count) localBytes=preserved events=\(events) accepted=0")
+    print("SM33-LEGACY-STAGED-REPLAY replay pid=\(ProcessInfo.processInfo.processIdentifier) batch=\(staged.batchID) " +
+      "expected=\(expectedPhase.rawValue) actual=\(after.namespaceState.phase.rawValue) " +
+      "revision=\(before.namespaceState.revision)->\(after.namespaceState.revision) " +
+      "nextEngine=matched stageCount=\(remaining.count) blocksAll=\(admission.blocksAll) " +
+      "replacementSave=\(replacementOperation != nil) localBytes=preserved events=\(events) accepted=0")
   }
 
   private func verifyObsoletePayloadStage(
-    _ manifest: ObsoletePayloadReplayManifest, in client: AttachmentClient
-  ) async throws -> CloudFullSyncPersistence.RawStagedBatch {
-    let staged = manifest.staged
+    _ staged: CloudFullBatchCommit, obsoletePayload: CloudTextStorageIdentity,
+    current: CloudFullNamespaceState, in client: AttachmentClient
+  ) async throws -> String {
     let namespaceKey = client.namespace.namespaceKey
     XCTAssertEqual(staged.storageVersion, 1)
     XCTAssertEqual(staged.namespaceKey, namespaceKey.rawValue)
+    XCTAssertTrue(staged.hasPlannedDeferredReleases)
 
-    let full = try await client.library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    XCTAssertEqual(full.namespaceState.phase, .active)
+    XCTAssertEqual(current.phase, .active)
     let revision = try XCTUnwrap(staged.expectedNamespaceRevision)
-    XCTAssertEqual(full.namespaceState.revision, revision)
+    XCTAssertEqual(current.revision, revision)
     let planned = try XCTUnwrap(staged.nextNamespaceState)
     XCTAssertEqual(planned.phase, .blocked)
     XCTAssertEqual(planned.revision, revision + 1)
     XCTAssertTrue(staged.attachmentTransitions.isEmpty)
+    XCTAssertTrue(staged.items.isEmpty)
 
     let wire = try await client.library.cloudTextSyncSnapshot(namespaceKey: namespaceKey)
     let token = try XCTUnwrap(staged.expectedEngineState)
@@ -195,7 +158,7 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let raw = try JSONDecoder().decode(CloudFullSyncPersistence.RawStagedBatch.self, from: rawData)
     XCTAssertEqual(raw.storageVersion, 1)
     guard case .sent(let sent) = raw.batch else { throw CloudFullStorageError.invalidBatchReplay }
-    let obsoleteID = CloudAttachmentRecordCodec.recordID(manifest.obsoletePayload)
+    let obsoleteID = CloudAttachmentRecordCodec.recordID(obsoletePayload)
     let configuredPayloadZone = await client.store.payloadZone
     let payloadZone = try XCTUnwrap(configuredPayloadZone)
     XCTAssertEqual(obsoleteID.zone, payloadZone)
@@ -207,41 +170,45 @@ final class CloudAttachmentTransferTests: XCTestCase {
     let nextEngine = try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: nextToken)
     XCTAssertEqual(nextEngine, sent.engineState)
     XCTAssertEqual(nextEngine.namespace, client.namespace)
+    XCTAssertFalse(nextEngine.serialization.isEmpty)
     XCTAssertFalse(nextEngine.requiresInitialFetch)
 
     let outbound = try XCTUnwrap(raw.outbound)
     XCTAssertEqual(outbound.zonesToSave, [payloadZone])
     XCTAssertEqual(outbound.operations.map(\.id), [obsoleteID])
     let operation = try XCTUnwrap(outbound.operations.first)
-    _ = try payloadAsset(for: operation)
+    let frozenAsset = try payloadAsset(for: operation)
+    XCTAssertTrue(frozenAsset.isFileURL)
+    XCTAssertTrue(frozenAsset.pathComponents.starts(with: client.root.pathComponents))
     XCTAssertEqual(staged.outboundBindings.count, 1)
     let binding = try XCTUnwrap(staged.outboundBindings.first)
-    XCTAssertEqual(binding.identity, manifest.obsoletePayload)
+    XCTAssertEqual(binding.identity, obsoletePayload)
     XCTAssertEqual(binding.action, .save)
     XCTAssertEqual(try JSONDecoder().decode(CloudOutboundOperation.self, from: binding.operationData), operation)
-    try await verifyObsoletePayloadReplacement(manifest, in: client)
-    print("SM33-F1-D3 verified raw=v\(raw.storageVersion) sent=zoneMissing frozen=AttachmentPayload.save " +
-      "engineToken=matched actual=\(full.namespaceState.phase) planned=\(planned.phase)")
-    return raw
+    print("SM33-LEGACY-STAGED-REPLAY verified raw=v\(raw.storageVersion) sent=zoneMissing " +
+      "frozen=AttachmentPayload.save engineCAS=matched revision=\(revision) " +
+      "current=\(current.phase) stagedPhase=\(planned.phase)")
+    return String(describing: SHA256.hash(data: rawData))
   }
 
   private func verifyObsoletePayloadReplacement(
-    _ manifest: ObsoletePayloadReplayManifest, in client: AttachmentClient
-  ) async throws {
+    _ manifest: ObsoletePayloadReplayManifest, attachments: CloudAttachmentStorageSnapshot, local: SnipLibrarySnapshot
+  ) throws {
     let attachmentID = manifest.replacementMetadata.attachmentID
-    let storage = try await snapshot(client.library, client.namespace)
-    let replacement = try publication(of: attachmentID, in: storage)
+    let replacement = try publication(of: attachmentID, in: attachments)
     XCTAssertEqual(replacement.metadata, manifest.replacementMetadata)
     XCTAssertEqual(replacement.metadataIdentity, manifest.metadataIdentity)
     XCTAssertNotEqual(replacement.metadata.payloadIdentity, manifest.obsoletePayload)
+    XCTAssertNil(replacement.priorPayloadIdentity)
+    XCTAssertFalse(attachments.cleanups.contains { $0.identity == manifest.obsoletePayload })
     XCTAssertTrue(replacement.isLocallyPresent)
     XCTAssertFalse(replacement.payloadAccepted)
     XCTAssertFalse(replacement.metadataAccepted)
     XCTAssertNil(replacement.lastFailure)
-    let local = try await client.library.checkedSnapshot(sortedBy: .manual)
     let snip = try XCTUnwrap(local.snips.first { $0.id == manifest.snipID })
     XCTAssertEqual(snip.attachments.map(\.id), [attachmentID])
     let localFile = try XCTUnwrap(local.attachmentURLs[attachmentID])
+    XCTAssertEqual(replacement.localSourceURL, localFile)
     let queuedUpload = try XCTUnwrap(replacement.sourceURL)
     XCTAssertEqual(try Data(contentsOf: localFile), Self.replacementUploadBytes)
     XCTAssertEqual(try Data(contentsOf: queuedUpload), Self.replacementUploadBytes)
@@ -252,16 +219,6 @@ final class CloudAttachmentTransferTests: XCTestCase {
       throw CloudFullStorageError.invalidBatchReplay
     }
     return try XCTUnwrap(draft.assetFields[CloudAttachmentRecordCodec.assetField]).fileURL
-  }
-
-  private func logObsoletePayloadEvidence(
-    _ phase: String, manifest: ObsoletePayloadReplayManifest, result: String
-  ) {
-    let staged = manifest.staged
-    let rawDigest = staged.rawBatchData.map { String(describing: SHA256.hash(data: $0)) } ?? "missing"
-    print("SM33-F1-D3 \(phase) pid=\(ProcessInfo.processInfo.processIdentifier) batch=\(staged.batchID) \(result)")
-    print("SM33-F1-D3 input namespace=\(manifest.namespace.generation) revision=\(staged.expectedNamespaceRevision ?? 0) raw=\(rawDigest)")
-    print("SM33-F1-D3 payload failed=\(manifest.obsoletePayload.recordName) replacement=\(manifest.replacementMetadata.payloadIdentity.recordName)")
   }
 
   func testNormalSyncPublishesPayloadBeforeMetadataAndRemoteClientSeesAttachment() async throws {
@@ -4855,8 +4812,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
   }
 
   /// One client with one snip whose attachments come from local files, enrolled but not synced.
-  private func makeAttachmentClient(fileNames: [String], root: URL? = nil) async throws -> AttachmentClient {
-    let seed = try await makeLocalAttachmentSeed(names: fileNames, root: root)
+  private func makeAttachmentClient(fileNames: [String]) async throws -> AttachmentClient {
+    let seed = try await makeLocalAttachmentSeed(names: fileNames)
     let client = attachmentClient(
       root: seed.root,
       storeURL: seed.storeURL,
@@ -5270,8 +5227,8 @@ final class CloudAttachmentTransferTests: XCTestCase {
     )
   }
 
-  private func makeLocalAttachmentSeed(names: [String], root: URL? = nil) async throws -> LocalAttachmentSeed {
-    let root = root ?? temporaryDirectory()
+  private func makeLocalAttachmentSeed(names: [String]) async throws -> LocalAttachmentSeed {
+    let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let sources = try names.map { name in
       let url = root.appendingPathComponent("\(name).txt")
