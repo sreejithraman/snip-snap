@@ -7,10 +7,40 @@ extension CloudFullSyncPersistence {
     _ batch: CloudFullBatchCommit, deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
     setupReplacements: Set<CloudSetupPointerDelete.Replacement> = []
   ) async throws {
+    let legacyPayloadReplay = deferredSetupPointerDeletes.isEmpty && setupReplacements.isEmpty
+      ? legacyStagedPayloadReplayProof(for: batch) : nil
     _ = try await library.commitCloudFullBatch(
       batch, resolveAttachmentMetadata: attachmentMetadataRebase(for: batch),
-      deferredSetupPointerDeletes: deferredSetupPointerDeletes, setupReplacements: setupReplacements
+      deferredSetupPointerDeletes: deferredSetupPointerDeletes, setupReplacements: setupReplacements,
+      legacyPayloadReplay: legacyPayloadReplay
     )
+  }
+
+  private func legacyStagedPayloadReplayProof(
+    for batch: CloudFullBatchCommit
+  ) -> SwiftDataSnipLibrary.LegacyStagedPayloadReplayProof? {
+    guard batch.nextNamespaceState?.phase == .blocked,
+      batch.namespaceKey == namespaceKey.rawValue, batch.attachmentTransitions.isEmpty,
+      let payloadZone, let data = batch.rawBatchData
+    else { return nil }
+    let decoder = JSONDecoder()
+    guard let raw = try? decoder.decode(RawStagedBatch.self, from: data),
+      raw.storageVersion == 1, case .sent(let sent) = raw.batch, sent.id == batch.batchID,
+      let outbound = raw.outbound, outbound.operations.count == 1,
+      let operation = outbound.operations.first,
+      CloudFullBatchPlanner.isSubmittedPayloadSave(operation, dataZone: dataZone, payloadZone: payloadZone),
+      sent.items == [.failed(operation.id, .zoneMissing)],
+      outbound.zonesToSave.isSubset(of: [payloadZone]), sent.zoneEvents.isEmpty,
+      sent.databaseEvents.isEmpty
+        || (outbound.zonesToSave.contains(payloadZone) && sent.databaseEvents == [.zoneSaved(payloadZone)]),
+      let binding = try? Self.outboundBinding(operation), batch.outboundBindings == [binding],
+      let expectedData = batch.expectedEngineState, let nextData = batch.nextEngineState,
+      let expected = try? decoder.decode(CloudEngineStateEnvelope.self, from: expectedData),
+      let next = try? decoder.decode(CloudEngineStateEnvelope.self, from: nextData),
+      expected.namespace == namespace, next.namespace == namespace,
+      !expected.requiresInitialFetch, !next.requiresInitialFetch, next == sent.engineState
+    else { return nil }
+    return .init(payloadIdentity: binding.identity)
   }
 
   private func attachmentMetadataRebase(

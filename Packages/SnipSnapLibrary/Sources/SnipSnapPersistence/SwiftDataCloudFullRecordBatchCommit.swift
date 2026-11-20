@@ -5,11 +5,20 @@ import SwiftData
 
 
 extension SwiftDataSnipLibrary {
+  package struct LegacyStagedPayloadReplayProof: Sendable {
+    fileprivate let payloadIdentity: CloudTextStorageIdentity
+
+    package init(payloadIdentity: CloudTextStorageIdentity) {
+      self.payloadIdentity = payloadIdentity
+    }
+  }
+
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
     resolveAttachmentMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
     deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
     setupReplacements: Set<CloudSetupPointerDelete.Replacement> = [],
+    legacyPayloadReplay: LegacyStagedPayloadReplayProof? = nil,
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
     guard batch.storageVersion == 1 else { throw CloudFullStorageError.invalidBatchReplay }
@@ -60,6 +69,10 @@ extension SwiftDataSnipLibrary {
     }
 
     try lock.check()
+    let nextNamespaceState = try Self.effectiveNextNamespaceState(
+      for: batch, current: currentEnrollment.namespaceState, legacyPayloadReplay: legacyPayloadReplay,
+      context: context
+    )
     let existing = try context.fetch(FetchDescriptor(
       predicate: #Predicate<StoredCloudEntityRecord> { $0.namespaceKey == namespaceKey }
     ))
@@ -498,7 +511,7 @@ extension SwiftDataSnipLibrary {
             ?? acceptedByID[reference.domainID]?.dependencyListID
           return dependency.map(listReferences.contains) ?? false
         }) else { throw CloudFullStorageError.invalidEnrollment }
-        let state = batch.nextNamespaceState ?? currentEnrollment.namespaceState
+        let state = nextNamespaceState ?? currentEnrollment.namespaceState
         let data = try JSONEncoder().encode(
           CloudFullEnrollmentState(namespaceState: state, references: enrollment)
         )
@@ -547,6 +560,26 @@ extension SwiftDataSnipLibrary {
       CloudAttachmentCacheFiles.remove(file, includingParentDirectory: true)
     }
     return .applied
+  }
+
+  private static func effectiveNextNamespaceState(
+    for batch: CloudFullBatchCommit,
+    current: CloudFullNamespaceState,
+    legacyPayloadReplay: LegacyStagedPayloadReplayProof?,
+    context: ModelContext
+  ) throws -> CloudFullNamespaceState? {
+    guard let identity = legacyPayloadReplay?.payloadIdentity, current.phase == .active,
+      batch.expectedNamespaceRevision != nil,
+      batch.nextNamespaceState == current.committingSend(.ownedZoneMissing)
+    else { return batch.nextNamespaceState }
+
+    let publications = try cloudAttachmentPublications(namespaceKey: batch.namespaceKey, context: context)
+    guard !publications.contains(where: {
+      $0.payloadIdentity == identity || $0.lifecycle.replacedPayload?.identity == identity
+    }) else { return batch.nextNamespaceState }
+    let cleanups = try cloudAttachmentCleanups(namespaceKey: batch.namespaceKey, context: context)
+    guard !cleanups.contains(where: { $0.identity == identity }) else { return batch.nextNamespaceState }
+    return current.committingSend(.delivered(needsRetry: false, savedDataZone: false))
   }
 
   private static func preconditionAfterListMoves(
