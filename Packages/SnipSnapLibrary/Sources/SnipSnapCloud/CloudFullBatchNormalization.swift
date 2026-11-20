@@ -72,10 +72,7 @@ extension CloudFullBatchPlanner {
         sentResults.updateValue(result, forKey: result.id) == nil
       else { throw CloudTransportError.invalidRecord }
       if case .failed(let id, .zoneMissing) = result,
-        let payloadZone, payloadZone != dataZone,
-        case .save(let draft) = operation,
-        draft.id.zone == payloadZone,
-        draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
+        Self.isSubmittedPayloadSave(operation, dataZone: dataZone, payloadZone: payloadZone)
       {
         attachmentOperationIDs.insert(id)
       }
@@ -115,6 +112,18 @@ extension CloudFullBatchPlanner {
       outboundOperations: operations,
       sentItemResults: sentResults
     )
+  }
+
+  static func isSubmittedPayloadSave(
+    _ operation: CloudOutboundOperation,
+    dataZone: CloudZoneID,
+    payloadZone: CloudZoneID?
+  ) -> Bool {
+    guard let payloadZone, payloadZone != dataZone, case .save(let draft) = operation else {
+      return false
+    }
+    return draft.id.zone == payloadZone
+      && draft.recordType == CloudAttachmentRecordCodec.payloadRecordType
   }
 
   static func normalizeSentResult(
