@@ -142,11 +142,13 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     try await requireActive(context)
     do {
       try await beforeRecordWork(context)
-    } catch CloudCollectionError.syncNeedsAttention {
-      // Earlier record work can encounter a changed collection before the
-      // ordered consumer reaches the account event.
+    } catch where (error as? CloudCollectionError) == .syncNeedsAttention
+      || (error as? CKError)?.code == .notAuthenticated
+    {
+      // Earlier record work can see the new database before the consumer
+      // reaches the account event. Confirm the account without consuming it.
       try await accountChanged(context)
-      throw CloudCollectionError.syncNeedsAttention
+      throw error
     }
     try await requireActive(context)
   }

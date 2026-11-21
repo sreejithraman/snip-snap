@@ -351,6 +351,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
         for batch in try await records.stagedBatches() {
           try await records.applyStaged(batch.batchID)
         }
+        guard try await !records.outboundAdmission().blocksAll else {
+          throw CloudCollectionError.syncNeedsAttention
+        }
         try await records.clearEngineState()
       }
       if resumed { return .enabled }

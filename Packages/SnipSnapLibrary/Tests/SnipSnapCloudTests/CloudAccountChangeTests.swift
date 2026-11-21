@@ -172,6 +172,14 @@ final class CloudAccountChangeTests: XCTestCase {
     XCTAssertEqual(result, .iCloudSignedOut)
     let edit = try await add("local edit", to: library)
     XCTAssertEqual(Set(edit.snapshot.snips.map(\.content)), ["keep even with a missing zone", "local edit"])
+
+    await fixture.account.set(.available(accountLineage: "account-a"))
+    do {
+      _ = try await fixture.lifecycle.enableICloudSync()
+      XCTFail("A blocked collection must leave the local library writable")
+    } catch CloudCollectionError.syncNeedsAttention {}
+    let afterEnable = try await add("still local", to: library)
+    XCTAssertEqual(afterEnable.snapshot.snips.count, 3)
   }
 
   func testLegacyManifestKeepsBothStoresAndIgnoresRetiredFields() async throws {
@@ -254,6 +262,8 @@ final class CloudAccountChangeTests: XCTestCase {
       let server = FakeCloudServer()
       let control = FakeCloudControlTransport(server: server)
       await control.seedControl(descriptor)
+      let inbox = CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: descriptor.metadataZone)
+      _ = try await server.send(CloudOutboundBatch(operations: [.save(inbox)]), failures: [:])
       try await persistence.activateEmptyCollection(namespace: namespace.binding)
       let source = try await persistence.activeLibrary()
       try Data("1".utf8).write(to: persistence.initialImportMarkerURL)

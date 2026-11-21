@@ -2998,7 +2998,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     _ = try await lifecycle.synchronize()
     await account.setLineage("account-b")
-    await records.enqueueAccountChange()
+    await control.removeControl()
+    let earlierBatch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    await records.enqueueAccountChange(after: .fetched(earlierBatch))
     await fulfillment(of: [stopped], timeout: 5)
     let snapshot = try await source.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(snapshot.snips.map(\.content), ["keep from the old account"])
@@ -4242,7 +4244,10 @@ private actor LifecycleAutomaticTransportProbe: CloudRecordTransport,
   func enqueue(_ batch: CloudSyncBatch) {
     mailbox.append(.batch(CloudPendingBatch(batch: batch, outbound: nil)))
   }
-  func enqueueAccountChange() { mailbox.append(.accountChange(UUID())) }
+  func enqueueAccountChange(after batch: CloudSyncBatch) {
+    enqueue(batch)
+    mailbox.append(.accountChange(UUID()))
+  }
   func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
   func events() -> [String] { recorded }
   func start(state: CloudEngineStateEnvelope?) { recorded.append("started") }
