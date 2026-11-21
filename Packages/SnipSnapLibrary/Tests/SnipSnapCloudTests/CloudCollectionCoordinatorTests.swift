@@ -1944,6 +1944,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     _ = try await lifecycle.synchronize()
     let pause = CollectionWorkPause()
+    defer { Task { await pause.resume() } }
     let paused = expectation(description: "Old record work reached the control fetch")
     await checkedControl.pauseNextFetch(pause) { paused.fulfill() }
     let finished = expectation(description: "Old record work returns after replacement")
@@ -1960,7 +1961,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         catch { return false }
       }
     }
-    await fulfillment(of: [paused], timeout: 2)
+    guard await XCTWaiter.fulfillment(of: [paused], timeout: 2) == .completed else {
+      XCTFail("Old record work did not reach the control fetch")
+      return
+    }
 
     await control.seedControl(fresh)
     let adopted = try await lifecycle.synchronize()
@@ -1971,7 +1975,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let beforeRelease = try await persistence.snapshot().activeStore
     XCTAssertNotEqual(beforeRelease.id, original.id)
     await pause.resume()
-    await fulfillment(of: [finished], timeout: 2)
+    guard await XCTWaiter.fulfillment(of: [finished], timeout: 2) == .completed else {
+      XCTFail("Old record work did not finish after the control fetch resumed")
+      return
+    }
     if let sendTask {
       let allowed = await sendTask.value
       XCTAssertFalse(allowed)
