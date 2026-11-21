@@ -1,0 +1,11 @@
+# Snip Snap 0.6.1 Beta 294
+
+## Mac
+
+- Share saved-snips commands and move the JSON library to test support
+- Simplify failed iCloud setup retries
+
+## iOS
+
+- Share saved-snips commands and move the JSON library to test support
+- Simplify failed iCloud setup retries
