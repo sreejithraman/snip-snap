@@ -295,6 +295,11 @@ public final class SyncedContentSettingsModel {
     }
   }
 
+  public var isSyncRequested: Bool {
+    if case .enabling = state { return true }
+    return mode == .iCloudSync || canCancelEnable
+  }
+
   public var canEnableClipboardSync: Bool {
     guard mode == .iCloudSync else { return false }
     return switch state {
@@ -545,6 +550,9 @@ public final class SyncedContentSettingsModel {
       record(issue, operation: "sync.setup")
       status.state = .enabling(issue)
     case (.localOnly, .enabling):
+      record(issue, operation: "sync.setup")
+      status.state = .failed(issue)
+    case (.localOnly, .failed(let previous)) where isPerformingExplicitSync && previous != issue:
       record(issue, operation: "sync.setup")
       status.state = .failed(issue)
     default:

@@ -285,7 +285,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
 
     setMarkerLocked(true)
     await assertMarkerRemovalFails("A cancel whose pending marker remains must not succeed") {
-      try await lifecycle.cancelPendingEnable()
+      _ = try await lifecycle.cancelPendingEnable()
     }
     XCTAssertEqual(startupSettings().state, .enabling(.waitingForConnection))
 
@@ -314,6 +314,27 @@ final class CloudPendingICloudEnableTests: XCTestCase {
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     XCTAssertEqual(startupSettings().state, .ready)
+  }
+
+  @MainActor
+  func testLateOrdinaryEnableReloadsButCannotOverrideAStopOrCancel() async throws {
+      let settings = SyncedContentSettingsModel(mode: .localOnly, initialState: .enabling(.checkingAccount),
+          cancelEnableAction: { .cancelled }, hasFailedPendingEnable: { true })
+      let started = settings.recordSyncStarted()
+      var reloads = 0
+      try await SnipSnapCloudSyncResult.iCloudSyncEnabled.applyEnableProgress(to: settings, started: started) {
+          reloads += 1
+          settings.recordSyncStopped(.iCloudAccountChanged)
+      }
+      XCTAssertEqual(settings.state, .failed(.iCloudAccountChanged))
+      XCTAssertEqual(settings.mode, .localOnly)
+      let beforeCancel = settings.recordSyncStarted()
+      await settings.cancelICloudSyncSetup()
+      try await SnipSnapCloudSyncResult.iCloudSyncSettingUp(.checkingAccount)
+          .applyEnableProgress(to: settings, started: beforeCancel) { reloads += 1 }
+      XCTAssertEqual(reloads, 1)
+      XCTAssertEqual(settings.state, .ready)
+      XCTAssertEqual(settings.mode, .localOnly)
   }
 
   // MARK: Stored marker format

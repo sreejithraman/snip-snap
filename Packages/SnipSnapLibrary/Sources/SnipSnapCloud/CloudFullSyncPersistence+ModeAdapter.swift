@@ -398,15 +398,32 @@ extension CloudFullSyncPersistence {
       replacingTargetSnipIDs: replacingSnips,
       replacingTargetListIDs: replacingLists
     )
+    // A missing local attachment can be a remote addition. Keep the fetched
+    // attachment on a replaced snip unless its ID is already in the merged library.
+    let mergedAttachmentIDs = Set(transfer.snips.flatMap(\.attachments).map(\.id))
+    let retainedAttachments = Dictionary(uniqueKeysWithValues: target.snips
+      .filter { replacingSnips.contains($0.id) }
+      .map { snip in
+        (snip.id, snip.attachments.filter { !mergedAttachmentIDs.contains($0.id) })
+      })
+    let retainedIDs = Set(retainedAttachments.values.flatMap { $0 }.map(\.id))
+    let snips = transfer.snips.map { snip in
+      var merged = snip
+      merged.attachments.append(contentsOf: retainedAttachments[snip.id] ?? [])
+      return merged
+    }
+    let attachmentData = transfer.attachmentData.merging(
+      target.attachmentData.filter { retainedIDs.contains($0.key) }
+    ) { local, _ in local }
     return try CloudFullReenableApplyPlan(
       transitionID: transitionID,
       namespaceKey: namespaceKey.rawValue,
       expectedNamespaceRevision: stored.namespaceState.revision,
       targetRevision: transfer.targetRevision,
       targetDigest: transfer.targetDigest,
-      snips: transfer.snips,
+      snips: snips,
       lists: transfer.lists,
-      attachmentData: transfer.attachmentData,
+      attachmentData: attachmentData,
       dormantPayload: transfer.opaqueSyncStatePayload,
       acceptedCAS: acceptedValues.map(CloudFullReenableAcceptedCAS.init),
       conflicts: conflicts,

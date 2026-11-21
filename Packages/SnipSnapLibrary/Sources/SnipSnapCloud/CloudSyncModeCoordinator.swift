@@ -370,9 +370,9 @@ package actor ICloudSyncModeCoordinator {
             let status = try await failedEnable(
                 transition,
                 error: error,
-                reason: retryable ? nil : .terminalFetchFailure
+                reason: retryable || CloudSyncDiagnostics.isCancellation(error) ? nil : .terminalFetchFailure
             )
-            if error is CancellationError { throw error }
+            if CloudSyncDiagnostics.isCancellation(error) { throw error }
             if !retryable, error is CloudSyncIssueError { throw error }
             return status
         }
@@ -441,12 +441,13 @@ package actor ICloudSyncModeCoordinator {
                 transition = try await currentTransition()
             }
         } catch {
-            if let stored = try? await persistence.snapshot(),
+            let cancelled = CloudSyncDiagnostics.isCancellation(error)
+            if !cancelled, let stored = try? await persistence.snapshot(),
                stored.transition?.hasDurableFullReenableIntent == true {
                 throw error
             }
             let retryable = isRetryableConnectivity(error)
-            let reason = retryable || error is CancellationError ? nil : failureReason(error)
+            let reason = retryable || cancelled ? nil : failureReason(error)
             let status = try await failedEnable(transition, error: error, reason: reason)
             if retryable { return status }
             throw error
@@ -484,7 +485,7 @@ package actor ICloudSyncModeCoordinator {
         do {
             try await persistence.discardFailedICloudEnable(
                 transitionID: transition.id, reason: reason,
-                preserveNewBases: !(error is CancellationError)
+                preserveNewBases: !CloudSyncDiagnostics.isCancellation(error)
             )
         } catch {
             // A transient manifest write failure can leave the source frozen.
