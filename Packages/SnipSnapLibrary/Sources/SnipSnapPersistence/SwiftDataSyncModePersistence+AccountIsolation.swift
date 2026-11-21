@@ -145,6 +145,11 @@ extension SwiftDataSyncModePersistence {
     }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
+    if manifest.transition?.phase == .swapped,
+      store(id: manifest.activeStoreID)?.kind == .iCloudSync
+    {
+      try finishTransition()
+    }
     var declared = manifest
     let isolation = try declared.declareAccountIsolation(reason: reason)
     try commit(declared)

@@ -1059,6 +1059,35 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(Set(remote), ["pending before sign-out", "made while signed out"])
     }
 
+    func testSignOutCanIsolateAnInterruptedCloudActivation() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let crash = CrashInjector(point: .afterPointerSwap)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: crash.hit)
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        try await add("keep after sign-out", to: persistence.activeLibrary())
+        do {
+            _ = try await coordinator.enableOrRetry()
+            XCTFail("Expected an interruption after the swap")
+        } catch CrashInjector.Failure.injected {}
+
+        let published = try await persistence.snapshot()
+        let isolation = try await persistence.isolateActiveCloudStore(reason: .signedOut)
+        let isolated = try await persistence.snapshot()
+        XCTAssertEqual(isolation.storeID, published.activeStore.id)
+        XCTAssertEqual(isolated.activeStore.kind, .localOnly)
+        XCTAssertNil(isolated.transition)
+        XCTAssertEqual(isolated.accountIsolation?.id, isolation.id)
+        let cache = try await persistence.libraryForTransition(storeID: isolation.storeID)
+        let stored = try await cache.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(stored.snips.map(\.content), ["keep after sign-out"])
+    }
+
     func testChangedAccountNeverDisplaysOrUploadsThePriorAccountCache() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
