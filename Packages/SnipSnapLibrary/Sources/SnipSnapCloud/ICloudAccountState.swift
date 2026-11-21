@@ -33,244 +33,74 @@ package struct FixedICloudAccountStateSource: ICloudAccountStateSource {
     }
 }
 
-/// Narrow production-capable action seam for platform notice models.
-public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
+/// App sync actions and on-demand attachment access for the active library.
+public actor SnipSnapCloudSyncHandler: OptionalCloudSyncHandling {
     public typealias SyncAction = @MainActor @Sendable () async -> Void
-    public typealias ScheduleAction = @MainActor @Sendable () async -> Void
     package typealias AttachmentCoordinatorFactory = @Sendable (
         SwiftDataSnipLibrary,
         CloudSyncNamespace,
         CloudCollectionDescriptor
     ) async -> any CloudAttachmentTransferring
-    package typealias SyncCoordinatorFactory = @Sendable (
-        SwiftDataSyncModePersistence,
-        CloudSyncNamespace,
-        CloudCollectionDescriptor
-    ) async -> ICloudSyncModeCoordinator
+    private let persistence: @Sendable () async throws -> SwiftDataSyncModePersistence?
+    private let controlTransport: any CloudCollectionControlTransport
+    private let accountStateSource: (any ICloudAccountStateSource)?
+    private let makeAttachmentCoordinator: AttachmentCoordinatorFactory
+    private let ownerName: String
+    private let reservedZones: Set<CloudZoneID>
+    private let operationGate: AsyncOperationGate
+    private let syncAction: SyncAction?
+    private let retryAction: SyncAction?
+    private let scheduleAction: SyncAction?
 
-    private struct Configuration: Sendable {
-        let persistence: @Sendable () async throws -> SwiftDataSyncModePersistence?
-        let controlTransport: any CloudCollectionControlTransport
-        let accountStateSource: any ICloudAccountStateSource
-        let makeSyncCoordinator: SyncCoordinatorFactory
-        let makeAttachmentCoordinator: AttachmentCoordinatorFactory
-        let ownerName: String
-        let reservedZones: Set<CloudZoneID>
-    }
-
-    private enum CoordinatorSource {
-        /// A caller supplied the sync coordinator; attachment actions are unsupported.
-        case injected(ICloudSyncModeCoordinator)
-        /// Coordinators are built for the active store's namespace and cached in `bindings`.
-        case resolved(Configuration)
-    }
-
-    private struct SyncCoordinatorBinding {
-        let descriptor: CloudCollectionDescriptor
-        let coordinator: ICloudSyncModeCoordinator
-    }
-
-    private struct AttachmentCoordinatorBinding {
+    private struct AttachmentBinding {
         let storeID: UUID
         let descriptor: CloudCollectionDescriptor
         let coordinator: any CloudAttachmentTransferring
     }
 
-    /// Coordinators built for the active store's namespace. The sync and attachment lifetimes
-    /// overlap, so each has its own slot.
-    private struct CoordinatorBindings {
-        private var sync: SyncCoordinatorBinding?
-        private var attachment: AttachmentCoordinatorBinding?
-
-        func syncCoordinator(for descriptor: CloudCollectionDescriptor) -> ICloudSyncModeCoordinator? {
-            guard let sync, sync.descriptor == descriptor else { return nil }
-            return sync.coordinator
-        }
-
-        func attachmentCoordinator(
-            storeID: UUID,
-            descriptor: CloudCollectionDescriptor
-        ) -> (any CloudAttachmentTransferring)? {
-            guard let attachment, attachment.storeID == storeID,
-                  attachment.descriptor == descriptor
-            else { return nil }
-            return attachment.coordinator
-        }
-
-        mutating func bind(_ sync: SyncCoordinatorBinding) {
-            self.sync = sync
-        }
-
-        mutating func bind(_ attachment: AttachmentCoordinatorBinding) {
-            self.attachment = attachment
-        }
-
-        /// Drops the attachment coordinator before a sync coordinator for another collection is built.
-        mutating func releaseAttachment() {
-            attachment = nil
-        }
-
-        /// Account isolation ended; the next action resolves the new active store.
-        mutating func removeAll() {
-            self = Self()
-        }
-    }
-
-    private let coordinatorSource: CoordinatorSource
-    private var bindings = CoordinatorBindings()
-    private let operationGate: AsyncOperationGate
-    private let syncAction: SyncAction?
-    private let retryAction: SyncAction?
-    private let scheduleAction: ScheduleAction?
-
-    package init(
-        coordinator: ICloudSyncModeCoordinator,
-        syncWhenPossible: SyncAction? = nil,
-        retrySyncWhenPossible: SyncAction? = nil,
-        scheduleSyncAfterLocalChange: ScheduleAction? = nil
-    ) {
-        coordinatorSource = .injected(coordinator)
-        operationGate = AsyncOperationGate()
-        syncAction = syncWhenPossible
-        retryAction = retrySyncWhenPossible
-        scheduleAction = scheduleSyncAfterLocalChange
-    }
+    private var attachmentBinding: AttachmentBinding?
 
     package init(
         persistence: @escaping @Sendable () async throws -> SwiftDataSyncModePersistence?,
         controlTransport: any CloudCollectionControlTransport,
-        accountStateSource: any ICloudAccountStateSource,
-        makeSyncCoordinator: @escaping SyncCoordinatorFactory,
+        accountStateSource: (any ICloudAccountStateSource)? = nil,
         makeAttachmentCoordinator: @escaping AttachmentCoordinatorFactory,
         ownerName: String = CKCurrentUserDefaultName,
         reservedZones: Set<CloudZoneID> = [CloudCollectionAssembly.productionControlID.zone],
         operationGate: AsyncOperationGate = AsyncOperationGate(),
         syncWhenPossible: SyncAction? = nil,
         retrySyncWhenPossible: SyncAction? = nil,
-        scheduleSyncAfterLocalChange: ScheduleAction? = nil
+        scheduleSyncAfterLocalChange: SyncAction? = nil
     ) {
-        coordinatorSource = .resolved(Configuration(
-            persistence: persistence,
-            controlTransport: controlTransport,
-            accountStateSource: accountStateSource,
-            makeSyncCoordinator: makeSyncCoordinator,
-            makeAttachmentCoordinator: makeAttachmentCoordinator,
-            ownerName: ownerName,
-            reservedZones: reservedZones
-        ))
+        self.persistence = persistence
+        self.controlTransport = controlTransport
+        self.accountStateSource = accountStateSource
+        self.makeAttachmentCoordinator = makeAttachmentCoordinator
+        self.ownerName = ownerName
+        self.reservedZones = reservedZones
         self.operationGate = operationGate
         syncAction = syncWhenPossible
         retryAction = retrySyncWhenPossible
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
-    public func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
-        let (notice, activated) = try await operationGate.withLease { try await self.refreshNotice() }
-        if activated { await scheduleAction?() }
-        return notice
-    }
+    public func syncWhenPossible() async { await syncAction?() }
 
-    private func refreshNotice() async throws -> (AppleAccountNotice?, Bool) {
-        if case .resolved(let configuration) = coordinatorSource {
-            guard let persistence = try await configuration.persistence() else { return (nil, false) }
-            let local = try await persistence.snapshot()
-            guard local.accountIsolation?.namespace != nil || local.transition?.namespace != nil
-                || local.activeStore.namespace != nil else { return (nil, false) }
-            let account = await configuration.accountStateSource.currentAccountState()
-            let storage = try await persistence.snapshot()
-            guard let binding = storage.accountIsolation?.namespace
-                ?? storage.transition?.namespace ?? storage.activeStore.namespace
-            else { return (nil, false) }
-            let notice: AppleAccountNotice? = switch account {
-            case .noAccount: .signedOut
-            case .available(let lineage) where lineage != binding.accountLineage: .accountChanged
-            case .restricted, .temporarilyUnavailable, .couldNotDetermine: .paused
-            case .available: nil
-            }
-            if let notice {
-                if storage.activeStore.kind == .iCloudSync, notice != .paused {
-                    _ = try await persistence.isolateActiveCloudStore(
-                        reason: notice == .signedOut ? .signedOut : .accountChanged,
-                        expectedStoreID: storage.activeStore.id)
-                }
-                return (notice, false)
-            }
-        }
-        let status = try await requireCoordinator().refreshAccountState()
-        let notice: AppleAccountNotice? = switch status.attentionReason {
-        case .accountSignedOut: .signedOut
-        case .accountChanged, .namespaceChanged: .accountChanged
-        case .accountTemporarilyUnavailable, .accountStatusUnknown, .accountRestricted: .paused
-        case nil, .enrollmentBlocked, .firstSyncFailed, .transferConflict, .storageFailure,
-             .storeReadFailed, .terminalFetchFailure, .transitionFailure:
-            nil
-        }
-        return (notice, status.activatedCloudStore)
-    }
+    public func retrySyncWhenPossible() async { await (retryAction ?? syncAction)?() }
 
-    public func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
-        try await operationGate.withLease { try await self.resolveCache(choice) }
-    }
-
-    private func resolveCache(_ choice: AppleAccountCacheChoice) async throws {
-        switch coordinatorSource {
-        case .injected(let coordinator):
-            _ = try await coordinator.resolveAccountIsolation(choice == .keepLocalCopy ? .keepLocalCopy : .remove)
-        case .resolved(let configuration):
-            guard let persistence = try await configuration.persistence() else {
-                throw SnipLibraryError.transferUnsupported
-            }
-            try await persistence.resolveAccountIsolation(choice == .keepLocalCopy ? .keepLocalCopy : .remove)
-            bindings.removeAll()
-        }
-    }
-
-    public func syncWhenPossible() async {
-        if let syncAction {
-            await syncAction()
-            return
-        }
-        do {
-            try await operationGate.withLease {
-                let coordinator = try await self.requireCoordinator()
-                let status = try await coordinator.status()
-                guard status.state != .off, status.attentionReason == nil else { return }
-                _ = try await coordinator.syncActive()
-            }
-        } catch {
-            // Launch and foreground work is best effort. Durable work remains queued.
-        }
-    }
-
-    public func retrySyncWhenPossible() async {
-        if let retryAction {
-            await retryAction()
-            return
-        }
-        await syncWhenPossible()
-    }
-
-    public func scheduleSyncAfterLocalChange() async {
-        if let scheduleAction {
-            await scheduleAction()
-            return
-        }
-        await syncWhenPossible()
-    }
+    public func scheduleSyncAfterLocalChange() async { await (scheduleAction ?? syncAction)?() }
 
     public func isCloudSyncActive() async throws -> Bool {
         try await operationGate.withLease { try await self.cloudSyncIsActive() }
     }
 
     private func cloudSyncIsActive() async throws -> Bool {
-        guard case .resolved(let configuration) = coordinatorSource else { return true }
-        guard let persistence = try await configuration.persistence() else { return false }
+        guard let persistence = try await persistence() else { return false }
         return try await persistence.snapshot().activeStore.kind == .iCloudSync
     }
 
     public func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
-        guard case .resolved(let configuration) = coordinatorSource,
-              let persistence = try await configuration.persistence()
+        guard let persistence = try await persistence()
         else { throw SnipLibraryError.transferUnsupported }
         let storage = try await persistence.snapshot()
         guard storage.activeStore.kind == .iCloudSync,
@@ -360,59 +190,28 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         return SyncedAttachmentCacheSnapshot(states: states, revision: revision)
     }
 
-    private func requireCoordinator() async throws -> ICloudSyncModeCoordinator {
-        let configuration: Configuration
-        switch coordinatorSource {
-        case .injected(let coordinator): return coordinator
-        case .resolved(let value): configuration = value
-        }
-        guard let persistence = try await configuration.persistence()
-        else { throw SnipLibraryError.transferUnsupported }
-        let storage = try await persistence.snapshot()
-        guard let binding = storage.accountIsolation?.namespace
-            ?? storage.transition?.namespace
-            ?? storage.activeStore.namespace
-        else { throw SnipLibraryError.transferUnsupported }
-        let descriptor = try await resolveDescriptor(
-            matching: binding,
-            configuration: configuration
-        )
-        try await requireCurrentSource(storage, persistence: persistence)
-        let namespace = descriptor.namespace(
-            cloudScope: binding.scope,
-            accountLineage: binding.accountLineage
-        )
-        if let coordinator = bindings.syncCoordinator(for: descriptor) {
-            return coordinator
-        }
-        bindings.releaseAttachment()
-        let created = await configuration.makeSyncCoordinator(persistence, namespace, descriptor)
-        try await requireCurrentSource(storage, persistence: persistence)
-        bindings.bind(SyncCoordinatorBinding(descriptor: descriptor, coordinator: created))
-        return created
-    }
-
     private func withAttachmentCoordinator<Value: Sendable>(
         _ operation: @escaping @Sendable (any CloudAttachmentTransferring, AttachmentSource?) async throws -> Value
     ) async throws -> Value {
-        guard case .resolved(let configuration) = coordinatorSource,
-              let persistence = try await configuration.persistence()
+        guard let persistence = try await persistence()
         else { throw SnipLibraryError.transferUnsupported }
         let storage = try await persistence.snapshot()
         guard storage.activeStore.kind == .iCloudSync,
               let binding = storage.activeStore.namespace
         else { throw SnipLibraryError.transferUnsupported }
-        let descriptor = try await resolveDescriptor(
-            matching: binding,
-            configuration: configuration
-        )
+        if let accountStateSource,
+           await accountStateSource.currentAccountState() != .available(accountLineage: binding.accountLineage)
+        {
+            throw SnipLibraryError.transferUnsupported
+        }
+        let descriptor = try await resolveDescriptor(matching: binding)
         try await requireCurrentSource(storage, persistence: persistence)
         let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         return try await lease.run {
             try await self.requireCurrentSource(storage, persistence: persistence)
             let attachment = try await self.attachmentCoordinator(
                 persistence: persistence, storeID: storage.activeStore.id,
-                binding: binding, descriptor: descriptor, configuration: configuration)
+                binding: binding, descriptor: descriptor)
             try await self.requireCurrentSource(storage, persistence: persistence)
             let source = AttachmentSource(library: try await persistence.libraryForTransition(storeID: storage.activeStore.id),
                 storeID: storage.activeStore.id, namespaceKey: binding.namespaceKey)
@@ -424,16 +223,15 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         persistence: SwiftDataSyncModePersistence,
         storeID: UUID,
         binding: ICloudSyncNamespaceBinding,
-        descriptor: CloudCollectionDescriptor,
-        configuration: Configuration
+        descriptor: CloudCollectionDescriptor
     ) async throws -> any CloudAttachmentTransferring {
-        if let coordinator = bindings.attachmentCoordinator(storeID: storeID, descriptor: descriptor) {
-            return coordinator
+        if let attachmentBinding, attachmentBinding.storeID == storeID, attachmentBinding.descriptor == descriptor {
+            return attachmentBinding.coordinator
         }
         let namespace = descriptor.namespace(cloudScope: binding.scope, accountLineage: binding.accountLineage)
         let library = try await persistence.libraryForTransition(storeID: storeID)
-        let created = await configuration.makeAttachmentCoordinator(library, namespace, descriptor)
-        bindings.bind(AttachmentCoordinatorBinding(storeID: storeID, descriptor: descriptor, coordinator: created))
+        let created = await makeAttachmentCoordinator(library, namespace, descriptor)
+        attachmentBinding = AttachmentBinding(storeID: storeID, descriptor: descriptor, coordinator: created)
         return created
     }
 
@@ -445,23 +243,21 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
         guard current.activeStore.kind == storage.activeStore.kind,
               current.activeStore.id == storage.activeStore.id,
               current.activeStore.namespace == storage.activeStore.namespace,
-              current.accountIsolation == storage.accountIsolation,
               current.transition == storage.transition
         else { throw SyncModePersistenceError.namespaceMismatch }
     }
 
     private func resolveDescriptor(
-        matching binding: ICloudSyncNamespaceBinding,
-        configuration: Configuration
+        matching binding: ICloudSyncNamespaceBinding
     ) async throws -> CloudCollectionDescriptor {
-        guard let current = try await configuration.controlTransport.fetchControl() else {
+        guard let current = try await controlTransport.fetchControl() else {
             throw SnipLibraryError.transferUnsupported
         }
         return try Self.validatedDescriptor(
             current,
             matching: binding,
-            ownerName: configuration.ownerName,
-            reservedZones: configuration.reservedZones
+            ownerName: ownerName,
+            reservedZones: reservedZones
         )
     }
 

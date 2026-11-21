@@ -27,17 +27,14 @@ extension SnipSnapCloudSyncResult {
   }
 }
 
-package enum CloudAccountIsolationError: Error, Equatable, Sendable {
-  case signedOut
-  case accountChanged
-
-  var syncResult: SnipSnapCloudSyncResult {
-    self == .signedOut ? .iCloudSignedOut : .iCloudAccountChanged
-  }
-}
-
 func automaticSyncResult(for error: any Error) -> SnipSnapCloudSyncResult {
-  if let isolation = error as? CloudAccountIsolationError { return isolation.syncResult }
+  if let account = error as? ICloudAccountGateError {
+    switch account {
+    case .noAccount: return .iCloudSignedOut
+    case .accountChanged: return .iCloudAccountChanged
+    default: break
+    }
+  }
   return .syncIssue(SnipSnapCloudSyncIssueMapper.issue(for: error))
 }
 

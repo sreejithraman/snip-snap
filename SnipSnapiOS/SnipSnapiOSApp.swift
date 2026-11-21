@@ -68,32 +68,13 @@ struct SnipSnapiOSApp: App {
         )
 #endif
         let syncActionBridge = IOSCloudSyncActionBridge()
-        let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
+        let productionCloudSyncHandler = cloudServices.makeCloudSyncHandler(
             syncWhenPossible: { await syncActionBridge.syncWhenPossible() },
             retrySyncWhenPossible: { await syncActionBridge.retrySyncWhenPossible() },
             scheduleSyncAfterLocalChange: {
                 await syncActionBridge.scheduleSyncAfterLocalChange()
             }
         )
-        let accountNoticeModel: AppleAccountNoticeModel?
-#if DEBUG
-        let uiTestAccountNoticeModel =
-            ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut"
-            ? AppleAccountNoticeModel(
-                notice: .signedOut,
-                handler: UITestAppleAccountCacheHandler()
-            )
-            : nil
-#else
-        let uiTestAccountNoticeModel: AppleAccountNoticeModel? = nil
-#endif
-        if let uiTestAccountNoticeModel {
-            accountNoticeModel = uiTestAccountNoticeModel
-        } else if let handler = productionCloudSyncHandler {
-            accountNoticeModel = AppleAccountNoticeModel(handler: handler)
-        } else {
-            accountNoticeModel = nil
-        }
         session = IOSAppSession(
             library: startup.library,
             userActions: startup.userActions,
@@ -103,7 +84,6 @@ struct SnipSnapiOSApp: App {
             startupError: startup.error,
             syncedContentSettings: cloudServices.syncedContentSettings,
             cloudSyncSession: cloudServices.syncSession,
-            accountNoticeModel: accountNoticeModel,
             cloudSyncHandler: productionCloudSyncHandler,
             clipboardRootURL: startup.clipboardRootURL,
             clipboardSyncRootURL: startup.syncModeRootURL,

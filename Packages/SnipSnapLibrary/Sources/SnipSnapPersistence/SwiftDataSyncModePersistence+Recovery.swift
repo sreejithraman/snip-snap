@@ -23,19 +23,7 @@ extension SwiftDataSyncModePersistence {
       }
       value.transition = nil
     }
-    if case .declared(let isolation) = try value.accountIsolationPhase() {
-      guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
-        throw SyncModePersistenceError.invalidManifest
-      }
-      _ = try SwiftDataSnipLibrary(
-        storeURL: replacementRoot.appendingPathComponent("snips.store"),
-        attachmentCacheRootURL: cacheRootURL(
-          base: attachmentCacheRootURL,
-          storeID: isolation.replacementStoreID
-        )
-      )
-      try value.swapToIsolationReplacement()
-    }
+    try recoverLegacyAccountCopy(&value, storeRoots: storeRoots)
     if let activeIndex = value.stores.firstIndex(where: { $0.id == value.activeStoreID }),
       value.stores[activeIndex].lifecycle == .creating
     {
@@ -122,7 +110,9 @@ extension SwiftDataSyncModePersistence {
   }
 
   static func canonicalRelativeRoot(for store: SyncModeStore) -> String {
-    canonicalRelativeRoot(kind: store.kind, id: store.id)
+    let cloudRoot = canonicalRelativeRoot(kind: .iCloudSync, id: store.id)
+    if store.quarantinedNamespace != nil, store.relativeRoot == cloudRoot { return cloudRoot }
+    return canonicalRelativeRoot(kind: store.kind, id: store.id)
   }
 
   static func canonicalRelativeRoot(kind: SyncModeStoreKind, id: UUID) -> String {
@@ -144,7 +134,6 @@ extension SwiftDataSyncModePersistence {
     if let transition = value.transition {
       try validateTransition(transition, in: value)
     }
-    _ = try value.accountIsolationPhase()
   }
 
   private static func validateTransition(_ transition: SyncModeTransition, in value: Manifest) throws {
@@ -153,7 +142,7 @@ extension SwiftDataSyncModePersistence {
       let source = value.stores.first(where: { $0.id == transition.sourceStoreID }),
       let candidate = value.stores.first(where: { $0.id == transition.candidateStoreID }),
       candidate.kind == transition.targetKind, candidate.namespace == transition.namespace,
-      candidate.syncProtocol == transition.syncProtocol, value.accountIsolation == nil
+      candidate.syncProtocol == transition.syncProtocol
     else { throw SyncModePersistenceError.invalidManifest }
     if transition.targetKind == .localOnly {
       guard source.kind == .iCloudSync, source.syncProtocol == candidate.syncProtocol else {

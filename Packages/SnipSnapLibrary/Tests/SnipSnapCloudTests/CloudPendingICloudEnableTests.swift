@@ -250,35 +250,6 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertNil(reopened.transition)
   }
 
-  func testSyncDuringAnUnfinishedAccountIsolationDoesNotReportICloudSyncOn() async throws {
-    let source = try await seededSource()
-    let server = FakeCloudServer()
-    let crash = CrashInjector(point: .afterAccountIsolationManifest)
-    let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot, crashHook: crash.hit)
-    let lifecycle = makeLifecycle(
-      source: source,
-      server: server,
-      syncModeStore: SnipSyncModeStore(persistence)
-    )
-    let outcome = try await lifecycle.enableICloudSync()
-    XCTAssertEqual(outcome, .enabled)
-    try writeMarker("pending")
-    do {
-      _ = try await persistence.isolateActiveCloudStore(reason: .accountChanged)
-      XCTFail("Expected the injected crash")
-    } catch CrashInjector.Failure.injected {}
-    let isolating = try await persistence.snapshot()
-    XCTAssertNotNil(isolating.accountIsolation)
-    XCTAssertEqual(isolating.activeStore.kind, .iCloudSync)
-
-    do {
-      let result = try await lifecycle.synchronize()
-      XCTAssertNotEqual(result, .iCloudSyncEnabled)
-    } catch {}
-
-    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
-  }
-
   func testCancelWhoseMarkerCannotBeRemovedKeepsTheEnablePending() async throws {
     let server = FakeCloudServer()
     let control = PendingOfflineThenOnlineControlTransport(server: server)
@@ -542,24 +513,22 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     probe: PendingMarkerProbe? = nil,
     accountState: ICloudAccountState? = nil
   ) -> SnipSnapICloudSyncLifecycle {
-    var lineageProvider: (@Sendable () async throws -> String)?
-    if let probe {
-      lineageProvider = { try await probe.accountLineage() }
-    }
-    var accountStateSource: (any ICloudAccountStateSource)?
-    if let accountState {
-      accountStateSource = FixedICloudAccountStateSource(state: accountState)
-    }
     let controlTransport: any CloudCollectionControlTransport =
       control ?? FakeCloudControlTransport(server: server)
+    let accountSource: (any ICloudAccountStateSource)? = if let probe {
+      probe
+    } else if let accountState {
+      FixedICloudAccountStateSource(state: accountState)
+    } else {
+      nil
+    }
     return SnipSnapICloudSyncLifecycle(
       rootURL: syncRoot,
       sourceLibrary: source,
       syncModeStore: syncModeStore,
       cloudScope: "private",
       accountLineage: "account-a",
-      accountLineageProvider: lineageProvider,
-      accountStateSource: accountStateSource,
+      accountStateSource: accountSource,
       ownerName: "owner",
       controlTransport: controlTransport,
       makeRecordTransport: { context in
@@ -666,7 +635,7 @@ private final class EnableCompletionProbe {
 
 /// Runs as the account lineage lookup, after the pending marker is written and
 /// before the enable finishes. It records the marker and can lock it once.
-private actor PendingMarkerProbe {
+private actor PendingMarkerProbe: ICloudAccountStateSource {
   private let marker: URL
   private var locksMarker: Bool
   private(set) var seenMarker: Data?
@@ -676,13 +645,13 @@ private actor PendingMarkerProbe {
     self.locksMarker = locksMarker
   }
 
-  func accountLineage() throws -> String {
+  func currentAccountState() -> ICloudAccountState {
     if seenMarker == nil { seenMarker = try? Data(contentsOf: marker) }
     if locksMarker {
       locksMarker = false
-      try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: marker.path)
+      try? FileManager.default.setAttributes([.immutable: true], ofItemAtPath: marker.path)
     }
-    return "account-a"
+    return .available(accountLineage: "account-a")
   }
 }
 

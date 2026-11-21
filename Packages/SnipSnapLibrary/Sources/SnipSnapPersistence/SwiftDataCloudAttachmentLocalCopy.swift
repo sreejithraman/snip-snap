@@ -82,6 +82,15 @@ extension SwiftDataSnipLibrary {
     try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
   }
 
+  /// Makes a durable copy of the bytes present on this device. Cloud-only
+  /// attachments keep their metadata and can be fetched if sync resumes.
+  package func keepAvailableCloudAttachments(namespaceKey: CloudSyncNamespaceKey) throws {
+    let snapshot = try checkedSnapshot(sortedBy: .manual)
+    for id in snapshot.snips.flatMap(\.attachments).map(\.id) {
+      _ = try materializeCloudAttachmentForLocalCopy(namespaceKey: namespaceKey, attachmentID: id)
+    }
+  }
+
   /// Verifies every Cloud attachment, or makes its durable copy, before a local-copy transfer.
   /// Cloud metadata remains intact until the transition commits.
   package func prepareCloudAttachmentsForLocalCopy(

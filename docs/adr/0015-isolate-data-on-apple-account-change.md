@@ -1,7 +1,14 @@
-# 0015: Isolate data when the Apple Account changes
+# 0015: Keep the local library when the Apple Account changes
 
-When a device signs out of iCloud or changes Apple Accounts, Snip Snap will stop cloud writes and isolate the prior account's local cache. It will ask whether to keep that cache as a local-only copy or remove it from the device. It will not show or upload the prior account's data under the new account. This preserves pending work without allowing data to cross account ownership without consent.
+When a device signs out of iCloud or changes Apple Accounts, Snip Snap turns off
+sync and keeps the cache as a writable local-only library. The app keeps the
+library automatically, without a Keep or Remove prompt. The kept library can
+rejoin only its original account and sync generation.
 
-## Consequences
+Snip Snap checks the Apple Account at the start of a sync cycle and when it
+receives an account-change notification or engine event. A temporary CloudKit
+failure pauses sync without changing the local library. A missing or changed
+control record requires confirming the account before interpreting it as a
+collection reset.
 
-The app must observe CloudKit account changes and keep account caches separate from both the local-only store and other account caches. A temporary CloudKit failure must not look like an account change or cause the app to remove cached data. Recovery and removal paths need tests that cover sign-out, sign-in to the same account, and a switch to a different account.
+Approved by SIMP-ADR12-15-D1 for SIMP-07.

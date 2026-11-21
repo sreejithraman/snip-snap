@@ -186,7 +186,7 @@ final class SnipCLIApplicationNavigationTests: StoreBackedTestCase {
             model: model, coordinator: coordinator,
             syncedContentSettings: SyncedContentSettingsModel(mode: .iCloudSync),
             updates: SnipCLIApplicationUpdates(settings: UpdateChannelSettings(defaults: defaults())),
-            cloudSyncHandler: nil, accountNoticeModel: nil, panel: { panel }
+            cloudSyncHandler: nil, panel: { panel }
         )
         return Fixture(model: model, coordinator: coordinator, handler: handler,
                        panel: panel, destination: destination)

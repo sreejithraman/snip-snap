@@ -20,7 +20,6 @@ final class SnipCLIApplicationHandler {
     private let syncedContentSettings: SyncedContentSettingsModel
     private let updates: SnipCLIApplicationUpdates
     private let cloudSyncHandler: (any OptionalCloudSyncHandling)?
-    private let accountNoticeModel: AppleAccountNoticeModel?
     private let panel: @MainActor () -> NSWindow?
 
     init(
@@ -29,7 +28,6 @@ final class SnipCLIApplicationHandler {
         syncedContentSettings: SyncedContentSettingsModel,
         updates: SnipCLIApplicationUpdates,
         cloudSyncHandler: (any OptionalCloudSyncHandling)?,
-        accountNoticeModel: AppleAccountNoticeModel?,
         panel: @escaping @MainActor () -> NSWindow?
     ) {
         self.model = model
@@ -37,7 +35,6 @@ final class SnipCLIApplicationHandler {
         self.syncedContentSettings = syncedContentSettings
         self.updates = updates
         self.cloudSyncHandler = cloudSyncHandler
-        self.accountNoticeModel = accountNoticeModel
         self.panel = panel
     }
 
@@ -150,20 +147,6 @@ final class SnipCLIApplicationHandler {
             await model.clipboardHistory.syncNow()
             return receipt(cliClipboardSyncResult(), message: model.clipboardHistory.syncError,
                            failed: model.clipboardHistory.syncError != nil)
-        case .resolveAccount(let choice, let revision, let confirmed):
-            try requireCLIRevision(revision, current: cliSyncResult())
-            guard choice != .remove || confirmed else { throw cliApplicationError("Removal requires --yes.") }
-            guard let accountNoticeModel, accountNoticeModel.showsResolutionActions,
-                  !accountNoticeModel.isResolving else {
-                throw cliApplicationError("There is no account notice to resolve.")
-            }
-            try model.beginCLIScopeChange()
-            defer { model.endCLIScopeChange() }
-            await accountNoticeModel.resolve(choice == .keep ? .keepLocalCopy : .remove)
-            return SnipCLIReceipt(request: request,
-                status: accountNoticeModel.errorMessage != nil ? .failed : .success,
-                message: accountNoticeModel.errorMessage, extendedResult: .application(cliSyncResult()),
-                resultingScopeToken: model.cliScopeToken)
         case .diagnosticsStatus:
             return receipt(try await cliDiagnosticsResult())
         case .diagnosticLogs(let range, let limit, let errorsOnly):
@@ -371,18 +354,10 @@ final class SnipCLIApplicationHandler {
         case .deleted: state = "deleted"
         case .failed(let issue): state = "failed:" + issue.diagnosticCode
         }
-        let notice: String
-        switch accountNoticeModel?.notice {
-        case .paused: notice = "paused"
-        case .signedOut: notice = "signed-out"
-        case .accountChanged: notice = "account-changed"
-        case nil: notice = "none"
-        }
         return SnipCLIApplicationResult(values: [
             "mode": syncedContentSettings.mode == .iCloudSync ? "icloud-sync" : "local-only",
             "state": state, "status": syncedContentSettings.statusTitle,
-            "detail": syncedContentSettings.detail, "account-notice": notice,
-            "account-resolution-available": String(accountNoticeModel?.showsResolutionActions == true),
+            "detail": syncedContentSettings.detail,
             "can-enable": String(syncedContentSettings.canEnable),
             "can-disable": String(syncedContentSettings.canDisable),
             "can-cancel-setup": String(syncedContentSettings.canCancelEnable),

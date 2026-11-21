@@ -53,7 +53,8 @@ public enum SyncModeActivationManifestReader {
         manifest.stores,
         rootURL: rootURL
       )
-      guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }),
+      guard manifest.accountIsolation == nil,
+        let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }),
         active.kind == .iCloudSync
       else { return nil }
       return active.namespace
@@ -83,7 +84,8 @@ public enum SyncModeActivationManifestReader {
         manifest.stores,
         rootURL: rootURL
       )
-      guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
+      guard manifest.accountIsolation == nil,
+        let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
       else { return .localOnly }
       if active.kind == .iCloudSync, let namespace = active.namespace {
         return .active(namespace)
@@ -126,24 +128,12 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
-  case afterAccountIsolationManifest
-  case beforeAccountIsolationDurability
-  case afterAccountIsolationDurability
-  case beforeAccountIsolationPointerSwap
-  case afterAccountIsolationPointerSwap
-  case afterAccountResolutionIntent
-  case afterAccountLocalCopyMerge
-  case beforeAccountIsolationRemovalCommit
-  case afterAccountIsolationRemovalCommit
-  case afterAccountIsolationRootRemoval
 }
 
 
 package enum SyncModeWritePoint: Equatable, Sendable {
   case beforeLibraryWrite
   case beforeStoreRetirement
-  /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
-  case beforeAccountLocalCopyMerge
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -158,7 +148,7 @@ package actor SwiftDataSyncModePersistence {
     var activeStoreID: UUID
     var stores: [SyncModeStore]
     var transition: SyncModeTransition?
-    var accountIsolation: ICloudAccountIsolation?
+    var accountIsolation: LegacyAccountCopy?
     var attentionReason: ICloudSyncAttentionReason?
 
     mutating func updateTransition(
@@ -187,10 +177,6 @@ package actor SwiftDataSyncModePersistence {
   private var initialLocalLibrary: SwiftDataSnipLibrary?
   // An I/O error after atomic replacement can leave a published pointer.
   private var unconfirmedActivation: Manifest?
-
-  /// Reconciles of an account-isolation choice take turns, so a background status never runs a
-  /// second Keep merge.
-  let accountIsolationTurns = AsyncOperationGate()
 
   let activeStoreTurns = AsyncOperationGate()
   enum ActiveStoreActivity { case libraryWrite, cloudMutation, replacement }
@@ -328,6 +314,7 @@ package actor SwiftDataSyncModePersistence {
 
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     try resolveActivationWrite()
+    try await finishLegacyAccountCopy()
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
@@ -335,7 +322,6 @@ package actor SwiftDataSyncModePersistence {
     return SyncModeStorageSnapshot(
       activeStore: active,
       transition: manifest.transition,
-      accountIsolation: manifest.accountIsolation,
       attentionReason: manifest.attentionReason
     )
   }
@@ -790,7 +776,7 @@ package actor SwiftDataSyncModePersistence {
     manifest = next
   }
 
-  private func publishActivation(_ next: Manifest) throws {
+  func publishActivation(_ next: Manifest) throws {
     try Self.validate(next)
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)

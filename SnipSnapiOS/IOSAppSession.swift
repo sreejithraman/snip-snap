@@ -53,11 +53,9 @@ final class IOSAppSession {
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let syncedContentSettings: SyncedContentSettingsModel
-    let accountNoticeModel: AppleAccountNoticeModel?
 
     private let shareImporter: IOSShareImportCoordinator?
     private let shareDestinationPublisher: ShareListCatalogPublisher?
-    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
     private var automaticSyncTask: Task<Void, Never>?
 
@@ -77,7 +75,6 @@ final class IOSAppSession {
         ),
         cloudSyncSession: (any IOSCloudSyncSessionHandling)? = nil,
         shareImportOperation: (@Sendable () async -> ShareImportSummary)? = nil,
-        accountNoticeModel: AppleAccountNoticeModel? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
         clipboardRootURL: URL? = nil,
@@ -119,7 +116,6 @@ final class IOSAppSession {
         )
         self.clipboard = clipboard
         self.syncedContentSettings = syncedContentSettings
-        self.accountNoticeModel = accountNoticeModel
         self.cloudSyncSession = cloudSyncSession
 
         let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
@@ -170,17 +166,6 @@ final class IOSAppSession {
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
-        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
-            await cloudSyncSession?.scheduleAutomaticSync()
-        }
-        accountNoticeModel?.setActiveLibraryChangeAction {
-            guard let cloudSyncSession else { return }
-            let active = try await cloudSyncSession.iosActiveLibrary()
-            await model.replaceLibrary(
-                active.library,
-                recoveryScope: active.recoveryScope
-            )
-        }
         if let cloudSyncSession {
             let results = cloudSyncSession.automaticSyncResults
             automaticSyncTask = Task { [weak self] in
@@ -193,32 +178,34 @@ final class IOSAppSession {
     }
 
     func launch() async {
+        await checkSync()
         await model.load()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
-        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
         }
-        await accountNoticeModel?.refresh()
     }
 
     func foreground() async {
+        await checkSync()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
-        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         await shareImporter?.importPendingAndReload()
-        await accountNoticeModel?.refresh()
     }
 
     func syncWhenPossible() async {
+        await checkSync()
+        await clipboard.synchronize()
+    }
+
+    private func checkSync() async {
         try? await Self.synchronizeCloudSessionOrThrow(
             cloudSyncSession,
             model: model,
             settings: syncedContentSettings,
             clipboard: clipboard
         )
-        await clipboard.synchronize()
     }
 
     func retrySyncWhenPossible() async {

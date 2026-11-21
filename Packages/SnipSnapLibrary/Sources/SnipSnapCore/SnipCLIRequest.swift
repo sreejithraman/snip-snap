@@ -28,7 +28,7 @@ public extension SnipCLIAction {
   var allowsScopeTransition: Bool {
     switch self {
     case .extended(.application(.setSync)), .extended(.application(.cancelSyncSetup)),
-         .extended(.application(.retrySync)), .extended(.application(.resolveAccount)):
+         .extended(.application(.retrySync)):
       true
     default: false
     }

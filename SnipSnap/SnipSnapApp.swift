@@ -56,7 +56,6 @@ struct SnipSnapApp: App {
                 shortcutSettings: appDelegate.shortcutSettings,
                 syncedContentSettings: appDelegate.syncedContentSettings,
                 coordinator: appDelegate.coordinator,
-                accountNoticeModel: appDelegate.accountNoticeModel,
                 cloudSyncHandler: appDelegate.cloudSyncHandler,
                 updateChannelSettings: appDelegate.updateChannelSettings,
                 updaterController: appDelegate.updateSettingsVisible
@@ -85,7 +84,6 @@ private struct AppSettingsContent: View {
     let shortcutSettings: ShortcutSettings
     let syncedContentSettings: SyncedContentSettingsModel
     let coordinator: AppCoordinator
-    let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     let updateChannelSettings: UpdateChannelSettings
     let updaterController: SPUStandardUpdaterController?
@@ -114,13 +112,6 @@ private struct AppSettingsContent: View {
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
 
             VStack(spacing: 0) {
-                if let accountNoticeModel, accountNoticeModel.notice != nil {
-                    AppleAccountNoticeView(
-                        model: accountNoticeModel,
-                        accessibilityIdentifier: "apple-account-notice-settings"
-                    )
-                    Divider()
-                }
                 SyncedContentSettingsView(
                     model: syncedContentSettings,
                     clipboard: model.clipboardHistory,
@@ -166,7 +157,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
     let updateChannelSettings: UpdateChannelSettings
     let updateChecksEnabled: Bool
     let updateSettingsVisible: Bool
-    let accountNoticeModel: AppleAccountNoticeModel?
     let cloudSyncHandler: (any OptionalCloudSyncHandling)?
     private var cloudAccountObserver: NSObjectProtocol?
     private var cliRequestObserver: NSObjectProtocol?
@@ -189,7 +179,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 checkForUpdates: { updater.checkForUpdates(nil) },
                 resetUpdateCycle: { updater.updater.resetUpdateCycleAfterShortDelay() }
             ),
-            cloudSyncHandler: cloudSyncHandler, accountNoticeModel: accountNoticeModel,
+            cloudSyncHandler: cloudSyncHandler,
             panel: { [weak self] in self?.mainPanel }
         )
     }()
@@ -387,12 +377,12 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         let syncAction: SnipSnapCloudLifecycleHooks.SyncAction = {
             await performSync(false)
         }
-        let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction = {
+        let retryAction: SnipSnapCloudSyncHandler.SyncAction = {
             await cloudServices.syncedContentSettings.performExplicitSync {
                 await performSync(true)
             }
         }
-        let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction = {
+        let scheduleAction: SnipSnapCloudSyncHandler.SyncAction = {
             await cloudServices.syncSession?.scheduleAutomaticSync()
         }
         let lifecycleScheduleAction: SnipSnapCloudLifecycleHooks.SyncAction = {
@@ -402,7 +392,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks(
             syncWhenPossible: lifecycleScheduleAction
         )
-        let productionCloudSyncHandler = cloudServices.makeAccountCacheHandler(
+        let productionCloudSyncHandler = cloudServices.makeCloudSyncHandler(
             syncWhenPossible: syncAction,
             retrySyncWhenPossible: retryAction,
             scheduleSyncAfterLocalChange: scheduleAction
@@ -420,30 +410,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             simulatedCloudSyncHandler ?? productionCloudSyncHandler
         cloudSyncHandler = appCloudSyncHandler
         model.setCloudSyncHandler(appCloudSyncHandler)
-        let uiTestAccountNoticeModel: AppleAccountNoticeModel? =
-            ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] == "signedOut"
-            ? AppleAccountNoticeModel(
-                notice: .signedOut,
-                handler: UITestAppleAccountCacheHandler()
-            )
-            : simulatedCloudSyncHandler.map {
-                AppleAccountNoticeModel(handler: $0, activeLibraryChangeAction: reloadActiveLibrary)
-            }
 #else
         cloudSyncHandler = productionCloudSyncHandler
         model.setCloudSyncHandler(productionCloudSyncHandler)
-        let uiTestAccountNoticeModel: AppleAccountNoticeModel? = nil
 #endif
-        if let uiTestAccountNoticeModel {
-            accountNoticeModel = uiTestAccountNoticeModel
-        } else if let handler = productionCloudSyncHandler {
-            accountNoticeModel = AppleAccountNoticeModel(
-                handler: handler,
-                activeLibraryChangeAction: reloadActiveLibrary
-            )
-        } else {
-            accountNoticeModel = nil
-        }
         updaterController = SPUStandardUpdaterController(
             startingUpdater: updateChecksEnabled,
             updaterDelegate: updateChannelSettings,
@@ -466,7 +436,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                 coordinator: coordinator,
                 fileDropController: fileDropController,
                 dragSessionController: dragSessionController,
-                accountNoticeModel: accountNoticeModel,
                 syncedContentSettings: syncedContentSettings,
                 syncNow: { [cloudSyncHandler] in
                     await cloudSyncHandler?.retrySyncWhenPossible()
@@ -490,14 +459,28 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         coordinator.start()
         Task {
             do {
+                if let cloudSyncSession {
+                    do {
+                        switch try await cloudSyncSession.synchronize() {
+                        case .iCloudSignedOut:
+                            await model.clipboardHistory.resetCloudAccount()
+                            syncedContentSettings.recordSyncStopped(.signInRequired)
+                        case .iCloudAccountChanged:
+                            await model.clipboardHistory.resetCloudAccount()
+                            syncedContentSettings.recordSyncStopped(.iCloudAccountChanged)
+                        case .iCloudDataReset:
+                            await model.clipboardHistory.resetCloudAccount()
+                            syncedContentSettings.recordSyncStopped(.iCloudDataReset)
+                        default:
+                            break
+                        }
+                    } catch {
+                        syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
+                    }
+                }
                 try await cliLifecycle.start(reconcile: { [self] in
-                    try await accountNoticeModel?.refreshCheckingAccount(notifyActiveLibraryChange: false)
                     if let cloudSyncSession {
                         let active = try await cloudSyncSession.activeLibrary()
-                        // An uncertain account must never expose a cloud-bound library.
-                        if active.recoveryScope != nil, accountNoticeModel?.notice == .paused {
-                            throw SnipCLIAppReadinessError.unavailable
-                        }
                         await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                     } else {
                         await model.reload()
@@ -530,7 +513,7 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.reloadActiveLibrary()
+                await self.cloudSyncHandler?.syncWhenPossible()
             }
         }
         cliRequestObserver = DistributedNotificationCenter.default().addObserver(
@@ -667,98 +650,24 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-extension AppleAccountNoticeModel {
-    var message: String {
-        switch notice {
-        case .paused:
-            String(localized: "Your synced snips stay on this Mac. Snip Snap will try again when iCloud is available.")
-        case .signedOut, .accountChanged:
-            String(localized: "Snip Snap kept your previous account’s snips separate.")
-        case nil:
-            ""
-        }
-    }
-
-}
-
-struct AppleAccountNoticeView: View {
-    let model: AppleAccountNoticeModel
-    let accessibilityIdentifier: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Needs attention")
-                .appFont(.caption, weight: .semibold)
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            Label(
-                model.title,
-                systemImage: model.systemImage
-            )
-                .appFont(.headline)
-            Text(model.message)
-                .appFont(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.showsResolutionActions {
-                HStack(spacing: 12) {
-                    AppPrimaryActionButton {
-                        Task { await model.resolve(.keepLocalCopy) }
-                    } label: {
-                        Text("Keep on this Mac")
-                    }
-                    .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove from this Mac", role: .destructive) {
-                        Task { await model.resolve(.remove) }
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("remove-account-cache")
-                }
-                .disabled(model.isResolving)
-            }
-            if let errorMessage = model.errorMessage {
-                Text(errorMessage)
-                    .appFont(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityIdentifier(accessibilityIdentifier)
-    }
-}
-
 #if DEBUG
-private actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
-    private var didResolve = false
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
-        didResolve ? nil : .signedOut
-    }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
-        didResolve = true
-    }
-}
-
-/// Stands in for the account handler that simulated sync settings lack, so Settings and the CLI
+/// Stands in for the sync handler that simulated sync settings lack, so Settings and the CLI
 /// reach the app's sync actions.
 actor SimulatedCloudSyncHandler: OptionalCloudSyncHandling {
-    private let syncAction: AppleAccountCacheCoordinatorHandler.SyncAction
-    private let retryAction: AppleAccountCacheCoordinatorHandler.SyncAction
-    private let scheduleAction: AppleAccountCacheCoordinatorHandler.ScheduleAction
+    private let syncAction: SnipSnapCloudSyncHandler.SyncAction
+    private let retryAction: SnipSnapCloudSyncHandler.SyncAction
+    private let scheduleAction: SnipSnapCloudSyncHandler.SyncAction
 
     init(
-        syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-        scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
+        syncWhenPossible: @escaping SnipSnapCloudSyncHandler.SyncAction,
+        retrySyncWhenPossible: @escaping SnipSnapCloudSyncHandler.SyncAction,
+        scheduleSyncAfterLocalChange: @escaping SnipSnapCloudSyncHandler.SyncAction
     ) {
         syncAction = syncWhenPossible
         retryAction = retrySyncWhenPossible
         scheduleAction = scheduleSyncAfterLocalChange
     }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { await syncAction() }
     func retrySyncWhenPossible() async { await retryAction() }
     func scheduleSyncAfterLocalChange() async { await scheduleAction() }

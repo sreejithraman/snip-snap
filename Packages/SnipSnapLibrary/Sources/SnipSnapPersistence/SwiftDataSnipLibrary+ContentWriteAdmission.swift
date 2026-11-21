@@ -3,6 +3,13 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
+  package func checkContentWriteAdmission() throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    try requireContentWritesAllowed(context: Self.makeContext(container: container))
+  }
+
   /// Call inside the same store lock as the content write. Reset evidence moves
   /// from the staged batch to recovery rows in one commit. Unreadable evidence
   /// cannot prove that this source is safe to edit, including after reopening.

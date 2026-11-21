@@ -33,7 +33,6 @@ struct ContentView: View {
     @ObservedObject private var clipboardHistory: ClipboardHistory
     @ObservedObject private var panelDialogs: PanelDialogPresentationState
     @ObservedObject private var fileDropController: PanelFileDropController
-    private let accountNoticeModel: AppleAccountNoticeModel?
     private let syncedContentSettings: SyncedContentSettingsModel?
     private let syncNow: (@MainActor () async -> Void)?
     private let dragSessionController: PanelDragSessionController
@@ -62,12 +61,10 @@ struct ContentView: View {
         coordinator: AppCoordinator,
         fileDropController: PanelFileDropController,
         dragSessionController: PanelDragSessionController,
-        accountNoticeModel: AppleAccountNoticeModel? = nil,
         syncedContentSettings: SyncedContentSettingsModel? = nil,
         syncNow: (@MainActor () async -> Void)? = nil
     ) {
         self.coordinator = coordinator
-        self.accountNoticeModel = accountNoticeModel
         self.syncedContentSettings = syncedContentSettings
         self.syncNow = syncNow
         _accessibilityPermissions = ObservedObject(
@@ -149,13 +146,6 @@ struct ContentView: View {
                 syncedContentSettings: syncedContentSettings,
                 syncNow: syncNow
             )
-
-            if let accountNoticeModel, accountNoticeModel.notice != nil {
-                AppleAccountNoticeView(
-                    model: accountNoticeModel,
-                    accessibilityIdentifier: "apple-account-notice-main"
-                )
-            }
 
             if accessibilityPermissions.isSetupCardVisible {
                 AccessibilitySetupCard(controller: accessibilityPermissions)
