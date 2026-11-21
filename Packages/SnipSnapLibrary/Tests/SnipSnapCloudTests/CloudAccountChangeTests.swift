@@ -228,6 +228,36 @@ final class CloudAccountChangeTests: XCTestCase {
     }
   }
 
+  func testMissingControlWhileSignedOutLeavesSyncOffOnReturn() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let library = try await fixture.persistence.activeLibrary()
+    _ = try await add("keep after sign-out and reset", to: library)
+    await fixture.account.set(.noAccount)
+    let stopped = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(stopped, .iCloudSignedOut)
+
+    await fixture.control.removeControl()
+    await fixture.account.set(.available(accountLineage: "account-a"))
+    do {
+      _ = try await fixture.lifecycle.enableICloudSync()
+      XCTFail("Setup should report the reset before uploading")
+    } catch let error as CloudSyncIssueError {
+      XCTAssertEqual(error.issue, .iCloudDataReset)
+    }
+    let storage = try await fixture.persistence.snapshot()
+    XCTAssertTrue(storage.keptAfterCloudReset)
+    let background = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(background, .noChange)
+    let snapshot = try await add("still writable", to: library)
+    XCTAssertEqual(Set(snapshot.snapshot.snips.map(\.content)),
+      ["keep after sign-out and reset", "still writable"])
+    let recordEvents = await fixture.records.events()
+    XCTAssertTrue(recordEvents.isEmpty)
+    let control = await fixture.server.controlDescriptor()
+    XCTAssertNil(control)
+  }
+
   func testAccountChangeKeepsAStoreAwaitingACloudZone() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

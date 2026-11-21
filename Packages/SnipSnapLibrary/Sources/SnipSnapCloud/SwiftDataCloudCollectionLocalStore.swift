@@ -48,7 +48,7 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     let snapshot = try await persistence.snapshot()
     let namespace = snapshot.activeStore.namespace.map(Self.namespace)
     return CloudCollectionLocalState(
-      hasSyncedBefore: stored.hasSyncedBefore || namespace != nil,
+      hasSyncedBefore: stored.hasSyncedBefore || namespace != nil || snapshot.keptAfterCloudReset,
       activeNamespace: namespace,
       cleanupZones: stored.cleanupZones,
       deletionState: stored.deletionState ?? .none,
@@ -73,11 +73,9 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
 
   package func stopAfterDataReset(in namespace: CloudSyncNamespace) async throws -> Bool {
     let store = try await persistence.snapshot().activeStore
-    guard try await persistence.keepCloudCacheLocally(
+    return try await persistence.keepCloudCacheLocally(
       storeID: store.id, namespace: namespace.binding, reason: .namespaceChanged
-    ) == .keptAfterReset else { return false }
-    if !stored.hasSyncedBefore { try update { $0.hasSyncedBefore = true } }
-    return true
+    ) == .keptAfterReset
   }
 
   package func markDeletionPending() throws {

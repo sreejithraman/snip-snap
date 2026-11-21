@@ -9,7 +9,7 @@ extension SwiftDataSnipLibrary {
     defer { withExtendedLifetime(lock) {} }
     let context = Self.makeContext(container: container)
     do {
-      try requireNoCloudReset(context: context, checkEnrollment: false)
+      try Self.requireNoCloudReset(context: context, checkEnrollment: false)
       return false
     } catch CloudContentWriteAdmission.Block.dataReset {
       return true

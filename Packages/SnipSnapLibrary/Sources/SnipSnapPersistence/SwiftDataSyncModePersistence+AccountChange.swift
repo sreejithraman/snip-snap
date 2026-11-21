@@ -48,8 +48,11 @@ extension SwiftDataSyncModePersistence {
   ) async throws -> KeepCacheResult {
     try resolveActivationWrite()
     guard manifest.activeStoreID == storeID,
-      let index = manifest.stores.firstIndex(where: { $0.id == storeID }),
-      manifest.stores[index].namespace == namespace
+      let index = manifest.stores.firstIndex(where: { $0.id == storeID })
+    else { return .sourceReplaced }
+    let store = manifest.stores[index]
+    guard store.namespace == namespace
+      || (reason == .namespaceChanged && store.quarantinedNamespace == namespace)
     else { return .sourceReplaced }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
@@ -65,7 +68,9 @@ extension SwiftDataSyncModePersistence {
     guard let stopReason = reset ? .namespaceChanged : reason else { return .sourceReplaced }
     if reset {
       // Close outbound admission durably before retiring the old sync rows.
-      if manifest.attentionReason != .namespaceChanged { try recordAttention(.namespaceChanged) }
+      if store.kind == .iCloudSync, manifest.attentionReason != .namespaceChanged {
+        try recordAttention(.namespaceChanged)
+      }
       try await finishReset(library, namespace: namespace, storeID: storeID)
     } else {
       await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
@@ -78,7 +83,7 @@ extension SwiftDataSyncModePersistence {
       next.stores[candidate].lifecycle = .deleting
     }
     next.transition = nil
-    next.stores[index] = next.stores[index].keepingLocally()
+    if store.kind == .iCloudSync { next.stores[index] = store.keepingLocally() }
     next.attentionReason = stopReason
     try publishActivation(next)
     return reset ? .keptAfterReset : .kept

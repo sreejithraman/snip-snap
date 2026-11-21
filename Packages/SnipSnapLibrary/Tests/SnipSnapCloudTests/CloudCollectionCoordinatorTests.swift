@@ -3338,6 +3338,12 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(choice.recovered.content, "unresolved local draft")
     let resolved = try await active.library.resolveRecovery(choice.id, in: scope, choice: .useRecovered)
     XCTAssertEqual(resolved.snips.first { $0.id == keptSnip.id }?.content, "unresolved local draft")
+
+    try await reopened.disableICloudSync(.useCurrentCache)
+    let local = try await reopened.activeLibrary().library.checkedSnapshot(sortedBy: .manual)
+    let localSnip = try XCTUnwrap(local.snips.first { $0.id == keptSnip.id })
+    XCTAssertEqual(localSnip.attachments.map(\.id), [missingID])
+    XCTAssertNil(local.attachmentURLs[missingID])
   }
 
   func testResetBetweenFetchAndSendStopsTheOldGenerationSend() async throws {

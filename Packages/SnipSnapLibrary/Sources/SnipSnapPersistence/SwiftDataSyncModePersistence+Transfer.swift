@@ -40,7 +40,7 @@ extension SwiftDataSyncModePersistence {
       target: target,
       transitionID: transition.id,
       acceptedTargetSnipIDs: acceptedTargetSnipIDs,
-      keepingUnavailableDownloads: manifest.attentionReason == .namespaceChanged
+      keepingUnavailableDownloads: true
     )
     try crashHook(.beforeCandidateMergeDurability)
     let result = try await candidate.applyTransferPlan(plan)

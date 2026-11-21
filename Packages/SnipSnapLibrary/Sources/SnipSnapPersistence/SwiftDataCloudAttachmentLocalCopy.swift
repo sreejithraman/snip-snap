@@ -2,6 +2,12 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
+extension CloudSyncNamespaceKey {
+  package var downloadPathPrefix: String {
+    "CloudDownloads/\(CloudAttachmentCacheFiles.namespaceDigest(rawValue))/"
+  }
+}
+
 extension SwiftDataSnipLibrary {
   /// Promotes every verified download still available on the device. A missing
   /// download keeps its attachment metadata; a failed durable copy stops the transition.
@@ -54,6 +60,7 @@ extension SwiftDataSnipLibrary {
     attachmentID: UUID,
     allowingMissingPublication: Bool = false
   ) throws -> Bool {
+    let cachePrefix = namespaceKey.downloadPathPrefix
     let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
@@ -94,7 +101,6 @@ extension SwiftDataSnipLibrary {
       }
       return isValid
     }
-    let cachePrefix = "CloudDownloads/\(CloudAttachmentCacheFiles.namespaceDigest(namespaceKey))/"
     guard attachment.relativePath.hasPrefix(cachePrefix) else {
       throw SnipLibraryError.attachmentCopyFailed
     }

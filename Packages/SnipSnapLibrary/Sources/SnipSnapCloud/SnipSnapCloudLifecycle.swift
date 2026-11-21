@@ -131,6 +131,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let outcome: SyncedContentEnableOutcome
     do {
       outcome = try await finishPendingEnable()
+    } catch let reset as CloudSyncIssueError where reset.issue == .iCloudDataReset {
+      throw reset
     } catch where Self.isRetryableSetupError(error) {
       let issue = SnipSnapCloudSyncIssueMapper.issue(for: error)
       PendingICloudSyncEnable.markRetrying(issue, at: rootURL)
@@ -220,13 +222,21 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       reservedZones: reservedZones
     )
     let descriptor: CloudCollectionDescriptor
-    if kept != nil, !storage.keptAfterCloudReset {
-      // Read the existing control record before allowing the kept library to rejoin.
-      guard let remote = try await controlTransport.fetchControl() else {
-        throw CloudCollectionError.noActiveCollection
+    if let kept, !storage.keptAfterCloudReset {
+      // A reset may happen while the account-stopped library is local-only.
+      let remote = try await controlTransport.fetchControl()?.descriptor
+      let binding = remote?.namespace(cloudScope: cloudScope, accountLineage: lineage).binding
+      if remote == nil || (remote?.generation == kept.generation && binding != kept) {
+        try await requireAccountLineage(lineage)
+        let stopped = try await modePersistence.keepCloudCacheLocally(
+          storeID: storage.activeStore.id, namespace: kept, reason: .namespaceChanged
+        )
+        guard stopped == .keptAfterReset else { throw CloudRecordWorkError.replaced }
+        throw CloudSyncIssueError(.iCloudDataReset)
       }
-      try remote.descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
-      descriptor = remote.descriptor
+      guard let remote else { throw CloudCollectionError.noActiveCollection }
+      try remote.validate(ownerName: ownerName, reservedZones: reservedZones)
+      descriptor = remote
     } else {
       descriptor = try await bootstrap.activeOrCreate(
         afterReset: storage.keptAfterCloudReset ? kept : nil
@@ -392,10 +402,17 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       return
     }
     if choice == .refreshThenCopy {
-      let result = syncResult(for: try await coordinator.synchronize())
-      if result == .iCloudDataReset {
-        await clearCollectionCoordinator()
-        automaticResultHandler(result)
+      do {
+        let result = syncResult(for: try await coordinator.synchronize())
+        if result == .iCloudDataReset {
+          await clearCollectionCoordinator()
+          automaticResultHandler(result)
+          return
+        }
+      } catch CloudRecordWorkError.replaced {
+        guard try await persistence.snapshot().keptAfterCloudReset else {
+          throw CloudRecordWorkError.replaced
+        }
         return
       }
     }
