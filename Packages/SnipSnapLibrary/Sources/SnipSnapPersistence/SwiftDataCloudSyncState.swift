@@ -141,7 +141,9 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  package func clearCloudSyncState(namespaceKey: CloudSyncNamespaceKey) throws {
+  package func clearCloudSyncState(
+    namespaceKey: CloudSyncNamespaceKey, afterReset: Bool = false
+  ) throws {
     let namespaceKey = namespaceKey.rawValue
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
@@ -153,8 +155,10 @@ extension SwiftDataSnipLibrary {
     for batch in try Self.cloudStagedBatches(namespaceKey: namespaceKey, context: context) {
       context.delete(batch)
     }
-    for event in try Self.cloudRecoveryEvents(namespaceKey: namespaceKey, context: context) {
-      context.delete(event)
+    let events = try Self.cloudRecoveryEvents(namespaceKey: namespaceKey, context: context)
+    if afterReset { try Self.updateRecoveryAttachmentPaths(events: events, context: context) }
+    for event in events {
+      if !afterReset || !event.eventKey.hasPrefix(Self.recoveryReviewPrefix) { context.delete(event) }
     }
     for state in try Self.cloudNamespaceStates(namespaceKey: namespaceKey, context: context) {
       context.delete(state)
@@ -165,7 +169,7 @@ extension SwiftDataSnipLibrary {
       context.delete(record)
     }
     for record in try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
-      where record.namespaceKey == namespaceKey
+      where record.namespaceKey == namespaceKey && !afterReset
     {
       context.delete(record)
     }
@@ -192,9 +196,28 @@ extension SwiftDataSnipLibrary {
     for record in try Self.cloudPendingDeletes(namespaceKey: namespaceKey, context: context) {
       context.delete(record)
     }
-    try afterMutationBeforeSave()
-    try lock.check()
-    try context.save()
+    if afterReset {
+      for row in try Self.cloudAttachmentPublications(namespaceKey: namespaceKey, context: context) {
+        context.delete(row)
+      }
+      for row in try Self.cloudAttachmentCleanups(namespaceKey: namespaceKey, context: context) {
+        context.delete(row)
+      }
+      for row in try Self.cloudAttachmentCacheEntries(namespaceKey: namespaceKey, context: context) {
+        context.delete(row)
+      }
+      for row in try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
+        where row.namespaceKey == namespaceKey { context.delete(row) }
+    }
+    if context.hasChanges {
+      try afterMutationBeforeSave()
+      try lock.check()
+      try context.save()
+    }
+    if afterReset {
+      try lock.check()
+      try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
+    }
   }
 
   private static func replaceCloudEngineState(

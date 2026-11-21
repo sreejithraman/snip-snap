@@ -129,7 +129,7 @@ public enum SnipSnapCloudAppAssembly {
   private static func hasPendingSetup(rootURL: URL) -> Bool {
     switch SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: rootURL) {
     case .settingUp, .needsAttention: true
-    case .localOnly: PendingICloudSyncEnable.needsAttention(at: rootURL)
+    case .localOnly, .keptAfterReset: PendingICloudSyncEnable.needsAttention(at: rootURL)
     case .active: false
     }
   }
@@ -150,7 +150,9 @@ public enum SnipSnapCloudAppAssembly {
       return (.localOnly, .enabling(PendingICloudSyncEnable.retryIssue(at: rootURL)))
     case .needsAttention:
       return (.localOnly, .failed(.appDataIssue))
-    case .localOnly, .active:
+    case .keptAfterReset where !PendingICloudSyncEnable.exists(at: rootURL):
+      return (.localOnly, .failed(.iCloudDataReset))
+    case .localOnly, .active, .keptAfterReset:
       return (
         .localOnly,
         PendingICloudSyncEnable.exists(at: rootURL)

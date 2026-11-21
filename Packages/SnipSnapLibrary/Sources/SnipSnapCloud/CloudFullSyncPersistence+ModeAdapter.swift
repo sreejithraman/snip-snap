@@ -318,7 +318,8 @@ extension CloudFullSyncPersistence {
       target: target,
       transitionID: transitionID,
       replacingTargetSnipIDs: replacingSnips,
-      replacingTargetListIDs: replacingLists
+      replacingTargetListIDs: replacingLists,
+      keepingUnavailableDownloads: true
     )
     return CloudFullReenableApplyPlan(
       namespaceKey: namespaceKey.rawValue,

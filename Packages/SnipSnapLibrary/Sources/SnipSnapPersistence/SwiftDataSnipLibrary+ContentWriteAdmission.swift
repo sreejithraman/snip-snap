@@ -7,8 +7,9 @@ extension SwiftDataSnipLibrary {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
     do {
-      try Self.requireNoCloudReset(context: Self.makeContext(container: container), checkEnrollment: false)
+      try Self.requireNoCloudReset(context: context, checkEnrollment: false)
       return false
     } catch CloudContentWriteAdmission.Block.dataReset {
       return true

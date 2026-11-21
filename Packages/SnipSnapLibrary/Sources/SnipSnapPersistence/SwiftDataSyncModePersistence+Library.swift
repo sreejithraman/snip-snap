@@ -12,7 +12,9 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func activeCloudMutation(storeID: UUID) throws -> SyncModeActiveMutation {
-    guard storeID == manifest.activeStoreID, store(id: storeID)?.kind == .iCloudSync else {
+    guard storeID == manifest.activeStoreID, store(id: storeID)?.kind == .iCloudSync,
+      manifest.attentionReason != .namespaceChanged
+    else {
       throw SyncModePersistenceError.namespaceMismatch
     }
     return SyncModeActiveMutation(persistence: self, storeID: storeID)
@@ -24,7 +26,7 @@ extension SwiftDataSyncModePersistence {
   ) async throws -> Value {
     try resolveActivationWrite()
     guard storeID == manifest.activeStoreID,
-      store(id: storeID)?.kind == .iCloudSync
+      store(id: storeID)?.kind == .iCloudSync, manifest.attentionReason != .namespaceChanged
     else { throw SyncModePersistenceError.namespaceMismatch }
     guard manifest.transition == nil else { throw SyncModePersistenceError.transitionInProgress }
     guard !activeStoreBusy else { throw SyncModePersistenceError.transitionInProgress }

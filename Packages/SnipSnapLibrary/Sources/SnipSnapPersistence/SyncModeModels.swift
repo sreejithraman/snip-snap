@@ -178,6 +178,10 @@ package struct SyncModeStorageSnapshot: Equatable, Sendable {
   package let activeStore: SyncModeStore
   package let transition: SyncModeTransition?
   package let attentionReason: ICloudSyncAttentionReason?
+
+  package var keptAfterCloudReset: Bool {
+    activeStore.kind == .localOnly && attentionReason == .namespaceChanged
+  }
 }
 
 package enum SyncModePersistenceError: Error, Equatable, Sendable {

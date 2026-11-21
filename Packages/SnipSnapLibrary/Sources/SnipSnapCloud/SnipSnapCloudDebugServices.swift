@@ -54,10 +54,6 @@ actor SimulatedCloudCollectionReset {
       await transport.failNextZoneDelete()
     }
     let status = try await coordinator.synchronize()
-    if status == .purged {
-      try await local?.markPurged()
-      return .iCloudDataReset
-    }
     return syncResult(for: status)
   }
 

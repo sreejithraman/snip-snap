@@ -67,7 +67,7 @@ A random identity for one version of the user's synced collection. Devices must 
 _Avoid_: Schema version, account ID
 
 **iCloud data reset**:
-A CloudKit notice that synced data was purged or its encrypted data was reset. A device must drop that sync cache and must not upload it again.
+A CloudKit notice that synced data was purged or its encrypted data was reset. Snip Snap stops sync, keeps the library on this device in local-only mode, and retires the old sync generation.
 _Avoid_: Recovery choice, sync conflict
 
 **Marketing version**:

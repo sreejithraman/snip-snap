@@ -62,10 +62,11 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
   package func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {
     let owner = try await recordOwner(context)
     try await requireActive(owner.context)
-    try await owner.coordinator.prepareAutomaticSync(
+    let outcome = try await owner.coordinator.prepareAutomaticSync(
       beforeApply: { try await self.requireCurrent(owner.context) },
       beforeStateSave: { try await self.requireActive(owner.context) }
     )
+    if outcome.result == .iCloudDataReset { try await deliver(outcome.result, from: owner.context) }
   }
 
   package func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {
@@ -134,7 +135,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let storage = try await persistence.snapshot()
     guard active?.context == context, storage.activeStore.id == context.storeID,
       storage.activeStore.namespace == context.binding, storage.activeStore.kind == .iCloudSync,
-      storage.transition == nil
+      storage.transition == nil, storage.attentionReason != .namespaceChanged
     else { throw CloudRecordWorkError.replaced }
   }
 

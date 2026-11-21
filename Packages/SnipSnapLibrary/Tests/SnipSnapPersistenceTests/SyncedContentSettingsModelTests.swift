@@ -625,7 +625,7 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordSyncStopped(.iCloudDataReset)
     XCTAssertEqual(model.mode, .localOnly)
     XCTAssertEqual(model.statusTitle, "Sync turned off")
-    XCTAssertTrue(model.detail.contains("won’t upload again"))
+    XCTAssertTrue(model.detail.contains("your library is kept on this device"))
 
     model.recordSyncStopped(.iCloudAccountChanged)
     XCTAssertEqual(model.statusTitle, "iCloud account changed")

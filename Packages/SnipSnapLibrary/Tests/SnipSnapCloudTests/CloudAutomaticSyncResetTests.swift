@@ -77,17 +77,18 @@ final class CloudAutomaticSyncResetTests: XCTestCase {
     let recovered = CloudFullSyncCoordinator(store: recoveredStore, transport: nextTransport,
       reportResult: { result in
         guard result == .iCloudDataReset else { return }
-        _ = try await reopened.discardActiveCloudCollection(storeID: original.id, namespace: binding)
+        try await reopened.keepCloudCacheLocally(
+          storeID: original.id, namespace: binding, reason: .namespaceChanged)
       })
     let outcome = try await recovered.prepareAutomaticSync()
     XCTAssertEqual(outcome.result, .iCloudDataReset)
     let active = try await reopened.snapshot().activeStore
-    XCTAssertNotEqual(active.id, original.id)
+    XCTAssertEqual(active.id, original.id)
     XCTAssertEqual(active.kind, .localOnly)
     let fresh = try await reopened.activeLibrary()
     _ = try await fresh.perform(Self.resetTestEdit("after reset"), sortedBy: .manual)
     let snapshot = try await fresh.checkedSnapshot(sortedBy: .manual)
-    XCTAssertEqual(snapshot.snips.map(\.content), ["after reset"])
+    XCTAssertEqual(Set(snapshot.snips.map(\.content)), ["before reset", "after reset"])
     let scheduled = await nextTransport.scheduledBatches()
     XCTAssertTrue(scheduled.isEmpty)
   }

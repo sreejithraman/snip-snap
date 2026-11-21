@@ -9,6 +9,7 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let attachmentData: [UUID: Data]
   package let attachmentFileURLs: [UUID: URL]
   package let attachmentFileDigests: [UUID: Data]
+  let unavailableDownloadIDs: Set<UUID>
   package let opaqueSyncStatePayload: Data
   package let additionalSeenRequestIDs: Set<UUID>
   package let result: SnipLibraryTransferResult
@@ -21,7 +22,8 @@ package enum SnipLibraryTransferPlanner {
     transitionID: UUID,
     replacingTargetSnipIDs: Set<UUID> = [],
     replacingTargetListIDs: Set<UUID> = [],
-    acceptedTargetSnipIDs: Set<UUID> = []
+    acceptedTargetSnipIDs: Set<UUID> = [],
+    keepingUnavailableDownloads: Bool = false
   ) throws -> SnipLibraryTransferPlan {
     let targetDigest = digest(snapshot: target)
     let targetBundle = try CloudDormantAcceptedBaseBundle.decode(target.opaqueSyncStatePayload)
@@ -61,9 +63,24 @@ package enum SnipLibraryTransferPlanner {
 
     let targetAttachments = attachmentMap(target.snips)
     let sourceAttachments = attachmentMap(source.snips)
+    var unavailableDownloadIDs: Set<UUID> = []
+    var replacementDownloads: [UUID: SnipAttachment] = [:]
     for (id, sourceAttachment) in sourceAttachments {
-      guard let sourceDigest = attachmentDigest(id: id, in: source) else {
-        throw SnipLibraryError.attachmentCopyFailed
+      let sourceDigest = attachmentDigest(id: id, in: source)
+      if sourceDigest == nil {
+        guard keepingUnavailableDownloads, sourceAttachment.relativePath.hasPrefix("CloudDownloads/")
+        else { throw SnipLibraryError.attachmentCopyFailed }
+        if let targetAttachment = targetAttachments[id] {
+          var equivalent = sourceAttachment
+          equivalent.relativePath = targetAttachment.relativePath
+          guard equivalent == targetAttachment else {
+            throw SnipLibraryError.transferConflict(.attachmentIdentity(id))
+          }
+          replacementDownloads[id] = targetAttachment
+        } else {
+          unavailableDownloadIDs.insert(id)
+        }
+        continue
       }
       if let targetAttachment = targetAttachments[id] {
         guard targetAttachment == sourceAttachment,
@@ -78,7 +95,8 @@ package enum SnipLibraryTransferPlanner {
     let targetByID = Dictionary(uniqueKeysWithValues: target.snips.map { ($0.id, $0) })
     var approved: Set<UUID> = []
     var recovered: Set<UUID> = []
-    for sourceSnip in source.snips {
+    for var sourceSnip in source.snips {
+      sourceSnip.attachments = sourceSnip.attachments.map { replacementDownloads[$0.id] ?? $0 }
       guard let targetSnip = targetByID[sourceSnip.id] else {
         snips.append(sourceSnip)
         approved.insert(sourceSnip.id)
@@ -127,6 +145,7 @@ package enum SnipLibraryTransferPlanner {
       attachmentFileDigests: target.attachmentFileDigests.merging(
         source.attachmentFileDigests.filter { !targetAttachmentIDs.contains($0.key) }
       ) { target, _ in target },
+      unavailableDownloadIDs: unavailableDownloadIDs,
       opaqueSyncStatePayload: mergedSyncPayload,
       additionalSeenRequestIDs: source.additionalSeenRequestIDs,
       result: SnipLibraryTransferResult(

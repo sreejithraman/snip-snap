@@ -59,7 +59,7 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     XCTAssertTrue(persisted.snips.allSatisfy(\.isDone))
   }
 
-  func testStoreReplacementRefusesAStoreHeldBySync() async throws {
+  func testResetWaitsForAnActiveCloudMutation() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let persistence = try await makeICloudPersistence(root: root)
@@ -75,12 +75,14 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     }
     await fulfillment(of: [held], timeout: 2)
 
-    do {
-      try await persistence.discardActiveCloudCollection()
-      XCTFail("Discarding the synced collection must wait for sync to release the store")
-    } catch SyncModePersistenceError.transitionInProgress {}
+    let source = try await persistence.snapshot().activeStore
+    let namespace = try XCTUnwrap(source.namespace)
+    let stopping = Task { try await persistence.keepCloudCacheLocally(
+      storeID: source.id, namespace: namespace, reason: .namespaceChanged) }
     await release.open()
     try await syncing.value
+    let stopped = try await stopping.value
+    XCTAssertEqual(stopped, .keptAfterReset)
   }
 
   func testEditsResumeAfterAnEditFailsToSave() async throws {

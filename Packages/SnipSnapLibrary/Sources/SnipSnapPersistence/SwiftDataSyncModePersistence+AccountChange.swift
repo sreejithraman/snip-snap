@@ -20,34 +20,68 @@ extension SwiftDataSyncModePersistence {
   }
 
   package enum KeepCacheResult: Sendable {
-    case kept
-    case resetPending
-    case sourceReplaced
+    case kept, keptAfterReset, sourceReplaced
   }
 
   @discardableResult
   package func keepCloudCacheLocally(
-    storeID: UUID, reason: ICloudSyncAttentionReason
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding, reason: ICloudSyncAttentionReason
   ) async throws -> KeepCacheResult {
     try await activeStoreTurns.withLease {
-      try await self.stopSyncKeepingCache(storeID: storeID, reason: reason)
+      try await self.stopSyncKeepingCache(storeID: storeID, namespace: namespace, reason: reason)
     }
   }
 
+  /// Replay a reset committed before the lifecycle could stop sync. Account
+  /// changes and regular sync entry points use the same source-bound transition.
+  package func recoverRecordedCloudReset(
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding
+  ) async throws -> Bool {
+    try resolveActivationWrite()
+    guard manifest.activeStoreID == storeID, store(id: storeID)?.namespace == namespace
+    else { return false }
+    if manifest.attentionReason != .namespaceChanged {
+      let library = try libraryForTransition(storeID: storeID)
+      guard try await library.hasPendingCloudReset() else { return false }
+    }
+    // Only a recorded reset needs to wait for active writes before changing the store.
+    return try await keepCloudCacheLocally(
+      storeID: storeID, namespace: namespace, reason: .namespaceChanged
+    ) == .keptAfterReset
+  }
+
   private func stopSyncKeepingCache(
-    storeID: UUID, reason: ICloudSyncAttentionReason
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding, reason: ICloudSyncAttentionReason
   ) async throws -> KeepCacheResult {
     try resolveActivationWrite()
     guard manifest.activeStoreID == storeID,
-      let index = manifest.stores.firstIndex(where: { $0.id == storeID }),
-      let namespace = manifest.stores[index].namespace
+      let index = manifest.stores.firstIndex(where: { $0.id == storeID })
+    else { return .sourceReplaced }
+    let store = manifest.stores[index]
+    guard store.namespace == namespace
+      || (reason == .namespaceChanged && store.quarantinedNamespace == namespace)
     else { return .sourceReplaced }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
     let library = try libraryForTransition(storeID: storeID)
-    // A reset already recorded in this store takes precedence over keeping the cache.
-    guard try await !library.hasPendingCloudReset() else { return .resetPending }
-    await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
+    // namespaceChanged is the existing on-disk attention value reserved here for
+    // a reset. Persist it before any cleanup, including for a missing control record.
+    let reset: Bool
+    if manifest.attentionReason == .namespaceChanged || reason == .namespaceChanged {
+      reset = true
+    } else {
+      reset = try await library.hasPendingCloudReset()
+    }
+    if reset {
+      // Close outbound admission durably before retiring the old sync rows.
+      if store.kind == .iCloudSync, manifest.attentionReason != .namespaceChanged {
+        try recordAttention(.namespaceChanged)
+      }
+      try await finishReset(library, namespace: namespace, storeID: storeID)
+    } else {
+      await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
+    }
+    try PendingICloudSyncEnable.clear(at: rootURL)
     var next = manifest
     if let transition = next.transition, transition.sourceStoreID == storeID,
       let candidate = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID })
@@ -55,10 +89,18 @@ extension SwiftDataSyncModePersistence {
       next.stores[candidate].lifecycle = .deleting
     }
     next.transition = nil
-    next.stores[index] = next.stores[index].keepingLocally()
-    next.attentionReason = reason
+    if store.kind == .iCloudSync { next.stores[index] = store.keepingLocally() }
+    next.attentionReason = reset ? .namespaceChanged : reason
     try publishActivation(next)
-    return .kept
+    return reset ? .keptAfterReset : .kept
+  }
+
+  private func finishReset(
+    _ library: SwiftDataSnipLibrary, namespace: ICloudSyncNamespaceBinding, storeID: UUID
+  ) async throws {
+    try await library.promoteAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
+    try await library.clearCloudSyncState(namespaceKey: namespace.namespaceKey, afterReset: true)
+    try Self.clearLegacyCloudReset(at: rootURL, matching: namespace, storeID: storeID)
   }
 
   /// A stopped cache retains the original engine and record state. Only its exact
@@ -67,7 +109,8 @@ extension SwiftDataSyncModePersistence {
     in namespace: ICloudSyncNamespaceBinding,
     prepareForInitialFetch: @Sendable (SwiftDataSnipLibrary) async throws -> Void
   ) async throws -> Bool {
-    guard let index = manifest.stores.firstIndex(where: { $0.id == manifest.activeStoreID }),
+    guard manifest.attentionReason != .namespaceChanged,
+      let index = manifest.stores.firstIndex(where: { $0.id == manifest.activeStoreID }),
       manifest.stores[index].relativeRoot == Self.canonicalRelativeRoot(
         kind: .iCloudSync, id: manifest.activeStoreID
       ), manifest.stores[index].quarantinedNamespace == namespace
@@ -124,7 +167,12 @@ extension SwiftDataSyncModePersistence {
     defer { finishStoreReplacement() }
     let target = try libraryForTransition(storeID: legacy.storeID)
     if let binding = store(id: legacy.storeID)?.quarantinedNamespace {
-      await target.keepAvailableCloudAttachments(namespaceKey: binding.namespaceKey)
+      if manifest.attentionReason == .namespaceChanged {
+        try PendingICloudSyncEnable.clear(at: rootURL)
+        try await finishReset(target, namespace: binding, storeID: legacy.storeID)
+      } else {
+        await target.keepAvailableCloudAttachments(namespaceKey: binding.namespaceKey)
+      }
     }
     if store(id: legacy.replacementStoreID)?.lifecycle == .isolated {
       let source = try libraryForTransition(storeID: legacy.replacementStoreID)

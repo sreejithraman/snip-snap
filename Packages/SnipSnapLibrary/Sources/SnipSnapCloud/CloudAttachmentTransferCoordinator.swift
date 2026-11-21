@@ -232,9 +232,13 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
   /// Returns whether any missing bytes had to be recovered from CloudKit.
   package func preserveAllAttachmentsForLocalCopy() async throws -> Bool {
     let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
-    let attachmentIDs = snapshot.snips.flatMap(\.attachments).map(\.id)
     var recoveredMissingBytes = false
-    for attachmentID in attachmentIDs {
+    for attachment in snapshot.snips.flatMap(\.attachments) {
+      // Metadata carried from a retired generation cannot trigger an old-zone download.
+      if attachment.relativePath.hasPrefix("CloudDownloads/"),
+        !attachment.relativePath.hasPrefix(namespaceKey.downloadPathPrefix)
+      { continue }
+      let attachmentID = attachment.id
       // Re-evaluate each entry because an earlier download may evict a later one.
       let isReady = try await library.materializeCloudAttachmentForLocalCopy(
         namespaceKey: namespaceKey,
@@ -291,11 +295,15 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
 
   package static func unsupportedFiles(
     in snapshot: SnipLibrarySnapshot,
-    policy: CloudAttachmentCompatibilityPolicy
+    policy: CloudAttachmentCompatibilityPolicy,
+    keepingUnavailableDownloads: Bool = false
   ) -> [CloudUnsupportedAttachment] {
     let inputs = snapshot.snips.flatMap { snip in
-      snip.attachments.map { attachment in
-        CompatibilityInput(
+      snip.attachments.compactMap { attachment -> CompatibilityInput? in
+        if keepingUnavailableDownloads, attachment.relativePath.hasPrefix("CloudDownloads/"),
+          snapshot.attachmentURLs[attachment.id] == nil
+        { return nil }
+        return CompatibilityInput(
           attachmentID: attachment.id,
           snipID: snip.id,
           fileName: attachment.fileName,

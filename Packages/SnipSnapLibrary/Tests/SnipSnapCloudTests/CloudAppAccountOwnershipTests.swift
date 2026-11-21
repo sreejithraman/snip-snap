@@ -123,7 +123,8 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertNotEqual(replacementStore.id, storage.activeStore.id)
     let replaced = try await fixture.handler.syncedAttachmentStates()
     XCTAssertTrue(replaced.isEmpty, "The prior store's publications must not appear in its replacement")
-    try await fixture.persistence.keepCloudCacheLocally(storeID: replacementStore.id, reason: .accountSignedOut)
+    try await fixture.persistence.keepCloudCacheLocally(storeID: replacementStore.id, namespace: XCTUnwrap(replacementStore.namespace),
+      reason: .accountSignedOut)
     do {
       _ = try await fixture.handler.syncedAttachmentStates()
       XCTFail("A local-only source cannot report retired iCloud publications")
@@ -232,7 +233,8 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     let downloaded = try await installer.prepare(attachmentID: id, for: .open)
     try FileManager.default.removeItem(at: durable)
 
-    try await fixture.persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountSignedOut)
+    try await fixture.persistence.keepCloudCacheLocally(storeID: store.id, namespace: XCTUnwrap(store.namespace),
+      reason: .accountSignedOut)
     try FileManager.default.removeItem(at: downloaded)
     let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
     let contents = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
@@ -250,7 +252,8 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     await pause.waitUntilSuspended()
     _ = try await fixture.persistence.activeLibrary()
     let change = Task {
-      try await fixture.persistence.keepCloudCacheLocally(storeID: source.id, reason: .accountSignedOut)
+      try await fixture.persistence.keepCloudCacheLocally(storeID: source.id, namespace: XCTUnwrap(source.namespace),
+      reason: .accountSignedOut)
     }
     try await waitForQueuedMutations(fixture.persistence, count: 1)
     let unchanged = try await fixture.persistence.snapshot()
@@ -468,7 +471,7 @@ extension CloudAppAccountOwnershipTests {
   }
 }
 
-private actor CacheInstallingAttachment: CloudAttachmentTransferring {
+actor CacheInstallingAttachment: CloudAttachmentTransferring {
   let library: SwiftDataSnipLibrary
   let namespaceKey: CloudSyncNamespaceKey
   init(library: SwiftDataSnipLibrary, namespaceKey: CloudSyncNamespaceKey) {

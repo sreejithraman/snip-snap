@@ -39,10 +39,20 @@ extension SwiftDataSyncModePersistence {
       source: source,
       target: target,
       transitionID: transition.id,
-      acceptedTargetSnipIDs: acceptedTargetSnipIDs
+      acceptedTargetSnipIDs: acceptedTargetSnipIDs,
+      keepingUnavailableDownloads: true
     )
     try crashHook(.beforeCandidateMergeDurability)
-    return try await candidate.applyTransferPlan(plan)
+    let result = try await candidate.applyTransferPlan(plan)
+    if manifest.attentionReason == .namespaceChanged,
+      let prior = store(id: transition.sourceStoreID)?.quarantinedNamespace,
+      let namespace = transition.namespace
+    {
+      let library = try libraryForTransition(storeID: transition.sourceStoreID)
+      try await library.copyRecoveryReviews(from: prior.namespaceKey, to: candidate,
+        namespaceKey: namespace.namespaceKey)
+    }
+    return result
   }
 
   package func markCandidateMerged(transitionID: UUID) throws {

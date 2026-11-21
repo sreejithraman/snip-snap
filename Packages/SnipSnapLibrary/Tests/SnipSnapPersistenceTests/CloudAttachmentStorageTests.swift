@@ -556,10 +556,11 @@ final class CloudAttachmentStorageTests: XCTestCase {
       withDestinationURL: actualNamespaceRoot
     )
 
-    try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+    try await library.promoteAvailableCloudAttachments(namespaceKey: namespace)
 
     let snapshot = await library.snapshot(sortedBy: .manual)
     let keptURL = try XCTUnwrap(snapshot.attachmentURLs[attachmentID])
+    try await library.clearCloudSyncState(namespaceKey: namespace, afterReset: true)
     let cloudState = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
     XCTAssertFalse(keptURL.path.contains("CloudDownloads"))
     XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
