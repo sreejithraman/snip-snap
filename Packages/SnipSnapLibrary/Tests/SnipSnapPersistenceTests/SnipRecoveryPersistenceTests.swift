@@ -7,7 +7,7 @@ import XCTest
 final class SnipRecoveryPersistenceTests: XCTestCase {
   private enum Crash: Error { case expected }
 
-  func testAppAssemblyKeepsPendingCloudTransitionOutOfActiveRecoveryScope() async throws {
+  func testAppAssemblyDiscardsUnfinishedEnableOnReopen() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
@@ -20,6 +20,10 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let persistence = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
     _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncModeRoot),
+      .settingUp(namespace)
+    )
 
     let assembly = SnipLibraryAssembly(
       library: store,
@@ -29,7 +33,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     XCTAssertNil(assembly.recoveryScope)
     XCTAssertEqual(
       SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncModeRoot),
-      .settingUp(namespace)
+      .localOnly
     )
   }
 

@@ -1002,8 +1002,10 @@ extension ICloudSyncModeCoordinatorTests {
         await server.seedControl(descriptor)
         let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
         let account = InjectedICloudAccountStateSource(state: .available(accountLineage: namespace.accountLineage))
+        let initial = try await persistence.snapshot()
+        let source = try await persistence.libraryForTransition(storeID: initial.activeStore.id)
         let lifecycle = SnipSnapICloudSyncLifecycle(
-            rootURL: root, sourceLibrary: try await persistence.activeLibrary(),
+            rootURL: root, sourceLibrary: source,
             syncModeStore: SnipSyncModeStore(persistence),
             cloudScope: namespace.cloudScope, accountLineage: namespace.accountLineage,
             accountStateSource: account, ownerName: "owner",

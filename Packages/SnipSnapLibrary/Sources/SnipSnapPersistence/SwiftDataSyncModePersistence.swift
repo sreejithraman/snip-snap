@@ -259,6 +259,7 @@ package actor SwiftDataSyncModePersistence {
         self.initialLocalLibrary = initialLocalLibrary
         return
       }
+      try DurableFile.createDirectory(rootURL)
       let declared = Manifest(
         version: 2,
         activeStoreID: store.id,

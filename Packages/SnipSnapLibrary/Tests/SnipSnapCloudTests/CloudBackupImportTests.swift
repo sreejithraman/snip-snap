@@ -154,7 +154,7 @@ final class CloudBackupImportTests: XCTestCase {
                     )
                 }
             )
-            let enabled = try await coordinator.enableOrRetry()
+            let enabled = try await coordinator.enableAndPublish()
             XCTAssertEqual(enabled.state, .on)
         }
         // Enabling sync promotes the initial download. Exercise a later download
