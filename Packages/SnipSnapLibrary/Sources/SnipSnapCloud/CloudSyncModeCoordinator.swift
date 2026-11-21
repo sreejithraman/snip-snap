@@ -199,7 +199,8 @@ package actor ICloudSyncModeCoordinator {
     @discardableResult
     package func syncActive() async throws -> ICloudSyncModeStatus {
         try begin(.activeSync)
-        defer { end() }
+        var operationEnded = false
+        defer { if !operationEnded { end() } }
         let accountState = await accountStateSource.currentAccountState()
         if accountAttentionReason(accountState) != nil {
             return try await updateAccountStatus(accountState)
@@ -230,6 +231,7 @@ package actor ICloudSyncModeCoordinator {
             return try await updateAccountStatus(await accountStateSource.currentAccountState())
         }
         end()
+        operationEnded = true
         return try await statusUnchecked(accountState: accountState)
     }
 

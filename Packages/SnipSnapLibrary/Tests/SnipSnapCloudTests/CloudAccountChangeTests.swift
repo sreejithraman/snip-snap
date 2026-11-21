@@ -262,7 +262,7 @@ final class CloudAccountChangeTests: XCTestCase {
       let server = FakeCloudServer()
       let control = FakeCloudControlTransport(server: server)
       await control.seedControl(descriptor)
-      let inbox = CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: descriptor.metadataZone)
+      let inbox = try CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: descriptor.metadataZone)
       _ = try await server.send(CloudOutboundBatch(operations: [.save(inbox)]), failures: [:])
       try await persistence.activateEmptyCollection(namespace: namespace.binding)
       let source = try await persistence.activeLibrary()
