@@ -345,7 +345,13 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let bridge = try await adapter(storeID: transition.candidateStoreID)
+        let bridge: FullRecordSyncAdapter
+        do {
+            bridge = try await adapter(storeID: transition.candidateStoreID)
+        } catch {
+            _ = try await failedEnable(transition, error: error, reason: .storageFailure)
+            throw error
+        }
         do {
             if transition.phase == .candidateReady {
                 try await prepareCandidate(transition, using: bridge)
