@@ -439,6 +439,7 @@ package actor ICloudSyncModeCoordinator {
             }
 
             if transition.phase == .firstSendComplete {
+                try await checkSetupCollection()
                 try await requireMatchingAccount()
                 try Task.checkCancellation()
                 try await persistence.swapPointer()

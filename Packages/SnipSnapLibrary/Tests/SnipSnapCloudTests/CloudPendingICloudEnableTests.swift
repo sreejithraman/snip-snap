@@ -414,6 +414,54 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
   }
 
+  func testEnableKeepsLocalStoreIfCollectionChangesDuringFirstSend() async throws {
+    let source = try await seededSource()
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot)
+    let original = try await persistence.snapshot().activeStore
+    let server = FakeCloudServer()
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    await server.seedControl(descriptor)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
+    )
+    await transport.pauseNextSend()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: syncRoot,
+      sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private",
+      accountLineage: "account-a",
+      ownerName: "owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { _ in transport },
+      makeDescriptor: { descriptor }
+    )
+
+    let enabling = Task { try await lifecycle.enableICloudSync() }
+    await transport.waitUntilSendPauses()
+    await server.seedControl(.fresh(ownerName: "owner"))
+    await transport.resumeSend()
+    do {
+      _ = try await enabling.value
+      XCTFail("Setup must stop when the collection changes before activation")
+    } catch CloudCollectionError.syncNeedsAttention {}
+
+    let after = try await persistence.snapshot()
+    XCTAssertEqual(after.activeStore.id, original.id)
+    XCTAssertNil(after.transition)
+    let local = try await persistence.activeLibrary()
+    let kept = try await local.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(kept.snips.map(\.content), ["stay local"])
+    _ = try await local.perform(
+      .add(
+        content: "still writable", origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+        attachmentURLs: [], requestID: UUID(), now: .now
+      ),
+      sortedBy: .manual
+    )
+  }
+
   func testOfflineEnableWritesRetryMarkerAndCancelRemovesIt() async throws {
     let server = FakeCloudServer()
     let lifecycle = try await makeLifecycle(
