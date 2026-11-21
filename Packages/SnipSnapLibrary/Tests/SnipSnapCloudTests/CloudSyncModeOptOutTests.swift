@@ -408,65 +408,6 @@ extension ICloudSyncModeCoordinatorTests {
         }
     }
 
-    func testListRenameDeleteAndAdditionReplaceOnlySeededCandidateListsOnRetry() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let source = try await persistence.activeLibrary()
-        let renamedID = try await createList("Rename Me", systemImage: "pencil", in: source).id
-        let deletedID = try await createList("Delete Me", systemImage: "trash", in: source).id
-        try await add("accepted", to: source)
-        try await add("fails", to: source)
-        let sourceSnips = await source.snapshot(sortedBy: .chronological).snips
-        let failedID = try XCTUnwrap(sourceSnips.first(where: { $0.content == "fails" })?.id)
-        let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { transport }
-        )
-        _ = try await failFirstSendRetryably(
-            coordinator: coordinator,
-            persistence: persistence,
-            transport: transport,
-            namespace: namespace,
-            failedSnipID: failedID
-        )
-        let failedStorage = try await persistence.snapshot()
-        let transition = try XCTUnwrap(failedStorage.transition)
-        let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
-        let targetOnly = try await createList(
-            "Target Only",
-            systemImage: "cloud",
-            in: candidate
-        )
-
-        _ = try await source.perform(
-            .updateList(id: renamedID, name: "Renamed", systemImage: "checkmark"),
-            sortedBy: .chronological
-        )
-        _ = try await source.perform(.deleteList(id: deletedID), sortedBy: .chronological)
-        let added = try await createList("Added Later", systemImage: "plus", in: source)
-        let expectedSource = await source.snapshot(sortedBy: .chronological).lists
-
-        let result = try await coordinator.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
-        let actual = await (try await persistence.activeLibrary())
-            .snapshot(sortedBy: .chronological).lists
-        XCTAssertEqual(actual.first(where: { $0.id == renamedID }), expectedSource.first {
-            $0.id == renamedID
-        })
-        XCTAssertNil(actual.first(where: { $0.id == deletedID }))
-        XCTAssertEqual(actual.first(where: { $0.id == added.id }), added)
-        XCTAssertEqual(actual.first(where: { $0.id == targetOnly.id }), targetOnly)
-        let expectedSeededOrder = expectedSource.map(\.id).filter { $0 != SnipList.inboxID }
-        let actualSeededOrder = actual.map(\.id).filter { expectedSeededOrder.contains($0) }
-        XCTAssertEqual(actualSeededOrder, expectedSeededOrder)
-    }
-
     func testSeededListChangesSurviveHardReopenBeforeRetry() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

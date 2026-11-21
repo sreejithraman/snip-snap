@@ -5,21 +5,6 @@ import Synchronization
 import XCTest
 
 final class ICloudSyncModeCoordinatorTests: XCTestCase {
-    func failFirstSendRetryably(
-        coordinator: ICloudSyncModeCoordinator,
-        persistence: SwiftDataSyncModePersistence,
-        transport: FakeCloudRecordTransport,
-        namespace: CloudSyncNamespace,
-        failedSnipID: UUID
-    ) async throws -> ICloudSyncModeStatus {
-        await transport.pauseNextSend()
-        let enable = Task { try await coordinator.enableOrRetry() }
-        await transport.waitUntilSendPauses()
-        await transport.failNextSentItem(.snip(failedSnipID, in: textZone(namespace)), failure: .retryable)
-        await transport.resumeSend()
-        return try await enable.value
-    }
-
     func mutateManifest(
         at url: URL,
         mutation: (inout [String: Any]) throws -> Void
@@ -71,42 +56,6 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
                 ]
             )
         )
-    }
-
-    func cloudRecordID(
-        for snipID: UUID,
-        persistence: SwiftDataSyncModePersistence,
-        namespace: CloudSyncNamespace
-    ) async throws -> CloudRecordID {
-        .snip(snipID, in: textZone(namespace))
-    }
-
-    func editRemote(
-        recordID: CloudRecordID,
-        snipID: UUID,
-        text: String,
-        server: FakeCloudServer
-    ) async throws {
-        let remote = await server.fullSnapshot(for: recordID)
-        let current = try XCTUnwrap(remote)
-        let writer = FakeCloudRecordTransport(server: server)
-        let sent = try await writer.send(
-            CloudOutboundBatch(
-                operations: [
-                    .save(CloudRecordDraft(
-                        id: recordID, recordType: current.recordType,
-                        schemaVersion: CloudFullRecordCodec.schemaVersion,
-                        routingFields: current.routingFields,
-                        encryptedFields: current.encryptedFields.merging(["text": .string(text)]) { _, new in new },
-                        base: current.shadow
-                    ))
-                ]
-            )
-        )
-        guard sent.items.count == 1, case .saved = sent.items[0] else {
-            XCTFail("The remote edit was not accepted.")
-            return
-        }
     }
 
     func makeNamespace() -> CloudSyncNamespace {

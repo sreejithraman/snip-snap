@@ -509,16 +509,16 @@ extension ICloudSyncModeCoordinatorTests {
             id: CloudRecordID(zone: textZone(namespace), name: "lease-test"),
             server: server
         )
-        let gate = CloudApplyGate()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.pauseNextFetch()
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
             namespace: namespace,
             textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
-            applyHook: gate.pause
+            makeTransport: { transport }
         )
         let syncing = Task { try await coordinator.syncActive() }
-        await gate.waitUntilPaused()
+        await transport.waitUntilFetchPauses()
         let liveStatus = try await coordinator.status()
         XCTAssertEqual(liveStatus.state, .syncing)
 
@@ -528,7 +528,7 @@ extension ICloudSyncModeCoordinatorTests {
         } catch {
             XCTAssertEqual(error as? SnipLibraryError, .modeTransitionInProgress)
         }
-        await gate.resume()
+        await transport.resumeFetch()
         let syncResult = try await syncing.value
         XCTAssertEqual(syncResult.state, .on)
         let finished = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)

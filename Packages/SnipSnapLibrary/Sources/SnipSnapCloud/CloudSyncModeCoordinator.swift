@@ -238,7 +238,6 @@ package actor ICloudSyncModeCoordinator {
     private let attachmentPolicy: CloudAttachmentCompatibilityPolicy
     package private(set) var peerCopyOffer: SyncedContentPeerCopyOffer?
     private let makeTransport: TransportFactory
-    private let applyHook: CloudFullSyncPersistence.ApplyHook
     private let accountStateSource: any ICloudAccountStateSource
     private let checkSetupCollection: @Sendable () async throws -> Void
     private enum Operation { case enable, optOut, activeSync }
@@ -251,7 +250,6 @@ package actor ICloudSyncModeCoordinator {
         payloadZone: CloudZoneID? = nil,
         attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
         makeTransport: @escaping TransportFactory,
-        applyHook: @escaping CloudFullSyncPersistence.ApplyHook = {},
         accountStateSource: (any ICloudAccountStateSource)? = nil,
         checkSetupCollection: @escaping @Sendable () async throws -> Void = {}
     ) {
@@ -263,7 +261,6 @@ package actor ICloudSyncModeCoordinator {
         self.payloadZone = payloadZone
         self.attachmentPolicy = attachmentPolicy
         self.makeTransport = makeTransport
-        self.applyHook = applyHook
         self.accountStateSource = accountStateSource ?? FixedICloudAccountStateSource(
             state: .available(accountLineage: namespace.accountLineage)
         )

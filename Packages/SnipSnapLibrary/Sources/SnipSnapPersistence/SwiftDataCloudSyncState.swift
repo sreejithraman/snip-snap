@@ -45,45 +45,78 @@ extension SwiftDataSnipLibrary {
   /// Retire transport state while keeping all local content and full-record shadows.
   static func resetRetiredTextSync(namespaceKey: CloudSyncNamespaceKey, context: ModelContext) throws {
     let key = namespaceKey.rawValue
-    for state in try Self.cloudEngineStates(namespaceKey: key, context: context) {
-      context.delete(state)
+    let batches = try Self.cloudStagedBatches(namespaceKey: key, context: context)
+    let events = try Self.cloudRecoveryEvents(namespaceKey: key, context: context)
+    let legacyBatches = batches.compactMap { row in retiredTextPayload(row.payload).map { (row, $0) } }
+    let legacyEvents = events.compactMap { row in retiredTextPayload(row.payload).map { (row, $0) } }
+    let reset = try Self.cloudNamespaceStates(namespaceKey: key, context: context)
+      .contains { $0.phase == CloudNamespaceBootstrapPhase.blocked.rawValue }
+      || legacyBatches.contains { hasRetiredReset($0.1) }
+      || legacyEvents.contains { hasRetiredReset($0.1) }
+    let enrollment = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
+      .first { $0.namespaceKey == key }
+
+    // A full-record batch and its checkpoint must survive together for replay.
+    if batches.count == legacyBatches.count {
+      for state in try Self.cloudEngineStates(namespaceKey: key, context: context) {
+        context.delete(state)
+      }
     }
-    for batch in try Self.cloudStagedBatches(namespaceKey: key, context: context)
-      where Self.isRetiredTextPayload(batch.payload)
-    {
-      context.delete(batch)
+    for (batch, _) in legacyBatches { context.delete(batch) }
+    for (event, _) in legacyEvents { context.delete(event) }
+
+    if let enrollment {
+      if reset {
+        let prior = try Self.fullEnrollmentState(from: enrollment.referencesData)
+        enrollment.referencesData = try JSONEncoder().encode(CloudFullEnrollmentState(
+          namespaceState: prior.namespaceState.committingSend(.destructiveReset),
+          references: prior.references
+        ))
+      }
+      return
     }
-    for event in try Self.cloudRecoveryEvents(namespaceKey: key, context: context)
-      where Self.isRetiredTextPayload(event.payload)
-    {
-      context.delete(event)
-    }
-    let enrollments = try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
-    if !enrollments.contains(where: { $0.namespaceKey == key }) {
-      let snips = try context.fetch(FetchDescriptor<StoredSnipRecord>())
-      let lists = try context.fetch(FetchDescriptor<StoredListRecord>())
-      let references = Set(snips.map { CloudEntityReference(kind: .snip, domainID: $0.id) })
-        .union(lists.map { CloudEntityReference(kind: .list, domainID: $0.id) })
-        .union([CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)])
-      let enrollment = CloudFullEnrollmentState(
-        namespaceState: CloudFullNamespaceState.notEnrolled.approvingEnrollment(),
-        references: references
-      )
-      context.insert(StoredCloudFullEnrollment(
-        namespaceKey: key, referencesData: try JSONEncoder().encode(enrollment)
-      ))
-    }
+    let snips = try context.fetch(FetchDescriptor<StoredSnipRecord>())
+    let lists = try context.fetch(FetchDescriptor<StoredListRecord>())
+    let references = Set(snips.map { CloudEntityReference(kind: .snip, domainID: $0.id) })
+      .union(lists.map { CloudEntityReference(kind: .list, domainID: $0.id) })
+      .union([CloudEntityReference(kind: .list, domainID: SnipList.inbox.id)])
+    let initial = CloudFullNamespaceState.notEnrolled.approvingEnrollment()
+    let seeded = CloudFullEnrollmentState(
+      namespaceState: reset ? initial.committingSend(.destructiveReset) : initial,
+      references: references
+    )
+    context.insert(StoredCloudFullEnrollment(
+      namespaceKey: key, referencesData: try JSONEncoder().encode(seeded)
+    ))
   }
 
-  private static func isRetiredTextPayload(_ data: Data) -> Bool {
+  private static func retiredTextPayload(_ data: Data) -> [String: Any]? {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-      return false
+      return nil
     }
     if object["marker"] as? String == "snipsnap-cloud-wire" {
-      return object["format"] as? String == "legacyTextV1"
+      guard object["format"] as? String == "legacyTextV1" else { return nil }
+      let payload = (object["payload"] as? String).flatMap { Data(base64Encoded: $0) }
+      return payload.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
     }
-    return object.count == 1 && ["fetched", "sent", "database", "zone", "modeRetryDeletion"]
-      .contains { object[$0] != nil }
+    guard object.count == 1,
+      ["fetched", "sent", "database", "zone", "modeRetryDeletion"].contains(where: { object[$0] != nil })
+    else { return nil }
+    return object
+  }
+
+  private static func hasRetiredReset(_ payload: [String: Any]) -> Bool {
+    let events: [[String: Any]]
+    if let event = (payload["database"] as? [String: Any])?["_0"] as? [String: Any] {
+      events = [event]
+    } else {
+      let batch = (payload["fetched"] ?? payload["sent"]) as? [String: Any]
+      events = (batch?["_0"] as? [String: Any])?["databaseEvents"] as? [[String: Any]] ?? []
+    }
+    return events.contains {
+      let reason = ($0["zoneDeleted"] as? [String: Any])?["reason"] as? String
+      return reason == "purged" || reason == "encryptedDataReset"
+    }
   }
 
   package func clearCloudEngineState(
