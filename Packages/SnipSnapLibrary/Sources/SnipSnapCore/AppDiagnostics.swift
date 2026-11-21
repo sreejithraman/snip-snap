@@ -5,7 +5,7 @@ enum AppDiagnosticCodePolicy {
   static let unknownError = "other.UnknownError"
 
   static let operations: Set<String> = [
-    "app.startup", "app.termination", "app.user_action", "app.unknown",
+    "app.startup", "app.user_action", "app.unknown",
     "cli.readiness", "cli.scope_suspend", "cli.session_end",
     "attachment.asset_copy", "attachment.cache_clear", "attachment.cache_install",
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
@@ -38,8 +38,7 @@ enum AppDiagnosticCodePolicy {
   ]
 
   static let errorCodes: Set<String> = [
-    "diagnostics.busy", "diagnostics.routineOverflow", "diagnostics.failureOverflow",
-    "diagnostics.writeFailed", "share.sharedContainerUnavailable",
+    "share.sharedContainerUnavailable",
     "cli.unavailable",
     "clipboard.empty", "clipboard.tooLarge", "clipboard.unreadable", "clipboard.unsupported",
     "import.partialFailure", "import.readFailed", "pasteboard.writeFailed",
@@ -76,7 +75,6 @@ enum AppDiagnosticCodePolicy {
     "sync.accessDenied", "sync.someChangesPending", "sync.attachmentMissing",
     "sync.attachmentUnavailable", "sync.attachmentStorageUnavailable", "sync.setupBlocked",
     "sync.iCloudDataReset", "sync.iCloudAccountChanged", "sync.appDataIssue",
-    "termination.watchdog", "termination.fileLock", "termination.crash",
   ]
 
   static func operation(_ raw: String) -> String {
@@ -100,12 +98,12 @@ public protocol AppDiagnosticErrorCodeProviding: Error {
   var appDiagnosticCode: String { get }
 }
 
-public enum AppDiagnosticVisibility: String, Sendable {
+public enum AppDiagnosticVisibility: String, Codable, Sendable {
   case user
   case background
 }
 
-public enum AppDiagnosticOutcome: String, Sendable {
+public enum AppDiagnosticOutcome: String, Codable, Sendable {
   case started
   case succeeded
   case failed
@@ -113,18 +111,18 @@ public enum AppDiagnosticOutcome: String, Sendable {
   case missing
 }
 
-public enum AppDiagnosticSyncScope: String, Sendable {
+public enum AppDiagnosticSyncScope: String, Codable, Sendable {
   case transport
   case records
 }
 
-public enum AppDiagnosticSyncEnvironment: String, Sendable {
+public enum AppDiagnosticSyncEnvironment: String, Codable, Sendable {
   case development
   case production
   case unknown
 }
 
-public enum AppDiagnosticSyncPhase: String, Sendable {
+public enum AppDiagnosticSyncPhase: String, Codable, Sendable {
   case uninitialized
   case remoteChecked = "remote_checked"
   case remoteCheckedMissingZone = "remote_checked_missing_zone"
@@ -133,7 +131,7 @@ public enum AppDiagnosticSyncPhase: String, Sendable {
   case blocked
 }
 
-public enum AppDiagnosticSyncReason: String, Sendable {
+public enum AppDiagnosticSyncReason: String, Codable, Sendable {
   case initialFetch = "initial_fetch"
   case uncommittedEvents = "uncommitted_events"
   case namespaceBlocked = "namespace_blocked"
@@ -145,7 +143,7 @@ public enum AppDiagnosticSyncReason: String, Sendable {
   case ownerReplaced = "owner_replaced"
 }
 
-public enum AppDiagnosticWriteReason: String, Sendable {
+public enum AppDiagnosticWriteReason: String, Codable, Sendable {
   case syncBusy = "sync_busy"
   case writeBusy = "write_busy"
   case modeChange = "mode_change"
@@ -155,7 +153,7 @@ public enum AppDiagnosticWriteReason: String, Sendable {
 
 /// One structured operational event. Fields are deliberately limited to values that cannot
 /// contain user content, filenames, filesystem paths, record identifiers, or hashes.
-public struct AppDiagnosticEvent: Equatable, Sendable {
+public struct AppDiagnosticEvent: Codable, Equatable, Sendable {
   public let operation: String
   public let outcome: AppDiagnosticOutcome
   public let visibility: AppDiagnosticVisibility
@@ -308,11 +306,11 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   public var line: String {
     var fields = [
       "diagnostic_event",
-      "operation=\(operation)",
+      "operation=\(AppDiagnosticCodePolicy.operation(operation))",
       "outcome=\(outcome.rawValue)",
       "visibility=\(visibility.rawValue)",
     ]
-    if let errorCode { fields.append("error=\(errorCode)") }
+    if let errorCode { fields.append("error=\(AppDiagnosticCodePolicy.errorCode(errorCode))") }
     if let writeReason { fields.append("write_reason=\(writeReason.rawValue)") }
     if let byteCount { fields.append("bytes=\(byteCount)") }
     if let retryAfterSeconds { fields.append("retry_after=\(retryAfterSeconds)") }
@@ -364,18 +362,12 @@ public struct AppDiagnosticLogReport: Sendable {
   public let text: String
   public let returnedEvents: Int
   public let truncated: Bool
-}
+  public let recordingEnabled: Bool
 
-/// A bounded local diagnostic operation could not acquire its storage lock.
-public enum AppDiagnosticAccessError: Error, LocalizedError, Sendable,
-  AppDiagnosticErrorCodeProviding
-{
-  case busy
+  public var recordingRevision: String { Self.recordingRevision(enabled: recordingEnabled) }
 
-  public var appDiagnosticCode: String { "diagnostics.busy" }
-
-  public var errorDescription: String? {
-    String(localized: "Diagnostic history is busy. Try again shortly.")
+  static func recordingRevision(enabled: Bool) -> String {
+    SnipCLIApplicationResult(values: ["recording-enabled": String(enabled)]).revision
   }
 }
 
@@ -408,6 +400,10 @@ public enum AppDiagnosticsExport {
 
   public static func setRecordingEnabled(_ enabled: Bool) throws {
     try AppDiagnosticScope.live.setRecordingEnabled(enabled)
+  }
+
+  public static func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
+    try AppDiagnosticScope.live.setRecordingEnabled(enabled, ifRevision: revision)
   }
 
   public static func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL
@@ -537,6 +533,15 @@ public final class AppDiagnosticScope: Sendable {
 
   public func setRecordingEnabled(_ enabled: Bool) throws {
     try queue.sync { try store.setRecordingEnabled(enabled) }
+  }
+
+  func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
+    try queue.sync {
+      let current = try store.readRecordingEnabled()
+      guard AppDiagnosticLogReport.recordingRevision(enabled: current) == revision else { return false }
+      try store.setRecordingEnabled(enabled)
+      return true
+    }
   }
 
   public func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL {

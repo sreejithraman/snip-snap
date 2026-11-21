@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 import XCTest
 
 final class SnipCLIDiagnosticLogTests: XCTestCase {
@@ -16,13 +17,14 @@ final class SnipCLIDiagnosticLogTests: XCTestCase {
     let now = Date()
     struct Entry: Encodable {
       let date: Date
-      let line: String
-      let failed: Bool
+      let event: AppDiagnosticEvent
     }
     let entries = [
-      Entry(date: now.addingTimeInterval(-90_000), line: "diagnostic_event operation=sync.run outcome=failed visibility=user error=sync.accessDenied", failed: true),
-      Entry(date: now.addingTimeInterval(-30), line: "diagnostic_event operation=app.startup outcome=succeeded visibility=background", failed: false),
-      Entry(date: now.addingTimeInterval(-20), line: "diagnostic_event operation=clipboard.persist outcome=failed visibility=user error=storage.pathOutsideRoot", failed: true),
+      Entry(date: now.addingTimeInterval(-90_000), event: .failure(
+        operation: "sync.run", errorCode: "sync.accessDenied", visibility: .user)),
+      Entry(date: now.addingTimeInterval(-30), event: .succeeded(operation: "app.startup")),
+      Entry(date: now.addingTimeInterval(-20), event: .failure(
+        operation: "clipboard.persist", errorCode: "storage.pathOutsideRoot", visibility: .user)),
     ]
     var history = Data()
     for entry in entries {

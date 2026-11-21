@@ -61,6 +61,17 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertEqual(try scope.readLog().returnedEvents, 1)
   }
 
+  func testRecordingChangeRejectsAnOutdatedPreferenceRevision() throws {
+    let (root, scope) = makeScope()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let initial = try scope.readLog()
+    try scope.setRecordingEnabled(false)
+    XCTAssertFalse(try scope.setRecordingEnabled(true, ifRevision: initial.recordingRevision))
+    let current = try scope.readLog()
+    XCTAssertFalse(current.recordingEnabled)
+    XCTAssertTrue(try scope.setRecordingEnabled(true, ifRevision: current.recordingRevision))
+  }
+
   private func makeScope(byteLimit: Int = 256 * 1024) -> (URL, AppDiagnosticScope) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let store = AppDiagnosticEventStore(

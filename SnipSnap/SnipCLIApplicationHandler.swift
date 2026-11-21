@@ -174,10 +174,12 @@ final class SnipCLIApplicationHandler {
             }.value
             return receipt(result)
         case .setDiagnosticRecording(let enabled, let revision):
-            try requireCLIRevision(revision, current: await cliDiagnosticsResult())
-            try await Task.detached(priority: .utility) {
-                try AppDiagnosticsExport.setRecordingEnabled(enabled)
+            let saved = try await Task.detached(priority: .utility) {
+                try AppDiagnosticsExport.setRecordingEnabled(enabled, ifRevision: revision)
             }.value
+            guard saved else {
+                throw cliApplicationError("The state changed. Read its status again and use the latest revision with a new request ID.")
+            }
             return receipt(try await cliDiagnosticsResult(), message: "Updated diagnostic recording.")
         case .exportDiagnostics(let path, let range):
             guard !path.isEmpty else { throw cliApplicationError("Choose a diagnostic export path.") }
@@ -417,14 +419,12 @@ final class SnipCLIApplicationHandler {
 
     private func cliDiagnosticsResult() async throws -> SnipCLIApplicationResult {
         try await Task.detached(priority: .utility) {
-            let recording = String(try AppDiagnosticsExport.readRecordingEnabled())
-            let revision = SnipCLIApplicationResult(values: ["recording-enabled": recording]).revision
             let report = try AppDiagnosticsExport.readLog(limit: .max)
             return SnipCLIApplicationResult(values: [
                 "bytes": String(report.text.utf8.count),
-                "content-revision": revision,
-                "recording-enabled": recording,
-            ], revision: revision)
+                "content-revision": SnipCLIApplicationResult(diagnosticLog: report).revision,
+                "recording-enabled": String(report.recordingEnabled),
+            ], revision: report.recordingRevision)
         }.value
     }
 

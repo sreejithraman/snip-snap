@@ -4,8 +4,7 @@ import Foundation
 struct AppDiagnosticEventStore: Sendable {
   private struct Entry: Codable {
     let date: Date
-    let line: String
-    let failed: Bool
+    let event: AppDiagnosticEvent
   }
 
   private static let unbundledNamespace = "unbundled-\(UUID().uuidString)"
@@ -74,7 +73,7 @@ struct AppDiagnosticEventStore: Sendable {
 
   func append(_ event: AppDiagnosticEvent, at date: Date) throws {
     guard try readRecordingEnabled() else { return }
-    let entry = Entry(date: date, line: event.line, failed: event.outcome == .failed)
+    let entry = Entry(date: date, event: event)
     let encoded = try JSONEncoder().encode(entry) + Data([10])
     guard encoded.count <= byteLimit else { return }
     var data = try read(history) ?? Data()
@@ -113,7 +112,7 @@ struct AppDiagnosticEventStore: Sendable {
     let decoder = JSONDecoder()
     let matching = (try read(history) ?? Data()).split(separator: 10)
       .compactMap { try? decoder.decode(Entry.self, from: Data($0)) }
-      .filter { $0.date >= cutoff && (!errorsOnly || $0.failed) }
+      .filter { $0.date >= cutoff && (!errorsOnly || $0.event.outcome == .failed) }
       .sorted { $0.date < $1.date }
     let selected = matching.suffix(limit)
     let truncated = selected.count < matching.count
@@ -125,14 +124,16 @@ struct AppDiagnosticEventStore: Sendable {
       \(truncated ? "truncated=true\n" : "")
       """
     for entry in selected {
-      text += "\(entry.date.ISO8601Format()) \(entry.line)\n"
+      text += "\(entry.date.ISO8601Format()) \(entry.event.line)\n"
     }
-    return AppDiagnosticLogReport(text: text, returnedEvents: selected.count, truncated: truncated)
+    return AppDiagnosticLogReport(
+      text: text, returnedEvents: selected.count, truncated: truncated, recordingEnabled: enabled
+    )
   }
 
   func makeShareableFile(range: AppDiagnosticExportRange) throws -> URL {
     let report = try readLog(range: range, limit: .max, errorsOnly: false)
-    let directory = directoryURL.appendingPathComponent("export-\(UUID().uuidString)")
+    let directory = directoryURL.appendingPathComponent("share-\(UUID().uuidString)")
     try createDirectory(directory)
     let file = directory.appendingPathComponent("Snip-Snap-Diagnostics.txt")
     do {
@@ -168,11 +169,15 @@ struct AppDiagnosticEventStore: Sendable {
 
   private func isExportDirectory(_ directory: URL) -> Bool {
     let name = directory.lastPathComponent
-    return name.hasPrefix("export-") && UUID(uuidString: String(name.dropFirst("export-".count))) != nil
+    return name.hasPrefix("share-") && UUID(uuidString: String(name.dropFirst("share-".count))) != nil
   }
 
   private func createDirectory(_ directory: URL) throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var url = directory
+    var resources = URLResourceValues()
+    resources.isExcludedFromBackup = true
+    try url.setResourceValues(resources)
   }
 
   private func read(_ file: URL) throws -> Data? {
