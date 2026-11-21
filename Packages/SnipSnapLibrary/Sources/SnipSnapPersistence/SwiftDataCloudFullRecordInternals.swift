@@ -457,10 +457,11 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
       for reference in removed {
         context.delete(reference)
       }
+      // Keep detached durable records available for a later remote reparent.
       let orphanedIDs = Set(removed.map(\.attachmentID)).subtracting(retainedIDs)
       if !orphanedIDs.isEmpty {
         for attachment in try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
-          where orphanedIDs.contains(attachment.id)
+          where orphanedIDs.contains(attachment.id) && attachment.relativePath.hasPrefix("CloudDownloads/")
         {
           context.delete(attachment)
         }

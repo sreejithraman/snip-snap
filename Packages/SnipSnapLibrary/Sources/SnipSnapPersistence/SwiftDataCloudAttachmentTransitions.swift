@@ -149,14 +149,14 @@ extension SwiftDataSnipLibrary {
         context.delete(row)
       }
     }
-    func removeMaterialized(attachmentID: UUID, snipID: UUID) {
+    func removeMaterialized(attachmentID: UUID, snipID: UUID, keepingRecord: Bool = false) {
       let references = storedReferences[attachmentID] ?? []
       for reference in references where reference.snipID == snipID {
         context.delete(reference)
       }
       let remaining = references.filter { $0.snipID != snipID }
       storedReferences[attachmentID] = remaining
-      guard remaining.isEmpty else { return }
+      guard remaining.isEmpty, !keepingRecord else { return }
       for attachment in storedAttachments.removeValue(forKey: attachmentID) ?? [] {
         context.delete(attachment)
       }
@@ -228,7 +228,11 @@ extension SwiftDataSnipLibrary {
           }
           let changedParent = row.snipID != metadata.snipID
           if changedParent {
-            removeMaterialized(attachmentID: row.attachmentID, snipID: row.snipID)
+            removeMaterialized(
+              attachmentID: row.attachmentID, snipID: row.snipID,
+              keepingRecord: row.lifecycle.localSourceRelativePath != nil
+                && row.payloadIdentity == metadata.payloadIdentity
+            )
           }
           row.snipID = metadata.snipID
           row.position = metadata.position
@@ -503,18 +507,14 @@ extension SwiftDataSnipLibrary {
     let records = Dictionary(uniqueKeysWithValues:
       try context.fetch(FetchDescriptor<StoredAttachmentRecord>()).map { ($0.id, $0) }
     )
-    // A reparent can arrive before its destination. The publication still owns the local bytes.
+    // A remote detach retains the durable record. A local removal deletes it.
     for row in durable where parentIDs.contains(row.snipID) && !linkedIDs.contains(row.attachmentID) {
-      guard let path = row.lifecycle.localSourceRelativePath else { continue }
-      let value = SnipAttachment(
-        id: row.attachmentID, fileName: row.fileName, relativePath: path,
-        contentType: row.contentType, byteCount: row.byteCount
-      )
-      if let record = records[row.attachmentID] {
-        record.update(from: value)
-      } else {
-        context.insert(StoredAttachmentRecord(value))
-      }
+      guard let record = records[row.attachmentID],
+        record.relativePath == row.lifecycle.localSourceRelativePath,
+        record.byteCount == row.byteCount
+      else { continue }
+      record.fileName = row.fileName
+      record.contentType = row.contentType
       context.insert(StoredSnipAttachmentReference(
         snipID: row.snipID, attachmentID: row.attachmentID, position: row.position
       ))

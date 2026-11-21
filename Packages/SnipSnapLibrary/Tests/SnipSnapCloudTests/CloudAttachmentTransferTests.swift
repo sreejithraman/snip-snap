@@ -109,7 +109,15 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await assertSyncedMerge(fromPeer: true, splitFetch: true)
   }
 
-  private func assertSyncedMerge(fromPeer: Bool, splitFetch: Bool = false) async throws {
+  func testPeerMergeDoesNotRestoreAnAttachmentRemovedOnTheCreator() async throws {
+    try await assertSyncedMerge(fromPeer: true, removedOnReceiver: true)
+  }
+
+  private func assertSyncedMerge(
+    fromPeer: Bool,
+    splitFetch: Bool = false,
+    removedOnReceiver: Bool = false
+  ) async throws {
     let (creator, peer) = try await makeSyncedAttachmentClients()
     defer { try? FileManager.default.removeItem(at: creator.root) }
     let (merging, receiving) = fromPeer ? (peer, creator) : (creator, peer)
@@ -121,6 +129,9 @@ final class CloudAttachmentTransferTests: XCTestCase {
       .merge(ids: [creator.snipID, other], now: Date()), sortedBy: .manual
     )
     guard case .merged(let snip) = merged.outcome else { return XCTFail("Expected merged snip") }
+    if removedOnReceiver {
+      try await keepAttachments([], ofSnip: creator.snipID, in: receiving.library)
+    }
     if splitFetch {
       let published = try await snapshot(receiving.library, receiving.namespace)
       let pointer = try XCTUnwrap(published.publications.first)
@@ -141,6 +152,10 @@ final class CloudAttachmentTransferTests: XCTestCase {
     try await receiving.sync.fetchRemote()
     let received = try await receiving.library.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(received.snips.map(\.id), [snip.id])
+    if removedOnReceiver {
+      XCTAssertTrue(received.snips.flatMap(\.attachments).isEmpty)
+      return
+    }
     let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
     XCTAssertEqual(received.snips.flatMap(\.attachments).map(\.id), [attachmentID])
     let storage = try await snapshot(receiving.library, receiving.namespace)
