@@ -26,7 +26,8 @@ private actor FullRecordSyncAdapter {
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
-            fetchScope: .zones([raw.dataZone])
+            fetchScope: .zones([raw.dataZone]),
+            accountChanged: beforeApply
         )
     }
 

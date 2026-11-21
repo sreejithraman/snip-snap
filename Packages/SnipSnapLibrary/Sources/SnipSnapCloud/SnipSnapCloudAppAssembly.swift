@@ -90,6 +90,7 @@ public enum SnipSnapCloudAppAssembly {
     )
     let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
+      checkActiveAccount: { try await lifecycle.checkActiveAccount() },
       synchronize: { try await lifecycle.synchronize() },
       retry: { try await lifecycle.retrySynchronization() },
       scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },

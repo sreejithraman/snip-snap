@@ -108,9 +108,9 @@ final class CloudOutboundAdmissionTests: XCTestCase {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let transport = AdmissionTransport(zones: fixture.namespace.zones)
-    let coordinator = CloudFullSyncCoordinator(store: fixture.store, transport: transport) { result in
+    let coordinator = CloudFullSyncCoordinator(store: fixture.store, transport: transport, reportResult: { result in
       if result == .iCloudDataReset { throw AutomaticSyncTestError.unsupported }
-    }
+    })
     try await coordinator.prepareAutomaticSync()
     let stale = try await fixture.store.pendingChanges()
     await transport.scheduleAutomaticSync(CloudOutboundBatch(operations: stale.operations, zonesToSave: fixture.namespace.zones))

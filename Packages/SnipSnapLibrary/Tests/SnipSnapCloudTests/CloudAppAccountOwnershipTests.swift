@@ -203,6 +203,44 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: syncRoot.appendingPathComponent("activation.json").path))
   }
 
+  func testSignOutPromotesAnAvailableDownloadBeforeItsCacheIsEvicted() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let active = try await fixture.persistence.activeLibrary()
+    let store = try await fixture.persistence.snapshot().activeStore
+    let binding = try XCTUnwrap(store.namespace)
+    let library = try await fixture.persistence.libraryForTransition(storeID: store.id)
+    let file = fixture.root.appendingPathComponent("download-only.txt")
+    let bytes = Data("downloaded attachment".utf8)
+    try bytes.write(to: file)
+    let added = try await active.perform(.add(content: "file", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: [file], requestID: UUID(), now: .distantPast),
+      sortedBy: .manual)
+    let id = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+    let durable = try XCTUnwrap(added.snapshot.attachmentURLs[id])
+    try await library.reconcileCloudAttachments(namespaceKey: binding.namespaceKey,
+      metadataZoneName: fixture.descriptor.metadataZone.name,
+      metadataOwnerName: fixture.descriptor.metadataZone.ownerName,
+      payloadZoneName: fixture.descriptor.payloadZone.name,
+      payloadOwnerName: fixture.descriptor.payloadZone.ownerName)
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+    let publication = try XCTUnwrap(stored.publications.first)
+    try await library.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey,
+      transitions: [.remoteMetadataAccepted(metadata: publication.metadata,
+        metadataIdentity: publication.metadataIdentity, shadowData: Data(), systemFields: Data())])
+    let installer = CacheInstallingAttachment(library: library, namespaceKey: binding.namespaceKey)
+    let downloaded = try await installer.prepare(attachmentID: id, for: .open)
+    try FileManager.default.removeItem(at: durable)
+
+    try await fixture.persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountSignedOut)
+    try FileManager.default.removeItem(at: downloaded)
+    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+    let contents = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+    let local = try XCTUnwrap(contents.attachmentURLs[id])
+    XCTAssertNotEqual(local, downloaded)
+    XCTAssertEqual(try Data(contentsOf: local), bytes)
+  }
+
   func testAttachmentUseKeepsItsSourceUntilTheFileOperationFinishes() async throws {
     let pause = OwnerPause()
     let fixture = try await Fixture.make(attachmentPause: pause)

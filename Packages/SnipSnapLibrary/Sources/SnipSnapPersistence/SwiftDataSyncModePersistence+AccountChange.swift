@@ -19,25 +19,35 @@ extension SwiftDataSyncModePersistence {
     let replacementStoreID: UUID
   }
 
+  package enum KeepCacheResult: Sendable {
+    case kept
+    case resetPending
+    case sourceReplaced
+  }
+
+  @discardableResult
   package func keepCloudCacheLocally(
     storeID: UUID, reason: ICloudSyncAttentionReason
-  ) async throws {
+  ) async throws -> KeepCacheResult {
     try await activeStoreTurns.withLease {
       try await self.stopSyncKeepingCache(storeID: storeID, reason: reason)
     }
   }
 
-  private func stopSyncKeepingCache(storeID: UUID, reason: ICloudSyncAttentionReason) async throws {
+  private func stopSyncKeepingCache(
+    storeID: UUID, reason: ICloudSyncAttentionReason
+  ) async throws -> KeepCacheResult {
     try resolveActivationWrite()
     guard manifest.activeStoreID == storeID,
       let index = manifest.stores.firstIndex(where: { $0.id == storeID }),
       let namespace = manifest.stores[index].namespace
-    else { return }
+    else { return .sourceReplaced }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
     let library = try libraryForTransition(storeID: storeID)
     // A reset already recorded in this store takes precedence over keeping the cache.
-    try await library.checkContentWriteAdmission()
+    guard try await !library.hasPendingCloudReset() else { return .resetPending }
+    await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
     var next = manifest
     if let transition = next.transition, transition.sourceStoreID == storeID,
       let candidate = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID })
@@ -48,12 +58,7 @@ extension SwiftDataSyncModePersistence {
     next.stores[index] = next.stores[index].keepingLocally()
     next.attentionReason = reason
     try publishActivation(next)
-    do {
-      try await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
-    } catch {
-      // The selected store and its cache paths are still intact.
-      diagnostics.record(.failure(operation: "sync.keep-local", error: error, visibility: .background))
-    }
+    return .kept
   }
 
   /// A stopped cache retains the original engine and record state. Only its exact
@@ -91,7 +96,6 @@ extension SwiftDataSyncModePersistence {
       manifest.transition = nil
       if manifest.stores[replacement].lifecycle == .creating {
         manifest.stores[replacement].lifecycle = .deleting
-        manifest.accountIsolation = nil
       } else {
         manifest.stores[replacement].lifecycle = .isolated
       }
@@ -113,10 +117,15 @@ extension SwiftDataSyncModePersistence {
     guard let legacy = manifest.accountIsolation, manifest.activeStoreID == legacy.storeID else { return }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
-    let source = try libraryForTransition(storeID: legacy.replacementStoreID)
     let target = try libraryForTransition(storeID: legacy.storeID)
-    let copy = try await source.transferSnapshot(revision: 0)
-    _ = try await target.mergeTransferSnapshot(copy, transitionID: legacy.id)
+    if let binding = store(id: legacy.storeID)?.quarantinedNamespace {
+      await target.keepAvailableCloudAttachments(namespaceKey: binding.namespaceKey)
+    }
+    if store(id: legacy.replacementStoreID)?.lifecycle == .isolated {
+      let source = try libraryForTransition(storeID: legacy.replacementStoreID)
+      let copy = try await source.transferSnapshot(revision: 0)
+      _ = try await target.mergeTransferSnapshot(copy, transitionID: legacy.id)
+    }
     var next = manifest
     next.accountIsolation = nil
     if let index = next.stores.firstIndex(where: { $0.id == legacy.replacementStoreID }) {

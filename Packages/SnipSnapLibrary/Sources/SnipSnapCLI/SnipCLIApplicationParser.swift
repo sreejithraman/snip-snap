@@ -19,7 +19,6 @@ enum SnipCLIApplicationParser {
       disable accepts --use-current-cache to explicitly keep this device's copy.
     sync clipboard status|enable|disable|retry
       enable and disable require --if-revision TOKEN from sync clipboard status.
-      remove requires --yes; TOKEN comes from sync status.
     diagnostics status|export PATH [--range 24h|7d]|clear --yes
     diagnostics recording on|off --if-revision TOKEN
     diagnostics logs [--range 24h|7d] [--errors-only] [--limit 1...2000]

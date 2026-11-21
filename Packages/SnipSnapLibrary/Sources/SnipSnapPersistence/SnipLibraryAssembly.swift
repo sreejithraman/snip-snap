@@ -44,9 +44,7 @@ public struct SnipLibraryAssembly: Sendable {
     attachmentCacheRootURL: URL? = nil,
     initializeSyncModeStore: Bool = false
   ) {
-    let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
-      atSyncModeRootURL: syncModeRootURL
-    )
+    let namespace = SyncModeActivationManifestReader.recoveryNamespace(at: syncModeRootURL)
     recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
     let resolvedLibrary: any SnipLibrary
     let initialLocalLibrary = initializeSyncModeStore ? nil : library as? SwiftDataSnipLibrary

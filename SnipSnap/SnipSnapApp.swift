@@ -279,7 +279,10 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
                     default: return true
                     }
                 },
-                generation: { try await cloudServices.syncSession?.activeLibrary().recoveryScope?.rawValue })
+                generation: {
+                    let namespace = SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: syncModeRootURL)
+                    return SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)?.rawValue
+                })
         }
         let fileDropController = PanelFileDropController()
         let dragSessionController = PanelDragSessionController()
@@ -461,18 +464,9 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             do {
                 if let cloudSyncSession {
                     do {
-                        switch try await cloudSyncSession.synchronize() {
-                        case .iCloudSignedOut:
+                        if let issue = try await cloudSyncSession.checkActiveAccount().syncStopIssue {
                             await model.clipboardHistory.resetCloudAccount()
-                            syncedContentSettings.recordSyncStopped(.signInRequired)
-                        case .iCloudAccountChanged:
-                            await model.clipboardHistory.resetCloudAccount()
-                            syncedContentSettings.recordSyncStopped(.iCloudAccountChanged)
-                        case .iCloudDataReset:
-                            await model.clipboardHistory.resetCloudAccount()
-                            syncedContentSettings.recordSyncStopped(.iCloudDataReset)
-                        default:
-                            break
+                            syncedContentSettings.recordSyncStopped(issue)
                         }
                     } catch {
                         syncedContentSettings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))

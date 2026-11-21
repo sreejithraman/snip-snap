@@ -57,6 +57,7 @@ final class IOSAppSession {
     private let shareImporter: IOSShareImportCoordinator?
     private let shareDestinationPublisher: ShareListCatalogPublisher?
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
+    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private var automaticSyncTask: Task<Void, Never>?
 
     init(
@@ -109,8 +110,11 @@ final class IOSAppSession {
             settings: syncedContentSettings,
             containerIdentifier: clipboardContainerIdentifier,
             generation: {
-                guard let cloudSyncSession else { return nil }
-                return try await cloudSyncSession.iosActiveLibrary().recoveryScope?.rawValue
+                guard let clipboardSyncRootURL else { return nil }
+                let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
+                    atSyncModeRootURL: clipboardSyncRootURL
+                )
+                return SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)?.rawValue
             },
             diagnostics: diagnostics
         )
@@ -166,6 +170,9 @@ final class IOSAppSession {
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
+        cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
+            await cloudSyncSession?.scheduleAutomaticSync()
+        }
         if let cloudSyncSession {
             let results = cloudSyncSession.automaticSyncResults
             automaticSyncTask = Task { [weak self] in
@@ -178,9 +185,9 @@ final class IOSAppSession {
     }
 
     func launch() async {
-        await checkSync()
         await model.load()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
+        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
@@ -188,24 +195,20 @@ final class IOSAppSession {
     }
 
     func foreground() async {
-        await checkSync()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
+        await cloudLifecycleHooks.run()
         await clipboard.foreground()
         await shareImporter?.importPendingAndReload()
     }
 
     func syncWhenPossible() async {
-        await checkSync()
-        await clipboard.synchronize()
-    }
-
-    private func checkSync() async {
         try? await Self.synchronizeCloudSessionOrThrow(
             cloudSyncSession,
             model: model,
             settings: syncedContentSettings,
             clipboard: clipboard
         )
+        await clipboard.synchronize()
     }
 
     func retrySyncWhenPossible() async {

@@ -50,7 +50,9 @@ final class CloudAccountChangeTests: XCTestCase {
     let result = try await fixture.lifecycle.retrySynchronization()
     XCTAssertEqual(result, .iCloudAccountChanged)
     let active = try await fixture.lifecycle.activeLibrary()
-    XCTAssertNil(active.recoveryScope)
+    XCTAssertEqual(active.recoveryScope,
+      SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: fixture.namespace.binding))
+    XCTAssertNil(SyncModeActivationManifestReader.activeCloudNamespace(atSyncModeRootURL: fixture.root))
     let edit = try await add("local edit", to: active.library)
     XCTAssertEqual(Set(edit.snapshot.snips.map(\.content)), ["account A data", "local edit"])
     do {
@@ -86,6 +88,27 @@ final class CloudAccountChangeTests: XCTestCase {
     XCTAssertEqual(Set(updated.snapshot.snips.map(\.content)), ["keep me", "still writable"])
     let lookups = await fixture.account.lookups
     XCTAssertEqual(lookups, 2)
+  }
+
+  func testRecordedPurgeStillDiscardsTheCacheWhenTheAccountSignsOut() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let library = try await fixture.persistence.activeLibrary()
+    _ = try await add("purged data", to: library)
+    let storeID = try await fixture.persistence.snapshot().activeStore.id
+    let store = try await fixture.persistence.libraryForTransition(storeID: storeID)
+    let cloud = CloudFullSyncPersistence(library: store, namespace: fixture.namespace,
+      dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone)
+    let purge = CloudFetchedBatch(id: UUID(), items: [],
+      databaseEvents: [.zoneDeleted(fixture.descriptor.metadataZone, reason: .purged)],
+      engineState: nil)
+    try await cloud.stage(.fetched(purge), outbound: nil)
+
+    await fixture.account.set(.noAccount)
+    let result = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(result, .iCloudDataReset)
+    let writable = try await add("after reset", to: library)
+    XCTAssertEqual(writable.snapshot.snips.map(\.content), ["after reset"])
   }
 
   func testLegacyManifestKeepsBothStoresAndIgnoresRetiredFields() async throws {
@@ -149,6 +172,7 @@ final class CloudAccountChangeTests: XCTestCase {
     let root: URL
     let persistence: SwiftDataSyncModePersistence
     let namespace: CloudSyncNamespace
+    let descriptor: CloudCollectionDescriptor
     let control: FakeCloudControlTransport
     let records: FakeCloudRecordTransport
     let account: Account
@@ -173,7 +197,8 @@ final class CloudAccountChangeTests: XCTestCase {
         ownerName: "owner", controlTransport: control,
         makeRecordTransport: { _ in records }, makeDescriptor: { descriptor }
       )
-      return Fixture(root: root, persistence: persistence, namespace: namespace, control: control,
+      return Fixture(root: root, persistence: persistence, namespace: namespace,
+        descriptor: descriptor, control: control,
         records: records, account: account, lifecycle: lifecycle)
     }
   }

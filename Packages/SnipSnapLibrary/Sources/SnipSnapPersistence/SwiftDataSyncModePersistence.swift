@@ -37,6 +37,16 @@ public enum SyncModeActivationManifestReader {
   public static func activeCloudNamespace(
     atSyncModeRootURL rootURL: URL
   ) -> ICloudSyncNamespaceBinding? {
+    activeNamespace(at: rootURL, includeKeptCache: false)
+  }
+
+  package static func recoveryNamespace(at rootURL: URL) -> ICloudSyncNamespaceBinding? {
+    activeNamespace(at: rootURL, includeKeptCache: true)
+  }
+
+  private static func activeNamespace(
+    at rootURL: URL, includeKeptCache: Bool
+  ) -> ICloudSyncNamespaceBinding? {
     guard rootURL.isFileURL else { return nil }
     let manifestURL = rootURL.appendingPathComponent("activation.json", isDirectory: false)
     do {
@@ -53,11 +63,12 @@ public enum SyncModeActivationManifestReader {
         manifest.stores,
         rootURL: rootURL
       )
-      guard manifest.accountIsolation == nil,
-        let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }),
-        active.kind == .iCloudSync
+      guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
       else { return nil }
-      return active.namespace
+      if includeKeptCache {
+        return active.quarantinedNamespace ?? active.namespace
+      }
+      return manifest.accountIsolation == nil ? active.namespace : nil
     } catch {
       return nil
     }

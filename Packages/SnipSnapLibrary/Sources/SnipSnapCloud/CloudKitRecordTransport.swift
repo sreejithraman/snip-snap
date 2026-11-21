@@ -514,7 +514,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
         )
         guard let batch, isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
-              !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
+              running.unverifiedAccountEvent == nil, !outboundQueue.admission.blocksAll,
+              !mailbox.blocksRecordProvider else { return nil }
         let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
             .map(CloudKitRecordMapper.id(for:)))
         guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs

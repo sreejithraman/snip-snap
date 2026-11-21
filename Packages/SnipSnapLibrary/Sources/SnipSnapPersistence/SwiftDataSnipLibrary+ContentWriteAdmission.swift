@@ -3,11 +3,16 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  package func checkContentWriteAdmission() throws {
+  package func hasPendingCloudReset() throws -> Bool {
     guard let container else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
-    try requireContentWritesAllowed(context: Self.makeContext(container: container))
+    do {
+      try Self.requireNoCloudReset(context: Self.makeContext(container: container))
+      return false
+    } catch CloudContentWriteAdmission.Block.dataReset {
+      return true
+    }
   }
 
   /// Call inside the same store lock as the content write. Reset evidence moves
@@ -18,21 +23,25 @@ extension SwiftDataSnipLibrary {
       throw SnipLibraryError.readOnlyRecovery
     }
     do {
-      for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()) {
-        try CloudContentWriteAdmission.requireStagedAllowsWrites(row)
-      }
-      for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()) {
-        try CloudContentWriteAdmission.requireRecoveryAllowsWrites(row)
-      }
-      for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()) {
-        guard let enrollment = try? Self.fullEnrollmentState(from: row.referencesData) else {
-          throw SnipLibraryError.invalidStore
-        }
-        try CloudContentWriteAdmission.requireNamespaceAllowsWrites(enrollment.namespaceState)
-      }
+      try Self.requireNoCloudReset(context: context)
     } catch CloudContentWriteAdmission.Block.dataReset {
       diagnostics.record(.writeAdmission(.failed, reason: .dataReset))
       throw SnipLibraryError.modeTransitionInProgress
+    }
+  }
+
+  private static func requireNoCloudReset(context: ModelContext) throws {
+    for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()) {
+      try CloudContentWriteAdmission.requireStagedAllowsWrites(row)
+    }
+    for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()) {
+      try CloudContentWriteAdmission.requireRecoveryAllowsWrites(row)
+    }
+    for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()) {
+      guard let enrollment = try? Self.fullEnrollmentState(from: row.referencesData) else {
+        throw SnipLibraryError.invalidStore
+      }
+      try CloudContentWriteAdmission.requireNamespaceAllowsWrites(enrollment.namespaceState)
     }
   }
 }

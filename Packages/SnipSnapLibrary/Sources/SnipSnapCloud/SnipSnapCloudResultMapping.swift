@@ -1,6 +1,15 @@
 import SnipSnapCore
 
 extension SnipSnapCloudSyncResult {
+  public var syncStopIssue: SyncedContentSyncIssue? {
+    switch self {
+    case .iCloudDataReset: .iCloudDataReset
+    case .iCloudSignedOut: .signInRequired
+    case .iCloudAccountChanged: .iCloudAccountChanged
+    default: nil
+    }
+  }
+
   @MainActor
   @discardableResult
   public func applyEnableProgress(

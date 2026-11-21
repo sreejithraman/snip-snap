@@ -393,6 +393,16 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return .enabled
   }
 
+  package func checkActiveAccount() async throws -> SnipSnapCloudSyncResult {
+    do {
+      _ = try await checkedActiveBinding()
+      return .noChange
+    } catch let error as ICloudAccountGateError {
+      guard let result = try await stopSync(for: error) else { throw error }
+      return result
+    }
+  }
+
   package func synchronize() async throws -> SnipSnapCloudSyncResult {
     try await synchronize(retryingUserRecoverableFailures: false)
   }
@@ -523,7 +533,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return SnipSnapCloudActiveLibrary(
       library: try await persistence.activeLibrary(),
       recoveryScope: SnipRecoveryScopeFactory.scope(
-        forActiveCloudNamespace: snapshot.activeStore.namespace
+        forActiveCloudNamespace: snapshot.activeStore.namespace ?? snapshot.activeStore.quarantinedNamespace
       )
     )
   }
@@ -612,11 +622,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   private func activeCollectionCoordinator() async throws -> CloudCollectionCoordinator? {
-    guard let persistence, let binding = try await persistence.snapshot().activeStore.namespace else {
+    guard let persistence, let binding = try await checkedActiveBinding() else {
       await clearCollectionCoordinator()
       return nil
     }
-    try await requireAccountLineage(binding.accountLineage)
     if let collectionCoordinator { return collectionCoordinator }
     accountLineage = binding.accountLineage
     let coordinator = try makeCollectionCoordinator(persistence)
@@ -624,19 +633,39 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return coordinator
   }
 
+  private func checkedActiveBinding() async throws -> ICloudSyncNamespaceBinding? {
+    guard let binding = try await persistence?.snapshot().activeStore.namespace else { return nil }
+    try await requireAccountLineage(binding.accountLineage)
+    return binding
+  }
+
   private func stopSync(for error: ICloudAccountGateError) async throws -> SnipSnapCloudSyncResult? {
     guard error == .noAccount || error == .accountChanged,
       let persistence
     else { return nil }
     let store = try await persistence.snapshot().activeStore
-    guard store.kind == .iCloudSync else { return nil }
+    guard let namespace = store.namespace else { return nil }
     let signedOut = error == .noAccount
     await clearCollectionCoordinator()
-    try await persistence.keepCloudCacheLocally(
+    let local = try SwiftDataCloudCollectionLocalStore(rootURL: rootURL, persistence: persistence)
+    if try await local.state().encryptedDataReset != nil {
+      try PendingICloudSyncEnable.clear(at: rootURL)
+      return .iCloudDataReset
+    }
+    let result = try await persistence.keepCloudCacheLocally(
       storeID: store.id, reason: signedOut ? .accountSignedOut : .accountChanged
     )
-    try PendingICloudSyncEnable.clear(at: rootURL)
-    return signedOut ? .iCloudSignedOut : .iCloudAccountChanged
+    switch result {
+    case .kept:
+      try PendingICloudSyncEnable.clear(at: rootURL)
+      return signedOut ? .iCloudSignedOut : .iCloudAccountChanged
+    case .resetPending:
+      guard try await local.markPurged(storeID: store.id, namespace: namespace) != nil else { return nil }
+      try PendingICloudSyncEnable.clear(at: rootURL)
+      return .iCloudDataReset
+    case .sourceReplaced:
+      return nil
+    }
   }
 
   private nonisolated static func accountGateError(
@@ -769,7 +798,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       return
     }
     if result == .iCloudDataReset {
-      guard let replacementID = try await local.markPurged(ifMatching: context),
+      guard let replacementID = try await local.markPurged(storeID: context.storeID, namespace: context.binding),
         let persistence, try await persistence.snapshot().activeStore.id == replacementID
       else { return }
     }

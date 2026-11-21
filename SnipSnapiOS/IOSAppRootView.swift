@@ -297,7 +297,7 @@ struct IOSAppRootView: View {
             for await _ in NotificationCenter.default.notifications(
                 named: SnipSnapCloudNotifications.accountChanged
             ) {
-                await session.foreground()
+                await session.syncWhenPossible()
             }
         }
         .task(id: scenePhase) { await pollClipboardWhileActive() }

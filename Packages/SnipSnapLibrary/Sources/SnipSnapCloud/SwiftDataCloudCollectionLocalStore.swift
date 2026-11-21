@@ -171,11 +171,11 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     try update { $0.recordPurge() }
   }
 
-  package func markPurged(ifMatching context: CloudRecordWorkContext) async throws -> UUID? {
+  package func markPurged(storeID: UUID, namespace: ICloudSyncNamespaceBinding) async throws -> UUID? {
     guard let replacementID = try await persistence.discardActiveCloudCollection(
-      storeID: context.storeID, namespace: context.binding
+      storeID: storeID, namespace: namespace
     ) else { return nil }
-    try update { $0.recordPurge(of: context.collection.namespace) }
+    try update { $0.recordPurge(of: Self.namespace(namespace)) }
     return replacementID
   }
 

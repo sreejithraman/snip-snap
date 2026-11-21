@@ -67,6 +67,26 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(fromCurrent?.recordsToSave.map(\.recordID), [CloudKitRecordMapper.recordID(for: id)])
     }
 
+    func testAccountChangeWithholdsRecordsUntilConfirmation() async throws {
+        let fixture = makeFixture()
+        let transport = fixture.transport
+        try await transport.start(state: nil)
+        let engine = try fixture.engine(0)
+        await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
+        try await transport.confirmAllEvents()
+        let id = fixture.recordID("pending")
+        try await transport.scheduleAutomaticSync(
+            CloudOutboundBatch(operations: [.save(makeDraft(id, "old account record"))])
+        )
+        await transport.emit(.willSendChanges, .accountChange, from: engine)
+
+        let withheld = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
+        XCTAssertNil(withheld)
+        try await transport.confirmAllEvents()
+        let accepted = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
+        XCTAssertEqual(accepted?.recordsToSave.map(\.recordID), [CloudKitRecordMapper.recordID(for: id)])
+    }
+
     func testStartWithEngineStateFromAnotherNamespaceThrowsAndMakesNoEngine() async {
         let fixture = makeFixture()
         let transport = fixture.transport
