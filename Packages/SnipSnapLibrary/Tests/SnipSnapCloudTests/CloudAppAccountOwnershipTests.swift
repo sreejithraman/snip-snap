@@ -257,7 +257,7 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertEqual(unchanged.activeStore.kind, .iCloudSync)
     await pause.resume()
     _ = try await prepare.value
-    try await change.value
+    _ = try await change.value
     let kept = try await fixture.persistence.snapshot()
     XCTAssertEqual(kept.activeStore.id, source.id)
     XCTAssertEqual(kept.activeStore.kind, .localOnly)

@@ -629,7 +629,8 @@ final class SyncedContentSettingsModelTests: XCTestCase {
 
     model.recordSyncStopped(.iCloudAccountChanged)
     XCTAssertEqual(model.statusTitle, "iCloud account changed")
-    XCTAssertTrue(model.detail.contains("previous account’s snips stay separate"))
+    XCTAssertEqual(model.mode, .localOnly)
+    XCTAssertTrue(model.detail.contains("your snips are kept on this device"))
   }
 
   @MainActor

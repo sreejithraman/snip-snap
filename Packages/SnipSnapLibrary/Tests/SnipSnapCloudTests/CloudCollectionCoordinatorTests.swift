@@ -1931,20 +1931,21 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let server = FakeCloudServer()
     let control = FakeCloudControlTransport(server: server)
     await control.seedControl(old)
-    let account = PausingCollectionAccountSource()
+    let checkedControl = PausingCollectionControlTransport(base: control)
     let oldRecords = LifecycleAutomaticTransportProbe()
     let freshRecords = LifecycleAutomaticTransportProbe()
     let results = CollectionResultRecorder()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
-      cloudScope: "private", accountLineage: "account-a", accountStateSource: account, ownerName: "owner",
-      controlTransport: control,
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      controlTransport: checkedControl,
       makeRecordTransport: { $0.namespace.generation == old.generation ? oldRecords : freshRecords },
       makeDescriptor: { fresh }, automaticResultHandler: results.append
     )
     _ = try await lifecycle.synchronize()
     let pause = CollectionWorkPause()
-    await account.pauseNextCheck(pause)
+    let paused = expectation(description: "Old record work reached the control fetch")
+    await checkedControl.pauseNextFetch(pause) { paused.fulfill() }
     let finished = expectation(description: "Old record work returns after replacement")
     let sendTask: Task<Bool, Never>?
     if purge {
@@ -1959,7 +1960,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         catch { return false }
       }
     }
-    await pause.waitUntilSuspended()
+    await fulfillment(of: [paused], timeout: 2)
 
     await control.seedControl(fresh)
     let adopted = try await lifecycle.synchronize()
@@ -4292,12 +4293,15 @@ private actor CollectionWorkPause {
   private var released = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
   private var release: CheckedContinuation<Void, Never>?
-  func suspend() async {
+  func suspend(onEntry: @Sendable () -> Void = {}) async {
     if released { return }
     suspended = true
     waiters.forEach { $0.resume() }
     waiters = []
-    await withCheckedContinuation { release = $0 }
+    await withCheckedContinuation {
+      release = $0
+      onEntry()
+    }
   }
   func waitUntilSuspended() async {
     if suspended { return }
@@ -4306,15 +4310,33 @@ private actor CollectionWorkPause {
   func resume() { released = true; release?.resume(); release = nil }
 }
 
-private actor PausingCollectionAccountSource: ICloudAccountStateSource {
-  private var pause: CollectionWorkPause?
-  func pauseNextCheck(_ value: CollectionWorkPause) { pause = value }
-  func currentAccountState() async -> ICloudAccountState {
+private actor PausingCollectionControlTransport: CloudCollectionControlTransport {
+  private let base: FakeCloudControlTransport
+  private var pause: (CollectionWorkPause, @Sendable () -> Void)?
+
+  init(base: FakeCloudControlTransport) { self.base = base }
+
+  func pauseNextFetch(_ value: CollectionWorkPause, onEntry: @escaping @Sendable () -> Void) {
+    pause = (value, onEntry)
+  }
+
+  func fetchControl() async -> CloudCollectionControlRecord? {
     let next = pause
     pause = nil
-    await next?.suspend()
-    return .available(accountLineage: "account-a")
+    let record = await base.fetchControl()
+    if let (pause, onEntry) = next { await pause.suspend(onEntry: onEntry) }
+    return record
   }
+
+  func createZones(_ zones: Set<CloudZoneID>) async { await base.createZones(zones) }
+
+  func saveControl(
+    _ descriptor: CloudCollectionDescriptor, replacing version: Data?
+  ) async -> CloudCollectionControlSaveResult {
+    await base.saveControl(descriptor, replacing: version)
+  }
+
+  func deleteZones(_ zones: Set<CloudZoneID>) async throws { try await base.deleteZones(zones) }
 }
 
 private final class CollectionResultRecorder: @unchecked Sendable {
