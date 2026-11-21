@@ -226,14 +226,15 @@ public enum SnipSnapCloudAppAssembly {
   public static func simulatedLocalOnlyServices(
     rootURL: URL,
     attachmentCacheRootURL: URL? = nil,
-    sourceLibrary: any SnipLibrary
+    sourceLibrary: any SnipLibrary,
+    syncModeStore: SnipSyncModeStore? = nil
   ) -> SnipSnapCloudAppServices {
     let server = FakeCloudServer()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: rootURL,
       attachmentCacheRootURL: attachmentCacheRootURL,
       sourceLibrary: sourceLibrary,
-      syncModeStore: nil,
+      syncModeStore: syncModeStore,
       cloudScope: "private",
       accountLineage: "ui-test-account",
       ownerName: "ui-test-owner",
@@ -248,6 +249,7 @@ public enum SnipSnapCloudAppAssembly {
     let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
       synchronize: { try await lifecycle.synchronize() },
+      scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
       enable: { try await lifecycle.enableICloudSync() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
       delete: { try await lifecycle.deleteSyncedContent() },

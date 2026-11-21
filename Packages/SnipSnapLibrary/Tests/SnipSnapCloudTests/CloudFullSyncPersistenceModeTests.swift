@@ -92,8 +92,7 @@ extension CloudFullSyncPersistenceTests {
     do {
       _ = try await persistence.makeReenableApplyPlan(
         source: source,
-        transitionID: UUID(),
-        targetRevision: 0
+        transitionID: UUID()
       )
       XCTFail("Expected deferred dependencies to block re-enable")
     } catch {
@@ -225,12 +224,11 @@ extension CloudFullSyncPersistenceTests {
     let transitionID = UUID()
     let planned = try await persistence.makeReenableApplyPlan(
       source: source,
-      transitionID: transitionID,
-      targetRevision: 7
+      transitionID: transitionID
     )
     let plan = try XCTUnwrap(planned)
 
-    _ = try await library.applyCloudFullReenablePlan(plan, currentRevision: 7)
+    try await library.applyCloudFullReenablePlan(plan)
 
     let merged = await library.snapshot(sortedBy: .manual)
     let value = try XCTUnwrap(merged.snips.first(where: { $0.id == base.id }))
@@ -323,8 +321,7 @@ extension CloudFullSyncPersistenceTests {
       ).replacingOpaqueSyncStatePayload(payload)
       let plan = try await persistence.makeReenableApplyPlan(
         source: source,
-        transitionID: UUID(),
-        targetRevision: 0
+        transitionID: UUID()
       )
       XCTAssertNil(plan)
       XCTAssertEqual(try CloudDormantAcceptedBaseBundle.decode(payload).entries, [entry])

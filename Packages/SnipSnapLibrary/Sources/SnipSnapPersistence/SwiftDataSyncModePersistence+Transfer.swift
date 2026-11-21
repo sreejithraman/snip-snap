@@ -2,19 +2,27 @@ import Foundation
 import SnipSnapCore
 
 extension SwiftDataSyncModePersistence {
-  package func sourceSnapshot(for transition: SyncModeTransition) async throws -> SnipLibraryTransferSnapshot {
+  package func sourceSnapshot(
+    for transition: SyncModeTransition,
+    validate: @Sendable (SnipLibrarySnapshot) throws -> Void = { _ in }
+  ) async throws -> SnipLibraryTransferSnapshot {
     try await readHook()
     return try await activeStoreTurns.withLease {
-      try await self.readSourceSnapshot(for: transition)
+      try await self.readSourceSnapshot(for: transition, validate: validate)
     }
   }
 
-  private func readSourceSnapshot(for transition: SyncModeTransition) async throws -> SnipLibraryTransferSnapshot {
+  private func readSourceSnapshot(
+    for transition: SyncModeTransition,
+    validate: (SnipLibrarySnapshot) throws -> Void
+  ) async throws -> SnipLibraryTransferSnapshot {
     guard manifest.transition == transition, manifest.activeStoreID == transition.sourceStoreID,
       !activeStoreBusy
     else { throw SyncModePersistenceError.transitionInProgress }
-    return try await libraryForTransition(storeID: transition.sourceStoreID)
-      .transferSnapshot(revision: activeStoreRevision)
+    let library = try libraryForTransition(storeID: transition.sourceStoreID)
+    let current = try await library.checkedSnapshot(sortedBy: .manual)
+    try validate(current)
+    return try await library.transferSnapshot(revision: activeStoreRevision)
   }
 
   package func mergeCandidate(

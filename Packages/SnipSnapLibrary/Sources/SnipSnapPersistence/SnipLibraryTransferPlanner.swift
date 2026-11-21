@@ -3,18 +3,15 @@ import Foundation
 import SnipSnapCore
 
 package struct SnipLibraryTransferPlan: Sendable {
-  package let targetRevision: UInt64
   package let targetDigest: Data
   package let snips: [Snip]
   package let lists: [SnipList]
   package let attachmentData: [UUID: Data]
   package let attachmentFileURLs: [UUID: URL]
   package let attachmentFileDigests: [UUID: Data]
-  package let opaqueSyncStateDigest: Data
   package let opaqueSyncStatePayload: Data
   package let additionalSeenRequestIDs: Set<UUID>
   package let result: SnipLibraryTransferResult
-
 }
 
 package enum SnipLibraryTransferPlanner {
@@ -26,7 +23,6 @@ package enum SnipLibraryTransferPlanner {
     replacingTargetListIDs: Set<UUID> = [],
     acceptedTargetSnipIDs: Set<UUID> = []
   ) throws -> SnipLibraryTransferPlan {
-    let targetRevision = target.revision
     let targetDigest = digest(snapshot: target)
     let targetBundle = try CloudDormantAcceptedBaseBundle.decode(target.opaqueSyncStatePayload)
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
@@ -121,7 +117,6 @@ package enum SnipLibraryTransferPlanner {
     let targetAttachmentIDs = Set(target.attachmentData.keys)
       .union(target.attachmentFileURLs.keys)
     return SnipLibraryTransferPlan(
-      targetRevision: targetRevision,
       targetDigest: targetDigest,
       snips: snips,
       lists: lists,
@@ -132,7 +127,6 @@ package enum SnipLibraryTransferPlanner {
       attachmentFileDigests: target.attachmentFileDigests.merging(
         source.attachmentFileDigests.filter { !targetAttachmentIDs.contains($0.key) }
       ) { target, _ in target },
-      opaqueSyncStateDigest: Data(SHA256.hash(data: mergedSyncPayload)),
       opaqueSyncStatePayload: mergedSyncPayload,
       additionalSeenRequestIDs: source.additionalSeenRequestIDs,
       result: SnipLibraryTransferResult(

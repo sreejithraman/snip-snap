@@ -37,7 +37,8 @@ struct SnipSnapiOSApp: App {
             cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
                 rootURL: startup.syncModeRootURL,
                 attachmentCacheRootURL: startup.attachmentCacheRootURL,
-                sourceLibrary: startup.sourceLibrary
+                sourceLibrary: startup.sourceLibrary,
+                syncModeStore: startup.syncModeStore
             )
         } else if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_SETTINGS"] == "1" {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(

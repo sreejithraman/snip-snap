@@ -53,6 +53,58 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertLessThan(fetchIndex, sendIndex)
     }
 
+    func testFirstEnableUsesEditsMadeThroughTheAppLibraryDuringFetch() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("Local/snips.store"))
+        try await add("before setup", to: original)
+        let syncRoot = root.appendingPathComponent("SyncMode")
+        let assembly = SnipLibraryAssembly(library: original, syncModeRootURL: syncRoot)
+        XCTAssertFalse(SyncModeActivationManifestReader.hasActivationManifest(atSyncModeRootURL: syncRoot))
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
+        let server = FakeCloudServer()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.pauseNextFetch()
+        let lifecycle = SnipSnapICloudSyncLifecycle(
+            rootURL: syncRoot, sourceLibrary: original, syncModeStore: assembly.syncModeStore,
+            cloudScope: namespace.cloudScope, accountLineage: namespace.accountLineage,
+            ownerName: "owner", controlTransport: FakeCloudControlTransport(server: server),
+            makeRecordTransport: { _ in transport }, makeDescriptor: { descriptor }
+        )
+        let scheduled = expectation(description: "The session schedules upload after activation")
+        let session = SnipSnapCloudSyncSession(
+            synchronize: { try await lifecycle.synchronize() },
+            scheduleAutomaticSync: {
+                let before = await server.storedTextValues()
+                XCTAssertTrue(before.isEmpty)
+                try await lifecycle.scheduleAutomaticSync()
+                scheduled.fulfill()
+            },
+            enable: { try await lifecycle.enableICloudSync() },
+            delete: { try await lifecycle.deleteSyncedContent() },
+            activeLibrary: { try await lifecycle.activeLibrary() }
+        )
+
+        let enabling = Task { try await session.enableICloudSync() }
+        await transport.waitUntilFetchPauses()
+        do {
+            try await add("during fetch", to: assembly.library)
+        } catch {
+            await transport.resumeFetch()
+            _ = await enabling.result
+            throw error
+        }
+        await transport.resumeFetch()
+        let outcome = try await enabling.value
+        XCTAssertEqual(outcome, .enabled)
+        await fulfillment(of: [scheduled], timeout: 5)
+        let visible = try await assembly.library.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(visible.snips.map(\.content)), ["before setup", "during fetch"])
+        let cloud = await server.storedTextValues()
+        XCTAssertEqual(Set(cloud), ["before setup", "during fetch"])
+    }
+
     func testEnableKeepsRemoteIdentityAndAddsARecoveredCopyForSameIDLocalText() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

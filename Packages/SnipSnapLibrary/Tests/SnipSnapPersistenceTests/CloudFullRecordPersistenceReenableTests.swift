@@ -19,7 +19,7 @@ extension CloudFullRecordPersistenceTests {
     )
     let storageBefore = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     let acceptedBefore = try XCTUnwrap(storageBefore.readyEntities.first)
-    let target = try await store.transferSnapshot(revision: 9)
+    let target = try await store.transferSnapshot(revision: 0)
     let sendBatch = CloudFullBatchCommit(
       namespaceKey: namespace.rawValue,
       batchID: transitionID,
@@ -57,7 +57,7 @@ extension CloudFullRecordPersistenceTests {
     let transfer = try SnipLibraryTransferPlanner.plan(source: target, target: target, transitionID: transitionID)
     let plan = CloudFullReenableApplyPlan(
       namespaceKey: namespace.rawValue, transfer: transfer, conflicts: [conflict],
-      recoveryInputs: [recovery], result: transfer.result
+      recoveryInputs: [recovery]
     )
 
     let failing = try SwiftDataSnipLibrary(
@@ -110,17 +110,19 @@ extension CloudFullRecordPersistenceTests {
       ),
       sortedBy: .manual
     )
-    let target = try await store.transferSnapshot(revision: 2)
+    let target = try await store.transferSnapshot(revision: 0)
     let attachment = try XCTUnwrap(target.snips.first?.attachments.first)
     var changedBytes = target.attachmentData
     changedBytes[attachment.id] = Data("different bytes".utf8)
     let source = SnipLibraryTransferSnapshot(revision: 0, snips: target.snips, lists: target.lists,
       attachmentData: changedBytes)
-    let empty = SnipLibraryTransferSnapshot(revision: 0, snips: [], lists: [.inbox], attachmentData: [:])
-    let transfer = try SnipLibraryTransferPlanner.plan(source: source, target: empty, transitionID: UUID())
+    let transfer = try SnipLibraryTransferPlanner.plan(
+      source: source, target: target, transitionID: UUID(),
+      replacingTargetSnipIDs: Set(target.snips.map(\.id))
+    )
     let plan = CloudFullReenableApplyPlan(
       namespaceKey: "private|attachment-collision", transfer: transfer, conflicts: [],
-      recoveryInputs: [], result: transfer.result
+      recoveryInputs: []
     )
 
     do {

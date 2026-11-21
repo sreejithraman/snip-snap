@@ -116,17 +116,20 @@ package struct ICloudSyncModeStatus: Equatable, Sendable {
     package let activeStoreID: UUID
     package let attentionReason: ICloudSyncAttentionReason?
     package let syncIssue: SyncedContentSyncIssue?
+    let activatedCloudStore: Bool
 
     package init(
         state: ICloudSyncModeState,
         activeStoreID: UUID,
         attentionReason: ICloudSyncAttentionReason? = nil,
-        syncIssue: SyncedContentSyncIssue? = nil
+        syncIssue: SyncedContentSyncIssue? = nil,
+        activatedCloudStore: Bool = false
     ) {
         self.state = state
         self.activeStoreID = activeStoreID
         self.attentionReason = attentionReason
         self.syncIssue = syncIssue
+        self.activatedCloudStore = activatedCloudStore
     }
 }
 
@@ -297,15 +300,8 @@ package actor ICloudSyncModeCoordinator {
             return try await statusUnchecked()
         }
         if payloadZone != nil {
-            let localLibrary = try await persistence.activeLibrary()
-            let local = try await localLibrary.checkedSnapshot(sortedBy: .manual)
-            let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(
-                in: local,
-                policy: attachmentPolicy
-            )
-            if !unsupported.isEmpty {
-                throw CloudAttachmentSetupError.unsupportedFiles(unsupported)
-            }
+            let local = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+            try validateAttachmentCompatibility(local)
         }
 
         let transition = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace.binding)
@@ -333,12 +329,14 @@ package actor ICloudSyncModeCoordinator {
 
             failure = .transitionFailure
             try Task.checkCancellation()
-            let source = try await persistence.sourceSnapshot(for: transition)
+            let source = try await persistence.sourceSnapshot(for: transition) { snapshot in
+                try self.validateAttachmentCompatibility(snapshot)
+            }
             let approvedSnipIDs: Set<UUID>
             if let plan = try await bridge.makeReenableApplyPlan(source: source, transitionID: transition.id) {
                 let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
                 try await candidate.applyCloudFullReenablePlan(plan)
-                approvedSnipIDs = plan.result.approvedSnipIDs
+                approvedSnipIDs = plan.transfer.result.approvedSnipIDs
             } else {
                 try await requireMatchingAccount()
                 _ = try await preserveIsolatedAttachmentsForLocalCopy(storeID: transition.candidateStoreID)
@@ -376,7 +374,13 @@ package actor ICloudSyncModeCoordinator {
             throw error
         }
         try await finishSwap()
-        return try await statusUnchecked()
+        return try await statusUnchecked(activatedCloudStore: true)
+    }
+
+    private nonisolated func validateAttachmentCompatibility(_ snapshot: SnipLibrarySnapshot) throws {
+        guard payloadZone != nil else { return }
+        let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(in: snapshot, policy: attachmentPolicy)
+        if !unsupported.isEmpty { throw CloudAttachmentSetupError.unsupportedFiles(unsupported) }
     }
 
     private func discardCandidate(
@@ -402,6 +406,7 @@ package actor ICloudSyncModeCoordinator {
             currentOperation = nil
             return try await statusUnchecked()
         }
+        try await persistence.retryCandidateRollback()
         let initial = try await persistence.snapshot()
         if initial.activeStore.kind == .localOnly, initial.transition == nil {
             return try await statusUnchecked()
@@ -555,7 +560,8 @@ package actor ICloudSyncModeCoordinator {
 
     private func statusUnchecked(
         accountState: ICloudAccountState? = nil,
-        syncIssue: SyncedContentSyncIssue? = nil
+        syncIssue: SyncedContentSyncIssue? = nil,
+        activatedCloudStore: Bool = false
     ) async throws -> ICloudSyncModeStatus {
         let storage = try await persistence.snapshot()
         if let isolation = storage.accountIsolation {
@@ -629,7 +635,9 @@ package actor ICloudSyncModeCoordinator {
         let state: ICloudSyncModeState = !evidence.needsAttention && [.active, .seeding].contains(evidence.phase)
             ? .on
             : .needsAttention
-        return ICloudSyncModeStatus(state: state, activeStoreID: storage.activeStore.id)
+        return ICloudSyncModeStatus(
+            state: state, activeStoreID: storage.activeStore.id, activatedCloudStore: activatedCloudStore
+        )
     }
 
     private func begin(_ operation: Operation) throws {

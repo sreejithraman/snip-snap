@@ -103,6 +103,11 @@ extension ICloudSyncModeCoordinatorTests {
         let final = try await secondPersistence.snapshot()
         XCTAssertEqual(final.activeStore.kind, .iCloudSync)
         XCTAssertEqual(final.transition?.phase, .swapped)
+        try mutateManifest(at: secondRoot.appendingPathComponent("activation.json")) { manifest in
+            var transition = try XCTUnwrap(manifest["transition"] as? [String: Any])
+            transition["phase"] = "pointerSwapped"
+            manifest["transition"] = transition
+        }
         let recovered = try SwiftDataSyncModePersistence(rootURL: secondRoot)
         let recoveredState = try await recovered.snapshot()
         XCTAssertEqual(recoveredState.activeStore.id, final.activeStore.id)

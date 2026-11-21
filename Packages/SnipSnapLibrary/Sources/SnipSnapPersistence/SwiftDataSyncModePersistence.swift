@@ -183,6 +183,8 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+  /// Until first setup, the original SwiftData file is still the local store.
+  private var initialLocalLibrary: SwiftDataSnipLibrary?
 
   /// Reconciles of an account-isolation choice take turns, so a background status never runs a
   /// second Keep merge.
@@ -209,6 +211,7 @@ package actor SwiftDataSyncModePersistence {
     rootURL: URL,
     attachmentCacheRootURL: URL? = nil,
     defaultSyncProtocol: SyncModeSyncProtocol = .fullRecordV1,
+    initialLocalLibrary: SwiftDataSnipLibrary? = nil,
     crashHook: @escaping @Sendable (SyncModeCrashPoint) throws -> Void = { _ in },
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
     writeHook: @escaping WriteHook = { _ in },
@@ -228,7 +231,6 @@ package actor SwiftDataSyncModePersistence {
     self.afterMutationBeforeSave = afterMutationBeforeSave
     self.defaultSyncProtocol = defaultSyncProtocol
     self.diagnostics = diagnostics
-    try DurableFile.createDirectory(rootURL)
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
         var loaded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
@@ -249,6 +251,12 @@ package actor SwiftDataSyncModePersistence {
         namespace: nil,
         syncProtocol: defaultSyncProtocol
       )
+      if let initialLocalLibrary {
+        store.lifecycle = .ready
+        manifest = Manifest(version: 2, activeStoreID: store.id, stores: [store])
+        self.initialLocalLibrary = initialLocalLibrary
+        return
+      }
       let declared = Manifest(
         version: 2,
         activeStoreID: store.id,
@@ -280,6 +288,45 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
+  nonisolated package var initialImportMarkerURL: URL {
+    rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
+  }
+
+  /// Put the original library under the manifest before beginning any mode change.
+  /// Until this copy is selected, a relaunch still uses the original SwiftData file.
+  package func materializeLocalSource() async throws {
+    try await activeStoreTurns.withLease { try await self.materializeLocalSourceInTurn() }
+  }
+
+  private func materializeLocalSourceInTurn() async throws {
+    guard let source = initialLocalLibrary, let active = store(id: manifest.activeStoreID) else { return }
+    let original = try await source.transferSnapshot(revision: activeStoreRevision)
+    let root = storeURL(active)
+    do {
+      try removeStoreFiles(active)
+      let copy = try SwiftDataSnipLibrary(
+        storeURL: storeFileURL(active), afterMutationBeforeSave: afterMutationBeforeSave
+      )
+      _ = try await copy.mergeTransferSnapshot(original, transitionID: active.id)
+      try DurableFile.syncDirectory(root)
+      try DurableFile.syncDirectory(root.deletingLastPathComponent())
+      try Task.checkCancellation()
+      // While there is no manifest, the next attempt always copies the live source again.
+      try DurableFile.write(Data("1".utf8), to: initialImportMarkerURL)
+      try Self.write(manifest, to: manifestURL, using: manifestWriter)
+    } catch {
+      // If the atomic write published the pointer before reporting an I/O
+      // error, keep the complete copy it selects and route later edits there.
+      if FileManager.default.fileExists(atPath: manifestURL.path) {
+        initialLocalLibrary = nil
+      } else {
+        try? removeStoreFiles(active)
+      }
+      throw error
+    }
+    initialLocalLibrary = nil
+  }
+
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
@@ -295,6 +342,7 @@ package actor SwiftDataSyncModePersistence {
 
   /// The only library later app assembly should retain.
   package func libraryForTransition(storeID: UUID) throws -> SwiftDataSnipLibrary {
+    if storeID == manifest.activeStoreID, let initialLocalLibrary { return initialLocalLibrary }
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
@@ -328,14 +376,12 @@ package actor SwiftDataSyncModePersistence {
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) throws -> SyncModeTransition {
-    guard !activeStoreBusy, manifest.accountIsolation == nil else {
+    guard initialLocalLibrary == nil, !activeStoreBusy, manifest.accountIsolation == nil else {
       throw SyncModePersistenceError.transitionInProgress
     }
-    if let transition = manifest.transition {
-      guard transition == strandedRollback else {
-        throw SyncModePersistenceError.transitionInProgress
-      }
-      try abortUnactivatedCandidate(transitionID: transition.id, reason: nil)
+    try retryCandidateRollback()
+    guard manifest.transition == nil else {
+      throw SyncModePersistenceError.transitionInProgress
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
       throw SyncModePersistenceError.namespaceMismatch
@@ -464,7 +510,7 @@ package actor SwiftDataSyncModePersistence {
   package func activateEmptyCollection(
     namespace: ICloudSyncNamespaceBinding?
   ) async throws {
-    guard manifest.transition == nil,
+    guard initialLocalLibrary == nil, manifest.transition == nil,
       !activeStoreBusy,
       let current = store(id: manifest.activeStoreID)
     else { throw SyncModePersistenceError.transitionInProgress }
@@ -637,6 +683,11 @@ package actor SwiftDataSyncModePersistence {
     completedRecoveryQuarantineStoreIDs.insert(store.id)
   }
 
+  package func retryCandidateRollback() throws {
+    guard let transition = manifest.transition, transition == strandedRollback else { return }
+    try abortUnactivatedCandidate(transitionID: transition.id, reason: nil)
+  }
+
   package func cancelPendingICloudEnable() throws {
     guard let transition = manifest.transition, transition.targetKind == .iCloudSync else {
       return
@@ -723,6 +774,10 @@ package actor SwiftDataSyncModePersistence {
 
   func commit(_ next: Manifest) throws {
     try Self.validate(next)
+    if initialLocalLibrary != nil {
+      manifest = next
+      return
+    }
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)
     } catch {

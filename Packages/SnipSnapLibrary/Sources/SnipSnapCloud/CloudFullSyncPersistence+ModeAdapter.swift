@@ -156,7 +156,6 @@ extension CloudFullSyncPersistence {
     var deletedLists: Set<UUID> = []
     var conflicts: [CloudConflictInput] = []
     var recoveryInputs: [CloudFullRecoveryInput] = []
-    var recoveredSourceIDs: Set<UUID> = []
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
 
@@ -239,7 +238,6 @@ extension CloudFullSyncPersistence {
         )
         let recovered = Self.recovered(local, id: recoveredID, listID: SnipList.inbox.id)
         adjustedSnips[index] = recovered
-        recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
             namespaceKey: namespaceKey.rawValue,
@@ -295,7 +293,6 @@ extension CloudFullSyncPersistence {
           recovery: .snip(review)
         ))
         adjustedSnips.append(recovered)
-        recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
             namespaceKey: namespaceKey.rawValue,
@@ -327,11 +324,7 @@ extension CloudFullSyncPersistence {
       namespaceKey: namespaceKey.rawValue,
       transfer: transfer,
       conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      result: SnipLibraryTransferResult(
-        approvedSnipIDs: transfer.result.approvedSnipIDs,
-        recoveredSourceSnipIDs: transfer.result.recoveredSourceSnipIDs.union(recoveredSourceIDs)
-      )
+      recoveryInputs: recoveryInputs
     )
   }
 

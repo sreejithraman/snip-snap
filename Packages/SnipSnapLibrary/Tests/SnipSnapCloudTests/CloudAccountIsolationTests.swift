@@ -983,44 +983,62 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try storeRootCount(in: root), 1)
     }
 
-    func testSameAccountReturnUsesRemoteFirstEnableAfterNamespaceMatch() async throws {
+    func testSameAccountReturnSchedulesNormalOutboundWorkAfterActivation() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-        let namespace = makeNamespace()
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
         let server = FakeCloudServer()
+        await server.seedControl(descriptor)
         let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
-        let account = InjectedICloudAccountStateSource(
-            state: .available(accountLineage: namespace.accountLineage)
+        let account = InjectedICloudAccountStateSource(state: .available(accountLineage: namespace.accountLineage))
+        let lifecycle = SnipSnapICloudSyncLifecycle(
+            rootURL: root, sourceLibrary: try await persistence.activeLibrary(),
+            syncModeStore: SnipSyncModeStore(persistence),
+            cloudScope: namespace.cloudScope, accountLineage: namespace.accountLineage,
+            accountStateSource: account, ownerName: "owner",
+            controlTransport: FakeCloudControlTransport(server: server),
+            makeRecordTransport: { _ in transport }, makeDescriptor: { descriptor }
         )
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { transport },
-            accountStateSource: account
+        _ = try await lifecycle.enableICloudSync()
+        _ = try await lifecycle.retrySynchronization()
+        let appGate = AsyncOperationGate()
+        let scheduled = expectation(description: "The normal scheduler publishes accepted account-return work")
+        let session = SnipSnapCloudSyncSession(
+            synchronize: { try await lifecycle.synchronize() },
+            scheduleAutomaticSync: {
+                let active = try await persistence.snapshot()
+                XCTAssertEqual(active.activeStore.kind, .iCloudSync)
+                XCTAssertNil(active.transition)
+                let before = await server.storedTextValues()
+                XCTAssertTrue(before.isEmpty)
+                try await lifecycle.scheduleAutomaticSync()
+                scheduled.fulfill()
+            },
+            enable: { try await lifecycle.enableICloudSync() },
+            delete: { try await lifecycle.deleteSyncedContent() },
+            activeLibrary: { try await lifecycle.activeLibrary() },
+            operationGate: appGate
         )
-        _ = try await coordinator.enableAndPublish()
+        let handler = lifecycle.makeAccountCacheHandler(
+            operationGate: appGate,
+            scheduleSyncAfterLocalChange: { await session.scheduleAutomaticSync() }
+        )
         try await add("pending before sign-out", to: persistence.activeLibrary())
         await account.setState(.noAccount)
-        _ = try await coordinator.refreshAccountState()
+        let signedOut = try await handler.refreshAppleAccountNotice()
+        XCTAssertEqual(signedOut, .signedOut)
         try await add("made while signed out", to: persistence.activeLibrary())
-        let eventsBeforeReturn = await transport.events().count
         await account.setState(.available(accountLineage: namespace.accountLineage))
 
-        let resumed = try await coordinator.refreshAccountState()
-        XCTAssertEqual(resumed.state, .on)
-        let resumedStorage = try await persistence.snapshot()
-        XCTAssertNil(resumedStorage.accountIsolation)
+        let returned = try await handler.refreshAppleAccountNotice()
+        XCTAssertNil(returned)
+        await fulfillment(of: [scheduled], timeout: 5)
+        let active = try await persistence.snapshot()
+        XCTAssertNil(active.accountIsolation)
         let remote = await server.storedTextValues()
         XCTAssertEqual(Set(remote), ["pending before sign-out", "made while signed out"])
-        let returnEvents = Array((await transport.events()).dropFirst(eventsBeforeReturn))
-        let fetchIndex = try XCTUnwrap(returnEvents.firstIndex(of: .fetched))
-        let sendIndex = try XCTUnwrap(returnEvents.firstIndex(where: {
-            if case .sent = $0 { return true }
-            return false
-        }))
-        XCTAssertLessThan(fetchIndex, sendIndex)
     }
 
     func testChangedAccountNeverDisplaysOrUploadsThePriorAccountCache() async throws {
@@ -2174,7 +2192,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: account
         )
-        let enabled = try await coordinator.enableOrRetry()
+        let enabled = try await coordinator.enableAndPublish()
         XCTAssertEqual(enabled.state, .on)
         let cloudStore = try await persistence.snapshot().activeStore
         let uploaded = await (try await persistence.activeLibrary()).snapshot(sortedBy: .manual)
@@ -2347,7 +2365,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
             accountStateSource: account
         )
-        let enabled = try await coordinator.enableOrRetry()
+        let enabled = try await coordinator.enableAndPublish()
         XCTAssertEqual(enabled.state, .on)
         let uploaded = await (try await persistence.activeLibrary()).snapshot(sortedBy: .manual)
         try FileManager.default.removeItem(at: XCTUnwrap(uploaded.attachmentURLs[attachmentID]))

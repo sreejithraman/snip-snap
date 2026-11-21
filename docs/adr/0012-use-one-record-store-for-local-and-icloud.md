@@ -8,4 +8,4 @@ JSON is a backup, import, and export format, not the live store. Launch opens th
 
 ## Sync-mode activation
 
-A mode change has three phases: declared, merged, and swapped. Snip Snap builds a separate candidate and writes its merged contents before atomically selecting it in the activation manifest. An unfinished candidate is discarded on failure, cancellation, or reopen. The main app coordinates writes in process and checks that the source has stayed current at the swap. The activation manifest no longer carries a write lock. Approved by SIMP-ADR12-15-D1 for SIMP-06.
+A mode change advances from declared to merged to swapped. Snip Snap builds a separate candidate and writes its merged contents before atomically selecting it in the activation manifest. An unfinished candidate is discarded on failure, cancellation, or reopen. The main app coordinates writes in process and checks that the source has stayed current at the swap. The activation manifest no longer carries a write lock. This replaces the durable write admission described in ADR 0028. Approved by SIMP-ADR12-15-D1 for SIMP-06.

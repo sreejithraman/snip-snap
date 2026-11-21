@@ -337,20 +337,17 @@ package struct CloudFullReenableApplyPlan: Sendable {
   package let transfer: SnipLibraryTransferPlan
   package let conflicts: [CloudConflictInput]
   package let recoveryInputs: [CloudFullRecoveryInput]
-  package let result: SnipLibraryTransferResult
 
   package init(
     namespaceKey: String,
     transfer: SnipLibraryTransferPlan,
     conflicts: [CloudConflictInput],
-    recoveryInputs: [CloudFullRecoveryInput],
-    result: SnipLibraryTransferResult
+    recoveryInputs: [CloudFullRecoveryInput]
   ) {
     self.namespaceKey = namespaceKey
     self.transfer = transfer
     self.conflicts = conflicts
     self.recoveryInputs = recoveryInputs
-    self.result = result
   }
 }
 

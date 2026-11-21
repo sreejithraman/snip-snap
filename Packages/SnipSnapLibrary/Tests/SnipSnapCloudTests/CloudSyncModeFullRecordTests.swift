@@ -587,9 +587,7 @@ extension ICloudSyncModeCoordinatorTests {
 
         await paused.resumeFetch()
         let finished = try await syncing.value
-        let finalStorage = try await persistence.snapshot()
         XCTAssertEqual(finished.state, .on)
-
     }
 
     func testFullActiveModeEnrollsNewLocalListAndSnipForAnotherClient() async throws {

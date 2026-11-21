@@ -49,15 +49,13 @@ public struct SnipLibraryAssembly: Sendable {
     )
     recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
     let resolvedLibrary: any SnipLibrary
-    if (
-      initializeSyncModeStore
-        || SyncModeActivationManifestReader.hasActivationManifest(
-          atSyncModeRootURL: syncModeRootURL
-        )
-    ),
+    let initialLocalLibrary = initializeSyncModeStore ? nil : library as? SwiftDataSnipLibrary
+    if (initializeSyncModeStore || initialLocalLibrary != nil
+      || SyncModeActivationManifestReader.hasActivationManifest(atSyncModeRootURL: syncModeRootURL)),
       let persistence = try? SwiftDataSyncModePersistence(
         rootURL: syncModeRootURL,
-        attachmentCacheRootURL: attachmentCacheRootURL
+        attachmentCacheRootURL: attachmentCacheRootURL,
+        initialLocalLibrary: initialLocalLibrary
       )
     {
       resolvedLibrary = persistence.activeLibrary(fallback: library)

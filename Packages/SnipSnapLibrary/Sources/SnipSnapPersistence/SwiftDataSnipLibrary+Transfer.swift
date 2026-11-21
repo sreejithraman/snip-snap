@@ -61,16 +61,25 @@ extension SwiftDataSnipLibrary {
       throw SnipLibraryError.importChanged
     }
     do {
-      return try await applyTransferPlan(plan)
+      return try applyTransferPlan(plan)
     } catch SnipLibraryError.invalidStore where expectedTargetDigest != nil {
       throw SnipLibraryError.importChanged
     }
   }
 
   package func applyTransferPlan(
-    _ plan: SnipLibraryTransferPlan,
-    currentRevision: UInt64 = 0
-  ) async throws -> SnipLibraryTransferResult {
+    _ plan: SnipLibraryTransferPlan
+  ) throws -> SnipLibraryTransferResult {
+    try applyTransferPlan(plan, reenable: nil)
+  }
+
+  package func applyCloudFullReenablePlan(_ plan: CloudFullReenableApplyPlan) throws {
+    _ = try applyTransferPlan(plan.transfer, reenable: plan)
+  }
+
+  private func applyTransferPlan(
+    _ plan: SnipLibraryTransferPlan, reenable: CloudFullReenableApplyPlan?
+  ) throws -> SnipLibraryTransferResult {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
@@ -83,7 +92,7 @@ extension SwiftDataSnipLibrary {
     }
     let transferMetadata = try Self.transferMetadata(context: context)
     let current = SnipLibraryTransferSnapshot(
-      revision: currentRevision,
+      revision: 0,
       snips: currentSnips,
       lists: loaded.state.allLists(),
       attachmentData: currentAttachmentData,
@@ -91,8 +100,7 @@ extension SwiftDataSnipLibrary {
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
       opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
     )
-    guard currentRevision == plan.targetRevision,
-      SnipLibraryTransferPlanner.digest(snapshot: current) == plan.targetDigest
+    guard SnipLibraryTransferPlanner.digest(snapshot: current) == plan.targetDigest
     else { throw SnipLibraryError.invalidStore }
     var createdDirectories: [URL] = []
     var transferredSnips = plan.snips
@@ -154,6 +162,14 @@ extension SwiftDataSnipLibrary {
       try Self.validate(state)
       try Self.applyChanges(from: loaded, to: state, context: context)
       try Self.replaceDormantBases(with: plan.opaqueSyncStatePayload, context: context)
+      if let reenable {
+        for conflict in reenable.conflicts {
+          try Self.insertConflictIfNeeded(conflict, namespaceKey: reenable.namespaceKey, context: context)
+        }
+        for recovery in reenable.recoveryInputs {
+          try Self.insertFullRecoveryIfNeeded(recovery, context: context)
+        }
+      }
       try afterMutationBeforeSave()
       try lock.check()
       try context.save()
@@ -161,84 +177,6 @@ extension SwiftDataSnipLibrary {
       lastKnownState = state
       rememberAttachments(in: state)
       return plan.result
-    } catch {
-      context.rollback()
-      removeAttachmentDirectories(createdDirectories)
-      throw error
-    }
-  }
-
-  package func applyCloudFullReenablePlan(
-    _ plan: CloudFullReenableApplyPlan
-  ) throws {
-    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    try requireContentWritesAllowed(context: context)
-    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
-    let currentSnips = loaded.state.allSnips(sortMode: .manual)
-
-    var createdDirectories: [URL] = []
-    var transferredSnips = plan.transfer.snips
-    let currentAttachments = Dictionary(
-      currentSnips.flatMap(\.attachments).map { ($0.id, $0) },
-      uniquingKeysWith: { first, _ in first }
-    )
-    do {
-      for snipIndex in transferredSnips.indices {
-        try lock.check()
-        for attachmentIndex in transferredSnips[snipIndex].attachments.indices {
-          try lock.check()
-          var attachment = transferredSnips[snipIndex].attachments[attachmentIndex]
-          // The exact same remote-only attachment can stay remote through activation.
-          if attachment.relativePath.hasPrefix("CloudDownloads/"),
-            currentAttachments[attachment.id] == attachment
-          { continue }
-          guard let bytes = plan.transfer.attachmentData[attachment.id] else {
-            throw SnipLibraryError.attachmentCopyFailed
-          }
-          let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
-          guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
-          let relativePath = "\(attachment.id.uuidString)/\(safeName)"
-          let destination = attachmentRootURL.appendingPathComponent(relativePath)
-          let directory = destination.deletingLastPathComponent()
-          if !FileManager.default.fileExists(atPath: destination.path) {
-            try DurableFile.createDirectory(directory)
-            createdDirectories.append(directory)
-            try DurableFile.write(bytes, to: destination)
-          } else if try Data(contentsOf: destination) != bytes {
-            throw SnipLibraryError.transferConflict(.attachmentIdentity(attachment.id))
-          }
-          attachment.relativePath = relativePath
-          transferredSnips[snipIndex].attachments[attachmentIndex] = attachment
-        }
-      }
-      let state = SnipLibraryState(
-        snips: transferredSnips,
-        lists: plan.transfer.lists,
-        seenRequestIDs: loaded.state.seenRequestIDs.union(transferredSnips.map(\.requestID))
-          .union(plan.transfer.additionalSeenRequestIDs)
-      )
-      try Self.validate(state)
-      try Self.applyChanges(from: loaded, to: state, context: context)
-      try Self.replaceDormantBases(with: plan.transfer.opaqueSyncStatePayload, context: context)
-      for conflict in plan.conflicts {
-        try Self.insertConflictIfNeeded(
-          conflict,
-          namespaceKey: plan.namespaceKey,
-          context: context
-        )
-      }
-      for recovery in plan.recoveryInputs {
-        try Self.insertFullRecoveryIfNeeded(recovery, context: context)
-      }
-      try afterMutationBeforeSave()
-      try lock.check()
-      try context.save()
-      seenRequestIDs = state.seenRequestIDs
-      lastKnownState = state
-      rememberAttachments(in: state)
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)

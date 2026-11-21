@@ -618,7 +618,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
             makeRecordTransport(CloudCollectionSyncContext(namespace: namespace,
               metadataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone))
           },
-          accountStateSource: accountStateSource
+          accountStateSource: accountStateSource,
+          checkSetupCollection: { try await self.requireControlRecord(for: namespace.binding) }
         )
       },
       makeAttachmentCoordinator: makeAttachmentCoordinator ?? { [makeRecordTransport] library, namespace, descriptor in
@@ -652,7 +653,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       )
       persistence = value
     }
-    let marker = rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
+    try await value.materializeLocalSource()
+    let marker = value.initialImportMarkerURL
     guard !FileManager.default.fileExists(atPath: marker.path) else { return value }
     let snapshot = try await sourceLibrary.transferSnapshot(revision: 0)
     let active = try await value.snapshot().activeStore
