@@ -5,14 +5,6 @@ import XCTest
 @testable import SnipSnapCLI
 
 final class SnipCLIIntegrationTests: XCTestCase {
-  func testDiagnosticBusyErrorHasARetryableMachineReadableCode() throws {
-    let data = try SnipCLIErrorReport(error: AppDiagnosticAccessError.busy).data()
-    let error = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    XCTAssertEqual(error["code"] as? String, "diagnostics_busy")
-    XCTAssertEqual(error["status"] as? String, "failed")
-    XCTAssertFalse((error["message"] as? String ?? "").isEmpty)
-  }
-
   func testBundledDiagnosticFetchRequiresExplicitSelectionForAnUnrelatedStore() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

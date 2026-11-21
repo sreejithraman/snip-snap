@@ -149,22 +149,10 @@ the newest 200 events from the last 24 hours, in chronological order. Pass
 `--range 7d`, `--errors-only`, or `--limit N` (1–2000) to narrow the result. Error
 filtering happens before the event limit. Plain output is report text; `--json`
 returns it in `result.application.values.log`, with `returned-events` and
-`truncated` values alongside it. Reports retain privacy-safe metadata and explain
-the available history and omissions. This command creates no export file.
-Repeated identical errors can appear as one record with a count and first/last
-timestamps. `--errors-only` selects failed operations; it excludes routine events
-and cancellation notices.
-When MetricKit reports that an earlier run crashed or the system killed it, a
-later launch records an `app.termination` failure. It carries the payload time,
-the build that ended (`exit_version`, `exit_build`), and typed exit facts such as
-`exception`, `signal`, `termination_namespace`, and `termination_code`. A
-suspended app that the system reclaims normally records nothing.
-The export range and seven-day history limit use the payload time, not the
-relaunch time. After a relaunch more than a day later, use `--range 7d`. A
-termination more than seven days old is not kept.
-If another process holds the diagnostic store lock, fetching returns a bounded
-busy error (`diagnostics_busy` in JSON) instead of waiting indefinitely. Retry the
-read shortly; it does not change history or restart the app.
+`truncated` values alongside it. The log keeps the newest complete events within
+a 256 KiB cap. `truncated` indicates that the requested event limit omitted
+matching events from the retained log. `--errors-only` selects failed operations
+and excludes cancellation notices. This command creates no export file.
 
 The CLI reads the selected app's logs. `SNIP_SNAP_APP_PATH` selects a Dev app or
 another installation. An arbitrary `SNIP_SNAP_STORE_PATH` without a selected app
@@ -174,14 +162,14 @@ These overrides are local environment settings, not required contributor
 configuration.
 
 Diagnostics exports default to the last 24 hours. Pass `--range 24h` or `--range 7d`
-to choose the requested window. Reports identify the actual available history and
-any omissions. `diagnostics recording on|off` uses the revision from `diagnostics
-status`; stopping recording keeps existing history. This setting affects app-owned
+to choose the requested window within retained history. `diagnostics recording
+on|off` uses the revision from `diagnostics status`. Stopping recording keeps
+existing history. This setting affects app-owned
 local history, not Apple's system logs. Diagnostic files contain structured
 operational events, not snip content, and are never uploaded automatically.
 
-Diagnostics and downloaded-attachment cache clearing each require their own
-status revision and `--yes`. `updates check` opens the app's updater when it is
+Use `diagnostics clear --yes` to clear the retained log. Downloaded-attachment
+cache clearing requires its status revision and `--yes`. `updates check` opens the app's updater when it is
 available. `app hide`, `app capture-selection`, and `app capture-screen` expose
 the corresponding app actions. Screen capture remains interactive; macOS
 controls Accessibility and Screen Recording consent. Capture reports success

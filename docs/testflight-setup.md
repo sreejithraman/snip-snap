@@ -274,93 +274,33 @@ builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-
 
 ### App diagnostics
 
-Local diagnostic recording is enabled by default in Dev, TestFlight, and normal
-Release builds, including App Store builds. It needs no debugger, account, or
-service. History lasts up to seven days within a 10 MiB disk budget; high activity
-can shorten that range. A reserved 2 MiB protects failures and nearby context from
-routine event traffic. Repeated events are summarized with counts and timestamps.
-Mac logs live in bundle-specific Application Support. On iOS, the app and its share
-extension use one diagnostic history in their app-group container, separate from
-user content. Both use the same recording preference, clear control, and size
-budget. The diagnostic directory is excluded from backup. Existing owned app
-history and cached logs migrate automatically when their source is readable.
-Test runners keep their explicit isolated diagnostic directory. Nothing is
-transmitted automatically.
+Local diagnostic recording is enabled by default in Dev, TestFlight, and Release
+builds. The app keeps the newest complete events within a 256 KiB log in its
+Application Support directory, excluded from backup. Test runners can use an
+explicit isolated diagnostics directory. On iOS the Share extension uses its
+own log and shares the recording preference with the app. If the shared
+preference is unavailable, events go to the unified log only. Use the unified log
+to inspect extension events. The app’s report covers its own history.
 
-With readable shared controls, the extension records startup, intake, and save
-failures. Before finishing, it uses a bounded, asynchronous write window; an abrupt
-process stop can still lose queued events. If intended shared controls cannot be
-read or the app group is unavailable, new app-owned history is not persisted and
-settings report unavailable. This deliberately loses outage diagnostics even when
-recording was on. Structured events can still reach the separate system log;
-this does not mean a shared-container startup failure was stored in app history.
-Ordinary lock contention retains the bounded retry path.
+On iPhone or iPad, open **Settings → Support → Diagnostics → Share diagnostic
+log**. On Mac, open **Settings → iCloud → Support → Share diagnostic log**.
+Choose the last 24 hours or seven days of retained history, save the text file,
+and attach it to your support message. Export reads local evidence without
+fetching from iCloud. Reports include app version and build, timestamps, fixed
+operation and outcome codes, stable error codes, and typed sync observations
+such as pending counts and phase. Events exclude snip content, filenames, file
+paths, account identifiers, and CloudKit record IDs. Recording and export send
+nothing automatically.
 
-After shared access is repaired, relaunch the app or extension to resolve its
-shared scope again. Older readable owned private history and cached logs may still
-migrate into the app's export. App Settings cannot retrieve an inaccessible
-extension sandbox. Clear durably discards pending owned history, including sources
-discovered later and later writes in those old sandboxes. Fresh shared events
-after Clear remain eligible for recording.
+Turn off **Record local diagnostics** to stop adding events to the local log.
+Use **Clear diagnostic log** to discard retained app history. Copies already
+saved or shared remain at their destinations.
 
-After reproducing an error on iPhone or iPad, open **Settings → Support →
-Diagnostics → Share diagnostic log**. On Mac, open **Settings → iCloud → Support →
-Share diagnostic log**. Choose the last 24 hours or seven days, save the text file,
-and attach it to your support message. Export happens only when you choose this
-action. Reports have a separate 5 MiB limit and identify the selected and available
-time ranges and any omitted events. They include the running app version, build,
-and OS context, and preserve the version associated with older events. Reports
-include timestamps, fixed operation and outcome codes, stable error codes,
-counts and other bounded numeric fields, and version fields.
-Queued Share imports record underlying errors with `share.import_library`,
-`share.import_read`, `share.import_apply`, or `share.import_cleanup`. Cleanup
-failures are separate from save failures; a retained request can replay without
-duplicating the snip. These events exclude shared text, paths, and request IDs.
-
-Saved-snip and list failures identify the action, such as `snip.add` or
-`list.update`. Separate `library.write_admission` events use a fixed
-`write_reason` to distinguish waiting for sync from rejection by another write,
-a mode change, an iCloud data reset, or a reserved interrupted write.
-Attachment stages and older attachment log entries are included until the size
-limit evicts old events. It contains no snip content, filenames, file paths,
-account identifiers, CloudKit record IDs, or hashes.
-
-The sync summary reports observed queued record writes, received records awaiting
-application, namespace phase, and waiting or blocked reasons. Transport and record
-snapshots are separate observations; do not add their counts together. These
-counts do not measure unseen server changes or attachment-cache downloads.
-Successful fetch/send timestamps advance after local commit and acknowledgement.
-Environment is declared build metadata: guarded Cloud Dev runs declare
-Development, distribution scripts declare Production, and unconfigured builds
-report unknown. Exporting reads local evidence without fetching from iCloud.
-
-Turn off **Record local diagnostics** to stop adding app-owned diagnostic events.
-Existing history remains available until it expires or you clear it. Use **Clear
-diagnostic log** in the same controls for a fresh capture. Copies already saved or
-shared remain wherever you sent them. These controls do not erase Apple's separate
-system logs. Latest sync health and last successful fetch/send observations are
-retained separately from ordinary history rotation.
-
-Runtime suspension traces use Apple's separate unified log: subsystem `SnipSnap`,
-category `Runtime`. They report actual aggregate app phase, the last observed
-protected-data availability, execution-time admission and expiry, file-lock wait
-and hold times, and diagnostic-writer retry/loss summaries. A random process
-session and temporary operation numbers connect related events without identifying
-snips, files, accounts, or CloudKit records. Writer counts describe queued
-submissions, occurrences removed from the queue, and attempted writes with unknown
-persistence results. A discarded queue entry can overlap an uncertain write; a
-queue drop does not prove disk loss. Counts are process-local and do not survive
-termination. Concurrent callback events can interleave.
-
-Lifecycle changes, denied or expired protection, writer loss/recovery, and
-geometric retry milestones use notice-level logging. Lock boundaries also use
-notice while inactive or backgrounded, or when waiting/holding takes at least one second;
-that threshold selects diagnostic detail, not an OS execution-time allowance.
-Routine foreground detail uses debug logging and needs an enabled capture.
-Use Console with the connected iPhone, or a collected device system-log archive,
-and filter by the subsystem and category. Retention is bounded. These traces
-never write through the diagnostic history store and are not included in its
-text export or automatically attached to TestFlight feedback.
+Apple’s unified log carries structured events under subsystem `SnipSnap`, with
+`Operations` for app events and `Runtime` for lifecycle and execution-time
+traces. Use Console with the connected iPhone or a system-log archive and filter
+by subsystem and category. The unified log has its own retention and is outside
+the app’s export and clear controls.
 
 #### Investigate an iOS TestFlight issue
 
@@ -386,10 +326,9 @@ collection](https://developer.apple.com/documentation/xcode/acquiring-crash-repo
 
 Agents can read the exported text attachment. The Mac `snipsnap diagnostics logs`
 command reads logs on that Mac; it cannot retrieve an iPhone's private app data.
-Check the report's available time range, omitted-event and loss markers before
-inferring that no failure occurred. Correlate its timestamps and build with any
-Apple crash report. Events still queued in memory can be lost if the app stops;
-unrecorded or expired history cannot be recovered by a later export.
+Use the selected range and event timestamps to assess the report’s coverage.
+Correlate its timestamps and build with any Apple crash report. Events can be
+evicted by the byte cap or lost if the app stops before writing them.
 Authorized maintainers can retrieve submitted TestFlight crash feedback through
 App Store Connect or the optional `asc` tool:
 

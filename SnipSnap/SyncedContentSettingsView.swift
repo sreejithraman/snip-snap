@@ -161,7 +161,7 @@ struct SyncedContentSettingsView: View {
             } header: {
                 Text("Support")
             } footer: {
-                Text("Diagnostics stay on this device for up to 7 days; storage limits may shorten history. They exclude snip content and file names. Nothing is uploaded automatically. Turning recording off keeps retained logs; clear them separately. The system may keep separate logs.")
+                Text("Diagnostics stay on this device in a size-limited log. Exports cover up to 7 days of retained history. They exclude snip content and file names. Nothing is uploaded automatically. Turning recording off keeps retained logs; clear them separately. The system may keep separate logs.")
             }
         }
         .formStyle(.grouped)

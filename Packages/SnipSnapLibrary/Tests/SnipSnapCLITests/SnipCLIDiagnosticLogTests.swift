@@ -1,4 +1,5 @@
 import Foundation
+import SnipSnapCore
 import XCTest
 
 final class SnipCLIDiagnosticLogTests: XCTestCase {
@@ -14,14 +15,23 @@ final class SnipCLIDiagnosticLogTests: XCTestCase {
     let logs = root.appendingPathComponent("diagnostics")
     try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
     let now = Date()
-    let history = """
-      \(now.addingTimeInterval(-90_000).ISO8601Format()) diagnostic_event operation=sync.run outcome=failed visibility=user error=sync.accessDenied
-      \(now.addingTimeInterval(-30).ISO8601Format()) diagnostic_event operation=app.startup outcome=succeeded visibility=background
-      \(now.addingTimeInterval(-20).ISO8601Format()) diagnostic_event operation=clipboard.persist outcome=failed visibility=user error=storage.pathOutsideRoot
-      \(now.addingTimeInterval(-10).ISO8601Format()) diagnostic_event operation=sync.snapshot outcome=succeeded visibility=background scope=transport pending_events=0
-
-      """
-    try history.write(to: logs.appendingPathComponent("diagnostic-events.txt"), atomically: true, encoding: .utf8)
+    struct Entry: Encodable {
+      let date: Date
+      let event: AppDiagnosticEvent
+    }
+    let entries = [
+      Entry(date: now.addingTimeInterval(-90_000), event: .failure(
+        operation: "sync.run", errorCode: "sync.accessDenied", visibility: .user)),
+      Entry(date: now.addingTimeInterval(-30), event: .succeeded(operation: "app.startup")),
+      Entry(date: now.addingTimeInterval(-20), event: .failure(
+        operation: "clipboard.persist", errorCode: "storage.pathOutsideRoot", visibility: .user)),
+    ]
+    var history = Data()
+    for entry in entries {
+      history.append(try JSONEncoder().encode(entry))
+      history.append(10)
+    }
+    try history.write(to: logs.appendingPathComponent("events.jsonl"))
     var environment = ProcessInfo.processInfo.environment
     environment["SNIP_SNAP_APP_PATH"] = app.path
     environment["SNIP_SNAP_STORE_PATH"] = root.appendingPathComponent("store/items.json").path
@@ -45,7 +55,7 @@ final class SnipCLIDiagnosticLogTests: XCTestCase {
     XCTAssertTrue(text.contains("error=storage.pathOutsideRoot"))
     XCTAssertFalse(text.contains("operation=app.startup"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("store/Agent").path))
-    XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: logs.path).contains { $0.hasPrefix("share-") })
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: logs.path), ["events.jsonl"])
   }
 
   private func fetch(_ options: [String], environment: [String: String]) async throws -> String {
