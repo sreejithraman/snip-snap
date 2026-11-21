@@ -20,6 +20,7 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let enabled = try await coordinator.enableOrRetry()
         XCTAssertEqual(enabled.state, .on)
+        _ = try await coordinator.syncActive()
         let cloudStoreID = try await persistence.snapshot().activeStore.id
         let callsBefore = await transport.events()
 
@@ -27,11 +28,13 @@ extension ICloudSyncModeCoordinatorTests {
         let afterCancel = try await persistence.snapshot()
         let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         let deletionCount = await server.acceptedDeletionCount()
+        let cloudTexts = await server.storedTextValues()
         let callsAfter = await transport.events()
         XCTAssertEqual(canceled.state, .on)
         XCTAssertEqual(afterCancel.activeStore.id, cloudStoreID)
         XCTAssertEqual(optedOut.state, .off)
         XCTAssertEqual(deletionCount, 0)
+        XCTAssertEqual(cloudTexts, ["cached"])
         XCTAssertEqual(callsAfter, callsBefore)
         let active = try await persistence.activeLibrary()
         let copiedTexts = await active.snapshot(sortedBy: .chronological).snips.map(\.content)
@@ -64,7 +67,8 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(crashed.activeStore.id, originalID)
         XCTAssertNil(crashed.transition)
         XCTAssertEqual(try storeRootCount(in: root), 1)
-        XCTAssertEqual(sentBeforeSwap, ["durable"])
+        XCTAssertTrue(sentBeforeSwap.isEmpty)
+        try await add("still writable", to: persistence.activeLibrary())
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let resumed = ICloudSyncModeCoordinator(
@@ -98,7 +102,14 @@ extension ICloudSyncModeCoordinatorTests {
         } catch CrashInjector.Failure.injected {}
         let final = try await secondPersistence.snapshot()
         XCTAssertEqual(final.activeStore.kind, .iCloudSync)
-        XCTAssertEqual(final.transition?.phase, .pointerSwapped)
+        XCTAssertEqual(final.transition?.phase, .swapped)
+        let recovered = try SwiftDataSyncModePersistence(rootURL: secondRoot)
+        let recoveredState = try await recovered.snapshot()
+        XCTAssertEqual(recoveredState.activeStore.id, final.activeStore.id)
+        XCTAssertNil(recoveredState.transition)
+        let recoveredLibrary = try await recovered.activeLibrary()
+        let texts = try await recoveredLibrary.checkedSnapshot(sortedBy: .manual).snips.map(\.content)
+        XCTAssertEqual(texts, ["after"])
     }
 
     func testFailedCandidateMergeKeepsLocalSourceRetryableAfterReopen() async throws {
@@ -134,115 +145,10 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
         let result = try await retry.enableOrRetry()
+        _ = try await retry.syncActive()
         let serverTexts = await server.storedTextValues()
         XCTAssertEqual(result.state, .on)
         XCTAssertEqual(serverTexts, ["survives merge crash"])
-    }
-
-    func testMergeIntentOwnsAppliedCandidateAcrossProcessDeathAndFreshSourceChanges() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let inputs = root.appendingPathComponent("inputs", isDirectory: true)
-        try FileManager.default.createDirectory(at: inputs, withIntermediateDirectories: true)
-        let firstAttachment = inputs.appendingPathComponent("first.txt")
-        let secondAttachment = inputs.appendingPathComponent("second.txt")
-        try Data("first bytes".utf8).write(to: firstAttachment, options: .atomic)
-        try Data("second bytes".utf8).write(to: secondAttachment, options: .atomic)
-
-        let crash = CrashInjector(point: .afterCandidateMergeDurability)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: crash.hit)
-        let source = try await persistence.activeLibrary()
-        let list = try await createList("Before Crash", systemImage: "circle", in: source)
-        _ = try await source.perform(
-            .add(
-                content: "attachment survives",
-                origin: .quickEntry,
-                source: nil,
-                listID: list.id,
-                attachmentURLs: [firstAttachment],
-                requestID: UUID(),
-                now: Date()
-            ),
-            sortedBy: .chronological
-        )
-        try await add("delete after reopen", to: source)
-        let before = await source.snapshot(sortedBy: .chronological)
-        let attached = try XCTUnwrap(
-            before.snips.first(where: { $0.content == "attachment survives" })
-        )
-        let deletedID = try XCTUnwrap(
-            before.snips.first(where: { $0.content == "delete after reopen" })?.id
-        )
-
-        _ = try await persistence.beginTransition(
-            to: .iCloudSync,
-            namespace: testBinding()
-        )
-        try await persistence.recordPreparationComplete()
-        let token = try await persistence.freezeSource()
-        let frozen = try await persistence.finalSnapshot(using: token)
-        do {
-            _ = try await persistence.mergeFinalSnapshot(frozen, using: token)
-            XCTFail("Expected process death after the candidate write.")
-        } catch CrashInjector.Failure.injected {}
-        let interrupted = try await persistence.snapshot()
-        XCTAssertEqual(interrupted.transition?.phase, .sourceFrozen)
-        XCTAssertNotNil(interrupted.transition?.mergeIntent)
-
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let recovered = try await reopened.snapshot()
-        XCTAssertEqual(recovered.transition?.phase, .candidateReady)
-        XCTAssertNil(recovered.transition?.mergeIntent)
-        XCTAssertTrue(recovered.transition?.seededListIDs.contains(list.id) == true)
-        let reopenedSource = try await reopened.activeLibrary()
-        _ = try await reopenedSource.perform(
-            .delete(ids: [deletedID]),
-            sortedBy: .chronological
-        )
-        _ = try await reopenedSource.perform(
-            .updateList(id: list.id, name: "After Reopen", systemImage: "checkmark.circle"),
-            sortedBy: .chronological
-        )
-        _ = try await reopenedSource.perform(
-            .update(
-                id: attached.id,
-                content: attached.content,
-                attachmentURLs: [secondAttachment],
-                expectedUpdatedAt: attached.updatedAt,
-                now: Date()
-            ),
-            sortedBy: .chronological
-        )
-
-        let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let retry = ICloudSyncModeCoordinator(
-            persistence: reopened,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
-        let result = try await retry.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
-        let active = try await reopened.activeLibrary()
-        let snapshot = try await active.checkedSnapshot(sortedBy: .manual)
-        XCTAssertNil(snapshot.snips.first(where: { $0.id == deletedID }))
-        XCTAssertEqual(
-            snapshot.lists.first(where: { $0.id == list.id }),
-            SnipList(
-                id: list.id,
-                name: "After Reopen",
-                systemImage: "checkmark.circle",
-                position: list.position,
-                sortKey: list.sortKey
-            )
-        )
-        let finalSnip = try XCTUnwrap(snapshot.snips.first(where: { $0.id == attached.id }))
-        let finalAttachment = try XCTUnwrap(finalSnip.attachments.first)
-        let finalURL = try XCTUnwrap(snapshot.attachmentURLs[finalAttachment.id])
-        XCTAssertEqual(try Data(contentsOf: finalURL), Data("second bytes".utf8))
-        let remoteTexts = await server.storedTextValues()
-        XCTAssertEqual(remoteTexts, ["attachment survives"])
     }
 
     func testFreshOptOutFetchesRemoteChangesIntoANewLocalCopyWithoutCloudDelete() async throws {
@@ -305,169 +211,6 @@ extension ICloudSyncModeCoordinatorTests {
         }
     }
 
-    func testFreezeIncludesPriorWritesRejectsLaterWritesAndSurvivesReopen() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let managed = try await persistence.activeLibrary()
-        _ = try await persistence.beginTransition(to: .iCloudSync, namespace: testBinding())
-        try await persistence.recordPreparationComplete()
-        try await add("before freeze", to: managed)
-
-        let token = try await persistence.freezeSource()
-        XCTAssertEqual(token.revision, 1)
-        do {
-            try await add("too late", to: managed)
-            XCTFail("A write must not succeed while the source is frozen.")
-        } catch {
-            XCTAssertEqual(error as? SnipLibraryError, .modeTransitionInProgress)
-        }
-        let final = try await persistence.finalSnapshot(using: token)
-        XCTAssertEqual(final.snips.map(\.content), ["before freeze"])
-        _ = try await persistence.mergeFinalSnapshot(final, using: token)
-
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let reopenedStorage = try await reopened.snapshot()
-        XCTAssertEqual(reopenedStorage.transition?.phase, .candidateReady)
-        try await add("after unfreeze", to: await reopened.activeLibrary())
-    }
-
-    func testEveryPreSwapFrozenPhaseReopensWritableAndRefetchesAfterEditOrDelete() async throws {
-        let phases: [SyncModeTransitionPhase] = [
-            .sourceFrozen, .recordsMerged, .enrollmentApproved, .firstSendStarted,
-            .firstSendComplete,
-        ]
-        for phase in phases {
-            for deletes in [false, true] {
-                let root = temporaryDirectory()
-                defer { try? FileManager.default.removeItem(at: root) }
-                let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-                let source = try await persistence.activeLibrary()
-                try await add("base", to: source)
-                let sourceSnapshot = await source.snapshot(sortedBy: .chronological)
-                let original = try XCTUnwrap(sourceSnapshot.snips.first)
-                _ = try await persistence.beginTransition(
-                    to: .iCloudSync,
-                    namespace: testBinding()
-                )
-                try await persistence.recordPreparationComplete()
-                let token = try await persistence.freezeSource()
-                if phase != .sourceFrozen {
-                    let frozen = try await persistence.finalSnapshot(using: token)
-                    let result = try await persistence.mergeFinalSnapshot(frozen, using: token)
-                    if phase != .recordsMerged {
-                        try await persistence.recordEnrollmentApproved(
-                            expected: result.approvedSnipIDs
-                        )
-                    }
-                    if phase == .firstSendStarted || phase == .firstSendComplete {
-                        try await persistence.recordFirstSendStarted()
-                    }
-                    if phase == .firstSendComplete {
-                        try await persistence.recordFirstSendComplete()
-                    }
-                }
-                let beforeReopen = try await persistence.snapshot()
-                XCTAssertEqual(beforeReopen.transition?.phase, phase)
-
-                let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-                let afterReopen = try await reopened.snapshot()
-                XCTAssertEqual(afterReopen.transition?.phase, .candidateReady)
-                let reopenedSource = try await reopened.activeLibrary()
-                if deletes {
-                    _ = try await reopenedSource.perform(
-                        .delete(ids: [original.id]),
-                        sortedBy: .chronological
-                    )
-                } else {
-                    _ = try await reopenedSource.perform(
-                        .update(
-                            id: original.id,
-                            content: "edited after \(phase.rawValue)",
-                            attachmentURLs: nil,
-                            expectedUpdatedAt: original.updatedAt,
-                            now: Date()
-                        ),
-                        sortedBy: .chronological
-                    )
-                }
-                let server = FakeCloudServer()
-                let namespace = makeNamespace()
-                let coordinator = ICloudSyncModeCoordinator(
-                    persistence: reopened,
-                    namespace: namespace,
-                    textZone: textZone(namespace),
-                    makeTransport: {
-                        FakeCloudRecordTransport(server: server, namespace: namespace)
-                    }
-                )
-                let result = try await coordinator.enableOrRetry()
-                XCTAssertEqual(result.state, .on, "phase=\(phase), deletes=\(deletes)")
-                let expected = deletes ? [] : ["edited after \(phase.rawValue)"]
-                let remoteTexts = await server.storedTextValues()
-                XCTAssertEqual(remoteTexts, expected)
-            }
-        }
-    }
-
-    func testSeededListChangesSurviveHardReopenBeforeRetry() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let source = try await persistence.activeLibrary()
-        let renamedID = try await createList("Before", systemImage: "circle", in: source).id
-        let deletedID = try await createList("Remove", systemImage: "xmark", in: source).id
-        _ = try await persistence.beginTransition(to: .iCloudSync, namespace: testBinding())
-        try await persistence.recordPreparationComplete()
-        let token = try await persistence.freezeSource()
-        let frozen = try await persistence.finalSnapshot(using: token)
-        _ = try await persistence.mergeFinalSnapshot(frozen, using: token)
-
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let reopenedSource = try await reopened.activeLibrary()
-        _ = try await reopenedSource.perform(
-            .updateList(id: renamedID, name: "After", systemImage: "checkmark.circle"),
-            sortedBy: .chronological
-        )
-        _ = try await reopenedSource.perform(.deleteList(id: deletedID), sortedBy: .chronological)
-        let added = try await createList("New After Reopen", systemImage: "plus.circle", in: reopenedSource)
-        let expected = await reopenedSource.snapshot(sortedBy: .chronological).lists
-        let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: reopened,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
-
-        let result = try await coordinator.enableOrRetry()
-        XCTAssertEqual(result.state, .on)
-        let actual = await (try await reopened.activeLibrary())
-            .snapshot(sortedBy: .chronological).lists
-        XCTAssertEqual(actual.first(where: { $0.id == renamedID }), expected.first {
-            $0.id == renamedID
-        })
-        XCTAssertNil(actual.first(where: { $0.id == deletedID }))
-        XCTAssertEqual(actual.first(where: { $0.id == added.id }), added)
-    }
-
-    func testFreezeTokenIsRevisionScopedAndSingleUse() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        _ = try await persistence.beginTransition(to: .iCloudSync, namespace: testBinding())
-        try await persistence.recordPreparationComplete()
-        let token = try await persistence.freezeSource()
-        _ = try await persistence.finalSnapshot(using: token)
-        do {
-            _ = try await persistence.finalSnapshot(using: token)
-            XCTFail("A freeze token must be single use.")
-        } catch {
-            XCTAssertEqual(error as? SyncModePersistenceError, .invalidFreezeToken)
-        }
-    }
-
     func testManifestWriteFailureDoesNotChangeActorMemory() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -482,80 +225,6 @@ extension ICloudSyncModeCoordinatorTests {
         }
         let snapshot = try await persistence.snapshot()
         XCTAssertNil(snapshot.attentionReason)
-    }
-
-    func testSendAttemptManifestFailureStopsTransportBeforeAnyBatchLeaves() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let writer = FailNextManifestWriter()
-        let persistence = try SwiftDataSyncModePersistence(
-            rootURL: root, defaultSyncProtocol: .fullRecordV1,
-            crashHook: writer.armAtSendAttempt,
-            manifestWriter: writer.write
-        )
-        let source = try await persistence.activeLibrary()
-        try await add("must not send", to: source)
-        let sourceStoreID = try await persistence.snapshot().activeStore.id
-        let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { transport }
-        )
-
-        do {
-            _ = try await coordinator.enableOrRetry()
-            XCTFail("The send-attempt manifest write must fail.")
-        } catch {
-            XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
-        }
-        let sent = await transport.events().contains { event in
-            if case .sent = event { return true }
-            return false
-        }
-        let storage = try await persistence.snapshot()
-        XCTAssertFalse(sent)
-        XCTAssertEqual(storage.activeStore.id, sourceStoreID)
-        try await add("source remains writable", to: source)
-    }
-
-    func testFailedEnrollmentApprovalKeepsLocalSourceRetryableAfterReopen() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let injector = CrashInjector(point: .afterEnrollmentApproval)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: injector.hit)
-        try await add("approved once", to: await persistence.activeLibrary())
-        let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let first = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
-        do {
-            _ = try await first.enableOrRetry()
-            XCTFail("Expected the approval crash.")
-        } catch CrashInjector.Failure.injected {}
-        let crashed = try await persistence.snapshot()
-        XCTAssertEqual(crashed.activeStore.kind, .localOnly)
-        XCTAssertNil(crashed.transition)
-        XCTAssertEqual(try storeRootCount(in: root), 1)
-
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        let retry = ICloudSyncModeCoordinator(
-            persistence: reopened,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
-        let result = try await retry.enableOrRetry()
-        let serverTexts = await server.storedTextValues()
-        XCTAssertEqual(result.state, .on)
-        XCTAssertEqual(serverTexts, ["approved once"])
     }
 
     func testNamespaceAccountAndGenerationMismatchCannotReadOrCopyPriorCache() async throws {

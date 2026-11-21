@@ -345,7 +345,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     if let activePersistence {
       let snapshot = try await activePersistence.snapshot()
       if snapshot.activeStore.kind == .iCloudSync, snapshot.accountIsolation == nil {
-        if snapshot.transition?.phase == .pointerSwapped {
+        if snapshot.transition?.phase == .swapped {
           try await activePersistence.finishTransition()
           try? await activePersistence.cleanupRetiredStores()
         }

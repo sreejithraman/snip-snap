@@ -414,7 +414,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
   }
 
-  func testEnableKeepsLocalStoreIfCollectionChangesDuringFirstSend() async throws {
+  func testEnableKeepsLocalStoreIfCollectionChangesDuringCandidateFetch() async throws {
     let source = try await seededSource()
     let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot)
     let original = try await persistence.snapshot().activeStore
@@ -425,7 +425,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       server: server,
       namespace: descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
     )
-    await transport.pauseNextSend()
+    await transport.pauseNextFetch()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: syncRoot,
       sourceLibrary: source,
@@ -439,9 +439,9 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     )
 
     let enabling = Task { try await lifecycle.enableICloudSync() }
-    await transport.waitUntilSendPauses()
+    await transport.waitUntilFetchPauses()
     await server.seedControl(.fresh(ownerName: "owner"))
-    await transport.resumeSend()
+    await transport.resumeFetch()
     do {
       _ = try await enabling.value
       XCTFail("Setup must stop when the collection changes before activation")

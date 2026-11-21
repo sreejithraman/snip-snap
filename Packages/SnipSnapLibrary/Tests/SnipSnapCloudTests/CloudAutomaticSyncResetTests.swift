@@ -37,9 +37,9 @@ final class CloudAutomaticSyncResetTests: XCTestCase {
     let original = try await persistence.snapshot().activeStore
     let library = try await persistence.libraryForTransition(storeID: original.id)
     _ = try await library.perform(Self.resetTestEdit("before reset"), sortedBy: .manual)
-    let lease = try await persistence.activeCloudMutationLease(storeID: original.id)
+    let lease = try await persistence.activeCloudMutation(storeID: original.id)
     let store = CloudFullSyncPersistence(library: library, namespace: namespace,
-      dataZone: zone, mutationLease: lease)
+      dataZone: zone, activeMutation: lease)
     let transport = AutomaticSyncTransportProbe()
     let pause = AutomaticSyncPause()
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport,
@@ -70,9 +70,9 @@ final class CloudAutomaticSyncResetTests: XCTestCase {
     let reopenedManaged = try await reopened.activeLibrary()
     try await Self.assertResetRejectsEditsAndImports(reopenedManaged)
     let reopenedLibrary = try await reopened.libraryForTransition(storeID: original.id)
-    let reopenedLease = try await reopened.activeCloudMutationLease(storeID: original.id)
+    let reopenedLease = try await reopened.activeCloudMutation(storeID: original.id)
     let recoveredStore = CloudFullSyncPersistence(library: reopenedLibrary, namespace: namespace,
-      dataZone: zone, mutationLease: reopenedLease)
+      dataZone: zone, activeMutation: reopenedLease)
     let nextTransport = AutomaticSyncTransportProbe()
     let recovered = CloudFullSyncCoordinator(store: recoveredStore, transport: nextTransport,
       reportResult: { result in

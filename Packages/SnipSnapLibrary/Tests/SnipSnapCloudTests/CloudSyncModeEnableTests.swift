@@ -4,21 +4,23 @@ import SnipSnapPersistence
 import XCTest
 
 extension ICloudSyncModeCoordinatorTests {
-    func testEnableFetchesRemoteBeforeExplicitlyEnrollingUniqueLocalRecords() async throws {
+    func testEnableSwapsTheMergedStoreBeforeNormalOutboundUpload() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let local = try await persistence.activeLibrary()
         try await add("local", to: local)
+        let originalID = try await persistence.snapshot().activeStore.id
         let server = FakeCloudServer()
-        let namespace = makeNamespace()
-        let remoteID = CloudRecordID(zone: textZone(namespace), name: "remote")
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
+        let remoteID = CloudRecordID(zone: descriptor.metadataZone, name: "remote")
         try await seed("remote", id: remoteID, server: server)
         let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
             namespace: namespace,
-            textZone: textZone(namespace),
+            textZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone,
             makeTransport: { transport }
         )
 
@@ -27,10 +29,21 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(result.state, .on)
         let active = try await persistence.activeLibrary()
         let activeTexts = await active.snapshot(sortedBy: .chronological).snips.map(\.content).sorted()
-        let serverTexts = await server.storedTextValues()
+        let enabled = try await persistence.snapshot()
+        XCTAssertNotEqual(enabled.activeStore.id, originalID)
+        XCTAssertNil(enabled.transition)
         XCTAssertEqual(activeTexts, ["local", "remote"])
-        XCTAssertEqual(serverTexts, ["local", "remote"])
         XCTAssertEqual(try storeRootCount(in: root), 1)
+        let beforeUpload = await server.storedTextValues()
+        XCTAssertEqual(beforeUpload, ["remote"])
+
+        let driver = CloudFullRecordCollectionSyncDriver(persistence: persistence, makeTransport: { _ in transport })
+        let context = CloudCollectionSyncContext(namespace: namespace,
+            metadataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone)
+        _ = try await driver.fetch(context)
+        _ = try await driver.send(context)
+        let serverTexts = await server.storedTextValues()
+        XCTAssertEqual(serverTexts, ["local", "remote"])
         let calls = await transport.events()
         let fetchIndex = try XCTUnwrap(calls.firstIndex(of: .fetched))
         let sendIndex = try XCTUnwrap(calls.firstIndex(where: {
@@ -89,7 +102,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(Set(snapshot.snips.map(\.id)).count, 2)
     }
 
-    func testOfflineEnableKeepsLocalStoreUsableAndReopenRetriesThePendingTransition() async throws {
+    func testOfflineEnableDiscardsCandidateAndReopenCanRetry() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
@@ -114,6 +127,9 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(offlineResult.syncIssue, .someChangesPending)
         XCTAssertEqual(offlineStorage.activeStore.id, originalID)
         XCTAssertEqual(localTexts, ["kept local"])
+        XCTAssertNil(offlineStorage.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
+        try await add("edited after failed fetch", to: local)
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let online = FakeCloudRecordTransport(server: server, namespace: namespace)
@@ -129,44 +145,87 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNotEqual(retryStorage.activeStore.id, originalID)
     }
 
-    func testFailedFirstSendDiscardsCandidateAndRetriesFromWritableSource() async throws {
+    func testCancellationBeforeSwapDiscardsCandidateAndLeavesSourceWritable() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
-        try await add("retry me", to: persistence.activeLibrary())
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("kept local", to: source)
         let originalID = try await persistence.snapshot().activeStore.id
-        let server = FakeCloudServer()
         let namespace = makeNamespace()
-        let failing = FakeCloudRecordTransport(server: server, namespace: namespace)
-        await failing.failNextSend()
-        let first = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { failing }
+        let server = FakeCloudServer()
+        let gate = CloudApplyGate()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            checkSetupCollection: { try await gate.pause() }
         )
 
-        let failedResult = try await first.enableOrRetry()
-        let failedStorage = try await persistence.snapshot()
-        XCTAssertEqual(failedResult.state, .settingUp)
-        XCTAssertNil(failedResult.attentionReason)
-        XCTAssertEqual(failedStorage.activeStore.id, originalID)
-        XCTAssertNil(failedStorage.transition)
+        let enable = Task { try await coordinator.enableOrRetry() }
+        await gate.waitUntilPaused()
+        let pending = try await persistence.snapshot()
+        XCTAssertEqual(pending.activeStore.id, originalID)
+        XCTAssertEqual(pending.transition?.phase, .merged)
+        enable.cancel()
+        await gate.resume()
+        do {
+            _ = try await enable.value
+            XCTFail("Cancellation must stop the swap")
+        } catch is CancellationError {}
+
+        let failed = try await persistence.snapshot()
+        XCTAssertEqual(failed.activeStore.id, originalID)
+        XCTAssertNil(failed.transition)
         XCTAssertEqual(try storeRootCount(in: root), 1)
-        let kept = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
-        XCTAssertEqual(kept.snips.map(\.content), ["retry me"])
-        try await add("written after failed send", to: try await persistence.activeLibrary())
+        try await add("saved after cancel", to: source)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let library = try await reopened.activeLibrary()
+        let texts = try await library.checkedSnapshot(sortedBy: .manual).snips.map(\.content)
+        XCTAssertEqual(Set(texts), ["kept local", "saved after cancel"])
+        let cloud = await server.storedTextValues()
+        XCTAssertTrue(cloud.isEmpty)
+    }
 
-        let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
-        let retry = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { retryTransport }
+    func testEditDuringMergeKeepsTheSourceAndTheNextEnableUsesTheEdit() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let source = try await persistence.activeLibrary()
+        try await add("original", to: source)
+        let originalID = try await persistence.snapshot().activeStore.id
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let gate = CloudApplyGate()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
+            checkSetupCollection: { try await gate.pause() }
         )
-        let retryResult = try await retry.enableOrRetry()
-        let serverTexts = await server.storedTextValues()
-        XCTAssertEqual(retryResult.state, .on)
-        XCTAssertEqual(serverTexts, ["retry me", "written after failed send"])
+        let enable = Task { try await coordinator.enableOrRetry() }
+        await gate.waitUntilPaused()
+        do {
+            try await add("saved during merge", to: source)
+        } catch {
+            await gate.resume()
+            _ = await enable.result
+            throw error
+        }
+        await gate.resume()
+        do {
+            _ = try await enable.value
+            XCTFail("An edit after the source snapshot must invalidate that candidate")
+        } catch SyncModePersistenceError.transitionInProgress {}
+
+        let failed = try await persistence.snapshot()
+        XCTAssertEqual(failed.activeStore.id, originalID)
+        XCTAssertNil(failed.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
+        let retry = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+        _ = try await retry.enableOrRetry()
+        let texts = try await source.checkedSnapshot(sortedBy: .manual).snips.map(\.content)
+        XCTAssertEqual(Set(texts), ["original", "saved during merge"])
     }
 }

@@ -3,16 +3,15 @@ import SwiftData
 
 enum CloudFullReceiptOperation: Equatable {
   case committedBatch(UUID)
-  case reenableTransition(UUID)
 
   var operationID: UUID {
     switch self {
-    case .committedBatch(let id), .reenableTransition(let id): id
+    case .committedBatch(let id): id
     }
   }
 
   func storageKey(namespaceKey: String) -> String {
-    "\(namespaceKey)|\(storageKind)|\(operationID.uuidString.lowercased())"
+    "\(namespaceKey)|full-batch|\(operationID.uuidString.lowercased())"
   }
 
   func matches(_ receipt: StoredCloudFullBatchReceipt, namespaceKey: String) -> Bool {
@@ -20,15 +19,9 @@ enum CloudFullReceiptOperation: Equatable {
       && receipt.id == storageKey(namespaceKey: namespaceKey)
   }
 
-  private var storageKind: String {
-    switch self {
-    case .committedBatch: "full-batch"
-    case .reenableTransition: "full-reenable"
-    }
-  }
 }
 
-/// Owns replay identity, compatibility migration, and retention for full-record operations.
+/// Owns replay identity and retention for committed full-record batches.
 enum SwiftDataCloudFullOperationReceipts {
   static func isReplay(
     _ operation: CloudFullReceiptOperation,
@@ -64,41 +57,6 @@ enum SwiftDataCloudFullOperationReceipts {
       operation: operation,
       digest: digest
     ))
-  }
-
-  static func retire(
-    _ operation: CloudFullReceiptOperation,
-    namespaceKey: String,
-    context: ModelContext
-  ) throws -> Bool {
-    guard let receipt = try receipt(for: operation, namespaceKey: namespaceKey, context: context)
-    else { return false }
-    context.delete(receipt)
-    return true
-  }
-
-  /// Beta 80 stored re-enable receipts under the committed-batch identity.
-  /// A matching plan digest proves which operation created the ambiguous legacy row.
-  static func migrateLegacyReenableReceipt(
-    namespaceKey: String,
-    transitionID: UUID,
-    expectedDigest: Data,
-    context: ModelContext
-  ) throws -> Bool {
-    let legacyOperation = CloudFullReceiptOperation.committedBatch(transitionID)
-    guard let legacy = try receipt(
-      for: legacyOperation,
-      namespaceKey: namespaceKey,
-      context: context
-    ), legacy.digest == expectedDigest else { return false }
-    record(
-      .reenableTransition(transitionID),
-      namespaceKey: namespaceKey,
-      digest: expectedDigest,
-      context: context
-    )
-    context.delete(legacy)
-    return true
   }
 
   static func pruneCommittedBatches(

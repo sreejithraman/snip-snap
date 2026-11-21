@@ -58,14 +58,8 @@ extension SwiftDataSnipLibrary {
     transitionID: UUID
   ) async throws -> SnipImportPreview {
     let target = try await previewTransferSnapshot(revision: 0)
-    let plan = try await prepareTransferPlan(
-      source,
-      transitionID: transitionID,
-      replacingTargetSnipIDs: [],
-      priorSeedProvenance: [],
-      priorServerAcceptedSnipIDs: [],
-      priorSeededListIDs: [],
-      targetSnapshot: target
+    let plan = try SnipLibraryTransferPlanner.plan(
+      source: source, target: target, transitionID: transitionID
     )
     return SnipLibraryImport.makePreview(
       source: source,

@@ -6,31 +6,12 @@ import SnipSnapCore
 import XCTest
 
 final class CloudMutationAdmissionTests: XCTestCase {
-  func testRejectedAddRecordsTheActiveModeChangeReason() async throws {
-    let diagnostics = AdmissionDiagnosticProbe()
-    let fixture = try await AdmissionFixture.make(diagnostics: diagnostics.recorder)
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    let lease = try await fixture.persistence.activeCloudMutationLease(
-      storeID: fixture.storeID, purpose: .modeChange)
-    let pause = AutomaticSyncPause()
-    let changing = Task { try await lease.run { await pause.suspend() } }
-    await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(admissionAddCommand("Private text"), sortedBy: .manual); XCTFail("Mode changes must block adds") }
-    catch SnipLibraryError.modeTransitionInProgress {}
-    await pause.resume()
-    try await changing.value
-
-    XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .modeChange)])
-    XCTAssertFalse(diagnostics.events.map(\.line).joined().contains("Private"))
-  }
-
   func testWaitingAddRecordsSyncContentionWithoutCallingItAFailure() async throws {
     let diagnostics = AdmissionDiagnosticProbe()
     let fixture = try await AdmissionFixture.make(diagnostics: diagnostics.recorder)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let managed = try await fixture.persistence.activeLibrary()
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let pause = AutomaticSyncPause()
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
@@ -41,24 +22,6 @@ final class CloudMutationAdmissionTests: XCTestCase {
     _ = try await adding.value
 
     XCTAssertEqual(diagnostics.events, [.writeAdmission(.started, reason: .syncBusy)])
-  }
-
-  func testAnotherManagedWriteRecordsWriteBusy() async throws {
-    let diagnostics = AdmissionDiagnosticProbe()
-    let pause = AutomaticSyncPause()
-    let fixture = try await AdmissionFixture.make(writeHook: { point in
-      if point == .afterRevisionReserved { await pause.suspend() }
-    }, diagnostics: diagnostics.recorder)
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    let writing = Task { try await managed.perform(admissionAddCommand("first"), sortedBy: .manual) }
-    await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(admissionAddCommand("second"), sortedBy: .manual); XCTFail("Writes must remain exclusive") }
-    catch SnipLibraryError.modeTransitionInProgress {}
-    await pause.resume()
-    _ = try await writing.value
-
-    XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .writeBusy)])
   }
 
   func testStoreReplacementRecordsModeChangeInsteadOfWriteBusy() async throws {
@@ -81,21 +44,6 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .modeChange)])
   }
 
-  func testAbandonedReservationRecordsReservedWrite() async throws {
-    let diagnostics = AdmissionDiagnosticProbe()
-    let fixture = try await AdmissionFixture.make(writeHook: { point in
-      if point == .afterRevisionReserved { throw AdmissionDiagnosticCrash.injected }
-    }, diagnostics: diagnostics.recorder)
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    do { _ = try await managed.perform(admissionAddCommand("interrupted"), sortedBy: .manual); XCTFail("Expected injected process loss") }
-    catch AdmissionDiagnosticCrash.injected {}
-    do { _ = try await managed.perform(admissionAddCommand("blocked"), sortedBy: .manual); XCTFail("The abandoned reservation must block writes") }
-    catch SnipLibraryError.modeTransitionInProgress {}
-
-    XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .reservedWrite)])
-  }
-
   func testAddToSelectedListWaitsForCloudMutationAndSavesOnce() async throws {
     let fixture = try await AdmissionFixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -104,7 +52,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let created = try await session.performLibraryCommand(
       .createList(name: "Selected tab", systemImage: "folder"), sortedBy: .manual)
     let selected = try XCTUnwrap(created.snapshot.lists.first { $0.name == "Selected tab" })
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let pause = AutomaticSyncPause()
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
@@ -135,7 +83,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertEqual(saved.snips.map(\.content), ["Send once"])
     XCTAssertEqual(saved.snips.map(\.listID), [selected.id])
     let state = try await fixture.persistence.snapshot()
-    XCTAssertFalse(state.hasActiveMutationReservation)
+
   }
 
   func testQueuedTextShareWaitsForSyncAndImportsOnceAcrossReopen() async throws {
@@ -144,7 +92,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let imports = ShareImportStore(sharedRootURL: fixture.root.appendingPathComponent("ShareInbox"))
     let request = ShareImportRequest(content: "Queued shared text", destinationListID: SnipList.inboxID)
     _ = try await imports.save(request)
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let pause = AutomaticSyncPause()
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
@@ -186,7 +134,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let fixture = try await AdmissionFixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let managed = try await fixture.persistence.activeLibrary()
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let pause = AutomaticSyncPause()
     let syncing = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
@@ -208,7 +156,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let saved = try await managed.checkedSnapshot(sortedBy: .manual)
     XCTAssertEqual(saved.snips.map(\.content), ["next send"])
     let state = try await fixture.persistence.snapshot()
-    XCTAssertFalse(state.hasActiveMutationReservation)
+
   }
 
   func testWaitingAddStillRejectsAResetReceivedByTheCloudMutation() async throws {
@@ -216,7 +164,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let fixture = try await AdmissionFixture.make(diagnostics: diagnostics.recorder)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let managed = try await fixture.persistence.activeLibrary()
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let namespace = fixture.descriptor.namespace(cloudScope: "private", accountLineage: "account")
     let resetStore = CloudFullSyncPersistence(library: fixture.library, namespace: namespace,
       dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone)
@@ -243,74 +191,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertTrue(saved.snips.isEmpty)
     XCTAssertEqual(diagnostics.events.last, .writeAdmission(.failed, reason: .dataReset))
     let state = try await fixture.persistence.snapshot()
-    XCTAssertFalse(state.hasActiveMutationReservation)
-  }
 
-  func testCancellationAfterSyncGrantsTheAddLeavesNoWriteReservation() async throws {
-    let admitted = AutomaticSyncPause()
-    let fixture = try await AdmissionFixture.make(writeHook: { point in
-      if point == .afterRevisionReserved { await admitted.suspend() }
-    })
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
-    let pause = AutomaticSyncPause()
-    let syncing = Task { try await lease.run { await pause.suspend() } }
-    await pause.waitUntilSuspended()
-    let adding = Task {
-      try await managed.perform(admissionAddCommand("cancelled after admission"), sortedBy: .manual)
-    }
-    try await waitForQueuedMutations(fixture.persistence, count: 1)
-    await pause.resume()
-    try await syncing.value
-    await admitted.waitUntilSuspended()
-    adding.cancel()
-    await admitted.resume()
-    do { _ = try await adding.value; XCTFail("Expected cancellation before saving") }
-    catch is CancellationError {}
-
-    let afterCancellation = try await fixture.persistence.snapshot()
-    XCTAssertFalse(afterCancellation.hasActiveMutationReservation)
-    _ = try await managed.perform(admissionAddCommand("next send"), sortedBy: .manual)
-    let saved = try await managed.checkedSnapshot(sortedBy: .manual)
-    XCTAssertEqual(saved.snips.map(\.content), ["next send"])
-  }
-
-  func testAddRejectsAModeChangeAlreadyWaitingBehindSync() async throws {
-    let fixture = try await AdmissionFixture.make()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    let syncLease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
-    let modeLease = try await fixture.persistence.activeCloudMutationLease(
-      storeID: fixture.storeID, purpose: .modeChange)
-    let pause = AutomaticSyncPause()
-    let syncing = Task { try await syncLease.run { await pause.suspend() } }
-    await pause.waitUntilSuspended()
-    let changingMode = Task { try await modeLease.run {} }
-    try await waitForQueuedMutations(fixture.persistence, count: 1)
-
-    let finished = Mutex(false)
-    let adding = Task {
-      defer { finished.withLock { $0 = true } }
-      return try await managed.perform(admissionAddCommand("must not cross mode change"), sortedBy: .manual)
-    }
-    do {
-      try await waitForQueuedMutations(fixture.persistence, count: 2,
-        orFinished: { finished.withLock { $0 } })
-    } catch {
-      await pause.resume()
-      try await syncing.value
-      try await changingMode.value
-      _ = try await adding.value
-      throw error
-    }
-    await pause.resume()
-    try await syncing.value
-    try await changingMode.value
-    do { _ = try await adding.value; XCTFail("An add must not queue behind a mode change") }
-    catch SnipLibraryError.modeTransitionInProgress {}
-    let saved = try await managed.checkedSnapshot(sortedBy: .manual)
-    XCTAssertTrue(saved.snips.isEmpty)
   }
 
   func testAttachmentReleaseContinuesThePendingAutomaticBatchAndCheckpoint() async throws {
@@ -350,23 +231,20 @@ final class CloudMutationAdmissionTests: XCTestCase {
     try await assertAutomaticWorkCommitted(fixture)
   }
 
-  func testEngineStateReadWithoutRecoveryDoesNotReserveAMutation() async throws {
+  func testEngineStateReadWithoutRecoveryReturnsTheCheckpoint() async throws {
     let fixture = try await AdmissionFixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     try await fixture.store.saveEngineState(fixture.checkpoint)
-    let before = try await fixture.persistence.snapshot()
     let loaded = try await fixture.store.loadEngineState()
-    let after = try await fixture.persistence.snapshot()
     XCTAssertEqual(loaded, fixture.checkpoint)
-    XCTAssertEqual(after.activeStore.revision, before.activeStore.revision)
-    XCTAssertFalse(after.hasActiveMutationReservation)
+
   }
 
   func testManagedEditAndImportReleaseContinueAutomaticWorkWithoutAnotherEvent() async throws {
     for importing in [false, true] {
       let pause = AutomaticSyncPause()
       let fixture = try await AdmissionFixture.make(writeHook: { point in
-        if point == .afterRevisionReserved { await pause.suspend() }
+        if point == .beforeLibraryWrite { await pause.suspend() }
       })
       defer { try? FileManager.default.removeItem(at: fixture.root) }
       let completion = try await prepareAutomaticConsumer(fixture)
@@ -394,7 +272,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
   func testCheckpointContinuesAfterAWriteWithoutAnotherTransportEvent() async throws {
     let pause = AutomaticSyncPause()
     let fixture = try await AdmissionFixture.make(writeHook: { point in
-      if point == .afterRevisionReserved { await pause.suspend() }
+      if point == .beforeLibraryWrite { await pause.suspend() }
     })
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let inbox = try CloudKitRecordMapper.snapshot(CloudKitRecordMapper.record(
@@ -423,10 +301,10 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertFalse(results.contains { if case .syncIssue = $0 { true } else { false } })
   }
 
-  func testCancelledWaiterDoesNotRunOrReorderRemainingReservations() async throws {
+  func testCancelledWaiterDoesNotRunOrReorderRemainingMutations() async throws {
     let fixture = try await AdmissionFixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: fixture.storeID)
     let pause = AutomaticSyncPause()
     let order = AdmissionOrder()
     let held = Task { try await lease.run { await pause.suspend() } }
@@ -445,33 +323,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     try await first.value
     try await next.value
     let ran = await order.values()
-    let snapshot = try await fixture.persistence.snapshot()
     XCTAssertEqual(ran, ["first", "next"])
-    XCTAssertFalse(snapshot.hasActiveMutationReservation)
-  }
-
-  func testQueuedReservationRejectsItsSourceAfterAStoreReplacement() async throws {
-    let pause = AutomaticSyncPause()
-    let point = AdmissionRetirementPause(pause: pause)
-    let fixture = try await AdmissionFixture.make(writeHook: { await point.hit($0) })
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: fixture.storeID)
-    let order = AdmissionOrder()
-    let replacement = CloudCollectionDescriptor.fresh(ownerName: "owner")
-    await point.arm()
-    let changing = Task { try await fixture.persistence.activateEmptyCollection(namespace: replacement.binding) }
-    await pause.waitUntilSuspended()
-    let stale = Task { try await lease.run { await order.append("stale") } }
-    try await waitForQueuedMutations(fixture.persistence, count: 1)
-    await pause.resume()
-    try await changing.value
-    do { try await stale.value; XCTFail("A queued mutation must recheck its source") }
-    catch SyncModePersistenceError.namespaceMismatch {}
-    let ran = await order.values()
-    let active = try await fixture.persistence.snapshot()
-    XCTAssertTrue(ran.isEmpty)
-    XCTAssertEqual(active.activeStore.namespace, replacement.binding)
-    XCTAssertFalse(active.hasActiveMutationReservation)
   }
 
   private func prepareAutomaticConsumer(_ fixture: AdmissionFixture) async throws -> XCTestExpectation {
@@ -545,9 +397,9 @@ private struct AdmissionFixture: Sendable {
     try await persistence.activateEmptyCollection(namespace: descriptor.binding)
     let active = try await persistence.snapshot().activeStore
     let library = try await persistence.libraryForTransition(storeID: active.id)
-    let lease = try await persistence.activeCloudMutationLease(storeID: active.id)
+    let lease = try await persistence.activeCloudMutation(storeID: active.id)
     let store = CloudFullSyncPersistence(library: library, namespace: namespace,
-      dataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone, mutationLease: lease)
+      dataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone, activeMutation: lease)
     return AdmissionFixture(root: root, descriptor: descriptor, persistence: persistence,
       library: library, storeID: active.id, store: store,
       checkpoint: CloudEngineStateEnvelope(namespace: namespace,
@@ -593,7 +445,7 @@ func waitForQueuedMutations(
   orFinished: @Sendable () -> Bool = { false }
 ) async throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-  while await persistence.queuedWriterCount != count {
+  while await persistence.activeStoreTurns.waitingCount != count {
     if orFinished() { return }
     guard ContinuousClock.now < deadline else { throw AdmissionTestError.timedOut }
     try await Task.sleep(for: .milliseconds(1))
@@ -611,4 +463,3 @@ private actor AdmissionRetirementPause {
 }
 
 private enum AdmissionTestError: Error { case timedOut }
-private enum AdmissionDiagnosticCrash: Error { case injected }

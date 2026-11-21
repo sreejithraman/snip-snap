@@ -15,36 +15,6 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let additionalSeenRequestIDs: Set<UUID>
   package let result: SnipLibraryTransferResult
 
-  package var digest: Data {
-    var bytes = Data("snipsnap-transfer-plan-v1".utf8)
-    SnipLibraryTransferPlanner.append(targetRevision, to: &bytes)
-    SnipLibraryTransferPlanner.append(targetDigest, to: &bytes)
-    SnipLibraryTransferPlanner.append(
-      SnipLibraryTransferPlanner.digest(
-        snapshot: SnipLibraryTransferSnapshot(
-          revision: targetRevision,
-          snips: snips,
-          lists: lists,
-          attachmentData: attachmentData,
-          attachmentFileURLs: attachmentFileURLs,
-          attachmentFileDigests: attachmentFileDigests,
-          legacyManualPositions: [:],
-          opaqueSyncStateDigest: opaqueSyncStateDigest,
-          opaqueSyncStatePayload: opaqueSyncStatePayload,
-          additionalSeenRequestIDs: additionalSeenRequestIDs
-        )
-      ),
-      to: &bytes
-    )
-    for id in result.approvedSnipIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-      SnipLibraryTransferPlanner.append(id.uuidString.lowercased(), to: &bytes)
-    }
-    bytes.append(0xff)
-    for id in result.recoveredSourceSnipIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-      SnipLibraryTransferPlanner.append(id.uuidString.lowercased(), to: &bytes)
-    }
-    return Data(SHA256.hash(data: bytes))
-  }
 }
 
 package enum SnipLibraryTransferPlanner {
@@ -54,26 +24,13 @@ package enum SnipLibraryTransferPlanner {
     transitionID: UUID,
     replacingTargetSnipIDs: Set<UUID> = [],
     replacingTargetListIDs: Set<UUID> = [],
-    acceptedTargetSnipIDs: Set<UUID> = [],
-    acceptedTargetTextBySnipID: [UUID: String] = [:],
-    priorSeedProvenance: [SyncModeSeedProvenance] = [],
-    priorServerAcceptedSnipIDs: Set<UUID> = [],
-    priorSeededListIDs: Set<UUID> = []
+    acceptedTargetSnipIDs: Set<UUID> = []
   ) throws -> SnipLibraryTransferPlan {
     let targetRevision = target.revision
     let targetDigest = digest(snapshot: target)
     let targetBundle = try CloudDormantAcceptedBaseBundle.decode(target.opaqueSyncStatePayload)
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
     let mergedSyncPayload = try targetBundle.merging(sourceBundle).encoded()
-    let retry = try retryPlan(
-      source: source,
-      target: target,
-      acceptedTargetSnipIDs: acceptedTargetSnipIDs,
-      acceptedTargetTextBySnipID: acceptedTargetTextBySnipID,
-      priorSeedProvenance: priorSeedProvenance,
-      priorServerAcceptedSnipIDs: priorServerAcceptedSnipIDs
-    )
-    let replacingTargetSnipIDs = replacingTargetSnipIDs.union(retry.replacingTargetSnipIDs)
     let retainedTargetSnips = target.snips.filter { !replacingTargetSnipIDs.contains($0.id) }
     let retainedAttachmentIDs = Set(retainedTargetSnips.flatMap(\.attachments).map(\.id))
     let target = SnipLibraryTransferSnapshot(
@@ -95,7 +52,7 @@ package enum SnipLibraryTransferPlanner {
       additionalSeenRequestIDs: target.additionalSeenRequestIDs
     )
     let retainedTargetLists = target.lists.filter {
-      !priorSeededListIDs.contains($0.id) && !replacingTargetListIDs.contains($0.id)
+      !replacingTargetListIDs.contains($0.id)
     }
     var lists = retainedTargetLists
     var listByID = Dictionary(uniqueKeysWithValues: retainedTargetLists.map { ($0.id, $0) })
@@ -125,7 +82,7 @@ package enum SnipLibraryTransferPlanner {
     let targetByID = Dictionary(uniqueKeysWithValues: target.snips.map { ($0.id, $0) })
     var approved: Set<UUID> = []
     var recovered: Set<UUID> = []
-    for sourceSnip in retry.sourceSnips {
+    for sourceSnip in source.snips {
       guard let targetSnip = targetByID[sourceSnip.id] else {
         snips.append(sourceSnip)
         approved.insert(sourceSnip.id)
@@ -160,8 +117,6 @@ package enum SnipLibraryTransferPlanner {
       approved.insert(recoveredID)
       recovered.insert(sourceSnip.id)
     }
-
-    approved.formUnion(retry.approvedSnipIDs)
 
     let targetAttachmentIDs = Set(target.attachmentData.keys)
       .union(target.attachmentFileURLs.keys)
@@ -287,21 +242,6 @@ package enum SnipLibraryTransferPlanner {
     return snapshot.attachmentFileDigests[id]
   }
 
-  package static func remoteDigest(snip: Snip?) -> Data {
-    remoteDigest(text: snip?.content)
-  }
-
-  package static func remoteDigest(text: String?) -> Data {
-    var bytes = Data("snipsnap-mode-seed-remote-v1".utf8)
-    guard let text else {
-      bytes.append(0)
-      return Data(SHA256.hash(data: bytes))
-    }
-    bytes.append(1)
-    append(text, to: &bytes)
-    return Data(SHA256.hash(data: bytes))
-  }
-
   package static func derivedUUID(transitionID: UUID, sourceID: UUID) -> UUID {
     var input = Data()
     withUnsafeBytes(of: transitionID.uuid) { input.append(contentsOf: $0) }
@@ -322,132 +262,6 @@ package enum SnipLibraryTransferPlanner {
       snips.flatMap(\.attachments).map { ($0.id, $0) },
       uniquingKeysWith: { first, _ in first }
     )
-  }
-
-  private struct RetryPlan {
-    let sourceSnips: [Snip]
-    let replacingTargetSnipIDs: Set<UUID>
-    let approvedSnipIDs: Set<UUID>
-  }
-
-  private static func retryPlan(
-    source: SnipLibraryTransferSnapshot,
-    target: SnipLibraryTransferSnapshot,
-    acceptedTargetSnipIDs: Set<UUID>,
-    acceptedTargetTextBySnipID: [UUID: String],
-    priorSeedProvenance: [SyncModeSeedProvenance],
-    priorServerAcceptedSnipIDs: Set<UUID>
-  ) throws -> RetryPlan {
-    guard !priorSeedProvenance.isEmpty else {
-      return RetryPlan(sourceSnips: source.snips, replacingTargetSnipIDs: [], approvedSnipIDs: [])
-    }
-    let sourceByID = Dictionary(uniqueKeysWithValues: source.snips.map { ($0.id, $0) })
-    let targetByID = Dictionary(uniqueKeysWithValues: target.snips.map { ($0.id, $0) })
-    let handledSourceIDs = Set(priorSeedProvenance.map(\.sourceSnipID))
-    var sourceSnips = source.snips.filter { !handledSourceIDs.contains($0.id) }
-    var replacingTargetSnipIDs: Set<UUID> = []
-    var approvedSnipIDs: Set<UUID> = []
-
-    for provenance in priorSeedProvenance {
-      let local = sourceByID[provenance.sourceSnipID].map {
-        translated($0, id: provenance.candidateSnipID, requestID: provenance.candidateRequestID)
-      }
-      let localDigest = digest(
-        snip: local,
-        attachmentData: source.attachmentData,
-        version: provenance.digestVersion,
-        legacyManualPosition: source.legacyManualPositions[provenance.sourceSnipID]
-      )
-      let localRemoteDigest = remoteDigest(snip: local)
-      let remoteWasAccepted = priorServerAcceptedSnipIDs.contains(provenance.candidateSnipID)
-      let remoteIsAccepted = acceptedTargetSnipIDs.contains(provenance.candidateSnipID)
-      let remoteContent: String?
-      let currentRemoteDigest: Data
-      if remoteIsAccepted {
-        guard let value = acceptedTargetTextBySnipID[provenance.candidateSnipID] else {
-          throw SnipLibraryError.transferConflict(.snipIdentity(provenance.candidateSnipID))
-        }
-        remoteContent = value
-        currentRemoteDigest = remoteDigest(text: value)
-      } else if remoteWasAccepted {
-        remoteContent = nil
-        currentRemoteDigest = remoteDigest(text: nil)
-      } else {
-        // No accepted server value means this seed is still unsent, not remotely deleted.
-        remoteContent = targetByID[provenance.candidateSnipID]?.content
-        currentRemoteDigest = provenance.baseRemoteDigest
-      }
-
-      let localChanged = localDigest != provenance.baseDigest
-      let localRemoteChanged = localRemoteDigest != provenance.baseRemoteDigest
-      let remoteChanged = currentRemoteDigest != provenance.baseRemoteDigest
-      if localRemoteDigest == currentRemoteDigest {
-        if localChanged {
-          replacingTargetSnipIDs.insert(provenance.candidateSnipID)
-          if let local {
-            sourceSnips.append(local)
-            if !remoteIsAccepted && !remoteWasAccepted {
-              approvedSnipIDs.insert(provenance.candidateSnipID)
-            }
-          }
-        } else if remoteIsAccepted || remoteWasAccepted {
-          if remoteContent == nil { replacingTargetSnipIDs.insert(provenance.candidateSnipID) }
-        } else if let local {
-          sourceSnips.append(local)
-          approvedSnipIDs.insert(provenance.candidateSnipID)
-        } else {
-          replacingTargetSnipIDs.insert(provenance.candidateSnipID)
-        }
-      } else if !localRemoteChanged {
-        if remoteContent == nil, localChanged {
-          throw SnipLibraryError.transferConflict(.snipIdentity(provenance.sourceSnipID))
-        }
-        if localChanged, let local, let remoteContent {
-          replacingTargetSnipIDs.insert(provenance.candidateSnipID)
-          sourceSnips.append(combining(remoteContent: remoteContent, with: local))
-        } else if remoteContent == nil {
-          replacingTargetSnipIDs.insert(provenance.candidateSnipID)
-        }
-      } else if !remoteChanged {
-        replacingTargetSnipIDs.insert(provenance.candidateSnipID)
-        if let local {
-          sourceSnips.append(local)
-          if !remoteIsAccepted || localRemoteDigest != currentRemoteDigest {
-            approvedSnipIDs.insert(provenance.candidateSnipID)
-          }
-        }
-      } else {
-        throw SnipLibraryError.transferConflict(.snipIdentity(provenance.sourceSnipID))
-      }
-    }
-    return RetryPlan(
-      sourceSnips: sourceSnips,
-      replacingTargetSnipIDs: replacingTargetSnipIDs,
-      approvedSnipIDs: approvedSnipIDs
-    )
-  }
-
-  private static func translated(_ snip: Snip, id: UUID, requestID: UUID) -> Snip {
-    Snip(
-      id: id,
-      requestID: requestID,
-      createdAt: snip.createdAt,
-      updatedAt: snip.updatedAt,
-      content: snip.content,
-      origin: snip.origin,
-      source: snip.source,
-      listID: snip.listID,
-      isDone: snip.isDone,
-      pinnedAt: snip.pinnedAt,
-      manualSortKey: snip.manualSortKey,
-      attachments: snip.attachments
-    )
-  }
-
-  private static func combining(remoteContent: String, with local: Snip) -> Snip {
-    var combined = local
-    combined.content = remoteContent
-    return combined
   }
 
   fileprivate static func append(_ value: String?, to data: inout Data) {

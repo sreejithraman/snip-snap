@@ -96,10 +96,10 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     active = nil
     await previous?.transport.reset()
     let library = try await persistence.libraryForTransition(storeID: context.storeID)
-    let lease = try await persistence.activeCloudMutationLease(storeID: context.storeID)
+    let lease = try await persistence.activeCloudMutation(storeID: context.storeID)
     let store = CloudFullSyncPersistence(
       library: library, namespace: collection.namespace,
-      dataZone: collection.metadataZone, payloadZone: collection.payloadZone, mutationLease: lease
+      dataZone: collection.metadataZone, payloadZone: collection.payloadZone, activeMutation: lease
     )
     let transport = makeTransport(collection)
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport) { [weak self] result in

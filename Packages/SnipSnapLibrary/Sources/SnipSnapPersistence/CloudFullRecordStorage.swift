@@ -331,201 +331,26 @@ package struct CloudDormantAcceptedBaseBundle: Codable, Equatable, Sendable {
   }
 }
 
-package struct CloudFullReenableAcceptedCAS: Codable, Equatable, Sendable {
-  package let accepted: CloudAcceptedEntityInput
-  package let localRevision: UInt64
-  package let isDeferred: Bool
-
-  package init(_ entity: CloudAcceptedEntity) {
-    accepted = CloudAcceptedEntityInput(
-      reference: entity.reference,
-      identity: entity.identity,
-      schemaVersion: entity.schemaVersion,
-      acceptedData: entity.acceptedData,
-      presenceData: entity.presenceData,
-      shadowData: entity.shadowData,
-      systemFields: entity.systemFields,
-      dependencyListID: entity.dependencyListID
-    )
-    localRevision = entity.localRevision
-    isDeferred = entity.isDeferred
-  }
-}
-
-package struct CloudFullReenableApplyPlan: Codable, Equatable, Sendable {
-  package let storageVersion: Int
-  package let transitionID: UUID
+/// A merge prepared for an inactive candidate. It is applied once before activation.
+package struct CloudFullReenableApplyPlan: Sendable {
   package let namespaceKey: String
-  package let expectedNamespaceRevision: UInt64
-  package let targetRevision: UInt64
-  package let targetDigest: Data
-  package let snips: [Snip]
-  package let lists: [SnipList]
-  package let attachmentData: [UUID: Data]
-  package let dormantPayload: Data
-  package let acceptedCAS: [CloudFullReenableAcceptedCAS]
+  package let transfer: SnipLibraryTransferPlan
   package let conflicts: [CloudConflictInput]
   package let recoveryInputs: [CloudFullRecoveryInput]
   package let result: SnipLibraryTransferResult
-  package let planDigest: Data
-
-  /// Unordered values go in sorted: a Set or Dictionary iterates in a per-instance order, so a
-  /// plan restored from disk would otherwise digest differently.
-  private struct DigestInput: Encodable {
-    let storageVersion: Int
-    let transitionID: UUID
-    let namespaceKey: String
-    let expectedNamespaceRevision: UInt64
-    let targetRevision: UInt64
-    let targetDigest: Data
-    let snips: [Snip]
-    let lists: [SnipList]
-    let attachmentData: SortedAttachmentData
-    let dormantPayload: Data
-    let acceptedCAS: [CloudFullReenableAcceptedCAS]
-    let conflicts: [CloudConflictInput]
-    let recoveryInputs: [CloudFullRecoveryInput]
-    let approvedSnipIDs: [UUID]
-    let recoveredSourceSnipIDs: [UUID]
-  }
-
-  /// Encodes as `[UUID: Data]` does, alternating IDs and bytes, with the entries sorted by ID.
-  private struct SortedAttachmentData: Encodable {
-    let values: [UUID: Data]
-
-    func encode(to encoder: any Encoder) throws {
-      var container = encoder.unkeyedContainer()
-      for (id, data) in values.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
-        try container.encode(id)
-        try container.encode(data)
-      }
-    }
-  }
 
   package init(
-    transitionID: UUID,
     namespaceKey: String,
-    expectedNamespaceRevision: UInt64 = 0,
-    targetRevision: UInt64,
-    targetDigest: Data,
-    snips: [Snip],
-    lists: [SnipList],
-    attachmentData: [UUID: Data],
-    dormantPayload: Data,
-    acceptedCAS: [CloudFullReenableAcceptedCAS],
+    transfer: SnipLibraryTransferPlan,
     conflicts: [CloudConflictInput],
     recoveryInputs: [CloudFullRecoveryInput],
     result: SnipLibraryTransferResult
-  ) throws {
-    storageVersion = 1
-    self.transitionID = transitionID
+  ) {
     self.namespaceKey = namespaceKey
-    self.expectedNamespaceRevision = expectedNamespaceRevision
-    self.targetRevision = targetRevision
-    self.targetDigest = targetDigest
-    self.snips = snips
-    self.lists = lists
-    self.attachmentData = attachmentData
-    self.dormantPayload = dormantPayload
-    self.acceptedCAS = acceptedCAS.sorted {
-      ($0.accepted.reference.kind.rawValue, $0.accepted.reference.domainID.uuidString)
-        < ($1.accepted.reference.kind.rawValue, $1.accepted.reference.domainID.uuidString)
-    }
-    self.conflicts = conflicts.sorted { $0.key < $1.key }
-    self.recoveryInputs = recoveryInputs.sorted { $0.batchID.uuidString < $1.batchID.uuidString }
+    self.transfer = transfer
+    self.conflicts = conflicts
+    self.recoveryInputs = recoveryInputs
     self.result = result
-    planDigest = try Self.digest(
-      storageVersion: storageVersion,
-      transitionID: transitionID,
-      namespaceKey: namespaceKey,
-      expectedNamespaceRevision: expectedNamespaceRevision,
-      targetRevision: targetRevision,
-      targetDigest: targetDigest,
-      snips: snips,
-      lists: lists,
-      attachmentData: attachmentData,
-      dormantPayload: dormantPayload,
-      acceptedCAS: self.acceptedCAS,
-      conflicts: self.conflicts,
-      recoveryInputs: self.recoveryInputs,
-      result: result
-    )
-  }
-
-  package func hasValidDigest() throws -> Bool {
-    try planDigest == Self.digest(
-      storageVersion: storageVersion,
-      transitionID: transitionID,
-      namespaceKey: namespaceKey,
-      expectedNamespaceRevision: expectedNamespaceRevision,
-      targetRevision: targetRevision,
-      targetDigest: targetDigest,
-      snips: snips,
-      lists: lists,
-      attachmentData: attachmentData,
-      dormantPayload: dormantPayload,
-      acceptedCAS: acceptedCAS,
-      conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      result: result
-    )
-  }
-
-  package func replacingTargetDigest(_ targetDigest: Data) throws -> Self {
-    try Self(
-      transitionID: transitionID,
-      namespaceKey: namespaceKey,
-      expectedNamespaceRevision: expectedNamespaceRevision,
-      targetRevision: targetRevision,
-      targetDigest: targetDigest,
-      snips: snips,
-      lists: lists,
-      attachmentData: attachmentData,
-      dormantPayload: dormantPayload,
-      acceptedCAS: acceptedCAS,
-      conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      result: result
-    )
-  }
-
-  private static func digest(
-    storageVersion: Int,
-    transitionID: UUID,
-    namespaceKey: String,
-    expectedNamespaceRevision: UInt64,
-    targetRevision: UInt64,
-    targetDigest: Data,
-    snips: [Snip],
-    lists: [SnipList],
-    attachmentData: [UUID: Data],
-    dormantPayload: Data,
-    acceptedCAS: [CloudFullReenableAcceptedCAS],
-    conflicts: [CloudConflictInput],
-    recoveryInputs: [CloudFullRecoveryInput],
-    result: SnipLibraryTransferResult
-  ) throws -> Data {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    encoder.dateEncodingStrategy = .secondsSince1970
-    let data = try encoder.encode(DigestInput(
-      storageVersion: storageVersion,
-      transitionID: transitionID,
-      namespaceKey: namespaceKey,
-      expectedNamespaceRevision: expectedNamespaceRevision,
-      targetRevision: targetRevision,
-      targetDigest: targetDigest,
-      snips: snips,
-      lists: lists,
-      attachmentData: SortedAttachmentData(values: attachmentData),
-      dormantPayload: dormantPayload,
-      acceptedCAS: acceptedCAS,
-      conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      approvedSnipIDs: result.approvedSnipIDs.sorted { $0.uuidString < $1.uuidString },
-      recoveredSourceSnipIDs: result.recoveredSourceSnipIDs.sorted { $0.uuidString < $1.uuidString }
-    ))
-    return Data(SHA256.hash(data: data))
   }
 }
 

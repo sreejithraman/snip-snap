@@ -404,7 +404,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             configuration: configuration
         )
         try await requireCurrentSource(storage, persistence: persistence)
-        let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
+        let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         return try await lease.run {
             try await self.requireCurrentSource(storage, persistence: persistence)
             let attachment = try await self.attachmentCoordinator(

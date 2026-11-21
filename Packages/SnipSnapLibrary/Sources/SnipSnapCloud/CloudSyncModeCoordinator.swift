@@ -2,11 +2,6 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
-private enum ICloudModeMergePreparation: Sendable {
-    case initialEnrollment(acceptedTextBySnipID: [UUID: String])
-    case fullRecord(CloudFullReenableApplyPlan)
-}
-
 package enum ICloudAccountGateError: Error, Equatable, Sendable {
     case couldNotDetermine
     case noAccount
@@ -92,46 +87,18 @@ private actor FullRecordSyncAdapter {
         try await raw.isReenableReady()
     }
 
-    func prepareModeMerge(
-        source: SnipLibraryTransferSnapshot,
-        transitionID: UUID,
-        targetRevision: UInt64,
-        keepFetchedAttachments: Bool
-    ) async throws -> ICloudModeMergePreparation {
-        if let plan = try await raw.makeReenableApplyPlan(
-            source: source,
-            transitionID: transitionID,
-            targetRevision: targetRevision,
-            keepFetchedAttachments: keepFetchedAttachments
-        ) {
-            return .fullRecord(plan)
-        }
-        return .initialEnrollment(acceptedTextBySnipID: try await raw.acceptedSnipTextValues())
+    func makeReenableApplyPlan(
+        source: SnipLibraryTransferSnapshot, transitionID: UUID
+    ) async throws -> CloudFullReenableApplyPlan? {
+        try await raw.makeReenableApplyPlan(source: source, transitionID: transitionID)
+    }
+
+    func acceptedSnipIDs() async throws -> Set<UUID> {
+        try await raw.acceptedSnipIDs()
     }
 
     func clearRetryableEvents(_ keys: Set<String>) async throws {
         try await raw.clearRetryableEvents(keys)
-    }
-
-    func currentModeSeedSettlement(
-        candidates: [SyncModeSeedSettlementCandidate],
-        namespace: ICloudSyncNamespaceBinding
-    ) async throws -> SyncModeSeedSettlementProof {
-        try await raw.currentModeSeedSettlement(candidates: candidates, namespace: namespace)
-    }
-
-    func modeSendAttempt(
-        for outbound: CloudOutboundBatch,
-        namespace: ICloudSyncNamespaceBinding
-    ) async throws -> SyncModeSendAttempt {
-        try await raw.modeSendAttempt(for: outbound, namespace: namespace)
-    }
-
-    func prepareModeRetry(
-        commitSettlement: @escaping @Sendable () async throws -> Void
-    ) async throws {
-        try await commitSettlement()
-        try await syncDriver.prepareManualRetry(beforeApply: beforeApply, beforeStateSave: beforeApply)
     }
 
 }
@@ -284,7 +251,7 @@ package actor ICloudSyncModeCoordinator {
             )
         }
         try await persistence.requireActiveNamespace(namespace.binding)
-        let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
+        let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         let adapter = try await adapter(storeID: storage.activeStore.id)
         do {
             try await lease.run { [self] in
@@ -324,11 +291,12 @@ package actor ICloudSyncModeCoordinator {
         try begin(.enable)
         defer { end() }
         let initial = try await persistence.snapshot()
-        if initial.activeStore.kind == .iCloudSync, initial.transition == nil {
+        if initial.activeStore.kind == .iCloudSync {
             try await persistence.requireActiveNamespace(namespace.binding)
+            if initial.transition?.phase == .swapped { try await finishSwap() }
             return try await statusUnchecked()
         }
-        if initial.transition == nil, payloadZone != nil {
+        if payloadZone != nil {
             let localLibrary = try await persistence.activeLibrary()
             let local = try await localLibrary.checkedSnapshot(sortedBy: .manual)
             let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(
@@ -340,184 +308,90 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
-        let followsFailedSend = initial.attentionReason == .firstSyncFailed || initial.transition?.sendAttempt != nil
-        var transition = try await persistence.beginOrResumeTransition(
-            to: .iCloudSync,
-            namespace: namespace.binding
-        )
-        let bridge: FullRecordSyncAdapter
+        let transition = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace.binding)
+        var failure: ICloudSyncAttentionReason = .terminalFetchFailure
         do {
-            bridge = try await adapter(storeID: transition.candidateStoreID)
-        } catch {
-            _ = try await failedEnable(transition, error: error, reason: .storageFailure)
-            throw error
-        }
-        do {
-            if transition.phase == .candidateReady {
-                try await prepareCandidate(transition, using: bridge)
-                let fetchIssue = await bridge.takeSyncIssue()
-                let evidence = try await bridge.statusEvidence()
-                if let fetchIssue {
-                    return try await failedEnable(
-                        transition,
-                        error: CloudSyncIssueError(fetchIssue),
-                        reason: fetchIssue.retriesAutomatically ? nil : .terminalFetchFailure
-                    )
-                }
-                if !evidence.retryableEventKeys.isEmpty {
-                    throw CloudSyncIssueError(.someChangesPending)
-                }
-                if evidence.needsAttention {
-                    try await persistence.discardFailedICloudEnable(
-                        transitionID: transition.id, reason: .enrollmentBlocked
-                    )
-                    return try await statusUnchecked()
-                }
-                guard evidence.phase != .notEnrolled else { return try await statusUnchecked() }
-                try await persistence.recordPreparationComplete()
-                transition = try await currentTransition()
+            let bridge = try await adapter(storeID: transition.candidateStoreID)
+            try await requireMatchingAccount()
+            try await bridge.fetchRemote {
+                try await self.requireMatchingAccount()
             }
-        } catch {
-            let retryable = isRetryableConnectivity(error)
-            let status = try await failedEnable(
-                transition,
-                error: error,
-                reason: retryable || CloudSyncDiagnostics.isCancellation(error) ? nil : .terminalFetchFailure
-            )
-            if CloudSyncDiagnostics.isCancellation(error) { throw error }
-            if !retryable, error is CloudSyncIssueError { throw error }
-            return status
-        }
-
-        do {
-            if transition.phase == .remoteFetched {
-                guard try await bridge.canPrepareModeMerge() else {
-                    try await persistence.retryRemoteFetch()
-                    return try await statusUnchecked()
-                }
-                let token = try await persistence.freezeSource()
-                let source = try await persistence.finalSnapshot(using: token)
-                let targetRevision = try await persistence.candidateRevision(
-                    transitionID: transition.id
+            if let issue = await bridge.takeSyncIssue() { throw CloudSyncIssueError(issue) }
+            let evidence = try await bridge.statusEvidence()
+            guard evidence.retryableEventKeys.isEmpty else {
+                throw CloudSyncIssueError(.someChangesPending)
+            }
+            if evidence.needsAttention {
+                try await persistence.abortUnactivatedCandidate(
+                    transitionID: transition.id, reason: .enrollmentBlocked
                 )
-                switch try await bridge.prepareModeMerge(
-                    source: source,
-                    transitionID: transition.id,
-                    targetRevision: targetRevision,
-                    keepFetchedAttachments: followsFailedSend
-                ) {
-                case .fullRecord(let plan):
-                    _ = try await persistence.mergeFullReenableSnapshot(
-                        source,
-                        using: token,
-                        plan: plan
-                    )
-                case .initialEnrollment(let accepted):
-                    // This merge copies all retained attachments, including remote metadata
-                    // whose bytes have not been downloaded on this device yet.
-                    try await requireMatchingAccount()
-                    _ = try await preserveIsolatedAttachmentsForLocalCopy(
-                        storeID: transition.candidateStoreID
-                    )
-                    try await requireMatchingAccount()
-                    _ = try await persistence.mergeFinalSnapshot(
-                        source,
-                        using: token,
-                        acceptedTargetTextBySnipID: accepted
-                    )
-                }
-                transition = try await currentTransition()
+                return try await statusUnchecked()
+            }
+            guard evidence.phase != .notEnrolled, try await bridge.canPrepareModeMerge() else {
+                throw CloudSyncRetryableError.itemFailure
             }
 
-            if transition.phase == .recordsMerged {
-                // Approval is idempotent and must be durable before the phase can advance.
-                try await bridge.approveModeMerge(snipIDs: transition.approvedSnipIDs)
-                try await persistence.recordEnrollmentApproved(expected: transition.approvedSnipIDs)
-                transition = try await currentTransition()
-            }
-
-            if transition.phase == .enrollmentApproved {
-                try await persistence.recordFirstSendStarted()
-                transition = try await currentTransition()
-            }
-
-            if transition.phase == .firstSendStarted {
-                try await sendUntilSettled(adapter: bridge)
-                try await persistence.recordFirstSendComplete()
-                transition = try await currentTransition()
-            }
-
-            if transition.phase == .firstSendComplete {
-                try await checkSetupCollection()
+            failure = .transitionFailure
+            try Task.checkCancellation()
+            let source = try await persistence.sourceSnapshot(for: transition)
+            let approvedSnipIDs: Set<UUID>
+            if let plan = try await bridge.makeReenableApplyPlan(source: source, transitionID: transition.id) {
+                let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
+                try await candidate.applyCloudFullReenablePlan(plan)
+                approvedSnipIDs = plan.result.approvedSnipIDs
+            } else {
                 try await requireMatchingAccount()
-                try Task.checkCancellation()
-                try await persistence.swapPointer()
-                transition = try await currentTransition()
+                _ = try await preserveIsolatedAttachmentsForLocalCopy(storeID: transition.candidateStoreID)
+                try await requireMatchingAccount()
+                let acceptedSnipIDs = try await bridge.acceptedSnipIDs()
+                let result = try await persistence.mergeCandidate(
+                    source, for: transition, acceptedTargetSnipIDs: acceptedSnipIDs
+                )
+                approvedSnipIDs = result.approvedSnipIDs
             }
+            try await bridge.approveModeMerge(snipIDs: approvedSnipIDs)
+            try await persistence.markCandidateMerged(transitionID: transition.id)
+            try await checkSetupCollection()
+            try await requireMatchingAccount()
+            try await persistence.swapPointer(transitionID: transition.id, sourceRevision: source.revision)
         } catch {
             let cancelled = CloudSyncDiagnostics.isCancellation(error)
-            if !cancelled, let stored = try? await persistence.snapshot(),
-               stored.transition?.hasDurableFullReenableIntent == true {
-                throw error
-            }
             let retryable = isRetryableConnectivity(error)
-            let reason = retryable || cancelled ? nil : failureReason(error)
-            let status = try await failedEnable(transition, error: error, reason: reason)
-            if retryable { return status }
+            let reason = cancelled || retryable ? nil : failureReason(error, default: failure)
+            await discardCandidate(transition, reason: reason)
+            if cancelled { throw error }
+            if failure == .terminalFetchFailure || retryable {
+                let storage = try await persistence.snapshot()
+                let accountState = await accountStateSource.currentAccountState()
+                if let attention = accountAttentionReason(accountState) ?? reason {
+                    return ICloudSyncModeStatus(
+                        state: .needsAttention, activeStoreID: storage.activeStore.id, attentionReason: attention
+                    )
+                }
+                return ICloudSyncModeStatus(
+                    state: .settingUp, activeStoreID: storage.activeStore.id,
+                    syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
+                )
+            }
             throw error
         }
-
-        if transition.phase == .pointerSwapped {
-            try await persistence.finishTransition()
-            try? await persistence.cleanupRetiredStores()
-        }
+        try await finishSwap()
         return try await statusUnchecked()
     }
 
-    private func prepareCandidate(
-        _ transition: SyncModeTransition, using bridge: FullRecordSyncAdapter
-    ) async throws {
-        let settlement = try await bridge.currentModeSeedSettlement(
-            candidates: transition.seedSettlementCandidates,
-            namespace: namespace.binding
-        )
-        try await bridge.prepareModeRetry { [persistence] in
-            try await persistence.prepareRetryFetch(settlement: settlement)
-        }
-        try await requireMatchingAccount()
-        try await bridge.fetchRemote {
-            try await self.requireMatchingAccount()
+    private func discardCandidate(
+        _ transition: SyncModeTransition, reason: ICloudSyncAttentionReason?
+    ) async {
+        do {
+            try await persistence.abortUnactivatedCandidate(transitionID: transition.id, reason: reason)
+        } catch {
+            try? await persistence.abortUnactivatedCandidate(transitionID: transition.id, reason: reason)
         }
     }
 
-    private func failedEnable(
-        _ transition: SyncModeTransition, error: Error, reason: ICloudSyncAttentionReason?
-    ) async throws -> ICloudSyncModeStatus {
-        // Read account status while the enable is still pending.
-        let accountState = await accountStateSource.currentAccountState()
-        let accountReason = accountAttentionReason(accountState)
-        do {
-            try await persistence.discardFailedICloudEnable(
-                transitionID: transition.id, reason: reason,
-                preserveNewBases: !CloudSyncDiagnostics.isCancellation(error)
-            )
-        } catch {
-            // A transient manifest write failure can leave the source frozen.
-            try? await persistence.discardFailedICloudEnable(transitionID: transition.id, reason: reason)
-        }
-        let storage = try await persistence.snapshot()
-        if storage.activeStore.id != transition.sourceStoreID {
-            return try await statusUnchecked(accountState: accountState)
-        }
-        if let attention = accountReason ?? reason {
-            return ICloudSyncModeStatus(
-                state: .needsAttention, activeStoreID: storage.activeStore.id, attentionReason: attention
-            )
-        }
-        return ICloudSyncModeStatus(
-            state: .settingUp, activeStoreID: storage.activeStore.id,
-            syncIssue: SnipSnapCloudSyncIssueMapper.issue(for: error)
-        )
+    private func finishSwap() async throws {
+        try await persistence.finishTransition()
+        try? await persistence.cleanupRetiredStores()
     }
 
     @discardableResult
@@ -533,9 +407,8 @@ package actor ICloudSyncModeCoordinator {
             return try await statusUnchecked()
         }
         if initial.transition?.targetKind == .localOnly,
-           initial.transition?.phase == .pointerSwapped {
-            try await persistence.finishTransition()
-            try? await persistence.cleanupRetiredStores()
+           initial.transition?.phase == .swapped {
+            try await finishSwap()
             return try await statusUnchecked()
         }
         try await persistence.requireActiveNamespace(namespace.binding)
@@ -557,9 +430,8 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
-        if initial.transition == nil, choice == .refreshThenCopy {
-            let lease = try await persistence.activeCloudMutationLease(
-                storeID: initial.activeStore.id, purpose: .modeChange)
+        if choice == .refreshThenCopy {
+            let lease = try await persistence.activeCloudMutation(storeID: initial.activeStore.id)
             let activeBridge = try await adapter(storeID: initial.activeStore.id)
             do {
                 let evidence = try await lease.run {
@@ -574,7 +446,7 @@ package actor ICloudSyncModeCoordinator {
                     }
                     return evidence
                 }
-                guard !evidence.needsAttention, evidence.phase == .active else {
+                guard !evidence.needsAttention, [.active, .seeding].contains(evidence.phase) else {
                     try await persistence.recordAttention(.enrollmentBlocked)
                     return try await statusUnchecked()
                 }
@@ -603,44 +475,24 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
-        var transition = try await persistence.beginTransition(to: .localOnly, namespace: nil)
-        if transition.phase == .candidateReady {
-            try await persistence.recordPreparationComplete()
-            transition = try await currentTransition()
-        }
+        let transition = try await persistence.beginTransition(to: .localOnly, namespace: nil)
         do {
-            if transition.phase == .remoteFetched {
-                let token = try await persistence.freezeSource()
-                var source = try await persistence.finalSnapshot(using: token)
-                let sourceAdapter = try await adapter(storeID: transition.sourceStoreID)
-                if let payload = try await sourceAdapter.dormantAcceptedBaseTransferPayload() {
-                    source = source.replacingOpaqueSyncStatePayload(payload)
-                }
-                _ = try await persistence.mergeFinalSnapshot(source, using: token)
-                transition = try await currentTransition()
+            var source = try await persistence.sourceSnapshot(for: transition)
+            let sourceAdapter = try await adapter(storeID: transition.sourceStoreID)
+            if let payload = try await sourceAdapter.dormantAcceptedBaseTransferPayload() {
+                source = source.replacingOpaqueSyncStatePayload(payload)
             }
-            if transition.phase == .recordsMerged {
-                try await persistence.recordEnrollmentApproved(expected: transition.approvedSnipIDs)
-                transition = try await currentTransition()
-            }
-            if transition.phase == .enrollmentApproved {
-                try await persistence.recordNoSendRequired()
-                transition = try await currentTransition()
-            }
-            if transition.phase == .firstSendComplete {
-                try await persistence.swapPointer()
-                transition = try await currentTransition()
-            }
+            _ = try await persistence.mergeCandidate(source, for: transition)
+            try await persistence.markCandidateMerged(transitionID: transition.id)
+            try await persistence.swapPointer(transitionID: transition.id, sourceRevision: source.revision)
         } catch {
             let retryable = isRetryableConnectivity(error)
-            await restoreSourceAfterPreSwapFailure(error, retryable: retryable)
+            let reason = retryable || CloudSyncDiagnostics.isCancellation(error) ? nil : failureReason(error)
+            await discardCandidate(transition, reason: reason)
             if retryable { return try await statusUnchecked() }
             throw error
         }
-        if transition.phase == .pointerSwapped {
-            try await persistence.finishTransition()
-            try? await persistence.cleanupRetiredStores()
-        }
+        try await finishSwap()
         return try await statusUnchecked()
     }
 
@@ -664,7 +516,7 @@ package actor ICloudSyncModeCoordinator {
 
     private func preserveAttachmentsForLocalCopy(storeID: UUID) async throws {
         guard payloadZone != nil else { return }
-        let lease = try await persistence.activeCloudMutationLease(storeID: storeID, purpose: .modeChange)
+        let lease = try await persistence.activeCloudMutation(storeID: storeID)
         try await lease.run {
             _ = try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
         }
@@ -683,40 +535,6 @@ package actor ICloudSyncModeCoordinator {
         return try await coordinator.preserveAllAttachmentsForLocalCopy()
     }
 
-    private func currentTransition() async throws -> SyncModeTransition {
-        guard let transition = try await persistence.snapshot().transition else {
-            throw SyncModePersistenceError.transitionInProgress
-        }
-        return transition
-    }
-
-    private func sendUntilSettled(adapter: FullRecordSyncAdapter) async throws {
-        for _ in 0..<8 {
-            try await adapter.sendPending { [persistence, namespace] outbound in
-                try await self.requireMatchingAccount()
-                let attempt = try await adapter.modeSendAttempt(for: outbound, namespace: namespace.binding)
-                try await self.checkSetupCollection()
-                try await persistence.recordSendAttempt(attempt)
-            }
-            let issue = await adapter.takeSyncIssue()
-            let evidence = try await adapter.enrollmentEvidence()
-            if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
-                try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
-                if let issue { throw CloudSyncIssueError(issue) }
-                throw CloudSyncRetryableError.itemFailure
-            }
-            if evidence.phase == .blocked {
-                throw CloudNamespaceEnrollmentError.invalidSeedSelection
-            }
-            if evidence.phase == .active, !evidence.hasPendingChanges {
-                if let issue { throw CloudSyncIssueError(issue) }
-                return
-            }
-            if let issue { throw CloudSyncIssueError(issue) }
-        }
-        throw CloudTransportError.sendFailed
-    }
-
     private func isRetryableConnectivity(_ error: Error) -> Bool {
         if CloudKitRetryPolicy.isTransient(error) { return true }
         if let error = error as? CloudTransportError {
@@ -728,16 +546,11 @@ package actor ICloudSyncModeCoordinator {
         return false
     }
 
-    private func failureReason(_ error: Error) -> ICloudSyncAttentionReason {
+    private func failureReason(
+        _ error: Error, default reason: ICloudSyncAttentionReason = .transitionFailure
+    ) -> ICloudSyncAttentionReason {
         if case SnipLibraryError.transferConflict = error { return .transferConflict }
-        return .transitionFailure
-    }
-
-    private func restoreSourceAfterPreSwapFailure(_ error: Error, retryable: Bool) async {
-        let reason = retryable ? nil : failureReason(error)
-        if (try? await persistence.unfreezeBeforePointerSwap(reason: reason)) == nil {
-            try? await persistence.unfreezeBeforePointerSwap(reason: reason)
-        }
+        return reason
     }
 
     private func statusUnchecked(
@@ -809,12 +622,11 @@ package actor ICloudSyncModeCoordinator {
             )
         }
         try await persistence.requireActiveNamespace(namespace.binding)
-        if currentOperation == .optOut || currentOperation == .activeSync
-            || storage.hasActiveMutationReservation {
+        if currentOperation == .optOut || currentOperation == .activeSync {
             return ICloudSyncModeStatus(state: .syncing, activeStoreID: storage.activeStore.id)
         }
         let evidence = try await adapter(storeID: storage.activeStore.id).statusEvidence()
-        let state: ICloudSyncModeState = !evidence.needsAttention && evidence.phase == .active
+        let state: ICloudSyncModeState = !evidence.needsAttention && [.active, .seeding].contains(evidence.phase)
             ? .on
             : .needsAttention
         return ICloudSyncModeStatus(state: state, activeStoreID: storage.activeStore.id)

@@ -155,42 +155,6 @@ final class FailingManifestWriter: Sendable {
     }
 }
 
-actor WriteReservationGate {
-    private var reserved = false
-    private var reservationWaiters: [CheckedContinuation<Void, Never>] = []
-    private var release: CheckedContinuation<Void, Never>?
-
-    func hit(_ point: SyncModeWritePoint) async throws {
-        guard point == .afterRevisionReserved else { return }
-        reserved = true
-        reservationWaiters.forEach { $0.resume() }
-        reservationWaiters = []
-        await withCheckedContinuation { release = $0 }
-    }
-
-    func waitUntilReserved() async {
-        if reserved { return }
-        await withCheckedContinuation { reservationWaiters.append($0) }
-    }
-
-    func resume() {
-        release?.resume()
-        release = nil
-    }
-}
-
-actor WriteCrashInjector {
-    enum Failure: Error { case injected }
-    private var didFail = false
-
-    func hit(_ point: SyncModeWritePoint) async throws {
-        guard point == .afterRevisionReserved else { return }
-        guard !didFail else { return }
-        didFail = true
-        throw Failure.injected
-    }
-}
-
 final class ReadFailureInjector: @unchecked Sendable {
     enum Failure: Error { case injected }
     private let lock = NSLock()
@@ -215,16 +179,6 @@ final class FailNextManifestWriter: @unchecked Sendable {
         lock.withLock { failNext = true }
     }
 
-    func armAtSendAttempt(_ point: SyncModeCrashPoint) {
-        guard point == .beforeSendAttemptManifest else { return }
-        lock.withLock { failNext = true }
-    }
-
-    func armAtWriteClear(_ point: SyncModeWritePoint) async throws {
-        guard point == .beforeReservationCleared else { return }
-        lock.withLock { failNext = true }
-    }
-
     func write(_ data: Data, to url: URL) throws {
         let shouldFail = lock.withLock {
             defer { failNext = false }
@@ -232,5 +186,14 @@ final class FailNextManifestWriter: @unchecked Sendable {
         }
         if shouldFail { throw FailingManifestWriter.Failure.injected }
         try data.write(to: url, options: .atomic)
+    }
+}
+
+extension ICloudSyncModeCoordinator {
+    /// Test setup for cases that need a settled server record as their merge base.
+    func enableAndPublish() async throws -> ICloudSyncModeStatus {
+        let status = try await enableOrRetry()
+        if status.state == .on { _ = try await syncActive() }
+        return status
     }
 }

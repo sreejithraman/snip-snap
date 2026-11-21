@@ -53,7 +53,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: account
         )
-        let enabled = try await coordinator.enableOrRetry()
+        let enabled = try await coordinator.enableAndPublish()
         XCTAssertEqual(enabled.state, .on)
         let activeStore = try await persistence.snapshot().activeStore
         let activeLibrary = try await persistence.libraryForTransition(storeID: activeStore.id)
@@ -165,7 +165,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: firstAccount
         )
-        _ = try await firstCoordinator.enableOrRetry()
+        _ = try await firstCoordinator.enableAndPublish()
         try await add("account A cache", to: persistence.activeLibrary())
 
         let secondNamespace = CloudSyncNamespace(
@@ -252,7 +252,6 @@ extension ICloudSyncModeCoordinatorTests {
         _ = try await coordinator.enableOrRetry()
         try await add("account A pending cache", to: persistence.activeLibrary())
         _ = try await persistence.beginTransition(to: .localOnly, namespace: nil)
-        try await persistence.recordPreparationComplete()
         await account.setState(.available(accountLineage: "account-b"))
 
         let result = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
@@ -715,7 +714,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
             accountStateSource: account
         )
-        _ = try await coordinator.enableOrRetry()
+        _ = try await coordinator.enableAndPublish()
         let cloudLibrary = try await persistence.activeLibrary()
         try await add("pending for first account", to: cloudLibrary)
         let before = try await persistence.snapshot()
@@ -765,7 +764,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
             accountStateSource: account
         )
-        _ = try await coordinator.enableOrRetry()
+        _ = try await coordinator.enableAndPublish()
         try await add("isolated work", to: persistence.activeLibrary())
         await account.setState(.noAccount)
         _ = try await coordinator.refreshAccountState()
@@ -893,7 +892,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: account
         )
-        _ = try await firstCoordinator.enableOrRetry()
+        _ = try await firstCoordinator.enableAndPublish()
         try await add("kept for export or return", to: persistence.activeLibrary())
         await account.setState(.noAccount)
         _ = try await firstCoordinator.refreshAccountState()
@@ -910,7 +909,7 @@ extension ICloudSyncModeCoordinatorTests {
             accountStateSource: account
         )
 
-        let enabled = try await returnCoordinator.enableOrRetry()
+        let enabled = try await returnCoordinator.enableAndPublish()
 
         XCTAssertEqual(enabled.state, .on)
         let remote = await returnServer.storedTextValues()
@@ -1001,7 +1000,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { transport },
             accountStateSource: account
         )
-        _ = try await coordinator.enableOrRetry()
+        _ = try await coordinator.enableAndPublish()
         try await add("pending before sign-out", to: persistence.activeLibrary())
         await account.setState(.noAccount)
         _ = try await coordinator.refreshAccountState()
@@ -1042,7 +1041,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: account
         )
-        _ = try await firstCoordinator.enableOrRetry()
+        _ = try await firstCoordinator.enableAndPublish()
         try await add("first account only", to: persistence.activeLibrary())
 
         let secondNamespace = CloudSyncNamespace(
@@ -1070,7 +1069,7 @@ extension ICloudSyncModeCoordinatorTests {
             accountStateSource: account
         )
 
-        let enabled = try await secondCoordinator.enableOrRetry()
+        let enabled = try await secondCoordinator.enableAndPublish()
         XCTAssertEqual(enabled.state, .on)
         let secondRemote = await secondServer.storedTextValues()
         XCTAssertEqual(secondRemote, ["second account work"])
@@ -1756,7 +1755,7 @@ extension ICloudSyncModeCoordinatorTests {
             },
             accountStateSource: account
         )
-        _ = try await setup.enableOrRetry()
+        _ = try await setup.enableAndPublish()
         try await add("must not send", to: persistence.activeLibrary())
         let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
         await transport.pauseNextFetch()

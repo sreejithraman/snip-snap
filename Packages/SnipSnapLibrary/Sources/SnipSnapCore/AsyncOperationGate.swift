@@ -8,6 +8,8 @@ package actor AsyncOperationGate {
 
   package init() {}
 
+  package var waitingCount: Int { waiters.count }
+
   package func withLease<Value: Sendable>(
     _ operation: @Sendable () async throws -> Value
   ) async throws -> Value {

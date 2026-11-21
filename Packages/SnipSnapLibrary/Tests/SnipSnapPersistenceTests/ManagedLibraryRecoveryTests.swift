@@ -36,7 +36,6 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
       let fixture = try await seedRecoveries(in: persistence, scope: scope)
       let library = try await persistence.activeLibrary()
       let session = SavedSnipsSession(library: library, recoveryScope: scope)
-      let before = try await persistence.snapshot()
 
       let snipState = try await session.resolveRecovery(
         fixture.snipRecovery.id, choice: .useRecovered,
@@ -56,9 +55,6 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
       XCTAssertEqual(listState?.library.lists.first { $0.id == fixture.list.id }?.name, "Recovered list")
       XCTAssertEqual(listState?.library.snips.first?.listID, fixture.list.id)
       XCTAssertEqual(listState?.recovery, .empty)
-      let after = try await persistence.snapshot()
-      XCTAssertEqual(after.activeStore.revision, before.activeStore.revision + 2)
-      XCTAssertFalse(after.hasActiveMutationReservation)
 
       let reopened = try SwiftDataSyncModePersistence(rootURL: root)
       let persisted = try await reopened.activeLibrary()
@@ -112,7 +108,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let edit = RecoveryAdmissionEdit()
     let persistence = try SwiftDataSyncModePersistence(rootURL: root, writeHook: { point in
-      if point == .afterRevisionReserved { try await edit.apply() }
+      if point == .beforeLibraryWrite { try await edit.apply() }
     })
     let scope = SnipRecoveryScope("managed-stale-guard")
     let fixture = try await seedRecoveries(in: persistence, scope: scope)
@@ -133,8 +129,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     let latest = try XCTUnwrap(unchanged.snips.first)
     XCTAssertEqual(latest.content, "Current")
     XCTAssertEqual(latest.isDone, false)
-    let rejected = try await persistence.snapshot()
-    XCTAssertFalse(rejected.hasActiveMutationReservation)
+
 
     var edited = fixture.snipRecovery.recovered
     edited.content = "Chosen edit"
@@ -145,54 +140,6 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     XCTAssertEqual(resolved?.library.snips.first?.content, "Chosen edit")
     XCTAssertEqual(resolved?.library.snips.first?.isDone, false)
     XCTAssertEqual(resolved?.recovery.pendingSnips, [])
-  }
-
-  func testRecoveryWriteAdmissionBlocksFreezeAndFrozenSourceRejectsResolution() async throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let gate = RecoveryPauseGate()
-    let reserved = expectation(description: "Recovery write reserved")
-    let persistence = try SwiftDataSyncModePersistence(rootURL: root, writeHook: { point in
-      if point == .afterRevisionReserved {
-        reserved.fulfill()
-        await gate.pause()
-      }
-    })
-    let scope = SnipRecoveryScope("managed-transition")
-    let fixture = try await seedRecoveries(in: persistence, scope: scope)
-    let library = try await persistence.activeLibrary()
-    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace())
-    try await persistence.recordPreparationComplete()
-    let resolution = Task {
-      try await library.resolveRecovery(fixture.snipRecovery.id, in: scope, choice: .keepCurrent)
-    }
-    await fulfillment(of: [reserved], timeout: 5)
-    let admitted = try await persistence.snapshot()
-    XCTAssertTrue(admitted.hasActiveMutationReservation)
-    do {
-      _ = try await persistence.freezeSource()
-      XCTFail("Freeze cannot pass an admitted recovery write")
-    } catch SyncModePersistenceError.transitionInProgress {}
-    // Opening another managed adapter cannot release a live reservation.
-    let other = try await persistence.activeLibrary()
-    do {
-      _ = try await other.resolveRecovery(fixture.listRecovery.id, in: scope, choice: .keepCurrent)
-      XCTFail("Another adapter cannot write while recovery holds admission")
-    } catch SnipLibraryError.modeTransitionInProgress {}
-    await gate.resume()
-    _ = try await resolution.value
-
-    _ = try await persistence.freezeSource()
-    do {
-      _ = try await library.resolveRecovery(
-        fixture.listRecovery.id, in: scope, choice: .useRecovered,
-        expectation: .init(record: .list(fixture.listRecovery), currentList: fixture.list))
-      XCTFail("A frozen source must reject recovery resolution")
-    } catch SnipLibraryError.modeTransitionInProgress {}
-    let pending = try await library.recoverySnapshot(in: scope)
-    XCTAssertEqual(pending.pendingSnips, [])
-    XCTAssertEqual(pending.pendingLists, [fixture.listRecovery])
-    try await persistence.unfreezeBeforePointerSwap()
   }
 
   func testSessionReplacementFollowsActiveStoreAndRecoveryScope() async throws {
