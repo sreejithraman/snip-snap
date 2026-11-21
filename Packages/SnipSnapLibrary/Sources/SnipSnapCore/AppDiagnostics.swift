@@ -172,7 +172,6 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
   public let pendingEvents: Int?
   public let blockedRecords: Int?
   public let writeReason: AppDiagnosticWriteReason?
-  public let termination: AppDiagnosticTermination?
 
   private init(
     operation: StaticString,
@@ -190,8 +189,7 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     pendingDownloads: Int? = nil,
     pendingEvents: Int? = nil,
     blockedRecords: Int? = nil,
-    writeReason: AppDiagnosticWriteReason? = nil,
-    termination: AppDiagnosticTermination? = nil
+    writeReason: AppDiagnosticWriteReason? = nil
   ) {
     self.operation = AppDiagnosticCodePolicy.operation(String(describing: operation))
     self.outcome = outcome
@@ -209,15 +207,9 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     self.pendingEvents = pendingEvents.flatMap { $0 >= 0 ? $0 : nil }
     self.blockedRecords = blockedRecords.flatMap { $0 >= 0 ? $0 : nil }
     self.writeReason = writeReason
-    self.termination = termination
   }
 
   /// A previous run that ended abnormally, as the platform reported it.
-  static func termination(_ termination: AppDiagnosticTermination) -> Self {
-    Self(operation: "app.termination", outcome: .failed, visibility: .background,
-      errorCode: termination.kind.errorCode, termination: termination)
-  }
-
   public static func writeAdmission(
     _ outcome: AppDiagnosticOutcome, reason: AppDiagnosticWriteReason
   ) -> Self {
@@ -333,7 +325,6 @@ public struct AppDiagnosticEvent: Equatable, Sendable {
     if let pendingDownloads { fields.append("pending_downloads=\(pendingDownloads)") }
     if let pendingEvents { fields.append("pending_events=\(pendingEvents)") }
     if let blockedRecords { fields.append("blocked_records=\(blockedRecords)") }
-    fields += termination?.fields ?? []
     return fields.joined(separator: " ")
   }
 
@@ -356,9 +347,7 @@ public struct AppDiagnosticRecorder: Sendable {
     flushEvents = flush
   }
 
-  /// Best effort for a finite queued batch. False means timeout, cancellation, or
-  /// unavailable storage; pending work remains eligible for the writer's retry.
-  /// The wait is capped at two seconds and never blocks the caller's executor.
+  /// Waits for queued recording attempts, up to the supplied timeout (at most two seconds).
   public func flush(timeout: TimeInterval = 0.5) async -> Bool {
     guard !Task.isCancelled else { return false }
     return await flushEvents(timeout)
@@ -371,13 +360,6 @@ public struct AppDiagnosticRecorder: Sendable {
   public static var live: AppDiagnosticRecorder { AppDiagnosticScope.live.recorder }
 }
 
-/// Describes the default rendered report. Its revision covers all history, health, and recording state.
-public struct AppDiagnosticExportSnapshot: Equatable, Sendable {
-  public let byteCount: Int
-  public let revision: String
-}
-
-/// Creates and clears the bounded, privacy-safe diagnostic file shared from app settings.
 public struct AppDiagnosticLogReport: Sendable {
   public let text: String
   public let returnedEvents: Int
@@ -428,12 +410,6 @@ public enum AppDiagnosticsExport {
     try AppDiagnosticScope.live.setRecordingEnabled(enabled)
   }
 
-  public static func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws
-    -> Bool
-  {
-    try AppDiagnosticScope.live.setRecordingEnabled(enabled, ifRevision: revision)
-  }
-
   public static func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL
   {
     try AppDiagnosticScope.live.makeShareableFile(range: range)
@@ -441,22 +417,13 @@ public enum AppDiagnosticsExport {
 
   /// Removes an owned staging file and its directory. User-saved copies are left alone.
   public static func removeShareableFile(_ fileURL: URL) {
-    AppDiagnosticScope.removeLiveShareableFile(fileURL)
-    AppDiagnosticEventStore.removeOwnedShareableFile(fileURL)
+    AppDiagnosticScope.live.removeShareableFile(fileURL)
   }
 
   public static func clear() throws {
     try AppDiagnosticScope.live.clear()
   }
 
-  public static func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try AppDiagnosticScope.live.snapshot()
-  }
-
-  /// Returns false without clearing when history, health, app context, or recording state has changed.
-  public static func clear(ifRevision revision: String) throws -> Bool {
-    try AppDiagnosticScope.live.clear(ifRevision: revision)
-  }
 }
 
 public func diagnosticErrorCode(_ error: any Error) -> String {
@@ -505,112 +472,42 @@ extension SnipLibraryError: AppDiagnosticErrorCodeProviding {
   }
 }
 
-/// One explicitly owned history, writer, recording preference, and export scope.
-/// Live iOS sharing requires matching application metadata and an accessible app group.
-/// Other bundles keep their private history; no global configuration order is required.
-public final class AppDiagnosticScope: @unchecked Sendable {
-  public static let live = resolve(bundle: .main)
-
-  public var recorder: AppDiagnosticRecorder {
-    AppDiagnosticRecorder(
-      record: { [self] in record($0) }, flush: { [self] in await writer.flush(timeout: $0) })
-  }
+/// Owns the diagnostics queue for this process. Each app or extension uses its own container.
+public final class AppDiagnosticScope: Sendable {
+  public static let live = AppDiagnosticScope(store: .forBundle(
+    bundleIdentifier: Bundle.main.bundleIdentifier,
+    appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+    bundle: .main
+  ))
 
   private let logger = Logger(subsystem: "SnipSnap", category: "Operations")
   private let store: AppDiagnosticEventStore
-  private let writer: AppDiagnosticWriter
-  private let controlsAvailable: Bool
-  public let sharesApplicationHistory: Bool
+  private let queue = DispatchQueue(label: "SnipSnap.diagnostics", qos: .utility)
 
-  init(
-    store: AppDiagnosticEventStore, writer: AppDiagnosticWriter? = nil,
-    sharesApplicationHistory: Bool = false, controlsAvailable: Bool = true
-  ) {
+  init(store: AppDiagnosticEventStore) {
     self.store = store
-    self.sharesApplicationHistory = sharesApplicationHistory
-    self.controlsAvailable = controlsAvailable
-    self.writer = writer ?? AppDiagnosticWriter(
-      store: store, requiresReadableControls: sharesApplicationHistory)
   }
 
-  private static func resolve(bundle: Bundle) -> AppDiagnosticScope {
-    let manager = FileManager.default
-    let environment = ProcessInfo.processInfo.environment
-    #if os(iOS)
-      let application =
-        bundle.object(forInfoDictionaryKey: "SnipSnapDiagnosticsApplicationIdentifier") as? String
-      let group = bundle.object(forInfoDictionaryKey: "SnipSnapAppGroupIdentifier") as? String
-      let isolated = environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]?.hasPrefix("/") == true
-      let container =
-        !isolated && validIdentifier(group)
-        ? manager.containerURL(forSecurityApplicationGroupIdentifier: group!) : nil
-    #else
-      let application: String? = nil
-      let group: String? = nil
-      let container: URL? = nil
-    #endif
-    return resolve(
-      bundleIdentifier: bundle.bundleIdentifier, applicationIdentifier: application,
-      appGroupIdentifier: group, sharedContainerURL: container,
-      applicationSupportURL: manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
-        0],
-      cachesURL: manager.urls(for: .cachesDirectory, in: .userDomainMask)[0],
-      environment: environment,
-      appVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        ?? "unknown",
-      appBuild: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")
+  public var recorder: AppDiagnosticRecorder {
+    AppDiagnosticRecorder(record: { [self] in record($0) }, flush: { [self] timeout in
+      guard timeout > 0 else { return false }
+      let (results, completion) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingOldest(1))
+      queue.async {
+        completion.yield(true)
+        completion.finish()
+      }
+      DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + min(timeout, 2)) {
+        completion.yield(false)
+        completion.finish()
+      }
+      var iterator = results.makeAsyncIterator()
+      let drained = await iterator.next()
+      return drained == true && !Task.isCancelled
+    })
   }
 
-  // The internal resolution seam substitutes only OS directory and bundle metadata in tests.
-  static func resolve(
-    bundleIdentifier: String?, applicationIdentifier: String?, appGroupIdentifier: String?,
-    sharedContainerURL: URL?, applicationSupportURL: URL, cachesURL: URL,
-    environment: [String: String], appVersion: String, appBuild: String
-  ) -> AppDiagnosticScope {
-    let isolated = environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"]?.hasPrefix("/") == true
-    let owned =
-      validIdentifier(applicationIdentifier)
-      && (bundleIdentifier == applicationIdentifier
-        || bundleIdentifier == applicationIdentifier.map { $0 + ".share" })
-    let shared = !isolated && owned && validIdentifier(appGroupIdentifier)
-      && sharedContainerURL?.isFileURL == true
-    let base =
-      shared
-      ? sharedContainerURL!.appendingPathComponent("Library/Application Support", isDirectory: true)
-      : applicationSupportURL
-    let directory = AppDiagnosticEventStore.storageDirectoryURL(
-      applicationSupportURL: base,
-      bundleIdentifier: shared ? applicationIdentifier : bundleIdentifier, environment: environment)
-    let oldSupport = AppDiagnosticEventStore.storageDirectoryURL(
-      applicationSupportURL: applicationSupportURL, bundleIdentifier: bundleIdentifier,
-      environment: [:])
-    let oldCache = AppDiagnosticEventStore.storageDirectoryURL(
-      cachesURL: cachesURL, bundleIdentifier: bundleIdentifier, environment: [:])
-    return AppDiagnosticScope(
-      store: AppDiagnosticEventStore(
-        directoryURL: directory, appVersion: appVersion, appBuild: appBuild,
-        legacyDirectoryURL: isolated ? nil : oldCache,
-        priorDirectoryURLs: shared ? [oldSupport] : []), sharesApplicationHistory: shared,
-      controlsAvailable: isolated || !owned || shared)
-  }
-
-  // Cleanup must not initialize the process's live writer. CLI/tests can clean an
-  // independently created export before first recording in their own isolated scope.
-  static func removeLiveShareableFile(_ fileURL: URL) {
-    resolve(bundle: .main).store.removeShareableFile(fileURL)
-  }
-
-  private static func validIdentifier(_ value: String?) -> Bool {
-    guard let value, !value.isEmpty, value.utf8.count <= 200,
-      value != ".", value != ".."
-    else { return false }
-    return value.unicodeScalars.allSatisfy {
-      CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
-        .contains($0)
-    }
-  }
-
-  func record(_ event: AppDiagnosticEvent, at occurredAt: Date = Date()) {
+  func record(_ event: AppDiagnosticEvent, at date: Date = Date()) {
     switch event.outcome {
     case .failed:
       logger.error("\(event.line, privacy: .public)")
@@ -619,54 +516,38 @@ public final class AppDiagnosticScope: @unchecked Sendable {
     case .started, .succeeded:
       logger.info("\(event.line, privacy: .public)")
     }
-    if controlsAvailable { writer.submit(event, at: occurredAt) }
-  }
-
-  private func perform<T>(_ operation: () throws -> T) throws -> T {
-    guard controlsAvailable else { throw CocoaError(.fileReadNoPermission) }
-    return try writer.perform {
-      if sharesApplicationHistory { _ = try store.readRecordingEnabled() }
-      return try operation()
+    queue.async { [self] in
+      do {
+        try store.append(event, at: date)
+      } catch {
+        logger.error("Diagnostic file write failed: \(diagnosticErrorCode(error), privacy: .private)")
+      }
     }
   }
 
   public func readLog(
     range: AppDiagnosticExportRange = .last24Hours, limit: Int = 200, errorsOnly: Bool = false
-  ) throws
-    -> AppDiagnosticLogReport
-  {
-    try perform { try store.readLog(range: range, limit: limit, errorsOnly: errorsOnly) }
+  ) throws -> AppDiagnosticLogReport {
+    try queue.sync { try store.readLog(range: range, limit: limit, errorsOnly: errorsOnly) }
   }
 
   public func readRecordingEnabled() throws -> Bool {
-    try perform { try store.readRecordingEnabled() }
+    try queue.sync { try store.readRecordingEnabled() }
   }
 
   public func setRecordingEnabled(_ enabled: Bool) throws {
-    try perform { try store.setRecordingEnabled(enabled) }
-  }
-
-  public func setRecordingEnabled(_ enabled: Bool, ifRevision revision: String) throws -> Bool {
-    try perform { try store.setRecordingEnabled(enabled, ifRevision: revision) }
+    try queue.sync { try store.setRecordingEnabled(enabled) }
   }
 
   public func makeShareableFile(range: AppDiagnosticExportRange = .last24Hours) throws -> URL {
-    try perform { try store.makeShareableFile(range: range) }
+    try queue.sync { try store.makeShareableFile(range: range) }
   }
 
   public func removeShareableFile(_ fileURL: URL) {
-    store.removeShareableFile(fileURL)
+    queue.sync { store.removeShareableFile(fileURL) }
   }
 
   public func clear() throws {
-    try perform { try store.clear() }
-  }
-
-  public func snapshot() throws -> AppDiagnosticExportSnapshot {
-    try perform { try store.snapshot() }
-  }
-
-  public func clear(ifRevision revision: String) throws -> Bool {
-    try perform { try store.clear(ifRevision: revision) }
+    try queue.sync { try store.clear() }
   }
 }

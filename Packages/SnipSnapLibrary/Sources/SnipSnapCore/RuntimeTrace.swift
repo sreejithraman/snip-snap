@@ -48,9 +48,9 @@ package struct RuntimeTrace: Sendable {
   static let context = Mutex(Context())
   private static let sequence = Mutex<UInt64>(0)
   private static let session = UUID().uuidString
-  private static let version = AppDiagnosticRecord.safeVersion(
+  private static let version = AppDiagnosticEventStore.safeVersion(
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
-  private static let build = AppDiagnosticRecord.safeVersion(
+  private static let build = AppDiagnosticEventStore.safeVersion(
     Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")
   private static let logger = Logger(subsystem: "SnipSnap", category: "Runtime")
 

@@ -470,7 +470,6 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
             return
         }
-        AppTerminationDiagnostics.startRecording()
         let rootView = ContentView(
                 coordinator: coordinator,
                 fileDropController: fileDropController,

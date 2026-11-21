@@ -21,11 +21,11 @@ enum SnipCLIApplicationParser {
       enable and disable require --if-revision TOKEN from sync clipboard status.
     sync account keep|remove --if-revision TOKEN [--yes]
       remove requires --yes; TOKEN comes from sync status.
-    diagnostics status|export PATH [--range 24h|7d]|clear --if-revision TOKEN --yes
+    diagnostics status|export PATH [--range 24h|7d]|clear --yes
     diagnostics recording on|off --if-revision TOKEN
     diagnostics logs [--range 24h|7d] [--errors-only] [--limit 1...2000]
     attachments cache status|clear --if-revision TOKEN --yes
-      clear tokens come from the corresponding status command.
+      The attachments token comes from attachments cache status.
     app status|show|hide|clipboard|close-search|select-list NAME_OR_UUID|search QUERY|settings
     app capture-selection|capture-screen
     updates check
@@ -143,7 +143,7 @@ enum SnipCLIApplicationParser {
         guard args.count == 2, ["on", "off"].contains(args[1]) else { throw invalid() }
         action = .setDiagnosticRecording(enabled: args[1] == "on", expectedRevision: token)
       } else {
-        let token = try revision()
+        let token = try option("--if-revision") ?? ""
         guard try flag("--yes"), args == ["clear"] else { throw invalid() }
         action = .clearDiagnostics(expectedRevision: token, confirmed: true)
       }

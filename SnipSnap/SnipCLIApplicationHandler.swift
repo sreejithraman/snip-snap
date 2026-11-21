@@ -174,12 +174,10 @@ final class SnipCLIApplicationHandler {
             }.value
             return receipt(result)
         case .setDiagnosticRecording(let enabled, let revision):
-            let saved = try await Task.detached(priority: .utility) {
-                try AppDiagnosticsExport.setRecordingEnabled(enabled, ifRevision: revision)
+            try requireCLIRevision(revision, current: await cliDiagnosticsResult())
+            try await Task.detached(priority: .utility) {
+                try AppDiagnosticsExport.setRecordingEnabled(enabled)
             }.value
-            guard saved else {
-                throw cliApplicationError("The state changed. Read its status again and use the latest revision with a new request ID.")
-            }
             return receipt(try await cliDiagnosticsResult(), message: "Updated diagnostic recording.")
         case .exportDiagnostics(let path, let range):
             guard !path.isEmpty else { throw cliApplicationError("Choose a diagnostic export path.") }
@@ -196,14 +194,11 @@ final class SnipCLIApplicationHandler {
             }.value
             return receipt(SnipCLIApplicationResult(values: ["bytes": String(byteCount)]),
                            message: "Exported diagnostics.")
-        case .clearDiagnostics(let revision, let confirmed):
+        case .clearDiagnostics(_, let confirmed):
             guard confirmed else { throw cliApplicationError("Clearing diagnostics requires --yes.") }
-            let cleared = try await Task.detached(priority: .utility) {
-                try AppDiagnosticsExport.clear(ifRevision: revision)
+            try await Task.detached(priority: .utility) {
+                try AppDiagnosticsExport.clear()
             }.value
-            guard cleared else {
-                throw cliApplicationError("The state changed. Read its status again and use the latest revision with a new request ID.")
-            }
             return receipt(try await cliDiagnosticsResult(), message: "Cleared diagnostics.")
         case .attachmentCacheStatus:
             return receipt(try await cliAttachmentCacheResult(request))
@@ -422,12 +417,14 @@ final class SnipCLIApplicationHandler {
 
     private func cliDiagnosticsResult() async throws -> SnipCLIApplicationResult {
         try await Task.detached(priority: .utility) {
-            let snapshot = try AppDiagnosticsExport.snapshot()
+            let recording = String(try AppDiagnosticsExport.readRecordingEnabled())
+            let revision = SnipCLIApplicationResult(values: ["recording-enabled": recording]).revision
+            let report = try AppDiagnosticsExport.readLog(limit: .max)
             return SnipCLIApplicationResult(values: [
-                "bytes": String(snapshot.byteCount),
-                "content-revision": snapshot.revision,
-                "recording-enabled": String(try AppDiagnosticsExport.readRecordingEnabled()),
-            ], revision: snapshot.revision)
+                "bytes": String(report.text.utf8.count),
+                "content-revision": revision,
+                "recording-enabled": recording,
+            ], revision: revision)
         }.value
     }
 

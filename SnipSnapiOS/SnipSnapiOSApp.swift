@@ -10,18 +10,15 @@ import UIKit
 struct SnipSnapiOSApp: App {
     @UIApplicationDelegateAdaptor(IOSRuntimeTraceDelegate.self) private var runtimeTraceDelegate
     @Environment(\.scenePhase) private var scenePhase
-    private let sharedContainerLocks: IOSSharedContainerLockLifecycle
     private let session: IOSAppSession
     private let uiTestAttachmentURLs: [URL]
     private let seedsCopyShareFixtures: Bool
     private let shareProcessToken: String?
 
     init() {
-        sharedContainerLocks = IOSSharedContainerLockLifecycle()
         AppRuntimeTrace.applicationState(
             .launching, protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
         )
-        AppTerminationDiagnostics.startRecording()
         AppTypography.configureNavigationBar()
         let startup = Self.makeLibrary()
         uiTestAttachmentURLs = startup.uiTestAttachmentURLs

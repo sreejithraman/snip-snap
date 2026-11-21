@@ -124,13 +124,19 @@ final class SnipCLIApplicationParserTests: XCTestCase {
     }
   }
 
-  func testClearRequiresBothLatestRevisionAndExplicitConfirmation() throws {
+  func testClearDiagnosticsRequiresConfirmationAndCacheClearAlsoRequiresRevision() throws {
     let revision = String(repeating: "b", count: 64)
-    for prefix in [["diagnostics", "clear"], ["attachments", "cache", "clear"]] {
+    let diagnostics = ["diagnostics", "clear"]
+    let cache = ["attachments", "cache", "clear"]
+    for prefix in [diagnostics, cache] {
       XCTAssertThrowsError(try SnipCLIApplicationParser.parse(prefix))
-      XCTAssertThrowsError(try SnipCLIApplicationParser.parse(prefix + ["--yes"]))
       XCTAssertThrowsError(try SnipCLIApplicationParser.parse(prefix + ["--if-revision", revision]))
     }
+    XCTAssertThrowsError(try SnipCLIApplicationParser.parse(cache + ["--yes"]))
+    XCTAssertEqual(try SnipCLIApplicationParser.parse(diagnostics + ["--yes"]),
+      .extended(.application(.clearDiagnostics(expectedRevision: "", confirmed: true))))
+    XCTAssertEqual(try SnipCLIApplicationParser.parse(diagnostics + ["--yes", "--if-revision", revision]),
+      .extended(.application(.clearDiagnostics(expectedRevision: revision, confirmed: true))))
     XCTAssertEqual(try SnipCLIApplicationParser.parse([
       "attachments", "cache", "clear", "--yes", "--if-revision", revision,
     ]), .extended(.application(.clearAttachmentCache(expectedRevision: revision, confirmed: true))))
