@@ -169,14 +169,18 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       syncModeStore: SnipSyncModeStore(persistence)
     )
     let activeStoreID = try await persistence.snapshot().activeStore.id
-    let edit = try await persistence.reserveActiveMutation(storeID: activeStoreID, purpose: .sync)
+    let mutation = try await persistence.activeCloudMutation(storeID: activeStoreID)
+    let gate = CloudApplyGate()
+    let writing = Task { try await mutation.run { try await gate.pause() } }
+    await gate.waitUntilPaused()
 
     await assertMarkerRemovalFails("A sync during an edit must not report setup") {
       try await lifecycle.synchronize()
     }
     XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
 
-    try await persistence.finishActiveMutation(edit)
+    await gate.resume()
+    try await writing.value
     setMarkerLocked(false)
     let finished = try await lifecycle.synchronize()
     XCTAssertEqual(finished, .iCloudSyncEnabled)
