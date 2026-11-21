@@ -310,11 +310,8 @@ extension ICloudSyncModeCoordinatorTests {
         let active = await (try await persistence.activeLibrary())
             .snapshot(sortedBy: .chronological)
         XCTAssertEqual(active.snips.map(\.content), ["local only"])
-        let transition = try XCTUnwrap(storage.transition)
-        let candidate = try await persistence.libraryForTransition(
-            storeID: transition.candidateStoreID
-        ).snapshot(sortedBy: .chronological)
-        XCTAssertFalse(candidate.snips.contains { $0.content == "foreign remote" })
+        XCTAssertNil(storage.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
         let sent = await transport.events().contains { event in
             if case .sent = event { return true }
             return false

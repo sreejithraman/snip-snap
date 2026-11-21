@@ -345,15 +345,18 @@ package actor ICloudSyncModeCoordinator {
             to: .iCloudSync,
             namespace: namespace.binding
         )
-        let bridge: FullRecordSyncAdapter
+        let bridge = try await adapter(storeID: transition.candidateStoreID)
         do {
-            bridge = try await adapter(storeID: transition.candidateStoreID)
             if transition.phase == .candidateReady {
                 try await prepareCandidate(transition, using: bridge)
                 let fetchIssue = await bridge.takeSyncIssue()
                 let evidence = try await bridge.statusEvidence()
                 if let fetchIssue {
-                    throw CloudSyncIssueError(fetchIssue)
+                    return try await failedEnable(
+                        transition,
+                        error: CloudSyncIssueError(fetchIssue),
+                        reason: fetchIssue.retriesAutomatically ? nil : .terminalFetchFailure
+                    )
                 }
                 if !evidence.retryableEventKeys.isEmpty {
                     throw CloudSyncIssueError(.someChangesPending)

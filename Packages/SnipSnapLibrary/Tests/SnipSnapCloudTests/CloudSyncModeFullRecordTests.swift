@@ -1292,14 +1292,21 @@ extension ICloudSyncModeCoordinatorTests {
         let zone = descriptor.metadataZone
         let server = FakeCloudServer()
         await server.seedControl(descriptor)
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: zone,
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        let sourceID = try await persistence.snapshot().activeStore.id
+        let rawSource = try await persistence.libraryForTransition(storeID: sourceID)
+        let lifecycle = SnipSnapICloudSyncLifecycle(
+            rootURL: root,
+            sourceLibrary: rawSource,
+            syncModeStore: SnipSyncModeStore(persistence),
+            cloudScope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            ownerName: "owner",
+            controlTransport: FakeCloudControlTransport(server: server),
+            makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
+            makeDescriptor: { descriptor }
         )
-        _ = try await coordinator.enableOrRetry()
-        _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
+        _ = try await lifecycle.enableICloudSync()
+        try await lifecycle.disableICloudSync(.useCurrentCache)
         let local = try await persistence.activeLibrary()
         let localSnapshot = await local.snapshot(sortedBy: .manual)
         let localBase = try XCTUnwrap(localSnapshot.snips.first)
@@ -1334,17 +1341,6 @@ extension ICloudSyncModeCoordinatorTests {
             .save(CloudFullRecordCodec.snipDraft(remote, accepted: accepted))
         ]))
 
-        let lifecycle = SnipSnapICloudSyncLifecycle(
-            rootURL: root,
-            sourceLibrary: local,
-            syncModeStore: SnipSyncModeStore(persistence),
-            cloudScope: namespace.cloudScope,
-            accountLineage: namespace.accountLineage,
-            ownerName: "owner",
-            controlTransport: FakeCloudControlTransport(server: server),
-            makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
-            makeDescriptor: { descriptor }
-        )
         let enabled = try await lifecycle.enableICloudSync()
         XCTAssertEqual(enabled, .enabled)
         let active = try await lifecycle.activeLibrary()

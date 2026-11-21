@@ -116,7 +116,7 @@ struct CloudFullAttachmentBatchPlanner {
     guard let local = publicationByPayloadIdentity[identity] else {
       return operation == nil ? .unhandled : .handled(nil)
     }
-    if operation != nil, !local.isLocallyPresent || local.payloadAccepted {
+    if local.payloadAccepted || (operation != nil && !local.isLocallyPresent) {
       return .handled(nil)
     }
     guard let payloadZone, snapshot.id.zone == payloadZone else {

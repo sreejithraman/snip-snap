@@ -42,7 +42,8 @@ extension SwiftDataSyncModePersistence {
     preserveNewBases: Bool = false
   ) async throws {
     guard let transition = manifest.transition, transition.id == transitionID,
-      transition.targetKind == .iCloudSync, transition.sourceStoreID == manifest.activeStoreID
+      transition.targetKind == .iCloudSync, transition.sourceStoreID == manifest.activeStoreID,
+      fullReenableMergeInFlight != transitionID
     else { return }
     if preserveNewBases, transition.sendAttempt != nil,
       let candidate = try? libraryForTransition(storeID: transition.candidateStoreID)
@@ -51,7 +52,8 @@ extension SwiftDataSyncModePersistence {
       // ancestors. Keep the existing ancestors from before this enable.
       try? await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     }
-    guard manifest.transition?.id == transitionID else { return }
+    guard manifest.transition?.id == transitionID, fullReenableMergeInFlight != transitionID
+    else { return }
     // A later enable can keep ambiguous fetched attachments after an earlier send.
     // No attachment IDs or provider results need to outlive the discarded candidate.
     try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? reason : .firstSyncFailed)
