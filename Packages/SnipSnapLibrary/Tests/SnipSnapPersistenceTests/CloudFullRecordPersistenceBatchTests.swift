@@ -863,7 +863,7 @@ extension CloudFullRecordPersistenceTests {
       namespaceKey: namespace,
       values: [CloudPendingDelete(reference: accepted.reference, identity: accepted.identity)]
     )
-    try await store.clearCloudTextSyncState(namespaceKey: namespace)
+    try await store.clearCloudSyncState(namespaceKey: namespace)
 
     let cleared = try await store.cloudFullStorageSnapshot(namespaceKey: namespace)
     XCTAssertTrue(cleared.readyEntities.isEmpty)

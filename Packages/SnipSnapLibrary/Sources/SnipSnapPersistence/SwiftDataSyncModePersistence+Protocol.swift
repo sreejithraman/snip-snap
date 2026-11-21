@@ -192,14 +192,9 @@ extension SwiftDataSyncModePersistence {
     candidate: SwiftDataSnipLibrary,
     settlement: SyncModeSeedSettlementProof?
   ) async throws -> Set<UUID> {
-    switch transition.syncProtocol {
-    case .legacyTextV1:
-      return try await candidate.acceptedCloudTextSnipIDs()
-    case .fullRecordV1:
-      guard settlement?.namespace == transition.namespace else { return [] }
-      return Set(settlement?.values.compactMap { id, value in
-        if case .saved = value { id } else { nil }
-      } ?? [])
-    }
+    guard settlement?.namespace == transition.namespace else { return [] }
+    return Set(settlement?.values.compactMap { id, value in
+      if case .saved = value { id } else { nil }
+    } ?? [])
   }
 }

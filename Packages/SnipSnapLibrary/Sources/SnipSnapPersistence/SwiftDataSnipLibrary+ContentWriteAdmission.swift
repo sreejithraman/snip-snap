@@ -31,7 +31,6 @@ extension SwiftDataSnipLibrary {
 }
 
 /// The storage admission rule reads every durable source of reset evidence.
-/// Optional legacy fields may be absent; present evidence must remain readable.
 private enum CloudContentWriteAdmission {
   enum Block: Error { case dataReset }
   static func requireStagedAllowsWrites(_ row: StoredCloudStagedBatch) throws {
@@ -39,13 +38,6 @@ private enum CloudContentWriteAdmission {
       throw SnipLibraryError.invalidStore
     }
     let envelope = CloudWirePayloadEnvelope.decode(row.payload)
-    if let legacy = legacyContentEvidence(row.payload, envelope: envelope) {
-      guard let wireBatch = try? JSONSerialization.jsonObject(with: legacy) else {
-        throw SnipLibraryError.invalidStore
-      }
-      try requireWireBatchAllowsWrites(wireBatch, id: row.batchID)
-      return
-    }
     guard let envelope, envelope.format == .fullRecordV1,
       let batch = try? JSONDecoder().decode(CloudFullBatchCommit.self, from: envelope.payload),
       batch.storageVersion == 1, batch.namespaceKey == row.namespaceKey,
@@ -83,10 +75,6 @@ private enum CloudContentWriteAdmission {
   static func requireRecoveryAllowsWrites(_ row: StoredCloudRecoveryEvent) throws {
     guard row.id == "\(row.namespaceKey)|\(row.eventKey)" else { throw SnipLibraryError.invalidStore }
     let envelope = CloudWirePayloadEnvelope.decode(row.payload)
-    if let legacy = legacyContentEvidence(row.payload, envelope: envelope) {
-      try requireLegacyRecoveryAllowsWrites(legacy, storedPayload: row.payload, eventKey: row.eventKey)
-      return
-    }
     guard let envelope, envelope.format == .fullRecordV1 else { throw SnipLibraryError.invalidStore }
     if row.eventKey.hasPrefix("review-recovery-") {
       // These rows hold user review choices, not collection-reset events.
@@ -137,13 +125,6 @@ private enum CloudContentWriteAdmission {
     let recovery: SnipRecoveryRecord
   }
 
-  private static func legacyContentEvidence(
-    _ data: Data, envelope: CloudWirePayloadEnvelope?
-  ) -> Data? {
-    if let envelope { return envelope.format == .legacyTextV1 ? envelope.payload : nil }
-    return CloudWirePayloadEnvelope.hasEnvelopeMarker(data) ? nil : data
-  }
-
   @discardableResult
   private static func requireRawBatchAllowsWrites(_ data: Data, id: UUID) throws -> WireBatchKind {
     guard let header = try? JSONDecoder().decode(RawBatchVersion.self, from: data),
@@ -156,8 +137,6 @@ private enum CloudContentWriteAdmission {
 
   private enum WireBatchKind: String { case fetched, sent }
 
-  /// Replay and legacy rows use the same batch header. Checking it also keeps
-  /// damaged full-record bytes from becoming valid legacy evidence after backfill.
   @discardableResult
   private static func requireWireBatchAllowsWrites(_ object: Any, id: UUID) throws -> WireBatchKind {
     guard let root = object as? [String: Any],
@@ -169,26 +148,6 @@ private enum CloudContentWriteAdmission {
     else { throw SnipLibraryError.invalidStore }
     for event in events { try requireDatabaseEventAllowsWrites(event) }
     return kind
-  }
-
-  private static func requireLegacyRecoveryAllowsWrites(
-    _ data: Data, storedPayload: Data, eventKey: String
-  ) throws {
-    let prefix = String(eventKey.prefix(36))
-    guard UUID(uuidString: prefix) != nil,
-      eventKey == "\(prefix)-\(data.base64EncodedString())"
-        || eventKey == "\(prefix)-\(storedPayload.base64EncodedString())",
-      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      root.count == 1, let kind = root.keys.first, let value = root[kind] as? [String: Any]
-    else { throw SnipLibraryError.invalidStore }
-    if kind == "modeRetryDeletion" {
-      guard value.isEmpty else { throw SnipLibraryError.invalidStore }
-      return
-    }
-    guard ["fetched", "sent", "database", "zone"].contains(kind),
-      let event = value["_0"] as? [String: Any], event.count == 1
-    else { throw SnipLibraryError.invalidStore }
-    if kind == "database" { try requireDatabaseEventAllowsWrites(event) }
   }
 
   private static func requireDatabaseEventAllowsWrites(_ object: Any) throws {

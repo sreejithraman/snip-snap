@@ -51,14 +51,7 @@ final class StoredCloudTextRecord {
     "\(namespaceKey)|\(identity.key)"
   }
 
-  func accept(_ value: CloudTextFetchedValue) {
-    snipID = value.snipID
-    schemaVersion = value.schemaVersion
-    acceptedText = value.text
-    shadowData = value.shadowData
-    systemFields = value.systemFields
-    recoveryData = nil
-  }
+
 }
 
 @Model

@@ -926,7 +926,6 @@ package enum CloudFullBatchCommitResult: Equatable, Sendable {
 }
 
 package enum CloudWirePayloadFormat: String, Codable, Equatable, Sendable {
-  case legacyTextV1
   case fullRecordV1
 }
 
@@ -937,10 +936,6 @@ package struct CloudWirePayloadEnvelope: Codable, Equatable, Sendable {
   package let payload: Data
   private let marker: String
   private let storageVersion: Int
-  private struct Header: Codable {
-    let marker: String
-    let storageVersion: Int
-  }
 
   package init(format: CloudWirePayloadFormat, payload: Data) {
     self.format = format
@@ -957,38 +952,10 @@ package struct CloudWirePayloadEnvelope: Codable, Equatable, Sendable {
     return value
   }
 
-  package static func hasEnvelopeMarker(_ data: Data) -> Bool {
-    (try? JSONDecoder().decode(Header.self, from: data))?.marker == expectedMarker
-  }
-
   package func encoded() throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(self)
   }
 
-  package static func legacyPayload(from data: Data) -> Data? {
-    guard let envelope = decode(data) else {
-      return hasEnvelopeMarker(data) ? nil : data
-    }
-    guard envelope.format == .legacyTextV1 else { return nil }
-    return envelope.payload
-  }
-}
-
-/// The fixed local form used when a schema-1 text-only record first enters the full-record store.
-package struct CloudLegacySnipMaterialization: Codable, Equatable, Sendable {
-  package static let storageVersion = 1
-
-  package let version: Int
-  package let snipID: UUID
-  package let requestID: UUID
-  package let createdAt: Date
-  package let updatedAt: Date
-  package let content: String
-  package let origin: String
-  package let listID: UUID
-  package let isDone: Bool
-  package let orderKey: Data
-  package let remotePresentFields: Set<String>
 }

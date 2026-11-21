@@ -41,12 +41,7 @@ extension SwiftDataSyncModePersistence {
     else { throw SyncModePersistenceError.invalidFreezeToken }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let candidateBefore = try await candidate.transferSnapshot(revision: candidateStore.revision)
-    let acceptedTextBySnipID: [UUID: String]
-    if let suppliedAcceptedText {
-      acceptedTextBySnipID = suppliedAcceptedText
-    } else {
-      acceptedTextBySnipID = try await candidate.acceptedCloudTextValues()
-    }
+    let acceptedTextBySnipID = suppliedAcceptedText ?? [:]
     let accepted = Set(acceptedTextBySnipID.keys)
     let plan = try SnipLibraryTransferPlanner.plan(
       source: source,

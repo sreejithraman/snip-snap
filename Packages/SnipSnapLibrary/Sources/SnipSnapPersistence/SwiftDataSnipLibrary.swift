@@ -106,8 +106,8 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     attachmentCacheRootURL: URL? = nil,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
+    resetRetiredTextNamespace: CloudSyncNamespaceKey? = nil,
     metadataBackfillHook: @escaping @Sendable (LibraryMetadataBackfillPoint) throws -> Void = { _ in },
-    cloudFullRecordBackfillHook: @escaping @Sendable (CloudFullRecordBackfillPoint) throws -> Void = { _ in },
     diagnostics: AppDiagnosticRecorder = .live
   ) throws {
     self.diagnostics = diagnostics
@@ -152,13 +152,12 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       try metadataBackfillHook(.afterSave)
       loaded = try Self.load(context: Self.makeContext(container: container), seenRequestIDs: [])
     }
-    if try Self.backfillCloudFullRecords(context: context) {
-      try cloudFullRecordBackfillHook(.beforeSave)
+    try Self.validate(loaded.state)
+    if let resetRetiredTextNamespace {
+      try Self.resetRetiredTextSync(namespaceKey: resetRetiredTextNamespace, context: context)
       try lock.check()
       try context.save()
-      try cloudFullRecordBackfillHook(.afterSave)
     }
-    try Self.validate(loaded.state)
     seenRequestIDs = loaded.state.seenRequestIDs
     lastKnownState = loaded.state
     knownAttachmentPaths = Dictionary(

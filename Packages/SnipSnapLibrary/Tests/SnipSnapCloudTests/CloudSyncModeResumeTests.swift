@@ -91,7 +91,7 @@ extension ICloudSyncModeCoordinatorTests {
 
             let reopened = try SwiftDataSyncModePersistence(
                 rootURL: root,
-                defaultSyncProtocol: .legacyTextV1
+                defaultSyncProtocol: .fullRecordV1
             )
 
             let recovered = try await reopened.snapshot()
@@ -116,7 +116,7 @@ extension ICloudSyncModeCoordinatorTests {
 
             let reopened = try SwiftDataSyncModePersistence(
                 rootURL: root,
-                defaultSyncProtocol: .legacyTextV1
+                defaultSyncProtocol: .fullRecordV1
             )
 
             let recovered = try await reopened.snapshot()
@@ -324,7 +324,7 @@ extension ICloudSyncModeCoordinatorTests {
         let disk = DiskFullInjector()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             crashHook: disk.hit,
             manifestWriter: disk.writer.write
         )
@@ -371,7 +371,7 @@ extension ICloudSyncModeCoordinatorTests {
         let pause = HeldStepPause()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             // The first read made while the source is frozen is the final snapshot read.
             readHook: { await pause.arrive(atHeldStep: storedSourceIsFrozen(under: root)) }
         )
@@ -515,7 +515,7 @@ extension ICloudSyncModeCoordinatorTests {
         let disk = DiskFullInjector()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             crashHook: disk.hit,
             manifestWriter: disk.writer.write,
             readHook: disk.failRead

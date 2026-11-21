@@ -7,7 +7,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testEnableFetchesRemoteBeforeExplicitlyEnrollingUniqueLocalRecords() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let local = try await persistence.activeLibrary()
         try await add("local", to: local)
         let server = FakeCloudServer()
@@ -43,7 +43,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testEnableKeepsRemoteIdentityAndAddsARecoveredCopyForSameIDLocalText() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let sharedID = UUID(uuidString: "12121212-1212-1212-1212-121212121212")!
         let local = try await persistence.activeLibrary()
         _ = try await local.perform(
@@ -65,13 +65,10 @@ extension ICloudSyncModeCoordinatorTests {
         _ = try await writer.send(
             CloudOutboundBatch(
                 operations: [
-                    .save(
-                        .text(
-                            id: CloudRecordID(zone: textZone(namespace), name: "same-id"),
-                            snipID: sharedID,
-                            text: "remote edit"
-                        )
-                    )
+                    .save(try CloudFullRecordCodec.snipDraft(
+                        Snip(id: sharedID, content: "remote edit", origin: .quickEntry, listID: SnipList.inboxID),
+                        in: textZone(namespace)
+                    ))
                 ]
             )
         )
@@ -95,7 +92,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testOfflineEnableKeepsLocalStoreUsableAndReopenRetriesThePendingTransition() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let local = try await persistence.activeLibrary()
         try await add("kept local", to: local)
         let originalID = try await persistence.snapshot().activeStore.id
@@ -118,7 +115,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(offlineStorage.activeStore.id, originalID)
         XCTAssertEqual(localTexts, ["kept local"])
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let online = FakeCloudRecordTransport(server: server, namespace: namespace)
         let retry = ICloudSyncModeCoordinator(
             persistence: reopened,
@@ -135,7 +132,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testFailedFirstSendKeepsSourceActiveAndRetryRefetchesFinalWrites() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         try await add("retry me", to: persistence.activeLibrary())
         let originalID = try await persistence.snapshot().activeStore.id
         let server = FakeCloudServer()
@@ -172,7 +169,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetryablePartialFirstSendThenEditRefetchesAndUpdatesAcceptedShadow() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("edit me", to: source)
         try await add("retry item", to: source)
@@ -220,7 +217,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetryablePartialFirstSendThenDeleteRefetchesAndDeletesAcceptedShadow() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("delete me", to: source)
         try await add("retry item", to: source)
@@ -259,7 +256,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testTwoPartialSendFailuresRetainProvenanceAcrossEditThenDeleteAndEdit() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("settles twice", to: source)
         try await add("fails twice", to: source)
@@ -321,7 +318,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testAcceptedSeedEditThatRetryablyFailsDoesNotAdvanceItsProvenance() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("edit this twice", to: source)
         try await add("first failure", to: source)
@@ -375,7 +372,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testAcceptedSeedDeleteThatRetryablyFailsDoesNotAdvanceItsProvenance() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("delete must retry", to: source)
         try await add("first failure", to: source)
@@ -422,7 +419,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetryablePartialFirstSendThenRemoteOnlyEditWinsOnFreshFetch() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("remote wins", to: source)
         try await add("retry item", to: source)
@@ -470,7 +467,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetryablePartialFirstSendCombinesLocalMetadataWithRemoteText() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("combine", to: source)
         try await add("retry item", to: source)
@@ -522,7 +519,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetryablePartialFirstSendThenDivergentLocalAndRemoteEditsNeedAttention() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("diverge", to: source)
         try await add("retry item", to: source)
@@ -586,7 +583,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testRetrySettlementTracksOnlyRecordsSentInTheCurrentAttempt() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let source = try await persistence.activeLibrary()
         try await add("source A", to: source)
         try await add("source B", to: source)

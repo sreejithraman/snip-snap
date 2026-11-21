@@ -158,7 +158,7 @@ package struct ICloudAccountIsolation: Codable, Equatable, Sendable {
 }
 
 package enum SyncModeSyncProtocol: String, Codable, Equatable, Sendable {
-  case legacyTextV1
+  case retiredText = "legacyTextV1"
   case fullRecordV1
 }
 
@@ -167,7 +167,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
   package let kind: SyncModeStoreKind
   package let namespace: ICloudSyncNamespaceBinding?
   package let relativeRoot: String
-  package let syncProtocol: SyncModeSyncProtocol
+  package var syncProtocol: SyncModeSyncProtocol
   /// The exact cloud collection whose data this local-only store may rejoin.
   package var quarantinedNamespace: ICloudSyncNamespaceBinding?
   package var revision: UInt64
@@ -208,7 +208,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
     syncProtocol = try values.decodeIfPresent(
       SyncModeSyncProtocol.self,
       forKey: .syncProtocol
-    ) ?? .legacyTextV1
+    ) ?? .retiredText
     quarantinedNamespace = try values.decodeIfPresent(
       ICloudSyncNamespaceBinding.self,
       forKey: .quarantinedNamespace

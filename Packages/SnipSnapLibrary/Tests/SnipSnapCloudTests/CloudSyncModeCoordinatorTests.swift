@@ -15,35 +15,9 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         await transport.pauseNextSend()
         let enable = Task { try await coordinator.enableOrRetry() }
         await transport.waitUntilSendPauses()
-        let storage = try await persistence.snapshot()
-        let transition = try XCTUnwrap(storage.transition)
-        let candidate = try await persistence.libraryForTransition(
-            storeID: transition.candidateStoreID
-        )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
-        let failed = try XCTUnwrap(cloud.records.first(where: { $0.snipID == failedSnipID }))
-        await transport.failNextSentItem(
-            CloudRecordID(
-                zone: CloudZoneID(name: failed.identity.zoneName, ownerName: failed.identity.ownerName),
-                name: failed.identity.recordName
-            ),
-            failure: .retryable
-        )
+        await transport.failNextSentItem(.snip(failedSnipID, in: textZone(namespace)), failure: .retryable)
         await transport.resumeSend()
         return try await enable.value
-    }
-
-    func stripSyncProtocol(from value: Any) -> Any {
-        if let dictionary = value as? [String: Any] {
-            return dictionary.reduce(into: [String: Any]()) { result, entry in
-                guard entry.key != "syncProtocol" else { return }
-                result[entry.key] = stripSyncProtocol(from: entry.value)
-            }
-        }
-        if let array = value as? [Any] {
-            return array.map(stripSyncProtocol(from:))
-        }
-        return value
     }
 
     func mutateManifest(
@@ -93,7 +67,7 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         _ = try await writer.send(
             CloudOutboundBatch(
                 operations: [
-                    .save(.text(id: id, snipID: UUID(), text: text))
+                    .save(try CloudFullRecordCodec.snipDraft(Snip(content: text, origin: .quickEntry), in: id.zone))
                 ]
             )
         )
@@ -104,17 +78,7 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         persistence: SwiftDataSyncModePersistence,
         namespace: CloudSyncNamespace
     ) async throws -> CloudRecordID {
-        let storage = try await persistence.snapshot()
-        let transition = try XCTUnwrap(storage.transition)
-        let candidate = try await persistence.libraryForTransition(
-            storeID: transition.candidateStoreID
-        )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
-        let record = try XCTUnwrap(cloud.records.first(where: { $0.snipID == snipID }))
-        return CloudRecordID(
-            zone: CloudZoneID(name: record.identity.zoneName, ownerName: record.identity.ownerName),
-            name: record.identity.recordName
-        )
+        .snip(snipID, in: textZone(namespace))
     }
 
     func editRemote(
@@ -123,16 +87,19 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         text: String,
         server: FakeCloudServer
     ) async throws {
-        let remote = try await server.snapshot(
-            for: recordID,
-            fields: ["schemaVersion", "snipID", "text"]
-        )
+        let remote = await server.fullSnapshot(for: recordID)
         let current = try XCTUnwrap(remote)
         let writer = FakeCloudRecordTransport(server: server)
         let sent = try await writer.send(
             CloudOutboundBatch(
                 operations: [
-                    .save(.text(id: recordID, snipID: snipID, text: text, base: current.shadow))
+                    .save(CloudRecordDraft(
+                        id: recordID, recordType: current.recordType,
+                        schemaVersion: CloudFullRecordCodec.schemaVersion,
+                        routingFields: current.routingFields,
+                        encryptedFields: current.encryptedFields.merging(["text": .string(text)]) { _, new in new },
+                        base: current.shadow
+                    ))
                 ]
             )
         )
