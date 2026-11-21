@@ -142,8 +142,10 @@ extension ICloudSyncModeCoordinatorTests {
         let remoteSynced = try await remoteCoordinator.syncActive()
         XCTAssertEqual(remoteSynced.state, .on)
 
+        _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace.binding)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root.appendingPathComponent("local"))
         let retry = ICloudSyncModeCoordinator(
-            persistence: persistence,
+            persistence: reopened,
             namespace: namespace,
             textZone: metadataZone,
             payloadZone: payloadZone,
@@ -152,12 +154,12 @@ extension ICloudSyncModeCoordinatorTests {
         let result = try await retry.enableOrRetry()
 
         XCTAssertEqual(result.state, .on, "\(result)")
-        let active = try await persistence.activeLibrary()
+        let active = try await reopened.activeLibrary()
         let final = try await active.checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(Set(final.snips.map(\.id)), [accepted.id, failed.id])
         let merged = try XCTUnwrap(final.snips.first { $0.id == accepted.id })
         XCTAssertEqual(merged.attachments.map(\.id), [attachment.id])
-        let raw = try await persistence.libraryForTransition(storeID: result.activeStoreID)
+        let raw = try await reopened.libraryForTransition(storeID: result.activeStoreID)
         let storage = try await raw.cloudAttachmentStorageSnapshot(namespaceKey: namespace.namespaceKey)
         let publication = try XCTUnwrap(storage.publications.first { $0.metadata.attachmentID == attachment.id })
         let remotePointer = await server.fullSnapshot(

@@ -39,8 +39,7 @@ extension SwiftDataSyncModePersistence {
   package func discardFailedICloudEnable(
     transitionID: UUID,
     reason: ICloudSyncAttentionReason?,
-    preserveNewBases: Bool = false,
-    followsFailedSend: Bool = false
+    preserveNewBases: Bool = false
   ) async throws {
     guard let transition = manifest.transition, transition.id == transitionID,
       transition.targetKind == .iCloudSync, transition.sourceStoreID == manifest.activeStoreID
@@ -50,15 +49,12 @@ extension SwiftDataSyncModePersistence {
     {
       // Accepted records first created during enrollment can serve as normal merge
       // ancestors. Keep the existing ancestors from before this enable.
-      try? await promoteAcceptedFullRetryBases(
-        transition: transition, candidate: candidate, preservingExistingBases: true
-      )
+      try? await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     }
     guard manifest.transition?.id == transitionID else { return }
     // A later enable can keep ambiguous fetched attachments after an earlier send.
     // No attachment IDs or provider results need to outlive the discarded candidate.
-    let mayHaveSent = followsFailedSend || transition.sendAttempt != nil
-    try abortUnactivatedCandidate(reason: mayHaveSent ? .firstSyncFailed : reason)
+    try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? reason : .firstSyncFailed)
   }
 
   package func restartAfterFirstSendFailure(
@@ -90,8 +86,7 @@ extension SwiftDataSyncModePersistence {
 
   private func promoteAcceptedFullRetryBases(
     transition: SyncModeTransition,
-    candidate: SwiftDataSnipLibrary,
-    preservingExistingBases: Bool = false
+    candidate: SwiftDataSnipLibrary
   ) async throws {
     guard transition.syncProtocol == .fullRecordV1,
       let attempt = transition.sendAttempt,
@@ -104,10 +99,8 @@ extension SwiftDataSyncModePersistence {
       (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
     )
     let source = try libraryForTransition(storeID: transition.sourceStoreID)
-    let existingReferences = preservingExistingBases
-      ? Set(try await source.dormantCloudBases().lazy
-        .filter { $0.namespaceKey == namespaceKey.rawValue }.map(\.reference))
-      : []
+    let existingReferences = Set(try await source.dormantCloudBases().lazy
+      .filter { $0.namespaceKey == namespaceKey.rawValue }.map(\.reference))
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     var bases: [CloudDormantBase] = []
@@ -169,6 +162,9 @@ extension SwiftDataSyncModePersistence {
         acceptedSeedIDs: settledState.acceptedSeedIDs,
         provenance: settledState.provenance
       )
+    }
+    if transition.sendAttempt != nil {
+      next.attentionReason = .firstSyncFailed
     }
     try crashHook(.beforeRetryFetchSettlementCommit)
     try commit(next)

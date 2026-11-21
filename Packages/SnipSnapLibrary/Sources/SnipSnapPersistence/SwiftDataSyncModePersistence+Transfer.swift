@@ -294,7 +294,9 @@ extension SwiftDataSyncModePersistence {
     guard let transition = manifest.transition,
       manifest.activeStoreID == transition.sourceStoreID
     else { throw SyncModePersistenceError.transitionInProgress }
-    next.attentionReason = reason
+    if next.attentionReason != .firstSyncFailed {
+      next.attentionReason = reason
+    }
     try commit(next)
     removeStagedFullReenablePlan(
       candidateStoreID: transition.candidateStoreID,

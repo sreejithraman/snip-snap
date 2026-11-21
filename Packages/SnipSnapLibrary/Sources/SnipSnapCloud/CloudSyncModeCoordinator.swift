@@ -340,7 +340,7 @@ package actor ICloudSyncModeCoordinator {
             }
         }
 
-        let followsFailedSend = initial.attentionReason == .firstSyncFailed
+        let followsFailedSend = initial.attentionReason == .firstSyncFailed || initial.transition?.sendAttempt != nil
         var transition = try await persistence.beginOrResumeTransition(
             to: .iCloudSync,
             namespace: namespace.binding
@@ -360,7 +360,7 @@ package actor ICloudSyncModeCoordinator {
                 }
                 if evidence.needsAttention {
                     try await persistence.discardFailedICloudEnable(
-                        transitionID: transition.id, reason: .enrollmentBlocked, followsFailedSend: followsFailedSend
+                        transitionID: transition.id, reason: .enrollmentBlocked
                     )
                     return try await statusUnchecked()
                 }
@@ -373,8 +373,7 @@ package actor ICloudSyncModeCoordinator {
             let status = try await failedEnable(
                 transition,
                 error: error,
-                reason: retryable || CloudSyncDiagnostics.isCancellation(error) ? nil : .terminalFetchFailure,
-                followsFailedSend: followsFailedSend
+                reason: retryable || CloudSyncDiagnostics.isCancellation(error) ? nil : .terminalFetchFailure
             )
             if CloudSyncDiagnostics.isCancellation(error) { throw error }
             if !retryable, error is CloudSyncIssueError { throw error }
@@ -453,9 +452,7 @@ package actor ICloudSyncModeCoordinator {
             }
             let retryable = isRetryableConnectivity(error)
             let reason = retryable || cancelled ? nil : failureReason(error)
-            let status = try await failedEnable(
-                transition, error: error, reason: reason, followsFailedSend: followsFailedSend
-            )
+            let status = try await failedEnable(transition, error: error, reason: reason)
             if retryable { return status }
             throw error
         }
@@ -484,8 +481,7 @@ package actor ICloudSyncModeCoordinator {
     }
 
     private func failedEnable(
-        _ transition: SyncModeTransition, error: Error, reason: ICloudSyncAttentionReason?,
-        followsFailedSend: Bool
+        _ transition: SyncModeTransition, error: Error, reason: ICloudSyncAttentionReason?
     ) async throws -> ICloudSyncModeStatus {
         // Read account status while the enable is still pending.
         let accountState = await accountStateSource.currentAccountState()
@@ -493,14 +489,11 @@ package actor ICloudSyncModeCoordinator {
         do {
             try await persistence.discardFailedICloudEnable(
                 transitionID: transition.id, reason: reason,
-                preserveNewBases: !CloudSyncDiagnostics.isCancellation(error),
-                followsFailedSend: followsFailedSend
+                preserveNewBases: !CloudSyncDiagnostics.isCancellation(error)
             )
         } catch {
             // A transient manifest write failure can leave the source frozen.
-            try? await persistence.discardFailedICloudEnable(
-                transitionID: transition.id, reason: reason, followsFailedSend: followsFailedSend
-            )
+            try? await persistence.discardFailedICloudEnable(transitionID: transition.id, reason: reason)
         }
         let storage = try await persistence.snapshot()
         if storage.activeStore.id != transition.sourceStoreID {
@@ -772,7 +765,7 @@ package actor ICloudSyncModeCoordinator {
                 )
             }
         }
-        if let reason = storage.attentionReason {
+        if let reason = storage.attentionReason, reason != .firstSyncFailed {
             return ICloudSyncModeStatus(
                 state: .needsAttention,
                 activeStoreID: storage.activeStore.id,

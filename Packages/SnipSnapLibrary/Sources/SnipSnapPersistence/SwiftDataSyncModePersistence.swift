@@ -93,7 +93,10 @@ public enum SyncModeActivationManifestReader {
         transition.targetKind == .iCloudSync,
         let namespace = transition.namespace
       else { return .localOnly }
-      return manifest.attentionReason == nil ? .settingUp(namespace) : .needsAttention(namespace)
+      switch manifest.attentionReason {
+      case nil, .firstSyncFailed: return .settingUp(namespace)
+      default: return .needsAttention(namespace)
+      }
     } catch {
       return .localOnly
     }
@@ -486,7 +489,9 @@ package actor SwiftDataSyncModePersistence {
     var declared = manifest
     declared.stores.append(candidate)
     declared.transition = transition
-    declared.attentionReason = nil
+    if declared.attentionReason != .firstSyncFailed {
+      declared.attentionReason = nil
+    }
     try commit(declared)
     try crashHook(.afterCandidateManifest)
     do {
@@ -516,7 +521,9 @@ package actor SwiftDataSyncModePersistence {
   package func recordPreparationComplete() throws {
     var next = manifest
     try next.updateTransition { try $0.recordPreparationComplete() }
-    next.attentionReason = nil
+    if next.attentionReason != .firstSyncFailed {
+      next.attentionReason = nil
+    }
     try commit(next)
   }
 
@@ -795,7 +802,7 @@ package actor SwiftDataSyncModePersistence {
       manifest.activeStoreID == transition.sourceStoreID,
       transition.phase != .pointerSwapped
     else { return }
-    try abortUnactivatedCandidate(reason: nil)
+    try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? nil : .firstSyncFailed)
   }
 
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
@@ -805,7 +812,9 @@ package actor SwiftDataSyncModePersistence {
       next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
-    next.attentionReason = reason
+    if next.attentionReason != .firstSyncFailed {
+      next.attentionReason = reason
+    }
     // Commit before removing any files. A candidate whose files are gone but whose manifest
     // entry survives a failed commit is reopened empty by the next enable.
     try commitRollback(next)
