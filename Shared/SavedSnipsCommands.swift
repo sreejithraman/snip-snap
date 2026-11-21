@@ -7,13 +7,17 @@ typealias SavedSnipsCommandModel = AppModel
 typealias SavedSnipsCommandModel = IOSAppModel
 #endif
 
-enum BackupImportPresentation {
-    case idle
-    case previewing(UUID, replacing: SavedSnipsImportPreview?)
-    case awaitingConfirmation(SavedSnipsImportPreview)
+struct BackupImportPresentation {
+    private enum Phase {
+        case idle
+        case previewing(UUID, replacing: SavedSnipsImportPreview?)
+        case awaitingConfirmation(SavedSnipsImportPreview)
+    }
+
+    private var phase = Phase.idle
 
     var preview: SavedSnipsImportPreview? {
-        switch self {
+        switch phase {
         case .idle: nil
         case .previewing(_, let previous): previous
         case .awaitingConfirmation(let preview): preview
@@ -22,34 +26,44 @@ enum BackupImportPresentation {
 
     mutating func beginPreview(keepingCurrentPreview: Bool = false) -> UUID {
         let operation = UUID()
-        self = .previewing(operation, replacing: keepingCurrentPreview ? preview : nil)
+        phase = .previewing(operation, replacing: keepingCurrentPreview ? preview : nil)
         return operation
     }
 
     @discardableResult
     mutating func present(_ preview: SavedSnipsImportPreview, for operation: UUID) -> Bool {
         guard isPreviewing(operation) else { return false }
-        self = .awaitingConfirmation(preview)
+        phase = .awaitingConfirmation(preview)
         return true
     }
 
     mutating func failPreview(_ operation: UUID) {
-        if isPreviewing(operation) { self = .idle }
+        if isPreviewing(operation) { phase = .idle }
     }
 
     mutating func cancel(keepingActivePreview: Bool) -> UUID? {
         let id = preview?.id
-        if keepingActivePreview, case .previewing(let operation, _) = self {
+        if keepingActivePreview, case .previewing(let operation, _) = phase {
             guard id != nil else { return nil }
-            self = .previewing(operation, replacing: nil)
+            phase = .previewing(operation, replacing: nil)
         } else {
-            self = .idle
+            phase = .idle
         }
         return id
     }
 
+    mutating func beginConfirmation(keepingPreviewVisible: Bool) -> SavedSnipsImportPreview? {
+        guard let preview else { return nil }
+        if !keepingPreviewVisible { phase = .idle }
+        return preview
+    }
+
+    mutating func finishConfirmation() {
+        phase = .idle
+    }
+
     private func isPreviewing(_ operation: UUID) -> Bool {
-        guard case .previewing(let current, _) = self else { return false }
+        guard case .previewing(let current, _) = phase else { return false }
         return current == operation
     }
 }
@@ -143,7 +157,7 @@ extension SavedSnipsCommandModel {
             apply(update.snapshot)
 #endif
             snackbarAndErrors.undoSucceeded(toast)
-            clearCommandFailure(operation)
+            clearFailure(for: operation)
 #if os(iOS)
             apply(update.snapshot)
 #endif
@@ -175,7 +189,7 @@ extension SavedSnipsCommandModel {
             guard result.didChange else { return true }
             clearPendingUndoToast()
 #if os(iOS)
-            clearCommandFailure("snip.delete")
+            clearFailure(for: "snip.delete")
 #endif
             afterDeletion()
             snackbarAndErrors.show(.deleted(count: count, id: token))
@@ -222,8 +236,8 @@ extension SavedSnipsCommandModel {
 #if os(iOS)
             clearPendingUndoToast()
 #endif
-            clearCommandFailure("snip.completion")
-            clearCommandFailure("snip.completion_after_copy")
+            clearFailure(for: "snip.completion")
+            clearFailure(for: "snip.completion_after_copy")
 #if os(macOS)
             clearPendingUndoToast()
 #endif
@@ -275,23 +289,21 @@ extension SavedSnipsCommandModel {
         route: CommandRoute = .userActions,
         afterApply: (SnipLibraryCommandResult) -> Void = { _ in }
     ) async -> Result<SnipLibraryOutcome, Error> {
-#if os(macOS)
-        if case .library = route {
-            let mutation = await performMutationUnlocked {
-                let result = try await session.performLibraryCommandWithResult(command, sortedBy: sortMode)
-                return (result.update, result)
-            }
-            return mutation.map { result in
-                afterApply(result)
-                return result.update.outcome
-            }
-        }
-#endif
         do {
-            let result = try await session.performUserCommandWithResult(command, sortedBy: sortMode)
-            if result.didChange { clearPendingUndoToast() }
+            let result: SnipLibraryCommandResult
+            switch route {
+#if os(macOS)
+            case .library:
+                let undoToken = snackbarAndErrors.undoToken
+                result = try await session.performLibraryCommandWithResult(command, sortedBy: sortMode)
+                await clearUndoUnlessRetained(undoToken)
+#endif
+            case .userActions:
+                result = try await session.performUserCommandWithResult(command, sortedBy: sortMode)
+                if result.didChange { clearPendingUndoToast() }
+            }
 #if os(iOS)
-            clearCommandFailure(command.diagnosticOperation)
+            clearFailure(for: command.diagnosticOperation)
 #endif
             apply(result.update.snapshot)
             afterApply(result)
@@ -355,7 +367,7 @@ extension SavedSnipsCommandModel {
         let (result, recovery) = imported
         clearPendingUndoToast()
 #if os(macOS)
-        backupImport = .idle
+        backupImport.finishConfirmation()
         apply(result.snapshot)
         recoverySnapshot = recovery
 #elseif os(iOS)

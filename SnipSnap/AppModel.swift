@@ -182,7 +182,7 @@ final class AppModel: ObservableObject {
             }
             return false
         case .success:
-            clearCommandFailure("snip.update")
+            clearFailure(for: "snip.update")
             guard savingEdit(sessionID) != nil else { return false }
             closeInlineEditor()
             return true
@@ -242,7 +242,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var appearance: AppAppearance
     @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published var legacyDraftCount = 0
-    @Published var backupImport = BackupImportPresentation.idle
+    @Published var backupImport = BackupImportPresentation()
     var pendingImportPreview: SavedSnipsImportPreview? { backupImport.preview }
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     @Published private(set) var cliScopeChangeInProgress = false
@@ -576,7 +576,7 @@ final class AppModel: ObservableObject {
         snackbarAndErrors.closeErrorDetails(failure)
     }
 
-    func clearCommandFailure(_ operation: StaticString) {
+    func clearFailure(for operation: StaticString) {
         guard latestFailure?.operation == String(describing: operation) else { return }
         snackbarAndErrors.resolveLatestFailure()
     }
@@ -864,7 +864,7 @@ final class AppModel: ObservableObject {
         }
         switch result {
         case .success(let update):
-            clearCommandFailure("snip.add")
+            clearFailure(for: "snip.add")
             guard case .add(let outcome) = update.outcome else {
                 preconditionFailure("The library returned the wrong add outcome.")
             }
@@ -893,7 +893,7 @@ final class AppModel: ObservableObject {
             expectedUpdatedAt: expectedUpdatedAt
         ) {
         case .success:
-            clearCommandFailure("snip.update")
+            clearFailure(for: "snip.update")
             return true
         case .failure(let error):
             presentError(error, operation: "snip.update")
@@ -1120,7 +1120,7 @@ final class AppModel: ObservableObject {
             presentError(error, operation: "list.create")
             return false
         }
-        clearCommandFailure("list.create")
+        clearFailure(for: "list.create")
         return true
     }
 
@@ -1149,7 +1149,7 @@ final class AppModel: ObservableObject {
             presentError(error, operation: "list.update")
             return false
         }
-        clearCommandFailure("list.update")
+        clearFailure(for: "list.update")
         return true
     }
 
@@ -1240,7 +1240,7 @@ final class AppModel: ObservableObject {
     }
 
     func confirmBackupImport() async {
-        guard let preview = pendingImportPreview else { return }
+        guard let preview = backupImport.beginConfirmation(keepingPreviewVisible: true) else { return }
         await withCommandLock {
             guard editingID == nil else { return }
             do {
@@ -1248,7 +1248,7 @@ final class AppModel: ObservableObject {
                 presentImportedBackup(imported)
                 scheduleCloudSync()
             } catch {
-                backupImport = .idle
+                backupImport.finishConfirmation()
                 presentError(error)
                 await reloadUnlocked()
             }
@@ -1750,12 +1750,7 @@ final class AppModel: ObservableObject {
             let undoToken = snackbarAndErrors.undoToken
             let (update, value) = try await mutation()
             let changed = didMutate(value)
-            if changed {
-                let preservesUndo = if let undoToken {
-                    await session.retainsUndo(token: undoToken)
-                } else { false }
-                if !preservesUndo { clearPendingUndoToast() }
-            }
+            if changed { await clearUndoUnlessRetained(undoToken) }
             apply(update.snapshot)
             if changed { scheduleCloudSync() }
             return .success(value)
@@ -1764,10 +1759,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func clearUndoUnlessRetained(_ token: UUID?) async {
+        if let token, await session.retainsUndo(token: token) { return }
+        clearPendingUndoToast()
+    }
+
     private func performPinCommand(_ command: SnipLibraryCommand) async {
         switch await runSavedSnipsCommand(command, route: .library) {
         case .failure(let error): presentError(error, operation: "snip.pin")
-        case .success: clearCommandFailure("snip.pin")
+        case .success: clearFailure(for: "snip.pin")
         }
     }
 

@@ -168,7 +168,7 @@ final class IOSAppModel {
         if case .iCloudSync = cloudAttachmentKnowledge.lastKnownSource { return true }
         return false
     }
-    var backupImport = BackupImportPresentation.idle
+    var backupImport = BackupImportPresentation()
     var pendingImportPreview: SnipImportPreview? { backupImport.preview?.value }
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
@@ -306,12 +306,8 @@ final class IOSAppModel {
 
     var pendingUndoFailure: AppFailure? { snackbarAndErrors.pendingUndoFailure }
 
-    func clearCommandFailure(_ operation: StaticString) {
-        clearFailure(for: String(describing: operation))
-    }
-
-    func clearFailure(for operation: String) {
-        guard let failure, failure.operation == operation else { return }
+    func clearFailure(for operation: StaticString) {
+        guard let failure, failure.operation == String(describing: operation) else { return }
         clearFailure(id: failure.id)
     }
 
@@ -1498,8 +1494,7 @@ final class IOSAppModel {
 
     func confirmBackupImport() async throws {
         haptics.invalidatePendingFeedback()
-        guard let preview = backupImport.preview else { return }
-        backupImport = .idle
+        guard let preview = backupImport.beginConfirmation(keepingPreviewVisible: false) else { return }
         do {
             let imported = try await session.withExclusiveAccess { _ in
                 try Task.checkCancellation()

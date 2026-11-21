@@ -65,7 +65,7 @@ public actor JSONSnipLibrary: SnipLibrary {
     // after the user removes it or the repository reopens.
     private var seenRequestIDs: Set<UUID>
 
-    public init(fileURL: URL = JSONSnipLibrary.defaultStoreURL()) throws {
+    public init(fileURL: URL) throws {
         self.fileURL = fileURL
         attachmentRootURL = fileURL.deletingLastPathComponent()
             .appendingPathComponent("Attachments", isDirectory: true)
@@ -116,21 +116,9 @@ public actor JSONSnipLibrary: SnipLibrary {
     }
 
     public static func unavailable(
-        fileURL: URL = JSONSnipLibrary.defaultStoreURL()
+        fileURL: URL = .temporaryDirectory.appendingPathComponent("unavailable.json")
     ) -> JSONSnipLibrary {
         JSONSnipLibrary(unavailableAt: fileURL)
-    }
-
-    public static func defaultStoreURL(fileManager: FileManager = .default) -> URL {
-        if let overridePath = LocalSnipStorePaths.storePathOverride() {
-            return URL(fileURLWithPath: overridePath, isDirectory: false)
-        }
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
-        return base
-            .appendingPathComponent("Snip Snap", isDirectory: true)
-            .appendingPathComponent("snips.json", isDirectory: false)
     }
 
     public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -455,14 +443,6 @@ public actor JSONSnipLibrary: SnipLibrary {
         _ = try perform(.setDone(ids: ids, done: done), sortedBy: .manual)
     }
 
-    public func toggleDone(id: UUID) throws {
-        _ = try perform(.toggleDone(id: id), sortedBy: .manual)
-    }
-
-    public func toggleDone(ids: Set<UUID>) throws {
-        _ = try perform(.toggleDoneMany(ids: ids), sortedBy: .manual)
-    }
-
     public func moveChronologically(ids: [UUID], to listID: UUID) throws {
         _ = try perform(.moveChronologically(ids: ids, to: listID), sortedBy: .manual)
     }
@@ -477,10 +457,6 @@ public actor JSONSnipLibrary: SnipLibrary {
             .place(ids: ids, in: listID, before: destinationID, basedOn: sortMode),
             sortedBy: sortMode
         )
-    }
-
-    public func replaceAll(with replacement: [Snip]) throws {
-        _ = try perform(.replaceAll(replacement), sortedBy: .manual)
     }
 
     private func removeUnreferencedAttachments(
