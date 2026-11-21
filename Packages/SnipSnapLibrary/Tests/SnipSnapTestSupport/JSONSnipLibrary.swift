@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import SnipSnapPersistence
 import UniformTypeIdentifiers
 
 public actor JSONSnipLibrary: SnipLibrary {
@@ -52,10 +53,10 @@ public actor JSONSnipLibrary: SnipLibrary {
         }
     }
 
-    static let currentVersion = 6
+    package static let currentVersion = JSONSnipArchive.currentVersion
 
     private let fileURL: URL
-    nonisolated let attachmentRootURL: URL
+    public nonisolated let attachmentRootURL: URL
     private let isAvailable: Bool
     private var snips: [Snip]
     private var lists: [SnipList]
@@ -291,7 +292,7 @@ public actor JSONSnipLibrary: SnipLibrary {
                         let destination = attachmentRootURL.appendingPathComponent(relativePath)
                         let directory = destination.deletingLastPathComponent()
                         if !FileManager.default.fileExists(atPath: destination.path) {
-                            try DurableFile.createDirectory(directory)
+                            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                             createdDirectories.append(directory)
                             if let bytes = plan.attachmentData[attachment.id] {
                                 try DurableFile.write(bytes, to: destination)
@@ -350,17 +351,17 @@ public actor JSONSnipLibrary: SnipLibrary {
         )
     }
 
-    func allSnips(sortMode: SnipSortMode = .chronological) -> [Snip] {
+    public func allSnips(sortMode: SnipSortMode = .chronological) -> [Snip] {
         SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: seenRequestIDs)
             .allSnips(sortMode: sortMode)
     }
 
-    func allLists() -> [SnipList] {
+    public func allLists() -> [SnipList] {
         SnipLibraryState(snips: snips, lists: lists, seenRequestIDs: seenRequestIDs).allLists()
     }
 
     @discardableResult
-    func add(
+    public func add(
         content: String,
         origin: SnipOrigin,
         source: SnipSource? = nil,
@@ -385,7 +386,7 @@ public actor JSONSnipLibrary: SnipLibrary {
         return update.snapshot.snips.first { $0.id == id }
     }
 
-    func createList(name: String, systemImage: String) throws -> SnipList {
+    public func createList(name: String, systemImage: String) throws -> SnipList {
         let update = try perform(
             .createList(name: name, systemImage: systemImage),
             sortedBy: .chronological
@@ -396,15 +397,15 @@ public actor JSONSnipLibrary: SnipLibrary {
         return list
     }
 
-    func updateList(id: UUID, name: String, systemImage: String) throws {
+    public func updateList(id: UUID, name: String, systemImage: String) throws {
         _ = try perform(.updateList(id: id, name: name, systemImage: systemImage), sortedBy: .manual)
     }
 
-    func deleteList(id: UUID) throws {
+    public func deleteList(id: UUID) throws {
         _ = try perform(.deleteList(id: id), sortedBy: .manual)
     }
 
-    func update(
+    public func update(
         id: UUID,
         content: String,
         attachmentURLs: [URL]? = nil,
@@ -423,15 +424,15 @@ public actor JSONSnipLibrary: SnipLibrary {
         )
     }
 
-    func delete(ids: Set<UUID>) throws {
+    public func delete(ids: Set<UUID>) throws {
         _ = try perform(.delete(ids: ids), sortedBy: .manual)
     }
 
-    func restore(snips: [Snip]) throws {
+    public func restore(snips: [Snip]) throws {
         _ = try perform(.restore(snips: snips), sortedBy: .manual)
     }
 
-    func restore(
+    public func restore(
         snips: [Snip],
         replacing id: UUID,
         expectedUpdatedAt: Date
@@ -442,7 +443,7 @@ public actor JSONSnipLibrary: SnipLibrary {
         )
     }
 
-    func merge(ids: Set<UUID>, now: Date = Date()) throws -> Snip {
+    public func merge(ids: Set<UUID>, now: Date = Date()) throws -> Snip {
         let update = try perform(.merge(ids: ids, now: now), sortedBy: .manual)
         guard case .merged(let snip) = update.outcome else {
             throw SnipLibraryError.requiresMultipleSnips
@@ -450,23 +451,23 @@ public actor JSONSnipLibrary: SnipLibrary {
         return snip
     }
 
-    func setDone(ids: Set<UUID>, done: Bool) throws {
+    public func setDone(ids: Set<UUID>, done: Bool) throws {
         _ = try perform(.setDone(ids: ids, done: done), sortedBy: .manual)
     }
 
-    func toggleDone(id: UUID) throws {
+    public func toggleDone(id: UUID) throws {
         _ = try perform(.toggleDone(id: id), sortedBy: .manual)
     }
 
-    func toggleDone(ids: Set<UUID>) throws {
+    public func toggleDone(ids: Set<UUID>) throws {
         _ = try perform(.toggleDoneMany(ids: ids), sortedBy: .manual)
     }
 
-    func moveChronologically(ids: [UUID], to listID: UUID) throws {
+    public func moveChronologically(ids: [UUID], to listID: UUID) throws {
         _ = try perform(.moveChronologically(ids: ids, to: listID), sortedBy: .manual)
     }
 
-    func place(
+    public func place(
         ids: [UUID],
         in listID: UUID,
         before destinationID: UUID?,
@@ -478,11 +479,11 @@ public actor JSONSnipLibrary: SnipLibrary {
         )
     }
 
-    func replaceAll(with replacement: [Snip]) throws {
+    public func replaceAll(with replacement: [Snip]) throws {
         _ = try perform(.replaceAll(replacement), sortedBy: .manual)
     }
 
-    func removeUnreferencedAttachments(
+    private func removeUnreferencedAttachments(
         currentSnips: [Snip],
         keepingAdditional relativePaths: Set<String>
     ) {
@@ -645,7 +646,7 @@ public actor JSONSnipLibrary: SnipLibrary {
         }
     }
 
-    nonisolated func attachmentURL(for attachment: SnipAttachment) -> URL {
+    public nonisolated func attachmentURL(for attachment: SnipAttachment) -> URL {
         attachmentRootURL.appendingPathComponent(attachment.relativePath, isDirectory: false)
     }
 
@@ -669,4 +670,28 @@ public actor JSONSnipLibrary: SnipLibrary {
         for index in result.indices { result[index].position = index }
         return result
     }
+}
+
+extension JSONSnipLibrary {
+  public func previewImport(
+    _ source: SnipLibraryTransferSnapshot,
+    transitionID: UUID
+  ) async throws -> SnipImportPreview {
+    let target = try await previewTransferSnapshot(revision: 0)
+    let plan = try SnipLibraryTransferPlanner.plan(
+      source: source,
+      target: target,
+      transitionID: transitionID
+    )
+    return SnipLibraryImport.makePreview(
+      source: source,
+      target: target,
+      plan: plan,
+      transitionID: transitionID
+    )
+  }
+
+  public func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
+    try await SnipLibraryImport.applyPrepared(preview, to: self)
+  }
 }

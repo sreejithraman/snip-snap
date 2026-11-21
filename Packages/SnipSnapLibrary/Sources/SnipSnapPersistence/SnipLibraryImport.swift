@@ -52,30 +52,6 @@ public enum SnipLibraryImport {
   }
 }
 
-extension JSONSnipLibrary {
-  public func previewImport(
-    _ source: SnipLibraryTransferSnapshot,
-    transitionID: UUID
-  ) async throws -> SnipImportPreview {
-    let target = try await previewTransferSnapshot(revision: 0)
-    let plan = try SnipLibraryTransferPlanner.plan(
-      source: source,
-      target: target,
-      transitionID: transitionID
-    )
-    return SnipLibraryImport.makePreview(
-      source: source,
-      target: target,
-      plan: plan,
-      transitionID: transitionID
-    )
-  }
-
-  public func applyImport(_ preview: SnipImportPreview) async throws -> SnipImportResult {
-    try await SnipLibraryImport.applyPrepared(preview, to: self)
-  }
-}
-
 extension SwiftDataSnipLibrary {
   public func previewImport(
     _ source: SnipLibraryTransferSnapshot,
@@ -109,7 +85,7 @@ extension SwiftDataSnipLibrary {
 }
 
 extension SnipLibraryImport {
-  fileprivate static func makePreview(
+  package static func makePreview(
     source: SnipLibraryTransferSnapshot,
     target: SnipLibraryTransferSnapshot,
     plan: SnipLibraryTransferPlan,
@@ -136,7 +112,7 @@ extension SnipLibraryImport {
     )
   }
 
-  fileprivate static func applyPrepared(
+  package static func applyPrepared(
     _ preview: SnipImportPreview,
     to target: any SnipLibrary,
     beforeCommit: @escaping @Sendable () async throws -> Void = {}

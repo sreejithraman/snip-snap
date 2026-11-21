@@ -8,6 +8,9 @@ import UIKit
 import UniformTypeIdentifiers
 import XCTest
 @testable import SnipSnapiOS
+import SnipSnapTestSupport
+
+typealias JSONSnipLibrary = SnipSnapTestSupport.JSONSnipLibrary
 
 @MainActor
 class IOSModelTestCase: XCTestCase {

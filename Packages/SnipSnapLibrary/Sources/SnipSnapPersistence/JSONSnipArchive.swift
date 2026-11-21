@@ -3,6 +3,8 @@ import SnipSnapCore
 
 /// The portable contents of a supported Snip Snap JSON document.
 public struct JSONSnipArchive: Equatable, Sendable {
+  package static let currentVersion = 6
+
   public let version: Int
   public let snips: [Snip]
   public let lists: [SnipList]
@@ -62,7 +64,7 @@ public enum JSONSnipArchiveReader {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let document = try decoder.decode(Document.self, from: data)
-    guard document.version == JSONSnipLibrary.currentVersion else {
+    guard document.version == JSONSnipArchive.currentVersion else {
       throw SnipLibraryError.invalidStore
     }
     let lists = try validatedLists(document.lists, snips: document.snips)
@@ -312,7 +314,7 @@ public enum JSONSnipArchiveTransfer {
     encoder.dateEncodingStrategy = .iso8601
     let data = try encoder.encode(
       Document(
-        version: JSONSnipLibrary.currentVersion,
+        version: JSONSnipArchive.currentVersion,
         snips: archive.snips,
         lists: archive.lists,
         seenRequestIDs: archive.seenRequestIDs
