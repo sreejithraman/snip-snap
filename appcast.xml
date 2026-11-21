@@ -4,6 +4,24 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sat, 21 Nov 2026 07:09:47 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.292</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.292-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>292</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.292/Snip-Snap-0.6.1.zip" length="19963476" type="application/octet-stream" sparkle:edSignature="L8q07wCv0nSlusaYdUcBNVyIBwUy6bpXRoOAAAXQTi7B3T8S3JH7K8wVA4NXr8skZ1CnDdtlhmj5SkATHZ0UCQ=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 292 — Mac
+
+- Keep first-upload attachment links valid during removal
+- Fix attachment references during synced snip deletion and merge
+- Remove retired text-only iCloud sync adapter
+- Simplify diagnostics to a capped JSONL log
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Thu, 19 Nov 2026 23:01:12 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.287</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.287-mac.txt</sparkle:fullReleaseNotesLink>
