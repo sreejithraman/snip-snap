@@ -1,5 +1,6 @@
 import CryptoKit
 import SnipSnapCore
+import Synchronization
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
 import XCTest
@@ -983,10 +984,18 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try storeRootCount(in: root), 1)
     }
 
-    func testSameAccountReturnSchedulesNormalOutboundWorkAfterActivation() async throws {
+    func testSameAccountReturnFinishesInterruptedActivationAndSchedulesNormalSync() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let interrupt = Mutex(false)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: { point in
+            if point == .afterPointerSwap, interrupt.withLock({ armed in
+                defer { armed = false }
+                return armed
+            }) {
+                throw CrashInjector.Failure.injected
+            }
+        })
         let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
         let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
         let server = FakeCloudServer()
@@ -1031,6 +1040,15 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(signedOut, .signedOut)
         try await add("made while signed out", to: persistence.activeLibrary())
         await account.setState(.available(accountLineage: namespace.accountLineage))
+
+        interrupt.withLock { $0 = true }
+        do {
+            _ = try await handler.refreshAppleAccountNotice()
+            XCTFail("Expected an interruption after the account-return swap")
+        } catch CrashInjector.Failure.injected {}
+        let interrupted = try await persistence.snapshot()
+        XCTAssertEqual(interrupted.activeStore.kind, .iCloudSync)
+        XCTAssertEqual(interrupted.transition?.phase, .swapped)
 
         let returned = try await handler.refreshAppleAccountNotice()
         XCTAssertNil(returned)

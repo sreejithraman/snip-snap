@@ -216,6 +216,8 @@ package actor ICloudSyncModeCoordinator {
             case .available(let accountLineage)
                 where accountLineage != namespace.accountLineage:
                 _ = try await persistence.isolateActiveCloudStore(reason: .accountChanged)
+            case .available where storage.transition?.phase == .swapped:
+                return try await enableOrRetry()
             case .available, .restricted, .temporarilyUnavailable, .couldNotDetermine:
                 break
             }

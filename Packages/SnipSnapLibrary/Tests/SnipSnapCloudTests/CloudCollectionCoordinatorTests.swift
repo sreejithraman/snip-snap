@@ -176,6 +176,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
     await model.enableICloudSync()
     let foreground = try await session.synchronize()
+    _ = try await session.synchronize()
     let library = try await session.activeLibrary()
     let snapshot = try await library.library.checkedSnapshot(sortedBy: .manual)
     let storedControl = await server.controlDescriptor()
