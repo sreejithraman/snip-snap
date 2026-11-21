@@ -278,7 +278,8 @@ Local diagnostic recording is enabled by default in Dev, TestFlight, and Release
 builds. The app keeps the newest complete events within a 256 KiB log in its
 Application Support directory, excluded from backup. Test runners can use an
 explicit isolated diagnostics directory. On iOS the Share extension uses its
-own log and shares the recording preference with the app. Use the unified log
+own log and shares the recording preference with the app. If the shared
+preference is unavailable, events go to the unified log only. Use the unified log
 to inspect extension events. The app’s report covers its own history.
 
 On iPhone or iPad, open **Settings → Support → Diagnostics → Share diagnostic
@@ -325,10 +326,9 @@ collection](https://developer.apple.com/documentation/xcode/acquiring-crash-repo
 
 Agents can read the exported text attachment. The Mac `snipsnap diagnostics logs`
 command reads logs on that Mac; it cannot retrieve an iPhone's private app data.
-Check the report's available time range, omitted-event and loss markers before
-inferring that no failure occurred. Correlate its timestamps and build with any
-Apple crash report. Events still queued in memory can be lost if the app stops;
-unrecorded or expired history cannot be recovered by a later export.
+Use the selected range and event timestamps to assess the report’s coverage.
+Correlate its timestamps and build with any Apple crash report. Events can be
+evicted by the byte cap or lost if the app stops before writing them.
 Authorized maintainers can retrieve submitted TestFlight crash feedback through
 App Store Connect or the optional `asc` tool:
 

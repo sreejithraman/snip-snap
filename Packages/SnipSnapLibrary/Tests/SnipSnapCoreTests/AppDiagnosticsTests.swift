@@ -41,7 +41,7 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertLessThan(report.returnedEvents, 20)
     XCTAssertTrue(report.text.contains("bytes=119"))
     XCTAssertFalse(report.text.contains("bytes=100"))
-    let reader = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2")
+    let reader = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root)
     XCTAssertEqual(try reader.readLog(range: .last24Hours, limit: 200, errorsOnly: false).text, report.text)
   }
 
@@ -72,10 +72,22 @@ final class AppDiagnosticsTests: XCTestCase {
     XCTAssertTrue(try scope.setRecordingEnabled(true, ifRevision: current.recordingRevision))
   }
 
+  func testUnavailableSharedPreferenceDoesNotEnablePrivateRecording() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = AppDiagnosticEventStore(
+      directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: nil
+    )
+    XCTAssertThrowsError(try store.append(.succeeded(operation: "app.startup"), at: Date()))
+    XCTAssertThrowsError(try store.readRecordingEnabled())
+    XCTAssertThrowsError(try store.setRecordingEnabled(true))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+  }
+
   private func makeScope(byteLimit: Int = 256 * 1024) -> (URL, AppDiagnosticScope) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let store = AppDiagnosticEventStore(
-      directoryURL: root, appVersion: "1", appBuild: "2", byteLimit: byteLimit
+      directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root, byteLimit: byteLimit
     )
     return (root, AppDiagnosticScope(store: store))
   }

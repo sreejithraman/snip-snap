@@ -12,20 +12,18 @@ struct AppDiagnosticEventStore: Sendable {
   private let appVersion: String
   private let appBuild: String
   private let byteLimit: Int
-  private let now: @Sendable () -> Date
   private var history: URL { directoryURL.appendingPathComponent("events.jsonl") }
-  private let preference: URL
+  private let preference: URL?
 
   init(
     directoryURL: URL, appVersion: String, appBuild: String,
-    preferenceDirectory: URL? = nil, byteLimit: Int = 256 * 1024, now: @escaping @Sendable () -> Date = { Date() }
+    preferenceDirectory: URL?, byteLimit: Int = 256 * 1024
   ) {
     self.directoryURL = directoryURL.standardizedFileURL
     self.appVersion = Self.safeVersion(appVersion)
     self.appBuild = Self.safeVersion(appBuild)
-    preference = (preferenceDirectory ?? directoryURL).appendingPathComponent("recording.json")
+    preference = preferenceDirectory?.appendingPathComponent("recording.json")
     self.byteLimit = byteLimit
-    self.now = now
   }
 
   static func forBundle(
@@ -35,9 +33,9 @@ struct AppDiagnosticEventStore: Sendable {
     if let path = ProcessInfo.processInfo.environment["SNIP_SNAP_DIAGNOSTICS_DIRECTORY"],
       path.hasPrefix("/")
     {
+      let isolated = URL(fileURLWithPath: path, isDirectory: true)
       return Self(
-        directoryURL: URL(fileURLWithPath: path, isDirectory: true),
-        appVersion: appVersion, appBuild: appBuild
+        directoryURL: isolated, appVersion: appVersion, appBuild: appBuild, preferenceDirectory: isolated
       )
     }
     let support = URL.applicationSupportDirectory
@@ -47,17 +45,17 @@ struct AppDiagnosticEventStore: Sendable {
     } ?? unbundledNamespace
     directory = support.appendingPathComponent(namespace).appendingPathComponent("SnipSnapDiagnostics")
     #if os(iOS)
-      var preferenceDirectory: URL?
+      var preferenceDirectory: URL? = directory
       // Keep the existing opt-out shared with the Share extension. Each process owns its log.
       if let group = bundle?.object(forInfoDictionaryKey: "SnipSnapAppGroupIdentifier") as? String,
-        let app = bundle?.object(forInfoDictionaryKey: "SnipSnapDiagnosticsApplicationIdentifier") as? String,
-        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
+        let app = bundle?.object(forInfoDictionaryKey: "SnipSnapDiagnosticsApplicationIdentifier") as? String
       {
-        preferenceDirectory = container.appendingPathComponent("Library/Application Support")
+        preferenceDirectory = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+          .appendingPathComponent("Library/Application Support")
           .appendingPathComponent(app).appendingPathComponent("SnipSnapDiagnostics")
       }
     #else
-      let preferenceDirectory: URL? = nil
+      let preferenceDirectory = directory
     #endif
     return Self(
       directoryURL: directory, appVersion: appVersion, appBuild: appBuild,
@@ -92,7 +90,8 @@ struct AppDiagnosticEventStore: Sendable {
   }
 
   func readRecordingEnabled() throws -> Bool {
-    switch try read(preference) {
+    guard let preference else { throw CocoaError(.fileReadNoPermission) }
+    return switch try read(preference) {
     case nil, Data("enabled\n".utf8): true
     case Data("disabled\n".utf8): false
     default: throw CocoaError(.fileReadCorruptFile)
@@ -100,6 +99,7 @@ struct AppDiagnosticEventStore: Sendable {
   }
 
   func setRecordingEnabled(_ enabled: Bool) throws {
+    guard let preference else { throw CocoaError(.fileWriteNoPermission) }
     try createDirectory(preference.deletingLastPathComponent())
     try Data((enabled ? "enabled\n" : "disabled\n").utf8).write(to: preference, options: .atomic)
   }
@@ -108,7 +108,7 @@ struct AppDiagnosticEventStore: Sendable {
     range: AppDiagnosticExportRange, limit: Int, errorsOnly: Bool
   ) throws -> AppDiagnosticLogReport {
     guard limit > 0 else { throw POSIXError(.EINVAL) }
-    let cutoff = now().addingTimeInterval(range == .last24Hours ? -86_400 : -604_800)
+    let cutoff = Date().addingTimeInterval(range == .last24Hours ? -86_400 : -604_800)
     let decoder = JSONDecoder()
     let matching = (try read(history) ?? Data()).split(separator: 10)
       .compactMap { try? decoder.decode(Entry.self, from: Data($0)) }

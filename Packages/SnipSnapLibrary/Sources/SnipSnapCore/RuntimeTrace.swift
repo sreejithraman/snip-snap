@@ -29,17 +29,15 @@ public enum AppRuntimeTrace {
 
 /// Production traces use only OSLog, independently of diagnostic history.
 package struct RuntimeTrace: Sendable {
-  package enum Component: String, Sendable { case application, diagnostics, database, writer }
+  package enum Component: String, Sendable { case application, diagnostics, database }
   package enum Operation: String, Sendable {
-    case access, append, read, export, clear, recording, migration, containerCleanup
+    case access, containerCleanup
   }
   package enum Phase: String, Sendable {
     case applicationState, protectedDataChanged, protectedDataWillBecomeUnavailable
     case protectionRequested, protectionGranted, protectionDenied, protectionExpired, protectionEnded
     case lockWaiting, lockAcquired, lockReleased, accessEnded
-    case cleanupStarted, cleanupEnded, migrationStarted, migrationEnded
-    case shareCleanupStarted, shareCleanupEnded
-    case writerDeferred, writerRecovered, writerLoss
+    case cleanupStarted, cleanupEnded
   }
   struct Context: Sendable {
     var state: AppRuntimeTrace.State = .unknown
@@ -62,18 +60,13 @@ package struct RuntimeTrace: Sendable {
     package var elapsedMilliseconds: Double? = nil
     package var waitMilliseconds: Double? = nil
     package var holdMilliseconds: Double? = nil
-    package var queued: Int? = nil
-    package var retries: Int? = nil
-    package var dropped: Int? = nil
-    package var uncertain: Int? = nil
     package var appState: AppRuntimeTrace.State = .unknown
     package var protectedDataAvailable: Bool? = nil
 
     var persisted: Bool {
       switch phase {
       case .applicationState, .protectedDataChanged, .protectedDataWillBecomeUnavailable,
-        .protectionDenied, .protectionExpired,
-        .writerDeferred, .writerRecovered, .writerLoss:
+        .protectionDenied, .protectionExpired:
         true
       case .lockAcquired, .lockReleased:
         appState == .background || appState == .inactive
@@ -93,10 +86,6 @@ package struct RuntimeTrace: Sendable {
       for (key, value) in [("elapsed_ms", elapsedMilliseconds), ("wait_ms", waitMilliseconds),
         ("hold_ms", holdMilliseconds)] {
         if let value { fields.append("\(key)=\(String(format: "%.3f", value))") }
-      }
-      for (key, value) in [("queued_submissions", queued), ("retries", retries), ("dropped", dropped),
-        ("uncertain", uncertain)] {
-        if let value { fields.append("\(key)=\(value)") }
       }
       return fields.joined(separator: " ")
     }
@@ -150,12 +139,6 @@ package struct RuntimeTrace: Sendable {
       self.operation = operation
       id = RuntimeTrace.sequence.withLock { $0 &+= 1; return $0 }
       started = trace.now()
-    }
-
-    package func health(_ phase: Phase, queued: Int, retries: Int, dropped: Int, uncertain: Int) {
-      trace.emit(.init(component: component, phase: phase, operation: operation, id: id,
-        elapsedMilliseconds: max(0, trace.now() - started) * 1_000,
-        queued: queued, retries: retries, dropped: dropped, uncertain: uncertain))
     }
 
     package func mark(_ phase: Phase) {

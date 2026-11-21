@@ -67,7 +67,7 @@ final class AppDiagnosticSettingsModelTests: XCTestCase {
     let backend = SettingsBackend()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2")
+    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root)
     let gate = BlockingSettingsWork()
     defer { gate.release() }
     var operations = backend.operations
@@ -200,7 +200,7 @@ final class AppDiagnosticSettingsModelTests: XCTestCase {
         let backend = SettingsBackend()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2")
+        let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root)
         var operations = backend.operations
         operations.prepareExport = { try store.makeShareableFile(range: $0) }
         operations.removeExport = { store.removeShareableFile($0) }
@@ -250,7 +250,7 @@ final class AppDiagnosticSettingsModelTests: XCTestCase {
     let backend = SettingsBackend()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2")
+    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root)
     let gate = BlockingSettingsWork()
     defer { gate.release() }
     var operations = backend.operations
@@ -281,7 +281,7 @@ final class AppDiagnosticSettingsModelTests: XCTestCase {
     let backend = SettingsBackend()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2")
+    let store = AppDiagnosticEventStore(directoryURL: root, appVersion: "1", appBuild: "2", preferenceDirectory: root)
     var operations = backend.operations
     operations.prepareExport = { try store.makeShareableFile(range: $0) }
     operations.removeExport = { store.removeShareableFile($0) }
