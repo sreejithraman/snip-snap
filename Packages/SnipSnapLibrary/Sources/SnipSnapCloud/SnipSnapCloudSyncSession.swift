@@ -160,7 +160,9 @@ public actor SnipSnapCloudSyncSession {
   }
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
-    try await operationGate.withLease(enableAction)
+    let outcome = try await operationGate.withLease(enableAction)
+    if case .enabled = outcome { scheduleAutomaticSync() }
+    return outcome
   }
 
   @discardableResult
@@ -221,6 +223,7 @@ public actor SnipSnapCloudSyncSession {
           }
         }
         result = .success(value)
+        if value == .iCloudSyncEnabled { scheduleAutomaticSync() }
       } catch {
         result = .failure(error)
         if batch.includesAutomaticSync {

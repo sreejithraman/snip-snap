@@ -9,3 +9,7 @@ A recovered snip appears beside the main snip with a visible badge and explanati
 When a remote delete competes with an offline edit, the original remains deleted and the edited version becomes a recovered snip in Inbox. If a remote list deletion competes with an offline move into that list, the list remains deleted and the snip moves to Inbox. Sync status will explain that move. Manual order will use sync-safe sort keys with stable IDs as tie-breakers. A server-accepted update will settle concurrent moves of the same snip without a recovered copy or warning.
 
 A user may turn off sync while offline by copying the current local cache after the app warns that newer iCloud changes may be absent. Turning off sync leaves the iCloud copy intact. The app will report Off, Setting Up, On, Syncing, and Needs Attention without promising that all remote changes have arrived.
+
+## Sync-mode activation
+
+On enable, Snip Snap fetches iCloud and merges it with the device's library before swapping the active store. The first upload uses the normal outbound queue after the swap. The device keeps its original library writable while preparing the candidate. Turning off sync copies the device's library and leaves iCloud content in place. Approved by SIMP-ADR12-15-D1 for SIMP-06.

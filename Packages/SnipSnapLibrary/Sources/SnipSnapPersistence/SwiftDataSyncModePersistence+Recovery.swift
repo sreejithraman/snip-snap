@@ -8,9 +8,21 @@ extension SwiftDataSyncModePersistence {
     attachmentCacheRootURL: URL? = nil
   ) throws {
     let storeRoots = try validatedStoreRoots(value.stores, rootURL: rootURL)
-    // The revision advances before the store write starts. A leftover reservation means the
-    // write may or may not have reached SwiftData, so keep that revision and reopen writes.
-    value.writeReservation = nil
+    if let transition = value.transition {
+      try validateTransition(transition, in: value)
+      if value.activeStoreID == transition.sourceStoreID,
+        let candidateIndex = value.stores.firstIndex(where: { $0.id == transition.candidateStoreID })
+      {
+        value.stores[candidateIndex].lifecycle = .deleting
+      } else if let root = storeRoots[transition.candidateStoreID],
+        FileManager.default.fileExists(atPath: root.appendingPathComponent("snips.store").path),
+        let sourceIndex = value.stores.firstIndex(where: { $0.id == transition.sourceStoreID }),
+        value.stores[sourceIndex].lifecycle == .retired
+      {
+        value.stores[sourceIndex].lifecycle = .deleting
+      }
+      value.transition = nil
+    }
     if case .declared(let isolation) = try value.accountIsolationPhase() {
       guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
         throw SyncModePersistenceError.invalidManifest
@@ -63,15 +75,9 @@ extension SwiftDataSyncModePersistence {
           try FileManager.default.removeItem(at: storeRoot)
         }
         value.stores.removeAll { $0.id == store.id }
-        if value.transition?.candidateStoreID == store.id { value.transition = nil }
       } catch {
         value.attentionReason = .storageFailure
       }
-    }
-    // The active pointer is authoritative even when an old enable was interrupted.
-    // Keep every ready store on disk and discard only the retired transport's work.
-    if value.transition?.syncProtocol == .retiredText {
-      value.transition = nil
     }
     for index in value.stores.indices where value.stores[index].syncProtocol == .retiredText {
       let store = value.stores[index]
@@ -86,7 +92,6 @@ extension SwiftDataSyncModePersistence {
       }
       value.stores[index].syncProtocol = .fullRecordV1
     }
-    value.transition?.interruptByReopen()
   }
 
   static func validatedStoreRoots(
@@ -136,53 +141,25 @@ extension SwiftDataSyncModePersistence {
         store.relativeRoot == canonicalRelativeRoot(for: store)
       else { throw SyncModePersistenceError.invalidManifest }
     }
-    if let reservation = value.writeReservation {
-      guard let store = value.stores.first(where: { $0.id == reservation.storeID }),
-        store.id == value.activeStoreID,
-        store.revision == reservation.reservedRevision
-      else { throw SyncModePersistenceError.invalidManifest }
-    }
     if let transition = value.transition {
-      guard let source = value.stores.first(where: { $0.id == transition.sourceStoreID }),
-        let candidate = value.stores.first(where: { $0.id == transition.candidateStoreID }),
-        candidate.kind == transition.targetKind,
-        candidate.namespace == transition.namespace,
-        transition.syncProtocol == candidate.syncProtocol,
-        (transition.targetKind == .iCloudSync) == (transition.namespace != nil)
-      else { throw SyncModePersistenceError.invalidManifest }
-      if transition.targetKind == .localOnly {
-        guard source.kind == .iCloudSync,
-          source.syncProtocol == transition.syncProtocol,
-          candidate.syncProtocol == source.syncProtocol
-        else { throw SyncModePersistenceError.invalidManifest }
-      }
-      let provenance = transition.seedProvenance + (transition.mergeIntent?.seedProvenance ?? [])
-      guard provenance.allSatisfy({ (1...3).contains($0.digestVersion) }) else {
-        throw SyncModePersistenceError.invalidManifest
-      }
-      if let intent = transition.mergeIntent {
-        guard transition.freezeToken?.revision == intent.sourceRevision,
-          intent.planDigest.count == 32,
-          intent.approvedSnipIDs.isSubset(of: Set(intent.seedProvenance.map(\.candidateSnipID))),
-          (intent.fullReenablePlanID.map { $0 == transition.id } ?? true)
-        else { throw SyncModePersistenceError.invalidManifest }
-      }
-      if let attempt = transition.sendAttempt {
-        let operationIdentities = Set(attempt.operations.map(\.recordIdentity))
-        guard attempt.namespace == transition.namespace,
-          operationIdentities.count == attempt.operations.count,
-          attempt.operations.allSatisfy({ operation in
-            attempt.namespace.zones.contains(
-              ICloudSyncZoneBinding(
-                name: operation.recordIdentity.zoneName,
-                ownerName: operation.recordIdentity.ownerName
-              )
-            )
-          })
-        else { throw SyncModePersistenceError.invalidManifest }
-      }
+      try validateTransition(transition, in: value)
     }
     _ = try value.accountIsolationPhase()
+  }
+
+  private static func validateTransition(_ transition: SyncModeTransition, in value: Manifest) throws {
+    guard transition.sourceStoreID != transition.candidateStoreID,
+      transition.sourceStoreID == value.activeStoreID || transition.candidateStoreID == value.activeStoreID,
+      let source = value.stores.first(where: { $0.id == transition.sourceStoreID }),
+      let candidate = value.stores.first(where: { $0.id == transition.candidateStoreID }),
+      candidate.kind == transition.targetKind, candidate.namespace == transition.namespace,
+      candidate.syncProtocol == transition.syncProtocol, value.accountIsolation == nil
+    else { throw SyncModePersistenceError.invalidManifest }
+    if transition.targetKind == .localOnly {
+      guard source.kind == .iCloudSync, source.syncProtocol == candidate.syncProtocol else {
+        throw SyncModePersistenceError.invalidManifest
+      }
+    }
   }
 
   static func write(

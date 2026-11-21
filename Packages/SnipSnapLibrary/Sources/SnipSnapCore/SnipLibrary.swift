@@ -312,7 +312,7 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
     package let legacyManualPositions: [UUID: Int64]
     package let opaqueSyncStateDigest: Data
     package let opaqueSyncStatePayload: Data
-    // Backup-only request history merges monotonically into local metadata. Content,
+    // Device-local request history merges monotonically into local metadata. Content,
     // target, and plan digests omit it to preserve persisted sync formats and allow
     // concurrent request-history additions without invalidating an import preview.
     package let additionalSeenRequestIDs: Set<UUID>

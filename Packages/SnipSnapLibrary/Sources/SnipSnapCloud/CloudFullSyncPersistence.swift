@@ -562,14 +562,14 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
   let afterCommitHook: ApplyHook
   let diagnostics: AppDiagnosticRecorder
   private var observedDestructiveReset: CloudZoneDeletionReason?
-  private let mutationLease: SyncModeActiveMutationLease?
+  private let activeMutation: SyncModeActiveMutation?
 
   package init(
     library: SwiftDataSnipLibrary,
     namespace: CloudSyncNamespace,
     dataZone: CloudZoneID,
     payloadZone: CloudZoneID? = nil,
-    mutationLease: SyncModeActiveMutationLease? = nil,
+    activeMutation: SyncModeActiveMutation? = nil,
     attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
     now: @escaping @Sendable () -> Date = Date.init,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
@@ -581,7 +581,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
     self.namespace = namespace
     self.dataZone = dataZone
     self.payloadZone = payloadZone
-    self.mutationLease = mutationLease
+    self.activeMutation = activeMutation
     self.attachmentPolicy = attachmentPolicy
     self.now = now
     self.diagnostics = diagnostics
@@ -592,7 +592,7 @@ package actor CloudFullSyncPersistence: CloudFullSyncStore {
 
 extension CloudFullSyncPersistence {
   func mutate<Value: Sendable>(_ operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
-    if let mutationLease { return try await mutationLease.run(operation) }
+    if let activeMutation { return try await activeMutation.run(operation) }
     return try await operation()
   }
 

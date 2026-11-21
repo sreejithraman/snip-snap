@@ -345,7 +345,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     if let activePersistence {
       let snapshot = try await activePersistence.snapshot()
       if snapshot.activeStore.kind == .iCloudSync, snapshot.accountIsolation == nil {
-        if snapshot.transition?.phase == .pointerSwapped {
+        if snapshot.transition?.phase == .swapped {
           try await activePersistence.finishTransition()
           try? await activePersistence.cleanupRetiredStores()
         }
@@ -420,20 +420,22 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       }
     )
     let status = try await mode.enableOrRetry()
-    switch status.state {
-    case .on:
-      break
-    case .settingUp, .syncing:
-      return .settingUp(
-        status.syncIssue ?? status.attentionReason.flatMap(Self.issue(for:))
-      )
-    case .needsAttention:
-      if let error = Self.accountGateError(for: status.attentionReason) { throw error }
-      // The new store may already be active with recovered snips to review.
-      guard status.attentionReason == nil, try await hasFinishedICloudSwitch()
-      else { throw CloudCollectionError.syncNeedsAttention }
-    case .off:
-      throw CloudCollectionError.syncNeedsAttention
+    if !status.activatedCloudStore {
+      switch status.state {
+      case .on:
+        break
+      case .settingUp, .syncing:
+        return .settingUp(
+          status.syncIssue ?? status.attentionReason.flatMap(Self.issue(for:))
+        )
+      case .needsAttention:
+        if let error = Self.accountGateError(for: status.attentionReason) { throw error }
+        // The new store may already be active with recovered snips to review.
+        guard status.attentionReason == nil, try await hasFinishedICloudSwitch()
+        else { throw CloudCollectionError.syncNeedsAttention }
+      case .off:
+        throw CloudCollectionError.syncNeedsAttention
+      }
     }
     await clearCollectionCoordinator()
     collectionCoordinator = try makeCollectionCoordinator(modePersistence)
@@ -618,7 +620,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
             makeRecordTransport(CloudCollectionSyncContext(namespace: namespace,
               metadataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone))
           },
-          accountStateSource: accountStateSource
+          accountStateSource: accountStateSource,
+          checkSetupCollection: { try await self.requireControlRecord(for: namespace.binding) }
         )
       },
       makeAttachmentCoordinator: makeAttachmentCoordinator ?? { [makeRecordTransport] library, namespace, descriptor in
@@ -652,7 +655,8 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       )
       persistence = value
     }
-    let marker = rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
+    try await value.materializeLocalSource()
+    let marker = value.initialImportMarkerURL
     guard !FileManager.default.fileExists(atPath: marker.path) else { return value }
     let snapshot = try await sourceLibrary.transferSnapshot(revision: 0)
     let active = try await value.snapshot().activeStore

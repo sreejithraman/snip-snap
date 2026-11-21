@@ -295,14 +295,8 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
       sortedBy: .manual
     )
     let snapshot = try await source.transferSnapshot(revision: 4)
-    let plan = try await target.prepareTransferPlan(
-      snapshot,
-      transitionID: UUID(),
-      replacingTargetSnipIDs: [],
-      priorSeedProvenance: [],
-      priorServerAcceptedSnipIDs: [],
-      priorSeededListIDs: []
-    )
+    let before = try await target.transferSnapshot(revision: 0)
+    let plan = try SnipLibraryTransferPlanner.plan(source: snapshot, target: before, transitionID: UUID())
 
     do {
       _ = try await target.applyTransferPlan(plan)

@@ -249,7 +249,8 @@ final class SnipSnapApplicationDelegate: NSObject, NSApplicationDelegate {
             cloudServices = SnipSnapCloudAppAssembly.simulatedLocalOnlyServices(
                 rootURL: syncModeRootURL,
                 attachmentCacheRootURL: attachmentCacheRootURL,
-                sourceLibrary: library
+                sourceLibrary: library,
+                syncModeStore: assembly.syncModeStore
             )
         } else if usesSimulatedSyncSettings {
             cloudServices = SnipSnapCloudAppAssembly.simulatedServices(

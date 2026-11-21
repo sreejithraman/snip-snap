@@ -295,11 +295,11 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let source = try await fixture.persistence.snapshot().activeStore
     let library = try await fixture.persistence.libraryForTransition(storeID: source.id)
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: source.id)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: source.id)
     let pause = OwnerPause()
     let store = CloudFullSyncPersistence(library: library, namespace: fixture.namespace,
       dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone,
-      mutationLease: lease, afterCommitHook: { await pause.suspend() })
+      activeMutation: lease, afterCommitHook: { await pause.suspend() })
     let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
     try await store.stage(.fetched(batch), outbound: nil)
     let commit = Task { try await store.applyStaged(batch.id) }
@@ -510,7 +510,7 @@ extension CloudAppAccountOwnershipTests {
     XCTAssertEqual(before.states[attachmentID], .available)
 
     let pause = OwnerPause()
-    let lease = try await fixture.persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
+    let lease = try await fixture.persistence.activeCloudMutation(storeID: storage.activeStore.id)
     let holding = Task { try await lease.run { await pause.suspend() } }
     await pause.waitUntilSuspended()
     let download = Task { try await fixture.handler.prepareSyncedAttachment(attachmentID, for: .open) }

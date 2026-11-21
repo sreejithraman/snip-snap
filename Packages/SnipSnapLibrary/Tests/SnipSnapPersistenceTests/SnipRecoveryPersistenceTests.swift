@@ -7,48 +7,7 @@ import XCTest
 final class SnipRecoveryPersistenceTests: XCTestCase {
   private enum Crash: Error { case expected }
 
-  func testSyncModeJournalPersistsAndRecoversAFrozenTransition() async throws {
-    let location = temporaryStore()
-    defer { try? FileManager.default.removeItem(at: location.root) }
-    let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
-    let namespace = ICloudSyncNamespaceBinding(
-      scope: "private",
-      accountLineage: "account-a",
-      generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
-      zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
-    )
-    let persistence = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
-
-    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
-    try await persistence.recordPreparationComplete()
-    let token = try await persistence.freezeSource()
-    _ = try await persistence.finalSnapshot(using: token)
-
-    let frozen = try await persistence.snapshot().transition
-    XCTAssertEqual(frozen?.phase, .sourceFrozen)
-    XCTAssertEqual(frozen?.freezeToken, token)
-    XCTAssertEqual(try storedTransition(in: syncModeRoot)?["freezeSnapshotTaken"] as? Bool, true)
-    do {
-      _ = try await persistence.finalSnapshot(using: token)
-      XCTFail("A taken final snapshot must not be read again with its token.")
-    } catch {
-      XCTAssertEqual(error as? SyncModePersistenceError, .invalidFreezeToken)
-    }
-
-    let reopened = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
-    let recovered = try await reopened.snapshot().transition
-    XCTAssertEqual(recovered?.phase, .candidateReady)
-    XCTAssertNil(recovered?.freezeToken)
-    XCTAssertEqual(try storedTransition(in: syncModeRoot)?["freezeSnapshotTaken"] as? Bool, false)
-
-    try await reopened.recordPreparationComplete()
-    let resumed = try await reopened.snapshot().transition
-    XCTAssertEqual(resumed?.phase, .remoteFetched)
-    let refrozen = try await reopened.freezeSource()
-    _ = try await reopened.finalSnapshot(using: refrozen)
-  }
-
-  func testAppAssemblyKeepsPendingCloudTransitionOutOfActiveRecoveryScope() async throws {
+  func testAppAssemblyDiscardsUnfinishedEnableOnReopen() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let syncModeRoot = location.root.appendingPathComponent("SyncMode", isDirectory: true)
@@ -61,6 +20,10 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let persistence = try SwiftDataSyncModePersistence(rootURL: syncModeRoot)
     _ = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace)
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    XCTAssertEqual(
+      SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncModeRoot),
+      .settingUp(namespace)
+    )
 
     let assembly = SnipLibraryAssembly(
       library: store,
@@ -70,7 +33,7 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     XCTAssertNil(assembly.recoveryScope)
     XCTAssertEqual(
       SyncModeActivationManifestReader.iCloudStartupState(atSyncModeRootURL: syncModeRoot),
-      .settingUp(namespace)
+      .localOnly
     )
   }
 

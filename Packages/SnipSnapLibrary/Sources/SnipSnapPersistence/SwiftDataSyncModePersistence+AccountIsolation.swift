@@ -56,7 +56,7 @@ extension SwiftDataSyncModePersistence.Manifest {
     if let transition {
       guard transition.sourceStoreID == active.id,
         transition.targetKind == .localOnly,
-        transition.phase != .pointerSwapped
+        transition.phase != .swapped
       else { throw SyncModePersistenceError.transitionInProgress }
       guard let candidateIndex = stores.firstIndex(where: { $0.id == transition.candidateStoreID })
       else { throw SyncModePersistenceError.missingStore }
@@ -145,6 +145,11 @@ extension SwiftDataSyncModePersistence {
     }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
+    if manifest.transition?.phase == .swapped,
+      store(id: manifest.activeStoreID)?.kind == .iCloudSync
+    {
+      try finishTransition()
+    }
     var declared = manifest
     let isolation = try declared.declareAccountIsolation(reason: reason)
     try commit(declared)

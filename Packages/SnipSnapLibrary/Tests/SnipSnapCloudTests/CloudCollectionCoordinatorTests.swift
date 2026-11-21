@@ -176,6 +176,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
     await model.enableICloudSync()
     let foreground = try await session.synchronize()
+    _ = try await session.synchronize()
     let library = try await session.activeLibrary()
     let snapshot = try await library.library.checkedSnapshot(sortedBy: .manual)
     let storedControl = await server.controlDescriptor()
@@ -228,6 +229,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
 
     try await lifecycle.enableICloudSync()
+    _ = try await lifecycle.retrySynchronization()
     try await lifecycle.disableICloudSync(.refreshThenCopy)
 
     let local = try await lifecycle.activeLibrary().library.checkedSnapshot(sortedBy: .manual)
@@ -235,6 +237,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       atSyncModeRootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
     )
     let cloudControl = await server.controlDescriptor()
+    let cloudSnips = await server.storedTextValues()
+    XCTAssertEqual(cloudSnips, ["keep this after turning sync off"])
     XCTAssertEqual(local.snips.map(\.content), ["keep this after turning sync off"])
     XCTAssertNil(manifest)
     XCTAssertEqual(cloudControl, active)
@@ -541,49 +545,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     }
   }
 
-  func testFullRecordSetupRetryKeepsItsExactMessageAfterRestart() async throws {
-    let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("FullRecordSetupRetry-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: root) }
-    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source.json"))
-    let added = try await source.add(content: "retry setup", origin: .quickEntry)
-    let snip = try XCTUnwrap(added)
-    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
-    let namespace = descriptor.namespace(
-      cloudScope: "private",
-      accountLineage: "account-a"
-    )
-    let server = FakeCloudServer()
-    let recordTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
-    await recordTransport.failNextSentItem(
-      .snip(snip.id, in: descriptor.metadataZone),
-      failure: .rateLimited
-    )
-    let syncRoot = root.appendingPathComponent("SyncMode", isDirectory: true)
-    let lifecycle = SnipSnapICloudSyncLifecycle(
-      rootURL: syncRoot,
-      sourceLibrary: source,
-      syncModeStore: nil,
-      cloudScope: "private",
-      accountLineage: "account-a",
-      ownerName: "owner",
-      controlTransport: FakeCloudControlTransport(server: server),
-      makeRecordTransport: { _ in recordTransport },
-      makeDescriptor: { descriptor }
-    )
-
-    let outcome = try await lifecycle.enableICloudSync()
-    let restarted = SnipSnapCloudAppAssembly.settingsStartupState(
-      rootURL: syncRoot,
-      startupState: SyncModeActivationManifestReader.iCloudStartupState(
-        atSyncModeRootURL: syncRoot
-      )
-    )
-
-    XCTAssertEqual(outcome, .settingUp(.retryingSoon))
-    XCTAssertEqual(restarted.state, .enabling(.retryingSoon))
-  }
-
   func testFullRecordFetchRetryKeepsItsExactMessageAfterRestart() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("FullRecordFetchRetry-\(UUID().uuidString)")
@@ -609,6 +570,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let writerOutcome = try await writer.enableICloudSync()
     XCTAssertEqual(writerOutcome, .enabled)
+    _ = try await writer.retrySynchronization()
 
     let readerRoot = root.appendingPathComponent("Reader", isDirectory: true)
     let readerTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
@@ -2036,9 +1998,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await persistence.activateEmptyCollection(namespace: binding(old))
     let original = try await persistence.snapshot().activeStore
     let oldLibrary = try await persistence.libraryForTransition(storeID: original.id)
-    let lease = try await persistence.activeCloudMutationLease(storeID: original.id)
+    let lease = try await persistence.activeCloudMutation(storeID: original.id)
     let store = CloudFullSyncPersistence(library: oldLibrary, namespace: namespace(old),
-      dataZone: old.metadataZone, payloadZone: old.payloadZone, mutationLease: lease)
+      dataZone: old.metadataZone, payloadZone: old.payloadZone, activeMutation: lease)
     let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
     try await store.stage(.fetched(batch), outbound: nil)
     try await persistence.activateEmptyCollection(namespace: binding(fresh))
@@ -2063,10 +2025,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await persistence.activateEmptyCollection(namespace: binding(old))
     let original = try await persistence.snapshot().activeStore
     let library = try await persistence.libraryForTransition(storeID: original.id)
-    let lease = try await persistence.activeCloudMutationLease(storeID: original.id)
+    let lease = try await persistence.activeCloudMutation(storeID: original.id)
     let pause = CollectionWorkPause()
     let store = CloudFullSyncPersistence(library: library, namespace: namespace(old),
-      dataZone: old.metadataZone, mutationLease: lease, afterCommitHook: { await pause.suspend() })
+      dataZone: old.metadataZone, activeMutation: lease, afterCommitHook: { await pause.suspend() })
     let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
     try await store.stage(.fetched(batch), outbound: nil)
     let applying = Task { try await store.applyStaged(batch.id) }

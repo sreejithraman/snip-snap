@@ -5,3 +5,7 @@ Snip Snap will use one record-based persistence schema for snips, lists, and att
 ## Consequences
 
 JSON is a backup, import, and export format, not the live store. Launch opens the SwiftData store and does not copy leftover `snips.json`. A backup imported while sync is on will show a preview, merge through the normal record rules, and send accepted changes through the normal sync path. Mode changes must be safe to retry, preserve stable IDs, keep the prior store active after failure, and never treat turning off sync as a request to delete iCloud data. Enabling sync while offline may enter Setting Up, but local-only mode remains active until Snip Snap can fetch the remote collection and finish the first merge. Undo will create normal inverse edits for recent actions taken on the current device. It will never replace the whole store, and the app will remove an undo entry if a remote change makes that inverse unsafe. This decision supersedes ADR 0001.
+
+## Sync-mode activation
+
+A mode change advances from declared to merged to swapped. Snip Snap builds a separate candidate and writes its merged contents before atomically selecting it in the activation manifest. An unfinished candidate is discarded on failure, cancellation, or reopen. The main app coordinates writes in process and checks that the source has stayed current at the swap. The activation manifest no longer carries a write lock. This replaces the durable write admission described in ADR 0028. Approved by SIMP-ADR12-15-D1 for SIMP-06.

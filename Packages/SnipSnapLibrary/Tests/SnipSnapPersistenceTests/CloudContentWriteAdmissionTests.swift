@@ -224,8 +224,8 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
     _ = try await first.perform(Self.add("saved content"), sortedBy: .manual)
     let preview = try await first.previewImport(SnipLibraryTransferSnapshot(revision: 0,
       snips: [], lists: [.inbox], attachmentData: [:], legacyManualPositions: [:]), transitionID: UUID())
-    let plan = try await first.prepareTransferPlan(preview.source, transitionID: UUID(),
-      replacingTargetSnipIDs: [], priorSeedProvenance: [], priorServerAcceptedSnipIDs: [], priorSeededListIDs: [])
+    let target = try await first.transferSnapshot(revision: 0)
+    let plan = try SnipLibraryTransferPlanner.plan(source: preview.source, target: target, transitionID: UUID())
     try await first.insertAdmissionEvidence(evidence, namespace: namespace)
     for reopened in [false, true] {
       let library = reopened ? try SwiftDataSnipLibrary(storeURL: url) : first

@@ -165,20 +165,22 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
     }
 
     public func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
-        try await operationGate.withLease { try await self.refreshNotice() }
+        let (notice, activated) = try await operationGate.withLease { try await self.refreshNotice() }
+        if activated { await scheduleAction?() }
+        return notice
     }
 
-    private func refreshNotice() async throws -> AppleAccountNotice? {
+    private func refreshNotice() async throws -> (AppleAccountNotice?, Bool) {
         if case .resolved(let configuration) = coordinatorSource {
-            guard let persistence = try await configuration.persistence() else { return nil }
+            guard let persistence = try await configuration.persistence() else { return (nil, false) }
             let local = try await persistence.snapshot()
             guard local.accountIsolation?.namespace != nil || local.transition?.namespace != nil
-                || local.activeStore.namespace != nil else { return nil }
+                || local.activeStore.namespace != nil else { return (nil, false) }
             let account = await configuration.accountStateSource.currentAccountState()
             let storage = try await persistence.snapshot()
             guard let binding = storage.accountIsolation?.namespace
                 ?? storage.transition?.namespace ?? storage.activeStore.namespace
-            else { return nil }
+            else { return (nil, false) }
             let notice: AppleAccountNotice? = switch account {
             case .noAccount: .signedOut
             case .available(let lineage) where lineage != binding.accountLineage: .accountChanged
@@ -191,11 +193,11 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
                         reason: notice == .signedOut ? .signedOut : .accountChanged,
                         expectedStoreID: storage.activeStore.id)
                 }
-                return notice
+                return (notice, false)
             }
         }
         let status = try await requireCoordinator().refreshAccountState()
-        return switch status.attentionReason {
+        let notice: AppleAccountNotice? = switch status.attentionReason {
         case .accountSignedOut: .signedOut
         case .accountChanged, .namespaceChanged: .accountChanged
         case .accountTemporarilyUnavailable, .accountStatusUnknown, .accountRestricted: .paused
@@ -203,6 +205,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
              .storeReadFailed, .terminalFetchFailure, .transitionFailure:
             nil
         }
+        return (notice, status.activatedCloudStore)
     }
 
     public func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
@@ -404,7 +407,7 @@ public actor AppleAccountCacheCoordinatorHandler: OptionalCloudSyncHandling {
             configuration: configuration
         )
         try await requireCurrentSource(storage, persistence: persistence)
-        let lease = try await persistence.activeCloudMutationLease(storeID: storage.activeStore.id)
+        let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         return try await lease.run {
             try await self.requireCurrentSource(storage, persistence: persistence)
             let attachment = try await self.attachmentCoordinator(

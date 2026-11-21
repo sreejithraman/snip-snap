@@ -52,71 +52,6 @@ extension CloudFullSyncPersistence {
     try await approveEnrollment(references: references)
   }
 
-  package func currentModeSeedSettlement(
-    candidates: [SyncModeSeedSettlementCandidate],
-    namespace expectedNamespace: ICloudSyncNamespaceBinding
-  ) async throws -> SyncModeSeedSettlementProof {
-    let actual = namespace.binding
-    guard actual == expectedNamespace else { throw SyncModePersistenceError.namespaceMismatch }
-    let local = try await library.checkedSnapshot(sortedBy: .manual)
-    let localByID = Dictionary(uniqueKeysWithValues: local.snips.map { ($0.id, $0) })
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let accepted = Dictionary(uniqueKeysWithValues:
-      (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
-    )
-    var values: [UUID: SyncModeSeedSettlementValue] = [:]
-    for candidate in candidates {
-      let reference = CloudEntityReference(kind: .snip, domainID: candidate.snipID)
-      if let entity = accepted[reference], let local = localByID[candidate.snipID],
-        candidate.acceptedRecordIdentity == nil
-          || candidate.acceptedRecordIdentity == entity.identity,
-        try Self.snipFields(Self.snipRecord(entity)).text == local.content,
-        !stored.conflicts.contains(where: { $0.reference == reference })
-      {
-        values[candidate.snipID] = .saved(
-          recordIdentity: entity.identity,
-          acceptedText: local.content
-        )
-      } else if localByID[candidate.snipID] == nil,
-        accepted[reference] == nil,
-        let identity = candidate.acceptedRecordIdentity
-      {
-        values[candidate.snipID] = .deleted(recordIdentity: identity)
-      }
-    }
-    return SyncModeSeedSettlementProof(namespace: actual, values: values)
-  }
-
-  package func modeSendAttempt(
-    for outbound: CloudOutboundBatch,
-    namespace expectedNamespace: ICloudSyncNamespaceBinding
-  ) async throws -> SyncModeSendAttempt {
-    let actual = namespace.binding
-    guard actual == expectedNamespace else { throw SyncModePersistenceError.namespaceMismatch }
-    var operations: [SyncModeSendOperation] = []
-    for operation in outbound.operations {
-      let id = operation.id
-      guard namespace.zones.contains(id.zone) else {
-        throw SyncModePersistenceError.namespaceMismatch
-      }
-      operations.append(
-        SyncModeSendOperation(
-          reference: Self.reference(for: id),
-          recordIdentity: Self.storageIdentity(id),
-          kind: {
-            switch operation {
-            case .save: .save
-            case .delete: .delete
-            }
-          }()
-        )
-      )
-    }
-    guard Set(operations.map(\.recordIdentity)).count == operations.count else {
-      throw SyncModePersistenceError.invalidManifest
-    }
-    return SyncModeSendAttempt(namespace: actual, operations: operations)
-  }
   package func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
@@ -152,18 +87,9 @@ extension CloudFullSyncPersistence {
     )
   }
 
-  package func acceptedSnipTextValues() async throws -> [UUID: String] {
+  package func acceptedSnipIDs() async throws -> Set<UUID> {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    var values: [UUID: String] = [:]
-    for entity in stored.readyEntities + stored.deferredEntities
-      where entity.reference.kind == .snip
-    {
-      let text = try Self.snipFields(Self.snipRecord(entity)).text
-      guard values.updateValue(text, forKey: entity.reference.domainID) == nil else {
-        throw CloudFullStorageError.invalidLegacyRecord
-      }
-    }
-    return values
+    return Set(stored.readyEntities.filter { $0.reference.kind == .snip }.map(\.reference.domainID))
   }
 
   package func dormantAcceptedBaseTransferPayload() async throws -> Data {
@@ -199,9 +125,7 @@ extension CloudFullSyncPersistence {
 
   package func makeReenableApplyPlan(
     source: SnipLibraryTransferSnapshot,
-    transitionID: UUID,
-    targetRevision: UInt64,
-    keepFetchedAttachments: Bool = false
+    transitionID: UUID
   ) async throws -> CloudFullReenableApplyPlan? {
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
     let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey.rawValue }
@@ -218,7 +142,7 @@ extension CloudFullSyncPersistence {
     }
     guard !bases.isEmpty else { return nil }
 
-    let target = try await library.transferSnapshot(revision: targetRevision)
+    let target = try await library.transferSnapshot(revision: 0)
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     guard stored.deferredEntities.isEmpty else {
       throw CloudFullReenableError.deferredDependencies
@@ -232,7 +156,6 @@ extension CloudFullSyncPersistence {
     var deletedLists: Set<UUID> = []
     var conflicts: [CloudConflictInput] = []
     var recoveryInputs: [CloudFullRecoveryInput] = []
-    var recoveredSourceIDs: Set<UUID> = []
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
 
@@ -315,7 +238,6 @@ extension CloudFullSyncPersistence {
         )
         let recovered = Self.recovered(local, id: recoveredID, listID: SnipList.inbox.id)
         adjustedSnips[index] = recovered
-        recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
             namespaceKey: namespaceKey.rawValue,
@@ -371,7 +293,6 @@ extension CloudFullSyncPersistence {
           recovery: .snip(review)
         ))
         adjustedSnips.append(recovered)
-        recoveredSourceIDs.insert(local.id)
         recoveryInputs.append(try Self.modeRecovery(
           transitionID: transitionID,
             namespaceKey: namespaceKey.rawValue,
@@ -399,37 +320,11 @@ extension CloudFullSyncPersistence {
       replacingTargetSnipIDs: replacingSnips,
       replacingTargetListIDs: replacingLists
     )
-    var snips = transfer.snips
-    var attachmentData = transfer.attachmentData
-    if keepFetchedAttachments {
-      // After a partial send an absent local attachment might have been added on a peer.
-      let mergedAttachmentIDs = Set(snips.flatMap(\.attachments).map(\.id))
-      let replaced = Dictionary(uniqueKeysWithValues: target.snips
-        .filter { replacingSnips.contains($0.id) }.map { ($0.id, $0.attachments) })
-      for index in snips.indices {
-        for attachment in replaced[snips[index].id] ?? [] where !mergedAttachmentIDs.contains(attachment.id) {
-          snips[index].attachments.append(attachment)
-          attachmentData[attachment.id] = target.attachmentData[attachment.id]
-        }
-      }
-    }
-    return try CloudFullReenableApplyPlan(
-      transitionID: transitionID,
+    return CloudFullReenableApplyPlan(
       namespaceKey: namespaceKey.rawValue,
-      expectedNamespaceRevision: stored.namespaceState.revision,
-      targetRevision: transfer.targetRevision,
-      targetDigest: transfer.targetDigest,
-      snips: snips,
-      lists: transfer.lists,
-      attachmentData: attachmentData,
-      dormantPayload: transfer.opaqueSyncStatePayload,
-      acceptedCAS: acceptedValues.map(CloudFullReenableAcceptedCAS.init),
+      transfer: transfer,
       conflicts: conflicts,
-      recoveryInputs: recoveryInputs,
-      result: SnipLibraryTransferResult(
-        approvedSnipIDs: transfer.result.approvedSnipIDs,
-        recoveredSourceSnipIDs: transfer.result.recoveredSourceSnipIDs.union(recoveredSourceIDs)
-      )
+      recoveryInputs: recoveryInputs
     )
   }
 
@@ -438,22 +333,6 @@ extension CloudFullSyncPersistence {
       .filter(Self.hasFailedFetchRecords).map(Self.recoveryKey)
     try await library.clearCloudFullRecoveryEvents(namespaceKey: namespaceKey, keys: keys.subtracting(retained))
   }
-  private static func reference(for id: CloudRecordID) -> CloudEntityReference? {
-    let kind: CloudEntityKind
-    let suffix: Substring
-    if id.name.hasPrefix("s-") {
-      kind = .snip
-      suffix = id.name.dropFirst(2)
-    } else if id.name.hasPrefix("l-") {
-      kind = .list
-      suffix = id.name.dropFirst(2)
-    } else {
-      return nil
-    }
-    guard let domainID = UUID(uuidString: String(suffix)) else { return nil }
-    return CloudEntityReference(kind: kind, domainID: domainID)
-  }
-
   private static func recoveryKey(_ input: CloudFullRecoveryInput) -> String {
     "full-recovery-\(input.batchID.uuidString.lowercased())"
   }

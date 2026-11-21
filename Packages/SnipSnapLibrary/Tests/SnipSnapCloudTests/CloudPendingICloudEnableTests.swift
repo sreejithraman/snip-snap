@@ -169,14 +169,18 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       syncModeStore: SnipSyncModeStore(persistence)
     )
     let activeStoreID = try await persistence.snapshot().activeStore.id
-    let edit = try await persistence.reserveActiveMutation(storeID: activeStoreID, purpose: .sync)
+    let mutation = try await persistence.activeCloudMutation(storeID: activeStoreID)
+    let gate = CloudApplyGate()
+    let writing = Task { try await mutation.run { try await gate.pause() } }
+    await gate.waitUntilPaused()
 
     await assertMarkerRemovalFails("A sync during an edit must not report setup") {
       try await lifecycle.synchronize()
     }
     XCTAssertEqual(try Data(contentsOf: marker), Data("pending".utf8))
 
-    try await persistence.finishActiveMutation(edit)
+    await gate.resume()
+    try await writing.value
     setMarkerLocked(false)
     let finished = try await lifecycle.synchronize()
     XCTAssertEqual(finished, .iCloudSyncEnabled)
@@ -414,7 +418,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
   }
 
-  func testEnableKeepsLocalStoreIfCollectionChangesDuringFirstSend() async throws {
+  func testEnableKeepsLocalStoreIfCollectionChangesDuringCandidateFetch() async throws {
     let source = try await seededSource()
     let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot)
     let original = try await persistence.snapshot().activeStore
@@ -425,7 +429,7 @@ final class CloudPendingICloudEnableTests: XCTestCase {
       server: server,
       namespace: descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
     )
-    await transport.pauseNextSend()
+    await transport.pauseNextFetch()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: syncRoot,
       sourceLibrary: source,
@@ -439,9 +443,9 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     )
 
     let enabling = Task { try await lifecycle.enableICloudSync() }
-    await transport.waitUntilSendPauses()
+    await transport.waitUntilFetchPauses()
     await server.seedControl(.fresh(ownerName: "owner"))
-    await transport.resumeSend()
+    await transport.resumeFetch()
     do {
       _ = try await enabling.value
       XCTFail("Setup must stop when the collection changes before activation")

@@ -103,35 +103,16 @@ public enum SyncModeActivationManifestReader {
   }
 }
 
-package actor SyncModeActiveMutationLease {
-  package enum Purpose: Equatable, Sendable {
-    case sync
-    case modeChange
-  }
-
-  private let persistence: SwiftDataSyncModePersistence
-  private let storeID: UUID
-  private let purpose: Purpose
-
-  init(persistence: SwiftDataSyncModePersistence, storeID: UUID, purpose: Purpose) {
-    self.persistence = persistence
-    self.storeID = storeID
-    self.purpose = purpose
-  }
+/// Binds active cloud mutations to the store that requested them.
+package struct SyncModeActiveMutation: Sendable {
+  let persistence: SwiftDataSyncModePersistence
+  let storeID: UUID
 
   package func run<Value: Sendable>(
     _ operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
-    let reservation = try await persistence.reserveActiveMutation(storeID: storeID, purpose: purpose)
-    do {
-      try Task.checkCancellation()
-      let value = try await operation()
-      try await persistence.finishActiveMutation(reservation)
-      return value
-    } catch {
-      // A failed clear leaves the store release-failed; this retry or the next admission clears it.
-      try? await persistence.finishActiveMutation(reservation)
-      throw error
+    try await persistence.activeStoreTurns.withLease {
+      try await persistence.performActiveCloudMutation(storeID: storeID, operation)
     }
   }
 }
@@ -142,13 +123,6 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case afterCandidateDurability
   case beforeCandidateMergeDurability
   case afterCandidateMergeDurability
-  case afterEnrollmentApproval
-  case afterFirstSendStarted
-  case beforeSendAttemptManifest
-  case afterFirstSendComplete
-  case afterRetryBasePromotion
-  case beforeRetryFetchSettlementCommit
-  case duringRetryBasePromotionStaging
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
@@ -166,15 +140,10 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
 
 
 package enum SyncModeWritePoint: Equatable, Sendable {
-  /// A hook that throws here models process loss: the write never starts, and its reservation stays for reopen.
-  case afterRevisionReserved
-  /// A hook that throws here fails the write after the library saved it, like a store error, so the reservation is released.
-  case beforeReservationCleared
+  case beforeLibraryWrite
   case beforeStoreRetirement
   /// Before a Keep Local Copy reads the isolated cache; a test can pause here.
   case beforeAccountLocalCopyMerge
-  /// Before a full re-enable applies its staged plan; a test can pause here.
-  case beforeFullReenablePlanApply
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -191,50 +160,6 @@ package actor SwiftDataSyncModePersistence {
     var transition: SyncModeTransition?
     var accountIsolation: ICloudAccountIsolation?
     var attentionReason: ICloudSyncAttentionReason?
-    var writeReservation: SyncModeWriteReservation?
-
-    private enum CodingKeys: String, CodingKey {
-      case version, activeStoreID, stores, transition, accountIsolation
-      case attentionReason, writeReservation
-    }
-
-    init(
-      version: Int,
-      activeStoreID: UUID,
-      stores: [SyncModeStore],
-      transition: SyncModeTransition?,
-      accountIsolation: ICloudAccountIsolation? = nil,
-      attentionReason: ICloudSyncAttentionReason?,
-      writeReservation: SyncModeWriteReservation?
-    ) {
-      self.version = version
-      self.activeStoreID = activeStoreID
-      self.stores = stores
-      self.transition = transition
-      self.accountIsolation = accountIsolation
-      self.attentionReason = attentionReason
-      self.writeReservation = writeReservation
-    }
-
-    init(from decoder: any Decoder) throws {
-      let values = try decoder.container(keyedBy: CodingKeys.self)
-      version = try values.decode(Int.self, forKey: .version)
-      activeStoreID = try values.decode(UUID.self, forKey: .activeStoreID)
-      stores = try values.decode([SyncModeStore].self, forKey: .stores)
-      transition = try values.decodeIfPresent(SyncModeTransition.self, forKey: .transition)
-      accountIsolation = try values.decodeIfPresent(
-        ICloudAccountIsolation.self,
-        forKey: .accountIsolation
-      )
-      attentionReason = try values.decodeIfPresent(
-        ICloudSyncAttentionReason.self,
-        forKey: .attentionReason
-      )
-      writeReservation = try values.decodeIfPresent(
-        SyncModeWriteReservation.self,
-        forKey: .writeReservation
-      )
-    }
 
     mutating func updateTransition(
       orThrow missing: SyncModePersistenceError = .transitionInProgress,
@@ -258,19 +183,26 @@ package actor SwiftDataSyncModePersistence {
   let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
+  /// Until first setup, the original SwiftData file is still the local store.
+  private var initialLocalLibrary: SwiftDataSnipLibrary?
+  // An I/O error after atomic replacement can leave a published pointer.
+  private var unconfirmedActivation: Manifest?
 
   /// Reconciles of an account-isolation choice take turns, so a background status never runs a
   /// second Keep merge.
   let accountIsolationTurns = AsyncOperationGate()
 
-  var writeAdmission = ActiveStoreWriteAdmission()
+  let activeStoreTurns = AsyncOperationGate()
+  enum ActiveStoreActivity { case libraryWrite, cloudMutation, replacement }
+  var activeStoreActivity: ActiveStoreActivity?
+  var activeStoreBusy: Bool { activeStoreActivity != nil }
+  // Advance before crossing to SwiftData. A mode change checks the revision again
+  // when it swaps, so work on a stale source snapshot can never replace an edit.
+  var activeStoreRevision: UInt64 = 0
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
   private var strandedRollback: SyncModeTransition?
-
-  /// The transition whose full re-enable merge this process is applying. Try Again skips it.
-  var fullReenableMergeInFlight: UUID?
 
   // A checked read may suspend while another wrapper starts and finishes its
   // own read. The newest started read whose result we have seen owns health.
@@ -281,6 +213,7 @@ package actor SwiftDataSyncModePersistence {
     rootURL: URL,
     attachmentCacheRootURL: URL? = nil,
     defaultSyncProtocol: SyncModeSyncProtocol = .fullRecordV1,
+    initialLocalLibrary: SwiftDataSnipLibrary? = nil,
     crashHook: @escaping @Sendable (SyncModeCrashPoint) throws -> Void = { _ in },
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
     writeHook: @escaping WriteHook = { _ in },
@@ -300,7 +233,6 @@ package actor SwiftDataSyncModePersistence {
     self.afterMutationBeforeSave = afterMutationBeforeSave
     self.defaultSyncProtocol = defaultSyncProtocol
     self.diagnostics = diagnostics
-    try DurableFile.createDirectory(rootURL)
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
         var loaded = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
@@ -321,14 +253,20 @@ package actor SwiftDataSyncModePersistence {
         namespace: nil,
         syncProtocol: defaultSyncProtocol
       )
+      if let initialLocalLibrary {
+        store.lifecycle = .ready
+        manifest = Manifest(version: 2, activeStoreID: store.id, stores: [store])
+        self.initialLocalLibrary = initialLocalLibrary
+        return
+      }
+      try DurableFile.createDirectory(rootURL)
       let declared = Manifest(
         version: 2,
         activeStoreID: store.id,
         stores: [store],
         transition: nil,
         accountIsolation: nil,
-        attentionReason: nil,
-        writeReservation: nil
+        attentionReason: nil
       )
       try Self.write(declared, to: manifestURL, using: manifestWriter)
       let storeURL = rootURL.appendingPathComponent(store.relativeRoot, isDirectory: true)
@@ -347,14 +285,49 @@ package actor SwiftDataSyncModePersistence {
         stores: [store],
         transition: nil,
         accountIsolation: nil,
-        attentionReason: nil,
-        writeReservation: nil
+        attentionReason: nil
       )
       try Self.write(manifest, to: manifestURL, using: manifestWriter)
     }
   }
 
+  nonisolated package var initialImportMarkerURL: URL {
+    rootURL.appendingPathComponent("local-source-imported", isDirectory: false)
+  }
+
+  /// Put the original library under the manifest before beginning any mode change.
+  /// Until this copy is selected, a relaunch still uses the original SwiftData file.
+  package func materializeLocalSource() async throws {
+    try await activeStoreTurns.withLease { try await self.materializeLocalSourceInTurn() }
+  }
+
+  private func materializeLocalSourceInTurn() async throws {
+    try resolveActivationWrite()
+    guard let source = initialLocalLibrary, let active = store(id: manifest.activeStoreID) else { return }
+    let original = try await source.transferSnapshot(revision: activeStoreRevision)
+    let root = storeURL(active)
+    do {
+      try removeStoreFiles(active)
+      let copy = try SwiftDataSnipLibrary(
+        storeURL: storeFileURL(active), afterMutationBeforeSave: afterMutationBeforeSave
+      )
+      _ = try await copy.mergeTransferSnapshot(original, transitionID: active.id)
+      try DurableFile.syncDirectory(root)
+      try DurableFile.syncDirectory(root.deletingLastPathComponent())
+      try Task.checkCancellation()
+      // While there is no manifest, the next attempt always copies the live source again.
+      try DurableFile.write(Data("1".utf8), to: initialImportMarkerURL)
+      try publishActivation(manifest)
+    } catch {
+      if unconfirmedActivation == nil, initialLocalLibrary != nil {
+        try? removeStoreFiles(active)
+      }
+      throw error
+    }
+  }
+
   package func snapshot() async throws -> SyncModeStorageSnapshot {
+    try resolveActivationWrite()
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
@@ -363,13 +336,13 @@ package actor SwiftDataSyncModePersistence {
       activeStore: active,
       transition: manifest.transition,
       accountIsolation: manifest.accountIsolation,
-      attentionReason: manifest.attentionReason,
-      hasActiveMutationReservation: manifest.writeReservation != nil
+      attentionReason: manifest.attentionReason
     )
   }
 
   /// The only library later app assembly should retain.
   package func libraryForTransition(storeID: UUID) throws -> SwiftDataSnipLibrary {
+    if storeID == manifest.activeStoreID, let initialLocalLibrary { return initialLocalLibrary }
     guard let store = manifest.stores.first(where: { $0.id == storeID }) else {
       throw SyncModePersistenceError.missingStore
     }
@@ -399,67 +372,16 @@ package actor SwiftDataSyncModePersistence {
     )
   }
 
-  package func candidateRevision(transitionID: UUID) throws -> UInt64 {
-    guard let transition = manifest.transition, transition.id == transitionID,
-      let candidate = store(id: transition.candidateStoreID)
-    else { throw SyncModePersistenceError.transitionInProgress }
-    return candidate.revision
-  }
-
-  /// Creates a mode transition or resumes its durable merge before returning it.
-  package func beginOrResumeTransition(
-    to targetKind: SyncModeStoreKind,
-    namespace: ICloudSyncNamespaceBinding?
-  ) async throws -> SyncModeTransition {
-    let started = try beginTransition(to: targetKind, namespace: namespace)
-    if targetKind == .iCloudSync {
-      do {
-        try await reconcileFullReenableIntent()
-      } catch let cancellation as CancellationError {
-        try await discardFailedICloudEnable(transitionID: started.id, reason: nil)
-        throw cancellation
-      }
-    }
-    guard let transition = manifest.transition else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    return transition
-  }
-
   package func beginTransition(
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) throws -> SyncModeTransition {
-    guard writeAdmissionIsIdle(), manifest.accountIsolation == nil else {
+    guard initialLocalLibrary == nil, !activeStoreBusy, manifest.accountIsolation == nil else {
       throw SyncModePersistenceError.transitionInProgress
     }
-    if let transition = manifest.transition {
-      guard transition.targetKind == targetKind, transition.namespace == namespace else {
-        throw SyncModePersistenceError.transitionInProgress
-      }
-      if manifest.activeStoreID == transition.sourceStoreID,
-        fullReenableMergeInFlight != transition.id,
-        !hasStoreFile(id: transition.candidateStoreID)
-      {
-        // Before the swap, the source still holds the library, so a fresh candidate loses
-        // nothing.
-        try abortUnactivatedCandidate(reason: nil)
-        let operation: StaticString = transition.targetKind == .iCloudSync
-          ? "sync.setup" : "sync.disable"
-        diagnostics.record(.missing(operation: operation))
-      } else {
-        // Finish only a rollback this process couldn't commit, so another operation's work in
-        // flight is never undone.
-        guard transition == strandedRollback else { return transition }
-        if transition.phase == .candidateDeclared || targetKind == .iCloudSync {
-          try abortUnactivatedCandidate(reason: nil)
-        } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
-          try unfreezeBeforePointerSwap()
-          return try currentTransition()
-        } else {
-          return transition
-        }
-      }
+    try retryCandidateRollback()
+    guard manifest.transition == nil else {
+      throw SyncModePersistenceError.transitionInProgress
     }
     guard (targetKind == .iCloudSync) == (namespace != nil) else {
       throw SyncModePersistenceError.namespaceMismatch
@@ -489,12 +411,10 @@ package actor SwiftDataSyncModePersistence {
     var declared = manifest
     declared.stores.append(candidate)
     declared.transition = transition
-    if declared.attentionReason != .firstSyncFailed {
-      declared.attentionReason = nil
-    }
+    declared.attentionReason = nil
     try commit(declared)
-    try crashHook(.afterCandidateManifest)
     do {
+      try crashHook(.afterCandidateManifest)
       try crashHook(.beforeCandidateDurability)
       let candidateRoot = storeURL(candidate)
       _ = try SwiftDataSnipLibrary(
@@ -509,54 +429,36 @@ package actor SwiftDataSyncModePersistence {
       try crashHook(.afterCandidateDurability)
       var ready = manifest
       ready.stores[try storeIndex(id: candidate.id)].lifecycle = .ready
-      try ready.updateTransition { try $0.markCandidateReady() }
       try commit(ready)
-      return try currentTransition()
+      return transition
     } catch {
-      try? abortUnactivatedCandidate(reason: .storageFailure)
+      try? abortUnactivatedCandidate(transitionID: transition.id, reason: .storageFailure)
       throw error
     }
   }
 
-  package func recordPreparationComplete() throws {
-    var next = manifest
-    try next.updateTransition { try $0.recordPreparationComplete() }
-    if next.attentionReason != .firstSyncFailed {
-      next.attentionReason = nil
-    }
-    try commit(next)
-  }
-
-  package func retryRemoteFetch() throws {
-    var next = manifest
-    try next.updateTransition { try $0.retryRemoteFetch() }
-    guard manifest.transition?.sourceStoreID == manifest.activeStoreID else {
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    if next.attentionReason == .enrollmentBlocked {
-      next.attentionReason = nil
-    }
-    try commit(next)
-  }
-
-  package func swapPointer() throws {
-    var next = manifest
-    try next.updateTransition { try $0.swapPointer() }
-    guard let transition = manifest.transition,
+  package func swapPointer(transitionID: UUID, sourceRevision: UInt64) throws {
+    try Task.checkCancellation()
+    guard !activeStoreBusy, activeStoreRevision == sourceRevision,
+      let transition = manifest.transition, transition.id == transitionID,
+      manifest.activeStoreID == transition.sourceStoreID,
       store(id: transition.candidateStoreID)?.lifecycle == .ready
     else { throw SyncModePersistenceError.transitionInProgress }
+    var next = manifest
+    try next.updateTransition { try $0.swap() }
     guard hasStoreFile(id: transition.candidateStoreID) else {
       throw SyncModePersistenceError.missingStore
     }
     try crashHook(.beforePointerSwap)
+    try Task.checkCancellation()
     next.activeStoreID = transition.candidateStoreID
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
-    try commit(next)
+    try publishActivation(next)
     try crashHook(.afterPointerSwap)
   }
 
   package func finishTransition() throws {
-    guard manifest.transition?.phase == .pointerSwapped else {
+    guard manifest.transition?.phase == .swapped else {
       throw SyncModePersistenceError.transitionInProgress
     }
     var next = manifest
@@ -565,20 +467,12 @@ package actor SwiftDataSyncModePersistence {
     for index in next.stores.indices where next.stores[index].lifecycle == .retired {
       next.stores[index].lifecycle = .deleting
     }
-    try commit(next)
+    // The durable swap already selects the candidate. Let retirement cleanup
+    // persist this bookkeeping as roots are removed.
+    manifest = next
     try crashHook(.afterRetiredCleanupDeclared)
   }
 
-  package func unfreezeBeforePointerSwap(reason: ICloudSyncAttentionReason? = nil) throws {
-    guard let transition = manifest.transition,
-      transition.sourceStoreID == manifest.activeStoreID,
-      transition.freezesSource
-    else { return }
-    var next = manifest
-    try next.updateTransition { try $0.unfreeze() }
-    next.attentionReason = reason
-    try commitRollback(next)
-  }
   package func recordAttention(_ reason: ICloudSyncAttentionReason) throws {
     var next = manifest
     next.attentionReason = reason
@@ -618,8 +512,8 @@ package actor SwiftDataSyncModePersistence {
   package func activateEmptyCollection(
     namespace: ICloudSyncNamespaceBinding?
   ) async throws {
-    guard manifest.transition == nil,
-      writeAdmissionIsIdle(),
+    guard initialLocalLibrary == nil, manifest.transition == nil,
+      !activeStoreBusy,
       let current = store(id: manifest.activeStoreID)
     else { throw SyncModePersistenceError.transitionInProgress }
     if current.namespace == namespace,
@@ -791,30 +685,31 @@ package actor SwiftDataSyncModePersistence {
     completedRecoveryQuarantineStoreIDs.insert(store.id)
   }
 
-  private func currentTransition() throws -> SyncModeTransition {
-    guard let transition = manifest.transition else { throw SyncModePersistenceError.transitionInProgress }
-    return transition
+  package func retryCandidateRollback() throws {
+    guard let transition = manifest.transition, transition == strandedRollback else { return }
+    try abortUnactivatedCandidate(transitionID: transition.id, reason: nil)
   }
 
   package func cancelPendingICloudEnable() throws {
-    guard let transition = manifest.transition,
-      transition.targetKind == .iCloudSync,
-      manifest.activeStoreID == transition.sourceStoreID,
-      transition.phase != .pointerSwapped
-    else { return }
-    try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? nil : .firstSyncFailed)
+    guard let transition = manifest.transition, transition.targetKind == .iCloudSync else {
+      return
+    }
+    try abortUnactivatedCandidate(transitionID: transition.id, reason: nil)
   }
 
-  func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
-    guard let transition = manifest.transition, manifest.activeStoreID == transition.sourceStoreID else { return }
+  package func abortUnactivatedCandidate(
+    transitionID: UUID, reason: ICloudSyncAttentionReason?
+  ) throws {
+    try resolveActivationWrite()
+    guard let transition = manifest.transition, transition.id == transitionID,
+      manifest.activeStoreID == transition.sourceStoreID
+    else { return }
     var next = manifest
     if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
       next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
-    if next.attentionReason != .firstSyncFailed {
-      next.attentionReason = reason
-    }
+    next.attentionReason = reason
     // Commit before removing any files. A candidate whose files are gone but whose manifest
     // entry survives a failed commit is reopened empty by the next enable.
     try commitRollback(next)
@@ -881,13 +776,60 @@ package actor SwiftDataSyncModePersistence {
   }
 
   func commit(_ next: Manifest) throws {
+    guard unconfirmedActivation == nil else { throw SyncModePersistenceError.storageFailure }
     try Self.validate(next)
+    if initialLocalLibrary != nil {
+      manifest = next
+      return
+    }
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)
     } catch {
       throw SyncModePersistenceError.storageFailure
     }
     manifest = next
+  }
+
+  private func publishActivation(_ next: Manifest) throws {
+    try Self.validate(next)
+    do {
+      try Self.write(next, to: manifestURL, using: manifestWriter)
+      manifest = next
+      initialLocalLibrary = nil
+    } catch {
+      unconfirmedActivation = next
+      try resolveActivationWrite()
+      guard manifest == next, initialLocalLibrary == nil else {
+        throw SyncModePersistenceError.storageFailure
+      }
+    }
+  }
+
+  func resolveActivationWrite() throws {
+    guard let attempted = unconfirmedActivation else { return }
+    do {
+      let installed: Manifest
+      do {
+        installed = try JSONDecoder().decode(
+          Manifest.self, from: Data(contentsOf: manifestURL)
+        )
+      } catch CocoaError.fileReadNoSuchFile where initialLocalLibrary != nil {
+        unconfirmedActivation = nil
+        return
+      }
+      if installed == attempted {
+        try DurableFile.applyDataProtection(to: manifestURL)
+        try DurableFile.syncFile(manifestURL)
+        try DurableFile.syncDirectory(rootURL)
+        manifest = installed
+        initialLocalLibrary = nil
+      } else if installed != manifest || initialLocalLibrary != nil {
+        throw SyncModePersistenceError.invalidManifest
+      }
+      unconfirmedActivation = nil
+    } catch {
+      throw SyncModePersistenceError.storageFailure
+    }
   }
 
   private static func newStore(
