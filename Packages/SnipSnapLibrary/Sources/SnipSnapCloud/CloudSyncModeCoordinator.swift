@@ -13,21 +13,19 @@ package enum ICloudAccountGateError: Error, Equatable, Sendable {
 private actor FullRecordSyncAdapter {
     private let raw: CloudFullSyncPersistence
     private let syncDriver: CloudFullSyncCoordinator
-    private let beforeApply: CloudFullSyncPersistence.ApplyHook
     private var pendingIssue: SyncedContentSyncIssue?
 
     init(
         raw: CloudFullSyncPersistence,
         transport: any CloudRecordTransport,
-        beforeApply: @escaping CloudFullSyncPersistence.ApplyHook
+        accountChanged: @escaping CloudFullSyncPersistence.ApplyHook
     ) {
         self.raw = raw
-        self.beforeApply = beforeApply
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
             fetchScope: .zones([raw.dataZone]),
-            accountChanged: beforeApply
+            accountChanged: accountChanged
         )
     }
 
@@ -42,7 +40,7 @@ private actor FullRecordSyncAdapter {
     func sendPending(
         beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
     ) async throws {
-        let outcome = try await syncDriver.sendPending(beforeApply: beforeApply, beforeSend: beforeSend)
+        let outcome = try await syncDriver.sendPending(beforeSend: beforeSend)
         try reportCompletedSyncIssue(outcome)
     }
 
@@ -210,22 +208,26 @@ package actor ICloudSyncModeCoordinator {
         try await persistence.requireActiveNamespace(namespace.binding)
         let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         let adapter = try await adapter(storeID: storage.activeStore.id)
-        try await lease.run {
-            try await adapter.fetchRemote()
-            var clearedEarlierRetry = false
-            for _ in 0..<8 {
-                let evidence = try await adapter.enrollmentEvidence()
-                if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
-                    guard !clearedEarlierRetry else { break }
-                    try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
-                    clearedEarlierRetry = true
-                    continue
+        do {
+            try await lease.run {
+                try await adapter.fetchRemote()
+                var clearedEarlierRetry = false
+                for _ in 0..<8 {
+                    let evidence = try await adapter.enrollmentEvidence()
+                    if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
+                        guard !clearedEarlierRetry else { break }
+                        try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
+                        clearedEarlierRetry = true
+                        continue
+                    }
+                    guard evidence.hasPendingChanges, !evidence.blocksSending,
+                          evidence.phase != .blocked
+                    else { break }
+                    try await adapter.sendPending()
                 }
-                guard evidence.hasPendingChanges, !evidence.blocksSending,
-                      evidence.phase != .blocked
-                else { break }
-                try await adapter.sendPending()
             }
+        } catch is ICloudAccountGateError {
+            return try await updateAccountStatus(await accountStateSource.currentAccountState())
         }
         end()
         return try await statusUnchecked(accountState: accountState)
@@ -467,7 +469,7 @@ package actor ICloudSyncModeCoordinator {
             attachmentPolicy: attachmentPolicy
         )
         return FullRecordSyncAdapter(raw: raw, transport: makeTransport()) {
-            if isCandidate && !isActive { try await self.requireMatchingAccount() }
+            try await self.requireMatchingAccount()
         }
     }
 

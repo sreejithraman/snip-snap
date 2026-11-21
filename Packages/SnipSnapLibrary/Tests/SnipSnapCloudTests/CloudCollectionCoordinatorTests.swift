@@ -3730,7 +3730,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await local.adopt(namespace(next))
     let nextStoreID = try await persistence.snapshot().activeStore.id
     let unrelated = try await local.markPurged(
-      ifMatching: workContext(next, storeID: nextStoreID)
+      storeID: nextStoreID, namespace: binding(next)
     )
     let kept = try decodedCollectionStateFile(at: root)
     XCTAssertNotNil(unrelated)
@@ -3740,7 +3740,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await local.adopt(namespace(old))
     let oldStoreID = try await persistence.snapshot().activeStore.id
     let matching = try await local.markPurged(
-      ifMatching: workContext(old, storeID: oldStoreID)
+      storeID: oldStoreID, namespace: binding(old)
     )
     let cleared = try decodedCollectionStateFile(at: root)
     XCTAssertNotNil(matching)
@@ -3901,20 +3901,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try JSONDecoder().decode(
       CollectionStateFile.self,
       from: Data(contentsOf: collectionStateURL(at: root))
-    )
-  }
-
-  private func workContext(
-    _ descriptor: CloudCollectionDescriptor,
-    storeID: UUID
-  ) -> CloudRecordWorkContext {
-    CloudRecordWorkContext(
-      collection: CloudCollectionSyncContext(
-        namespace: namespace(descriptor),
-        metadataZone: descriptor.metadataZone,
-        payloadZone: descriptor.payloadZone
-      ),
-      storeID: storeID
     )
   }
 

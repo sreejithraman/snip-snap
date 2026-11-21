@@ -364,6 +364,7 @@ package actor SwiftDataSyncModePersistence {
         base: attachmentCacheRootURL,
         storeID: store.id
       ),
+      checksCloudEnrollment: store.quarantinedNamespace == nil,
       afterMutationBeforeSave: afterMutationBeforeSave,
       diagnostics: diagnostics
     )

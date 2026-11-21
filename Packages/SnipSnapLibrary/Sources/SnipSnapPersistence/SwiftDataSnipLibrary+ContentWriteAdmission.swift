@@ -8,7 +8,7 @@ extension SwiftDataSnipLibrary {
     let lock = try SnipStoreFileLock(url: lockURL)
     defer { withExtendedLifetime(lock) {} }
     do {
-      try Self.requireNoCloudReset(context: Self.makeContext(container: container))
+      try Self.requireNoCloudReset(context: Self.makeContext(container: container), checkEnrollment: false)
       return false
     } catch CloudContentWriteAdmission.Block.dataReset {
       return true
@@ -23,20 +23,21 @@ extension SwiftDataSnipLibrary {
       throw SnipLibraryError.readOnlyRecovery
     }
     do {
-      try Self.requireNoCloudReset(context: context)
+      try Self.requireNoCloudReset(context: context, checkEnrollment: checksCloudEnrollment)
     } catch CloudContentWriteAdmission.Block.dataReset {
       diagnostics.record(.writeAdmission(.failed, reason: .dataReset))
       throw SnipLibraryError.modeTransitionInProgress
     }
   }
 
-  private static func requireNoCloudReset(context: ModelContext) throws {
+  private static func requireNoCloudReset(context: ModelContext, checkEnrollment: Bool) throws {
     for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()) {
-      try CloudContentWriteAdmission.requireStagedAllowsWrites(row)
+      try CloudContentWriteAdmission.requireStagedAllowsWrites(row, checkEnrollment: checkEnrollment)
     }
     for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>()) {
       try CloudContentWriteAdmission.requireRecoveryAllowsWrites(row)
     }
+    guard checkEnrollment else { return }
     for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>()) {
       guard let enrollment = try? Self.fullEnrollmentState(from: row.referencesData) else {
         throw SnipLibraryError.invalidStore
@@ -49,7 +50,7 @@ extension SwiftDataSnipLibrary {
 /// The storage admission rule reads every durable source of reset evidence.
 private enum CloudContentWriteAdmission {
   enum Block: Error { case dataReset }
-  static func requireStagedAllowsWrites(_ row: StoredCloudStagedBatch) throws {
+  static func requireStagedAllowsWrites(_ row: StoredCloudStagedBatch, checkEnrollment: Bool) throws {
     guard row.id == "\(row.namespaceKey)|\(row.batchID.uuidString.lowercased())" else {
       throw SnipLibraryError.invalidStore
     }
@@ -59,11 +60,11 @@ private enum CloudContentWriteAdmission {
       batch.storageVersion == 1, batch.namespaceKey == row.namespaceKey,
       batch.batchID == row.batchID
     else { throw SnipLibraryError.invalidStore }
-    try requireFullBatchAllowsWrites(batch)
+    try requireFullBatchAllowsWrites(batch, checkEnrollment: checkEnrollment)
   }
 
-  private static func requireFullBatchAllowsWrites(_ batch: CloudFullBatchCommit) throws {
-    if let state = batch.nextNamespaceState {
+  private static func requireFullBatchAllowsWrites(_ batch: CloudFullBatchCommit, checkEnrollment: Bool) throws {
+    if checkEnrollment, let state = batch.nextNamespaceState {
       try requireNamespaceAllowsWrites(state)
     }
     if let raw = batch.rawBatchData {

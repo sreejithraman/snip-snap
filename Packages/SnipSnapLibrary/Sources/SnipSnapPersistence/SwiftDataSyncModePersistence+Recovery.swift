@@ -69,7 +69,7 @@ extension SwiftDataSyncModePersistence {
     }
     for index in value.stores.indices where value.stores[index].syncProtocol == .retiredText {
       let store = value.stores[index]
-      if store.id == value.activeStoreID, let namespace = store.namespace,
+      if store.id == value.activeStoreID, let namespace = store.namespace ?? store.quarantinedNamespace,
         let root = storeRoots[store.id]
       {
         _ = try SwiftDataSnipLibrary(

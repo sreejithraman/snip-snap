@@ -345,9 +345,15 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     accountLineage = lineage
     if kept != nil {
       try await requireAccountLineage(lineage)
-      if try await modePersistence.resumeKeptCloudCache(in: namespace.binding) {
-        return .enabled
+      let resumed = try await modePersistence.resumeKeptCloudCache(in: namespace.binding) { library in
+        let records = CloudFullSyncPersistence(library: library, namespace: namespace,
+          dataZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone)
+        for batch in try await records.stagedBatches() {
+          try await records.applyStaged(batch.batchID)
+        }
+        try await records.clearEngineState()
       }
+      if resumed { return .enabled }
     }
     let mode = ICloudSyncModeCoordinator(
       persistence: modePersistence,
@@ -648,7 +654,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let signedOut = error == .noAccount
     await clearCollectionCoordinator()
     let local = try SwiftDataCloudCollectionLocalStore(rootURL: rootURL, persistence: persistence)
-    if try await local.state().encryptedDataReset != nil {
+    if try await local.finishRecordedReset(storeID: store.id, namespace: namespace) != nil {
       try PendingICloudSyncEnable.clear(at: rootURL)
       return .iCloudDataReset
     }

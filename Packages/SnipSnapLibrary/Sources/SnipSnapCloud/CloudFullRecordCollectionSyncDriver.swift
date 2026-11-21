@@ -140,7 +140,14 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
 
   private func requireCurrent(_ context: CloudRecordWorkContext) async throws {
     try await requireActive(context)
-    try await beforeRecordWork(context)
+    do {
+      try await beforeRecordWork(context)
+    } catch CloudCollectionError.syncNeedsAttention {
+      // Earlier record work can encounter a changed collection before the
+      // ordered consumer reaches the account event.
+      try await accountChanged(context)
+      throw CloudCollectionError.syncNeedsAttention
+    }
     try await requireActive(context)
   }
 

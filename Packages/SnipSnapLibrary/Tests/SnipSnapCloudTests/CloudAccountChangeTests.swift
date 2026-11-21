@@ -40,6 +40,45 @@ final class CloudAccountChangeTests: XCTestCase {
     XCTAssertTrue(events.contains { if case .sent = $0 { return true }; return false })
   }
 
+  func testResumingChecksRemoteEditsBeforePlanningOfflineDeletes() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let local = try await fixture.persistence.activeLibrary()
+    let added = try await add("common version", to: local)
+    let snip = try XCTUnwrap(added.snapshot.snips.first)
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let acceptedID = CloudRecordID.snip(snip.id, in: fixture.descriptor.metadataZone)
+    let accepted = await fixture.server.fullSnapshot(for: acceptedID)
+    XCTAssertNotNil(accepted)
+
+    await fixture.account.set(.noAccount)
+    let stopped = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(stopped, .iCloudSignedOut)
+    _ = try await local.perform(.delete(ids: [snip.id]), sortedBy: .manual)
+
+    let other = try SwiftDataSnipLibrary(storeURL: fixture.root.appendingPathComponent("other.store"))
+    let remote = CloudFullSyncCoordinator(
+      store: CloudFullSyncPersistence(library: other, namespace: fixture.namespace,
+        dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone),
+      transport: FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace)
+    )
+    _ = try await remote.fetchRemote()
+    _ = try await other.perform(.update(id: snip.id, content: "edited on another device",
+      attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
+    _ = try await remote.sendPending()
+
+    await fixture.account.set(.available(accountLineage: "account-a"))
+    let resumed = try await fixture.lifecycle.enableICloudSync()
+    XCTAssertEqual(resumed, .enabled)
+    try await fixture.lifecycle.scheduleAutomaticSync()
+    let activeID = try await fixture.persistence.snapshot().activeStore.id
+    let active = try await fixture.persistence.libraryForTransition(storeID: activeID)
+    let recordState = try await active.cloudFullStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+    XCTAssertTrue(recordState.conflicts.contains { $0.reference.domainID == snip.id })
+    let remoteRecord = await fixture.server.fullSnapshot(for: acceptedID)
+    XCTAssertNotNil(remoteRecord, "The offline delete must not erase the later remote edit")
+  }
+
   func testNewAccountCannotUploadTheKeptLibraryEvenAfterExplicitEnable() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -111,6 +150,30 @@ final class CloudAccountChangeTests: XCTestCase {
     XCTAssertEqual(writable.snapshot.snips.map(\.content), ["after reset"])
   }
 
+  func testAccountChangeKeepsAStoreAwaitingACloudZone() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let library = try await fixture.persistence.activeLibrary()
+    _ = try await add("keep even with a missing zone", to: library)
+    _ = try await fixture.lifecycle.retrySynchronization()
+    let storeID = try await fixture.persistence.snapshot().activeStore.id
+    let store = try await fixture.persistence.libraryForTransition(storeID: storeID)
+    let cloud = CloudFullSyncPersistence(library: store, namespace: fixture.namespace,
+      dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone)
+    let missing = CloudFetchedBatch(id: UUID(), items: [],
+      zoneEvents: [.failed(fixture.descriptor.metadataZone, .zoneMissing)], engineState: nil)
+    try await cloud.stage(.fetched(missing), outbound: nil)
+    try await cloud.applyStaged(missing.id)
+    let enrollment = try await store.cloudFullStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
+    XCTAssertEqual(enrollment.namespaceState.phase, .blocked)
+
+    await fixture.account.set(.noAccount)
+    let result = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(result, .iCloudSignedOut)
+    let edit = try await add("local edit", to: library)
+    XCTAssertEqual(Set(edit.snapshot.snips.map(\.content)), ["keep even with a missing zone", "local edit"])
+  }
+
   func testLegacyManifestKeepsBothStoresAndIgnoresRetiredFields() async throws {
     for swapped in [false, true] {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -134,7 +197,10 @@ final class CloudAccountChangeTests: XCTestCase {
       for index in stores.indices {
         let id = stores[index]["id"] as? String
         if id == replacement.id.uuidString { stores[index]["lifecycle"] = swapped ? "ready" : "creating" }
-        if id == cache.id.uuidString { stores[index]["lifecycle"] = swapped ? "isolated" : "ready" }
+        if id == cache.id.uuidString {
+          stores[index]["lifecycle"] = swapped ? "isolated" : "ready"
+          if swapped { stores[index].removeValue(forKey: "syncProtocol") }
+        }
       }
       manifest["stores"] = stores
       manifest["activeStoreID"] = (swapped ? replacement : cache).id.uuidString
@@ -151,6 +217,7 @@ final class CloudAccountChangeTests: XCTestCase {
       let active = try await reopened.snapshot().activeStore
       XCTAssertEqual(active.kind, .localOnly)
       XCTAssertEqual(active.quarantinedNamespace, binding)
+      XCTAssertEqual(active.syncProtocol, .fullRecordV1)
       let library = try await reopened.activeLibrary()
       let edited = try await add("new local edit", to: library)
       var expected: Set<String> = ["old account cache", "new local edit"]
@@ -173,6 +240,7 @@ final class CloudAccountChangeTests: XCTestCase {
     let persistence: SwiftDataSyncModePersistence
     let namespace: CloudSyncNamespace
     let descriptor: CloudCollectionDescriptor
+    let server: FakeCloudServer
     let control: FakeCloudControlTransport
     let records: FakeCloudRecordTransport
     let account: Account
@@ -198,7 +266,7 @@ final class CloudAccountChangeTests: XCTestCase {
         makeRecordTransport: { _ in records }, makeDescriptor: { descriptor }
       )
       return Fixture(root: root, persistence: persistence, namespace: namespace,
-        descriptor: descriptor, control: control,
+        descriptor: descriptor, server: server, control: control,
         records: records, account: account, lifecycle: lifecycle)
     }
   }

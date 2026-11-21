@@ -63,7 +63,10 @@ extension SwiftDataSyncModePersistence {
 
   /// A stopped cache retains the original engine and record state. Only its exact
   /// collection may resume, so pending deletes and edits keep their accepted bases.
-  package func resumeKeptCloudCache(in namespace: ICloudSyncNamespaceBinding) throws -> Bool {
+  package func resumeKeptCloudCache(
+    in namespace: ICloudSyncNamespaceBinding,
+    prepareForInitialFetch: @Sendable (SwiftDataSnipLibrary) async throws -> Void
+  ) async throws -> Bool {
     guard let index = manifest.stores.firstIndex(where: { $0.id == manifest.activeStoreID }),
       manifest.stores[index].relativeRoot == Self.canonicalRelativeRoot(
         kind: .iCloudSync, id: manifest.activeStoreID
@@ -71,8 +74,10 @@ extension SwiftDataSyncModePersistence {
     else { return false }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
+    let kept = manifest.stores[index]
+    let library = try libraryForTransition(storeID: kept.id)
+    try await prepareForInitialFetch(library)
     var next = manifest
-    let kept = next.stores[index]
     next.stores[index] = SyncModeStore(
       id: kept.id, kind: .iCloudSync, namespace: namespace, relativeRoot: kept.relativeRoot,
       syncProtocol: kept.syncProtocol, revision: kept.revision, lifecycle: .ready
