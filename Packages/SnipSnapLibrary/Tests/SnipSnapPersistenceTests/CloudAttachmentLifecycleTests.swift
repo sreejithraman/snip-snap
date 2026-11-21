@@ -1110,6 +1110,7 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
 
     do {
       try await reopened.promoteAvailableCloudAttachments(namespaceKey: namespace)
+      try await reopened.clearCloudSyncState(namespaceKey: namespace, afterReset: true)
     } catch {
       return XCTFail(
         "A partial file from an interrupted durable copy must not block iCloud data reset recovery: \(error)"

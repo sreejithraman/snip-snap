@@ -3327,7 +3327,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(state.activeNamespace, namespace(fresh))
     XCTAssertFalse(state.keptAfterReset)
     XCTAssertEqual(Set(activeSnapshot.snips.map(\.content)), ["kept local snip", "new local work"])
-    XCTAssertEqual(Set(cloudText), ["kept local snip", "new local work"])
+    XCTAssertEqual(cloudText, ["new local work"], "The unresolved snip stays off the wire")
     let keptAfterEnable = try XCTUnwrap(activeSnapshot.snips.first { $0.id == keptSnip.id })
     XCTAssertEqual(keptAfterEnable.attachments.map(\.id), [missingID])
     XCTAssertNil(activeSnapshot.attachmentURLs[missingID])
@@ -3339,6 +3339,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let resolved = try await active.library.resolveRecovery(choice.id, in: scope, choice: .useRecovered)
     XCTAssertEqual(resolved.snips.first { $0.id == keptSnip.id }?.content, "unresolved local draft")
 
+    _ = try await reopened.retrySynchronization()
+    let syncedAfterReview = await server.storedTextValues()
+    XCTAssertEqual(Set(syncedAfterReview), ["unresolved local draft", "new local work"])
     try await reopened.disableICloudSync(.useCurrentCache)
     let local = try await reopened.activeLibrary().library.checkedSnapshot(sortedBy: .manual)
     let localSnip = try XCTUnwrap(local.snips.first { $0.id == keptSnip.id })

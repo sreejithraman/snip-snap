@@ -37,14 +37,21 @@ extension SwiftDataSyncModePersistence {
   package func recoverRecordedCloudReset(
     storeID: UUID, namespace: ICloudSyncNamespaceBinding
   ) async throws -> Bool {
-    try await activeStoreTurns.withLease {
-      try await self.stopSyncKeepingCache(storeID: storeID, namespace: namespace, reason: nil)
-        == .keptAfterReset
+    try resolveActivationWrite()
+    guard manifest.activeStoreID == storeID, store(id: storeID)?.namespace == namespace
+    else { return false }
+    if manifest.attentionReason != .namespaceChanged {
+      let library = try libraryForTransition(storeID: storeID)
+      guard try await library.hasPendingCloudReset() else { return false }
     }
+    // Only a recorded reset needs to wait for active writes before changing the store.
+    return try await keepCloudCacheLocally(
+      storeID: storeID, namespace: namespace, reason: .namespaceChanged
+    ) == .keptAfterReset
   }
 
   private func stopSyncKeepingCache(
-    storeID: UUID, namespace: ICloudSyncNamespaceBinding, reason: ICloudSyncAttentionReason?
+    storeID: UUID, namespace: ICloudSyncNamespaceBinding, reason: ICloudSyncAttentionReason
   ) async throws -> KeepCacheResult {
     try resolveActivationWrite()
     guard manifest.activeStoreID == storeID,
@@ -65,7 +72,6 @@ extension SwiftDataSyncModePersistence {
     } else {
       reset = try await library.hasPendingCloudReset()
     }
-    guard let stopReason = reset ? .namespaceChanged : reason else { return .sourceReplaced }
     if reset {
       // Close outbound admission durably before retiring the old sync rows.
       if store.kind == .iCloudSync, manifest.attentionReason != .namespaceChanged {
@@ -84,7 +90,7 @@ extension SwiftDataSyncModePersistence {
     }
     next.transition = nil
     if store.kind == .iCloudSync { next.stores[index] = store.keepingLocally() }
-    next.attentionReason = stopReason
+    next.attentionReason = reset ? .namespaceChanged : reason
     try publishActivation(next)
     return reset ? .keptAfterReset : .kept
   }
