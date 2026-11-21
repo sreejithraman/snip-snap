@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "SnipSnapCore", targets: ["SnipSnapCore"]),
         .library(name: "SnipSnapPersistence", targets: ["SnipSnapPersistence"]),
         .library(name: "SnipSnapCloud", targets: ["SnipSnapCloud"]),
+        .library(name: "SnipSnapTestSupport", targets: ["SnipSnapTestSupport"]),
         .executable(name: "snipsnap", targets: ["SnipSnapCLI"]),
     ],
     targets: [
@@ -28,17 +29,22 @@ let package = Package(
             name: "SnipSnapCLI",
             dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
         ),
+        .target(
+            name: "SnipSnapTestSupport",
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence"],
+            path: "Tests/SnipSnapTestSupport"
+        ),
         .testTarget(
             name: "SnipSnapCoreTests",
             dependencies: ["SnipSnapCore"]
         ),
         .testTarget(
             name: "SnipSnapPersistenceTests",
-            dependencies: ["SnipSnapCore", "SnipSnapPersistence"]
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence", "SnipSnapTestSupport"]
         ),
         .testTarget(
             name: "SnipSnapCloudTests",
-            dependencies: ["SnipSnapCore", "SnipSnapPersistence", "SnipSnapCloud"]
+            dependencies: ["SnipSnapCore", "SnipSnapPersistence", "SnipSnapCloud", "SnipSnapTestSupport"]
         ),
         .testTarget(
             name: "SnipSnapCLITests",

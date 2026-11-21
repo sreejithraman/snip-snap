@@ -182,7 +182,7 @@ final class AppModel: ObservableObject {
             }
             return false
         case .success:
-            dismissFailure(for: "snip.update")
+            clearFailure(for: "snip.update")
             guard savingEdit(sessionID) != nil else { return false }
             closeInlineEditor()
             return true
@@ -213,7 +213,7 @@ final class AppModel: ObservableObject {
         reconcileSelection()
     }
 
-    @Published private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    @Published var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var presentedError: String? { snackbarAndErrors.presentedFailure?.message }
     var presentedErrorTitle: String? { snackbarAndErrors.presentedTitle }
@@ -231,16 +231,6 @@ final class AppModel: ObservableObject {
         return { [weak self] in self?.retryPendingUndo(failure) }
     }
 
-    func retryPendingUndo(_ failure: AppFailure) {
-        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
-        Task { await performToastActionNow(undo) }
-    }
-
-    func retryPendingUndoNow(_ failure: AppFailure) async {
-        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
-        await performToastActionNow(undo)
-    }
-
     var dialogFailure: AppFailure? {
         if let errorDetails { return errorDetails }
         guard let presented = snackbarAndErrors.presentedFailure, presented.surface == .dialog else { return nil }
@@ -252,7 +242,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var appearance: AppAppearance
     @Published var recoverySnapshot: SnipRecoverySnapshot = .empty
     @Published var legacyDraftCount = 0
-    @Published private(set) var pendingImportPreview: SavedSnipsImportPreview?
+    @Published var backupImport = BackupImportPresentation()
+    var pendingImportPreview: SavedSnipsImportPreview? { backupImport.preview }
     @Published var clipboardCopyPulse: ClipboardCopyPulse?
     @Published private(set) var cliScopeChangeInProgress = false
     private(set) var cliMutationInProgress = false
@@ -585,7 +576,7 @@ final class AppModel: ObservableObject {
         snackbarAndErrors.closeErrorDetails(failure)
     }
 
-    private func dismissFailure(for operation: StaticString) {
+    func clearFailure(for operation: StaticString) {
         guard latestFailure?.operation == String(describing: operation) else { return }
         snackbarAndErrors.resolveLatestFailure()
     }
@@ -739,33 +730,12 @@ final class AppModel: ObservableObject {
     var pendingRecoveredSnips: [RecoveredSnip] { recoverySnapshot.pendingSnips }
     var pendingRecoveredLists: [RecoveredListEdit] { recoverySnapshot.pendingLists }
 
-    func currentSnip(for recovery: RecoveredSnip) -> Snip? {
-        snips.first { $0.id == recovery.currentSnipID }
-    }
-
-    func currentList(for recovery: RecoveredListEdit) -> SnipList? {
-        lists.first { $0.id == recovery.currentListID }
-    }
-
-    func isRecoveredSnip(_ snipID: UUID) -> Bool {
-        recoverySnapshot.pendingSnips.contains { $0.id == snipID }
-            || recoverySnapshot.promotedSnips.contains { $0.id == snipID }
-    }
-
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
-        return await withCommandLock {
+        await withCommandLock {
             guard editingID == nil else { return false }
             do {
-                guard let state = try await session.resolveRecovery(
-                    id,
-                    choice: choice,
-                    sortedBy: sortMode
-                ) else { return false }
-                clearPendingUndoToast()
-                apply(state)
-                scheduleCloudSync()
-                return true
+                return try await resolveSavedSnipsRecovery(id, choice: choice)
             } catch {
                 presentError(error, operation: "recovery.resolve")
                 await reloadUnlocked()
@@ -774,7 +744,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func apply(_ state: SavedSnipsSessionState) {
+    func apply(_ state: SavedSnipsSessionState) {
         apply(state.library, reconcileOrphanDrafts: false)
         recoverySnapshot = state.recovery
     }
@@ -894,7 +864,7 @@ final class AppModel: ObservableObject {
         }
         switch result {
         case .success(let update):
-            dismissFailure(for: "snip.add")
+            clearFailure(for: "snip.add")
             guard case .add(let outcome) = update.outcome else {
                 preconditionFailure("The library returned the wrong add outcome.")
             }
@@ -923,7 +893,7 @@ final class AppModel: ObservableObject {
             expectedUpdatedAt: expectedUpdatedAt
         ) {
         case .success:
-            dismissFailure(for: "snip.update")
+            clearFailure(for: "snip.update")
             return true
         case .failure(let error):
             presentError(error, operation: "snip.update")
@@ -1109,20 +1079,12 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         let result: Result<Void, Error>? = await withCommandLock {
             guard editingID == nil else { return nil }
-            let creation = await performMutationUnlocked {
-                let update = try await session.performLibraryCommand(
-                    .createList(name: name, systemImage: systemImage, color: color),
-                    sortedBy: sortMode
-                )
-                guard case .listCreated(let list) = update.outcome else {
-                    preconditionFailure("The library returned the wrong list outcome.")
-                }
-                return (update, list)
-            }
-            switch creation {
+            switch await runSavedSnipsCommand(
+                .createList(name: name, systemImage: systemImage, color: color), route: .library
+            ) {
             case .failure(let error):
                 return .failure(error)
-            case .success(let list):
+            case .success(.listCreated(let list)):
                 let selectedMovingIDs = selection.intersection(movingIDs)
                 showListPage(list, preservingSelection: !movingIDs.isEmpty)
                 guard !movingIDs.isEmpty else { return .success(()) }
@@ -1149,6 +1111,8 @@ final class AppModel: ObservableObject {
                     affectedIDs: Set(orderedIDs)
                 )
                 return moveResult?.map { _ in () }
+            case .success:
+                preconditionFailure("The library returned the wrong list outcome.")
             }
         }
         guard let result else { return false }
@@ -1156,7 +1120,7 @@ final class AppModel: ObservableObject {
             presentError(error, operation: "list.create")
             return false
         }
-        dismissFailure(for: "list.create")
+        clearFailure(for: "list.create")
         return true
     }
 
@@ -1164,13 +1128,7 @@ final class AppModel: ObservableObject {
         guard list.id != SnipList.inboxID else { return }
         let result: Result<Void, Error>? = await withCommandLock {
             guard editingID == nil else { return nil }
-            return await performMutationUnlocked {
-                let update = try await session.performLibraryCommand(
-                    .deleteList(id: list.id),
-                    sortedBy: sortMode
-                )
-                return (update, ())
-            }
+            return await runSavedSnipsCommand(.deleteList(id: list.id), route: .library).map { _ in () }
         }
         if case .some(.failure(let error)) = result {
             presentError(error, operation: "list.delete")
@@ -1182,20 +1140,16 @@ final class AppModel: ObservableObject {
     func updateList(_ list: SnipList, name: String, systemImage: String, color: SnipListColorChange = .keep) async -> Bool {
         let result: Result<Void, Error>? = await withCommandLock {
             guard editingID == nil else { return nil }
-            return await performMutationUnlocked {
-                let update = try await session.performLibraryCommand(
-                    .updateList(id: list.id, name: name, systemImage: systemImage, color: color),
-                    sortedBy: sortMode
-                )
-                return (update, ())
-            }
+            return await runSavedSnipsCommand(
+                .updateList(id: list.id, name: name, systemImage: systemImage, color: color), route: .library
+            ).map { _ in () }
         }
         guard let result else { return false }
         if case .failure(let error) = result {
             presentError(error, operation: "list.update")
             return false
         }
-        dismissFailure(for: "list.update")
+        clearFailure(for: "list.update")
         return true
     }
 
@@ -1242,86 +1196,22 @@ final class AppModel: ObservableObject {
     func deleteSelectionNow(ids targets: Set<UUID>? = nil) async {
         let ids = targets ?? selection
         guard !ids.isEmpty else { return }
-        let token = UUID()
         await withCommandLock {
-            let deletableIDs = Set(ids.filter { $0 != editingID })
-            let snipsToDelete = snips.filter { deletableIDs.contains($0.id) }
-            guard !snipsToDelete.isEmpty else { return }
-            do {
-                let result = try await session.deleteWithResult(
-                    ids: deletableIDs,
-                    token: token,
-                    sortedBy: sortMode
-                )
-                apply(result.update.snapshot)
-                guard result.didChange else { return }
-                clearPendingUndoToast()
-                snackbarAndErrors.show(.deleted(count: snipsToDelete.count, id: token))
-                scheduleCloudSync()
-            } catch {
-                presentError(error, operation: "snip.delete")
-            }
+            let deletableIDs = ids.subtracting(editingID.map { [$0] } ?? [])
+            _ = await deleteSavedSnips(ids: deletableIDs)
         }
     }
 
-    func performToastAction(_ presentedToast: AppToast) {
-        Task { await performToastActionNow(presentedToast) }
+    func performUndoAction(_ toast: AppToast) async {
+        await withCommandLock { await restoreUndo(toast) }
     }
 
-    func performToastActionNow(_ presentedToast: AppToast) async {
-        switch presentedToast.action {
-        case .undoDelete:
-            await restoreDeletion(token: presentedToast.id, presentedToast: presentedToast)
-        case .undoDone:
-            await withCommandLock {
-                do {
-                    guard let update = try await session.restoreDone(token: presentedToast.id, sortedBy: sortMode) else {
-                        expireUnavailableRetry(for: presentedToast)
-                        return
-                    }
-                    apply(update.snapshot)
-                    snackbarAndErrors.undoSucceeded(presentedToast)
-                    dismissFailure(for: "snip.undo_done")
-                    scheduleCloudSync()
-                } catch {
-                    presentError(error, operation: "snip.undo_done")
-                    snackbarAndErrors.retainUndoFailure(of: presentedToast)
-                }
-            }
-        case .showErrorDetails(let id):
-            snackbarAndErrors.showLatestErrorDetails(ifLatestIs: id)
-        case nil:
-            break
-        }
-    }
-
-    private func expireUnavailableRetry(for presentedToast: AppToast) {
-        guard snackbarAndErrors.retainsUndo(presentedToast.id) else { return }
-        let operation: StaticString = presentedToast.action == .undoDelete ? "snip.undo_delete" : "snip.undo_done"
+    func expireUnavailableUndoRetry(token: UUID, operation: StaticString) {
+        guard snackbarAndErrors.retainsUndo(token) else { return }
         presentError(
             String(localized: "Undo is no longer available because the snips changed."),
             operation: operation, diagnosticCode: "undo.unavailable"
         )
-    }
-
-    func dismissToast(_ presentedToast: AppToast) {
-        Task {
-            await session.withExclusiveAccess { session in
-                switch presentedToast.action {
-                case .undoDelete:
-                    await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
-                case .undoDone:
-                    await session.discardDone(token: presentedToast.id)
-                default:
-                    break
-                }
-            }
-            snackbarAndErrors.closeSnackbar(id: presentedToast.id)
-        }
-    }
-
-    func closeSnackbar(_ snackbar: AppToast) {
-        snackbarAndErrors.closeSnackbar(id: snackbar.id)
     }
 
     func showSnackbar(_ snackbar: AppToast) {
@@ -1332,74 +1222,41 @@ final class AppModel: ObservableObject {
         snackbarAndErrors.showUnlessActionable(snackbar)
     }
 
-    private func restoreDeletion(token: UUID, presentedToast: AppToast) async {
-        await withCommandLock {
-            do {
-                guard let update = try await session.restoreDeletion(
-                    token: token,
-                    sortedBy: sortMode
-                ) else {
-                    expireUnavailableRetry(for: presentedToast)
-                    return
-                }
-                apply(update.snapshot)
-                snackbarAndErrors.undoSucceeded(presentedToast)
-                dismissFailure(for: "snip.undo_delete")
-                scheduleCloudSync()
-            } catch {
-                presentError(error, operation: "snip.undo_delete")
-                snackbarAndErrors.retainUndoFailure(of: presentedToast)
-            }
-        }
-    }
-
     var importPreviewSummary: String {
         pendingImportPreview?.value.localizedSummary ?? ""
     }
 
     func previewBackupImport(from url: URL) async {
         await withCommandLock {
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            let operation = backupImport.beginPreview(keepingCurrentPreview: true)
             do {
-                pendingImportPreview = try await session.previewImport(from: url)
+                let preview = try await stageBackupImport(from: url)
+                backupImport.present(preview, for: operation)
             } catch {
-                pendingImportPreview = nil
+                backupImport.failPreview(operation)
                 presentError(error)
-            }
-        }
-    }
-
-    func cancelBackupImport() {
-        guard let preview = pendingImportPreview else { return }
-        pendingImportPreview = nil
-        Task {
-            await session.withExclusiveAccess { session in
-                _ = await session.cancelImport(id: preview.id)
             }
         }
     }
 
     func confirmBackupImport() async {
-        guard let preview = pendingImportPreview else { return }
+        guard let preview = backupImport.beginConfirmation(keepingPreviewVisible: true) else { return }
         await withCommandLock {
             guard editingID == nil else { return }
             do {
-                guard let (result, recovery) = try await session.applyPendingImport(
-                    id: preview.id,
-                    sortedBy: sortMode
-                ) else { throw SnipLibraryError.importChanged }
-                clearPendingUndoToast()
-                pendingImportPreview = nil
-                apply(result.snapshot)
-                recoverySnapshot = recovery
+                let imported = try await applyBackupImport(preview.id, sortedBy: sortMode)
+                presentImportedBackup(imported)
                 scheduleCloudSync()
             } catch {
-                pendingImportPreview = nil
+                backupImport.finishConfirmation()
                 presentError(error)
                 await reloadUnlocked()
             }
         }
+    }
+
+    var copiedButCouldNotMarkDone: String {
+        String(localized: "Copied, but couldn’t mark Done. Try marking Done again.")
     }
 
     func toggleDoneNow(
@@ -1451,47 +1308,9 @@ final class AppModel: ObservableObject {
         versions: [UUID: Date]? = nil,
         copyToast: AppToast? = nil
     ) async -> Bool {
-        let eligibleIDs = Set(snips.lazy.filter {
-            ids.contains($0.id)
-                && $0.id != self.editingID
-                && !$0.isPinned
-                && $0.isDone != done
-                && (versions == nil || versions?[$0.id] == $0.updatedAt)
-        }.map(\.id))
-        guard !eligibleIDs.isEmpty else { return true }
-        do {
-            let change = try await session.setDone(
-                ids: eligibleIDs, done: done,
-                expectation: .init(expectedCompletionSnips: snips.filter { eligibleIDs.contains($0.id) }),
-                sortedBy: sortMode
-            )
-            guard change.didChange else {
-                apply(change.update.snapshot)
-                return true
-            }
-            dismissFailure(for: "snip.completion")
-            dismissFailure(for: "snip.completion_after_copy")
-            clearPendingUndoToast()
-            apply(change.update.snapshot)
-            if let undo = change.undo {
-                snackbarAndErrors.show(copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id))
-            } else if let copyToast {
-                snackbarAndErrors.showUnlessActionable(copyToast)
-            }
-            scheduleCloudSync()
-            return true
-        } catch {
-            if copyToast != nil {
-                presentError(
-                    String(localized: "Copied, but couldn’t mark Done. Try marking Done again."),
-                    operation: "snip.completion_after_copy",
-                    diagnosticCode: diagnosticErrorCode(error)
-                )
-            } else {
-                presentError(error, operation: "snip.completion")
-            }
-            return false
-        }
+        let changing = completionCandidates(ids: ids, excluding: editingID, versions: versions)
+            .filter { $0.isDone != done }
+        return await changeCompletion(done, snips: changing, guardingChanges: true, copyToast: copyToast)
     }
 
     func toggleDone(id: UUID) {
@@ -1508,12 +1327,7 @@ final class AppModel: ObservableObject {
     func togglePinned(id: UUID) async {
         await withCommandLock {
             guard editingID != id else { return }
-            await performUserMutationUnlocked(operation: "snip.pin") {
-                let update = try await session.performLibraryCommand(
-                    .togglePinned(id: id), sortedBy: sortMode
-                )
-                return (update, ())
-            }
+            await performPinCommand(.togglePinned(id: id))
         }
     }
 
@@ -1521,12 +1335,7 @@ final class AppModel: ObservableObject {
         await withCommandLock {
             let eligibleIDs = ids.subtracting(editingID.map { [$0] } ?? [])
             guard !eligibleIDs.isEmpty else { return }
-            await performUserMutationUnlocked(operation: "snip.pin") {
-                let update = try await session.performLibraryCommand(
-                    .setPinned(ids: eligibleIDs, pinned: pinned), sortedBy: sortMode
-                )
-                return (update, ())
-            }
+            await performPinCommand(.setPinned(ids: eligibleIDs, pinned: pinned))
         }
     }
 
@@ -1536,16 +1345,8 @@ final class AppModel: ObservableObject {
 
     func setDoneAfterExternalDropNow(versions: [UUID: Date]) async {
         await withCommandLock {
-            let unfinishedIDs = Set(
-                snips.lazy
-                    .filter {
-                        versions[$0.id] == $0.updatedAt && !$0.isDone && !$0.isPinned
-                            && $0.id != self.editingID
-                    }
-                    .map(\.id)
-            )
-            guard !unfinishedIDs.isEmpty else { return }
-            await setDoneWithoutCopyUnlocked(true, ids: unfinishedIDs)
+            let changing = completionCandidates(excluding: editingID, versions: versions).filter { !$0.isDone }
+            _ = await changeCompletion(true, snips: changing, guardingChanges: true, copyToast: nil)
         }
     }
 
@@ -1555,22 +1356,10 @@ final class AppModel: ObservableObject {
         listID: UUID,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
-        if sortMode == .manual {
-            let movingIDs = Set(ids)
-            let firstID = snips.first {
-                $0.listID == listID && !movingIDs.contains($0.id)
-            }?.id
-            return await move(
-                ids: ids,
-                to: listID,
-                before: firstID,
-                selectionAfterMove: selectionAfterMove
-            )
-        }
-        return await moveChronologically(
-            ids: ids,
-            to: listID,
-            selectionAfterMove: selectionAfterMove
+        let command = moveToListCommand(ids: ids, to: listID, sortedBy: sortMode, in: snips)
+        return await moveSnips(
+            command, ids: ids, selectionAfterMove: selectionAfterMove,
+            afterSortMode: sortMode == .manual ? .manual : nil
         )
     }
 
@@ -1581,25 +1370,10 @@ final class AppModel: ObservableObject {
         before destinationID: UUID?,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
-        guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
-        let currentSortMode = sortMode
-        let result = await performCommand(
-            command: .place(
-                ids: ids,
-                in: listID,
-                before: destinationID,
-                basedOn: currentSortMode
-            ),
-            afterSelection: selectionAfterMove,
-            afterSortMode: .manual,
-            affectedIDs: Set(ids)
+        await moveSnips(
+            .place(ids: ids, in: listID, before: destinationID, basedOn: sortMode),
+            ids: ids, selectionAfterMove: selectionAfterMove, afterSortMode: .manual
         )
-        guard let result else { return false }
-        if case .success = result {
-            return true
-        }
-        if case .failure(let error) = result { presentError(error, operation: "snip.move") }
-        return false
     }
 
     @discardableResult
@@ -1608,18 +1382,28 @@ final class AppModel: ObservableObject {
         to listID: UUID,
         selectionAfterMove: Set<UUID>? = nil
     ) async -> Bool {
+        await moveSnips(.moveChronologically(ids: ids, to: listID), ids: ids, selectionAfterMove: selectionAfterMove)
+    }
+
+    private func moveSnips(
+        _ command: SnipLibraryCommand,
+        ids: [UUID],
+        selectionAfterMove: Set<UUID>?,
+        afterSortMode: SnipSortMode? = nil
+    ) async -> Bool {
         guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
-        let result = await performCommand(
-            command: .moveChronologically(ids: ids, to: listID),
+        switch await performCommand(
+            command: command,
             afterSelection: selectionAfterMove,
+            afterSortMode: afterSortMode,
             affectedIDs: Set(ids)
-        )
-        guard let result else { return false }
-        if case .success = result {
-            return true
+        ) {
+        case .success: return true
+        case .failure(let error):
+            presentError(error, operation: "snip.move")
+            return false
+        case nil: return false
         }
-        if case .failure(let error) = result { presentError(error, operation: "snip.move") }
-        return false
     }
 
     func moveSelectionNow(by offset: Int, ids targets: Set<UUID>? = nil) async {
@@ -1966,12 +1750,7 @@ final class AppModel: ObservableObject {
             let undoToken = snackbarAndErrors.undoToken
             let (update, value) = try await mutation()
             let changed = didMutate(value)
-            if changed {
-                let preservesUndo = if let undoToken {
-                    await session.retainsUndo(token: undoToken)
-                } else { false }
-                if !preservesUndo { clearPendingUndoToast() }
-            }
+            if changed { await clearUndoUnlessRetained(undoToken) }
             apply(update.snapshot)
             if changed { scheduleCloudSync() }
             return .success(value)
@@ -1980,13 +1759,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func performUserMutationUnlocked(
-        operation: StaticString,
-        _ mutation: () async throws -> (SnipLibraryUpdate, Void)
-    ) async {
-        switch await performMutationUnlocked(mutation) {
-        case .failure(let error): presentError(error, operation: operation)
-        case .success: dismissFailure(for: operation)
+    func clearUndoUnlessRetained(_ token: UUID?) async {
+        if let token, await session.retainsUndo(token: token) { return }
+        clearPendingUndoToast()
+    }
+
+    private func performPinCommand(_ command: SnipLibraryCommand) async {
+        switch await runSavedSnipsCommand(command, route: .library) {
+        case .failure(let error): presentError(error, operation: "snip.pin")
+        case .success: clearFailure(for: "snip.pin")
         }
     }
 
@@ -2013,19 +1794,9 @@ final class AppModel: ObservableObject {
         affectedIDs: Set<UUID>
     ) async -> Result<SnipLibraryOutcome, Error>? {
         if let editingID, affectedIDs.contains(editingID) { return nil }
-        do {
-            let result = try await session.performUserCommandWithResult(
-                command,
-                sortedBy: sortMode
-            )
-            if result.didChange { clearPendingUndoToast() }
-            apply(result.update.snapshot)
+        return await runSavedSnipsCommand(command) { _ in
             if let afterSortMode { setSortMode(afterSortMode) }
             if let afterSelection { selection = afterSelection }
-            scheduleCloudSync()
-            return .success(result.update.outcome)
-        } catch {
-            return .failure(error)
         }
     }
 
@@ -2033,10 +1804,6 @@ final class AppModel: ObservableObject {
         _ operation: @MainActor @Sendable () async -> Value
     ) async -> Value {
         await session.withExclusiveAccess { _ in await operation() }
-    }
-
-    func clearPendingUndoToast() {
-        snackbarAndErrors.endUndoWindow()
     }
 
     func scheduleCloudSync() {

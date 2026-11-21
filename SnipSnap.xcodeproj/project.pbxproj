@@ -234,6 +234,10 @@
 		CFA100000000000000000006 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000002 /* Fonts */; };
 		CFA100000000000000000007 /* AppTypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000003 /* AppTypographyTests.swift */; };
 		CFA100000000000000000008 /* AppTypographyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA200000000000000000003 /* AppTypographyTests.swift */; };
+		4D9600000000000000000001 /* SavedSnipsCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D9600000000000000000003 /* SavedSnipsCommands.swift */; };
+		4D9600000000000000000002 /* SavedSnipsCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D9600000000000000000003 /* SavedSnipsCommands.swift */; };
+		4D9600000000000000000004 /* SnipSnapTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9600000000000000000006 /* SnipSnapTestSupport */; };
+		4D9600000000000000000005 /* SnipSnapTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 4D9600000000000000000007 /* SnipSnapTestSupport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -481,6 +485,7 @@
 		CFA200000000000000000001 /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
 		CFA200000000000000000002 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
 		CFA200000000000000000003 /* AppTypographyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/AppTypographyTests.swift; sourceTree = SOURCE_ROOT; };
+		4D9600000000000000000003 /* SavedSnipsCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedSnipsCommands.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -502,6 +507,7 @@
 				D00000000000000000000022 /* SnipSnapCore in Frameworks */,
 				D00000000000000000000023 /* SnipSnapPersistence in Frameworks */,
 				D00000000000000000000025 /* SnipSnapCloud in Frameworks */,
+				4D9600000000000000000004 /* SnipSnapTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -520,6 +526,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1000000000000000000000D /* SnipSnapCore in Frameworks */,
+				4D9600000000000000000005 /* SnipSnapTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -710,6 +717,7 @@
 				AF7200000000000000000001 /* AppFailure.swift */,
 				AF7200000000000000000002 /* AppErrorDetailsView.swift */,
 				AF7200000000000000000004 /* SnackbarAndErrorPresentation.swift */,
+				4D9600000000000000000003 /* SavedSnipsCommands.swift */,
 				AD5200000000000000000001 /* SendDestinationPicker.swift */,
                 AF6200000000000000000001 /* GlassMenus.swift */,
 				AC2000000000000000000001 /* SnipListAppearance.swift */,
@@ -863,6 +871,7 @@
 				D00000000000000000000012 /* SnipSnapCore */,
 				D00000000000000000000013 /* SnipSnapPersistence */,
 				D00000000000000000000015 /* SnipSnapCloud */,
+				4D9600000000000000000006 /* SnipSnapTestSupport */,
 			);
 			productName = SnipSnapTests;
 			productReference = 200000000000000000000006 /* SnipSnapTests.xctest */;
@@ -908,6 +917,7 @@
 			name = SnipSnapiOSTests;
 			packageProductDependencies = (
 				EF0000000000000000000003 /* SnipSnapCore */,
+				4D9600000000000000000007 /* SnipSnapTestSupport */,
 			);
 			productName = SnipSnapiOSTests;
 			productReference = E2000000000000000000000C /* SnipSnapiOSTests.xctest */;
@@ -1154,6 +1164,7 @@
 				AF7100000000000000000001 /* AppFailure.swift in Sources */,
 				AF7100000000000000000004 /* AppErrorDetailsView.swift in Sources */,
 				AF7100000000000000000008 /* SnackbarAndErrorPresentation.swift in Sources */,
+				4D9600000000000000000001 /* SavedSnipsCommands.swift in Sources */,
 				AD5100000000000000000001 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000001 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000001 /* SnipListAppearance.swift in Sources */,
@@ -1247,6 +1258,7 @@
 				AF7100000000000000000002 /* AppFailure.swift in Sources */,
 				AF7100000000000000000005 /* AppErrorDetailsView.swift in Sources */,
 				AF7100000000000000000009 /* SnackbarAndErrorPresentation.swift in Sources */,
+				4D9600000000000000000002 /* SavedSnipsCommands.swift in Sources */,
 				AD5100000000000000000002 /* SendDestinationPicker.swift in Sources */,
                 AF6100000000000000000002 /* GlassMenus.swift in Sources */,
 				AC1000000000000000000002 /* SnipListAppearance.swift in Sources */,
@@ -1735,6 +1747,14 @@
 		FD0000000000000000000002 /* SnipSnapPersistence */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SnipSnapPersistence;
+		};
+		4D9600000000000000000006 /* SnipSnapTestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapTestSupport;
+		};
+		4D9600000000000000000007 /* SnipSnapTestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SnipSnapTestSupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

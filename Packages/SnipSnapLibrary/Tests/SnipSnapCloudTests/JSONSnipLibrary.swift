@@ -1,0 +1,3 @@
+import SnipSnapTestSupport
+
+typealias JSONSnipLibrary = SnipSnapTestSupport.JSONSnipLibrary

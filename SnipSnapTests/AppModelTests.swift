@@ -548,23 +548,36 @@ final class AppModelTests: StoreBackedTestCase {
         let secondBackup = try JSONSnipLibrary(fileURL: secondURL)
         _ = try await firstBackup.add(content: "First", origin: .quickEntry)
         _ = try await secondBackup.add(content: "Second", origin: .quickEntry)
+        let (staging, stageStarted) = AsyncStream<Void>.makeStream()
+        let (resume, resumeStaging) = AsyncStream<Void>.makeStream()
         let actions = DirectSnipLibraryUserActions(
             library: target,
             previewBackupImport: { url, library in
-                try await SnipLibraryImport.preview(backupURL: url, target: library)
+                if url == secondURL {
+                    stageStarted.finish()
+                    var iterator = resume.makeAsyncIterator()
+                    _ = await iterator.next()
+                }
+                return try await SnipLibraryImport.preview(backupURL: url, target: library)
             }
         )
-        let session = SavedSnipsSession(library: target, userActions: actions)
 
-        let first = try await session.previewImport(from: firstURL)
-        let second = try await session.previewImport(from: secondURL)
-        await session.cancelImport(id: first.id)
-        let applied = try await session.applyPendingImport(
-            id: second.id,
-            sortedBy: .chronological
-        )
+        let model = AppModel(library: target, defaults: defaults(), userActions: actions)
+        await model.previewBackupImport(from: firstURL)
+        let first = try XCTUnwrap(model.pendingImportPreview)
+        let replacement = Task { await model.previewBackupImport(from: secondURL) }
+        var iterator = staging.makeAsyncIterator()
+        _ = await iterator.next()
+        XCTAssertEqual(model.pendingImportPreview, first)
+        model.cancelBackupImport()
+        XCTAssertNil(model.pendingImportPreview)
+        resumeStaging.finish()
+        await replacement.value
 
-        XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["Second"])
+        let second = try XCTUnwrap(model.pendingImportPreview)
+        XCTAssertNotEqual(second.id, first.id)
+        await model.confirmBackupImport()
+        XCTAssertEqual(model.snips.map(\.content), ["Second"])
     }
 
     @MainActor

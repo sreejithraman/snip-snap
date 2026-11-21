@@ -2,6 +2,9 @@ import Foundation
 import SnipSnapCore
 @testable import SnipSnap
 @testable import SnipSnapPersistence
+import SnipSnapTestSupport
+
+typealias JSONSnipLibrary = SnipSnapTestSupport.JSONSnipLibrary
 
 actor InMemorySnipLibrary: SnipLibrary {
     private var snips: [Snip]

@@ -49,7 +49,7 @@ final class InlineListDraft {
 @MainActor
 @Observable
 final class IOSAppModel {
-    private let session: SavedSnipsSession
+    let session: SavedSnipsSession
     private(set) var libraryRevision = UUID()
     // Nil while replacing the source; libraryRevision names the applied snapshot.
     private(set) var attachmentSourceRevision: UUID? = UUID()
@@ -168,16 +168,8 @@ final class IOSAppModel {
         if case .iCloudSync = cloudAttachmentKnowledge.lastKnownSource { return true }
         return false
     }
-    private enum BackupImportPhase {
-        case idle
-        case previewing(operation: UUID)
-        case awaitingConfirmation(SavedSnipsImportPreview)
-    }
-    private var backupImport: BackupImportPhase = .idle
-    var pendingImportPreview: SnipImportPreview? {
-        guard case .awaitingConfirmation(let preview) = backupImport else { return nil }
-        return preview.value
-    }
+    var backupImport = BackupImportPresentation()
+    var pendingImportPreview: SnipImportPreview? { backupImport.preview?.value }
     private(set) var selectedPage: LibraryPage = .list(SnipList.inboxID)
     private var selectionRevision: UInt64 = 0
     private(set) var lastSelectedListID: UUID
@@ -277,7 +269,7 @@ final class IOSAppModel {
     var sortMode: SnipSortMode = .chronological {
         didSet { reconcileDoneLimitSelection() }
     }
-    private var snackbarAndErrors = SnackbarAndErrorPresentation()
+    var snackbarAndErrors = SnackbarAndErrorPresentation()
     var toast: AppToast? { snackbarAndErrors.snackbar }
     var failure: AppFailure? { snackbarAndErrors.presentedFailure }
     var latestFailure: AppFailure? { snackbarAndErrors.latestFailure }
@@ -314,18 +306,8 @@ final class IOSAppModel {
 
     var pendingUndoFailure: AppFailure? { snackbarAndErrors.pendingUndoFailure }
 
-    func retryPendingUndo(_ failure: AppFailure) {
-        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
-        Task { await performToastActionNow(undo) }
-    }
-
-    func retryPendingUndoNow(_ failure: AppFailure) async {
-        guard let undo = snackbarAndErrors.undoToRetry(for: failure) else { return }
-        await performToastActionNow(undo)
-    }
-
-    func clearFailure(for operation: String) {
-        guard let failure, failure.operation == operation else { return }
+    func clearFailure(for operation: StaticString) {
+        guard let failure, failure.operation == String(describing: operation) else { return }
         clearFailure(id: failure.id)
     }
 
@@ -599,19 +581,6 @@ final class IOSAppModel {
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func currentSnip(for recovery: RecoveredSnip) -> Snip? {
-        snips.first { $0.id == recovery.currentSnipID }
-    }
-
-    func currentList(for recovery: RecoveredListEdit) -> SnipList? {
-        lists.first { $0.id == recovery.currentListID }
-    }
-
-    func isRecoveredSnip(_ snipID: UUID) -> Bool {
-        recoverySnapshot.pendingSnips.contains { $0.id == snipID }
-            || recoverySnapshot.promotedSnips.contains { $0.id == snipID }
-    }
-
     func load() async {
         await withSerializedMutation { await loadUnlocked() }
         await refreshAttachmentTransferStates()
@@ -645,7 +614,14 @@ final class IOSAppModel {
     @discardableResult
     func resolveRecovery(_ id: UUID, choice: SnipRecoveryChoice) async -> Bool {
         await withUserMutation { _ in
-            await resolveRecoveryUnlocked(id, choice: choice)
+            do {
+                return try await resolveSavedSnipsRecovery(id, choice: choice)
+            } catch {
+                presentError(error, operation: "recovery.resolve")
+                await loadUnlocked()
+                scheduleAttachmentTransferStateRefresh()
+                return false
+            }
         }
     }
 
@@ -799,17 +775,9 @@ final class IOSAppModel {
         guard !versions.isEmpty else { return .unchanged }
         return await withSerializedMutation { () -> IOSMarkCopiedSnipsDoneResult in
             guard ifStillCurrent() else { return .unchanged }
-            let unfinishedIDs = Set(snips.lazy.filter {
-                versions[$0.id] == $0.updatedAt && !$0.isPinned && !$0.isDone
-            }.map(\.id))
-            guard !unfinishedIDs.isEmpty else { return .unchanged }
-            let changed = await setDoneUnlocked(
-                ids: unfinishedIDs,
-                done: true,
-                feedbackInteraction: nil,
-                copyToast: copyToast,
-                expectation: SnipLibraryExpectation(expectedCompletionSnips: snips.filter { unfinishedIDs.contains($0.id) })
-            )
+            let changing = completionCandidates(versions: versions).filter { !$0.isDone }
+            guard !changing.isEmpty else { return .unchanged }
+            let changed = await changeCompletion(true, snips: changing, guardingChanges: true, copyToast: copyToast)
             return changed ? .markedDone : .failed
         }
     }
@@ -1004,86 +972,17 @@ final class IOSAppModel {
         snackbarAndErrors.showKeepingUndo(presentedToast)
     }
 
-    func closeSnackbar(_ snackbar: AppToast) {
-        snackbarAndErrors.closeSnackbar(id: snackbar.id)
-    }
-
-    func performToastAction(_ presentedToast: AppToast) {
-        Task { await performToastActionNow(presentedToast) }
-    }
-
-    func performToastActionNow(_ presentedToast: AppToast) async {
-        switch presentedToast.action {
-        case .undoDelete:
-            await withUserMutation { interaction in
-                await restoreDeletion(presentedToast, feedbackInteraction: interaction)
+    func performUndoAction(_ toast: AppToast) async {
+        await withUserMutation { interaction in
+            await restoreUndo(toast) { restored in
+                let kind: IOSHapticFeedback.Kind = toast.action == .undoDelete ? .restored : .reopened
+                haptics.emit(restored ? kind : .error, for: interaction)
             }
-        case .undoDone:
-            await withUserMutation { interaction in
-                let priorUndoFailureID = snackbarAndErrors.retryUndoFailure?.id
-                do {
-                    guard let update = try await session.restoreDone(token: presentedToast.id, sortedBy: sortMode) else {
-                        expireUnavailableUndoRetry(token: presentedToast.id, operation: "snip.undo_done")
-                        return
-                    }
-                    snackbarAndErrors.undoSucceeded(presentedToast)
-                    clearFailure(for: "snip.undo_done")
-                    apply(update.snapshot)
-                    haptics.emit(.reopened, for: interaction)
-                    scheduleCloudSync()
-                } catch {
-                    retainUndoFailure(error, operation: "snip.undo_done", toast: presentedToast,
-                                      replacingDetailsFor: priorUndoFailureID)
-                    haptics.emit(.error, for: interaction)
-                }
-            }
-        case .showErrorDetails(let id):
-            snackbarAndErrors.showLatestErrorDetails(ifLatestIs: id)
-        case nil:
-            break
-        }
-    }
-
-    func dismissToast(_ presentedToast: AppToast) {
-        Task {
-            await session.withExclusiveAccess { session in
-                switch presentedToast.action {
-                case .undoDelete:
-                    await session.discardDeletion(token: presentedToast.id, sortedBy: sortMode)
-                case .undoDone:
-                    await session.discardDone(token: presentedToast.id)
-                default:
-                    break
-                }
-            }
-            snackbarAndErrors.closeSnackbar(id: presentedToast.id)
         }
     }
 
     private func loadUnlocked() async {
         apply(await session.state(sortedBy: sortMode))
-    }
-
-    private func resolveRecoveryUnlocked(
-        _ id: UUID,
-        choice: SnipRecoveryChoice
-    ) async -> Bool {
-        do {
-            guard let state = try await session.resolveRecovery(
-                id,
-                choice: choice,
-                sortedBy: sortMode
-            ) else { return false }
-            clearPendingUndoToast()
-            apply(state)
-            scheduleCloudSync()
-            return true
-        } catch {
-            presentError(error, operation: "recovery.resolve")
-            await loadUnlocked()
-            scheduleAttachmentTransferStateRefresh()
-            return false
-        }
     }
 
     private func createSnipUnlocked(
@@ -1384,17 +1283,15 @@ final class IOSAppModel {
     ) async -> Bool {
         guard !ids.isEmpty else { return false }
         let moving = Set(ids)
-        let command: SnipLibraryCommand
+        let currentSnips: [Snip]
         if moveSortMode == .manual {
-            let currentSnips = (await session.state(sortedBy: .manual)).library.snips
-            let firstDestinationID = Snip.sorted(
-                currentSnips.filter { $0.listID == listID && !moving.contains($0.id) },
-                by: .manual
-            ).first?.id
-            command = .place(ids: ids, in: listID, before: firstDestinationID, basedOn: .manual)
+            let destinationSnips = (await session.state(sortedBy: .manual)).library.snips
+                .filter { $0.listID == listID }
+            currentSnips = Snip.sorted(destinationSnips, by: .manual)
         } else {
-            command = .moveChronologically(ids: ids, to: listID)
+            currentSnips = []
         }
+        let command = moveToListCommand(ids: ids, to: listID, sortedBy: moveSortMode, in: currentSnips)
         return await performUserAction(command, feedbackInteraction: feedbackInteraction) { _ in
             // Shared movement must not consume a newer selection, or an ordinary item's selection.
             guard let selectionSessionID, selectionSessionID == gatheringSessionID else { return }
@@ -1426,47 +1323,18 @@ final class IOSAppModel {
         return await setDoneUnlocked(ids: [id], done: !snip.isDone, feedbackInteraction: feedbackInteraction)
     }
 
-    private func setDoneUnlocked(
-        ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?, copyToast: AppToast? = nil,
-        expectation: SnipLibraryExpectation? = nil
-    ) async -> Bool {
-        let eligible = snips.filter { ids.contains($0.id) && !$0.isPinned }
+    private func setDoneUnlocked(ids: Set<UUID>, done: Bool, feedbackInteraction: UUID?) async -> Bool {
+        let eligible = completionCandidates(ids: ids)
         guard !eligible.isEmpty else { return false }
-        let ids = Set(eligible.filter { $0.isDone != done }.map(\.id))
-        guard !ids.isEmpty else { return true }
-        do {
-            let change = try await session.setDone(
-                ids: ids, done: done, expectation: expectation, sortedBy: sortMode
-            )
-            guard change.didChange else {
-                apply(change.update.snapshot)
-                return true
-            }
-            clearPendingUndoToast()
-            clearFailure(for: "snip.completion")
-            clearFailure(for: "snip.completion_after_copy")
-            apply(change.update.snapshot)
-            if let undo = change.undo {
-                snackbarAndErrors.show(copyToast?.addingDoneUndo(undo) ?? .markedDone(count: undo.count, id: undo.id))
-            }
-            haptics.emit(done ? .markedDone : .reopened, for: feedbackInteraction)
-            recoverySnapshot = await session.refreshRecovery()
-            scheduleAttachmentTransferStateRefresh()
-            scheduleCloudSync()
-            return true
-        } catch {
-            if copyToast != nil {
-                presentError(
-                    String(localized: "Copied, but couldn’t mark Done. Try marking the snip Done again."),
-                    operation: "snip.completion_after_copy",
-                    diagnosticCode: diagnosticErrorCode(error)
-                )
-            } else {
-                presentError(error, operation: "snip.completion")
-            }
-            haptics.emit(.error, for: feedbackInteraction)
-            return false
+        return await changeCompletion(
+            done, snips: eligible.filter { $0.isDone != done }, guardingChanges: false, copyToast: nil
+        ) { changed in
+            haptics.emit(changed ? (done ? .markedDone : .reopened) : .error, for: feedbackInteraction)
         }
+    }
+
+    var copiedButCouldNotMarkDone: String {
+        String(localized: "Copied, but couldn’t mark Done. Try marking the snip Done again.")
     }
 
     private func createListUnlocked(
@@ -1502,66 +1370,13 @@ final class IOSAppModel {
         selectedSnipIDs.intersection(snips.map(\.id))
     }
 
-    private func restoreDeletion(_ presentedToast: AppToast, feedbackInteraction: UUID?) async {
-        let token = presentedToast.id
-        let priorUndoFailureID = snackbarAndErrors.retryUndoFailure?.id
-        do {
-            guard let update = try await session.restoreDeletion(
-                token: token,
-                sortedBy: sortMode
-            ) else {
-                expireUnavailableUndoRetry(token: token, operation: "snip.undo_delete")
-                return
-            }
-            snackbarAndErrors.undoSucceeded(presentedToast)
-            clearFailure(for: "snip.undo_delete")
-            apply(update.snapshot)
-            haptics.emit(.restored, for: feedbackInteraction)
-            recoverySnapshot = await session.refreshRecovery()
-            scheduleAttachmentTransferStateRefresh()
-            scheduleCloudSync()
-        } catch {
-            haptics.emit(.error, for: feedbackInteraction)
-            retainUndoFailure(error, operation: "snip.undo_delete", toast: presentedToast,
-                              replacingDetailsFor: priorUndoFailureID)
-        }
-    }
-
-    private func retainUndoFailure(
-        _ error: any Error, operation: StaticString, toast: AppToast,
-        replacingDetailsFor priorFailureID: UUID?
-    ) {
-        presentError(error, operation: operation)
-        snackbarAndErrors.retainUndoFailure(of: toast, movingDetailsFrom: priorFailureID)
-    }
-
     private func deleteSnips(ids: Set<UUID>, feedbackInteraction: UUID?) async -> Bool {
         let ids = ids.intersection(snips.map(\.id))
-        guard !ids.isEmpty else { return false }
-        let count = ids.count
-        let token = UUID()
-        do {
-            let result = try await session.deleteWithResult(
-                ids: ids,
-                token: token,
-                sortedBy: sortMode
-            )
-            apply(result.update.snapshot)
-            guard result.didChange else { return true }
-            clearPendingUndoToast()
-            clearFailure(for: "snip.delete")
+        return await deleteSavedSnips(ids: ids) {
             if let selectedSnipID, ids.contains(selectedSnipID) { self.selectedSnipID = nil }
             replaceGatheredSnips(with: selectedSnipIDs.subtracting(ids))
-            snackbarAndErrors.show(.deleted(count: count, id: token))
-            haptics.emit(.deleted, for: feedbackInteraction)
-            recoverySnapshot = await session.refreshRecovery()
-            scheduleAttachmentTransferStateRefresh()
-            scheduleCloudSync()
-            return true
-        } catch {
-            presentError(error, operation: "snip.delete")
-            haptics.emit(.error, for: feedbackInteraction)
-            return false
+        } feedback: { deleted in
+            haptics.emit(deleted ? .deleted : .error, for: feedbackInteraction)
         }
     }
 
@@ -1585,28 +1400,16 @@ final class IOSAppModel {
         afterSuccess: (SnipLibraryOutcome) -> Void = { _ in }
     ) async -> Bool {
         let feedback = feedbackKind(for: command)
-        do {
-            let result = try await session.performUserCommandWithResult(
-                command,
-                sortedBy: sortMode
-            )
-            let update = result.update
-            if result.didChange { clearPendingUndoToast() }
-            clearFailure(for: String(describing: command.diagnosticOperation))
-            apply(update.snapshot)
+        let result = await runSavedSnipsCommand(command) { result in
             if let feedback, result.didChange {
                 haptics.emit(feedback, for: feedbackInteraction)
             }
-            afterSuccess(update.outcome)
-            recoverySnapshot = await session.refreshRecovery()
-            scheduleAttachmentTransferStateRefresh()
-            scheduleCloudSync()
-            return true
-        } catch {
-            presentError(error, operation: command.diagnosticOperation)
-            haptics.emit(.error, for: feedbackInteraction)
-            return false
+            afterSuccess(result.update.outcome)
         }
+        guard case .failure(let error) = result else { return true }
+        presentError(error, operation: command.diagnosticOperation)
+        haptics.emit(.error, for: feedbackInteraction)
+        return false
     }
 
     func presentError(
@@ -1630,7 +1433,7 @@ final class IOSAppModel {
         snackbarAndErrors.present(failure)
     }
 
-    private func expireUnavailableUndoRetry(token: UUID, operation: StaticString) {
+    func expireUnavailableUndoRetry(token: UUID, operation: StaticString) {
         guard snackbarAndErrors.retainsUndo(token) else { return }
         let failure = AppFailure(
             message: String(localized: "Undo is no longer available because the snips changed."),
@@ -1638,10 +1441,6 @@ final class IOSAppModel {
         )
         diagnostics.record(.failure(operation: operation, errorCode: failure.code, visibility: .user))
         snackbarAndErrors.replaceRetryUndo(with: failure)
-    }
-
-    private func clearPendingUndoToast() {
-        snackbarAndErrors.endUndoWindow()
     }
 
     func backupImportSelectionFailed(_ error: any Error) -> String? {
@@ -1674,26 +1473,18 @@ final class IOSAppModel {
     func previewBackupImport(from url: URL) async throws {
         haptics.invalidatePendingFeedback()
         cancelBackupImport()
-        let operationID = UUID()
-        backupImport = .previewing(operation: operationID)
+        let operation = backupImport.beginPreview()
         do {
-            let preview = try await session.withExclusiveAccess { session in
+            let preview = try await session.withExclusiveAccess { _ in
                 try Task.checkCancellation()
-                let didAccess = url.startAccessingSecurityScopedResource()
-                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-                return try await session.previewImport(from: url)
+                return try await stageBackupImport(from: url)
             }
-            guard isPreviewingBackupImport(operationID), !Task.isCancelled else {
-                await session.withExclusiveAccess { session in
-                    _ = await session.cancelImport(id: preview.id)
-                }
+            guard !Task.isCancelled, backupImport.present(preview, for: operation) else {
+                await discardBackupImport(preview.id)
                 throw CancellationError()
             }
-            backupImport = .awaitingConfirmation(preview)
         } catch {
-            if isPreviewingBackupImport(operationID) {
-                backupImport = .idle
-            }
+            backupImport.failPreview(operation)
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_preview", error: error, visibility: .user))
             }
@@ -1701,34 +1492,17 @@ final class IOSAppModel {
         }
     }
 
-    func cancelBackupImport() {
-        let previous = backupImport
-        backupImport = .idle
-        guard case .awaitingConfirmation(let preview) = previous else { return }
-        Task {
-            await session.withExclusiveAccess { session in
-                _ = await session.cancelImport(id: preview.id)
-            }
-        }
-    }
-
     func confirmBackupImport() async throws {
         haptics.invalidatePendingFeedback()
-        guard case .awaitingConfirmation(let preview) = backupImport else { return }
-        backupImport = .idle
-        let id = preview.id
+        guard let preview = backupImport.beginConfirmation(keepingPreviewVisible: false) else { return }
         do {
-            guard let (result, recovery) = try await session.withExclusiveAccess({ session in
+            let imported = try await session.withExclusiveAccess { _ in
                 try Task.checkCancellation()
-                return try await session.applyPendingImport(id: id, sortedBy: .chronological)
-            }) else { throw SnipLibraryError.importChanged }
-            clearPendingUndoToast()
-            apply(result.snapshot)
-            recoverySnapshot = recovery
-        } catch {
-            await session.withExclusiveAccess { session in
-                _ = await session.cancelImport(id: id)
+                return try await applyBackupImport(preview.id, sortedBy: .chronological)
             }
+            presentImportedBackup(imported)
+        } catch {
+            await discardBackupImport(preview.id)
             if !(error is CancellationError) {
                 diagnostics.record(.failure(operation: "backup.import_apply", error: error, visibility: .user))
                 await load()
@@ -1737,17 +1511,17 @@ final class IOSAppModel {
         }
     }
 
-    private func isPreviewingBackupImport(_ operation: UUID) -> Bool {
-        guard case .previewing(let current) = backupImport else { return false }
-        return current == operation
+    func refreshAfterSavedSnipsCommand() async {
+        recoverySnapshot = await session.refreshRecovery()
+        scheduleAttachmentTransferStateRefresh()
     }
 
-    private func apply(_ state: SavedSnipsSessionState) {
+    func apply(_ state: SavedSnipsSessionState) {
         apply(state.library)
         recoverySnapshot = state.recovery
     }
 
-    private func apply(_ snapshot: SnipLibrarySnapshot) {
+    func apply(_ snapshot: SnipLibrarySnapshot) {
         attachmentCaptures.removeAll { $0.value == nil }
         for capture in attachmentCaptures { capture.value?.validate(in: snapshot.snips) }
         let removedAttachments = Set(snips.flatMap(\.attachments).map(\.id))
@@ -1872,7 +1646,7 @@ final class IOSAppModel {
         await session.withExclusiveAccess { _ in await operation() }
     }
 
-    private func scheduleCloudSync() {
+    func scheduleCloudSync() {
         guard let cloudSyncHandler else { return }
         Task { await cloudSyncHandler.scheduleSyncAfterLocalChange() }
     }
