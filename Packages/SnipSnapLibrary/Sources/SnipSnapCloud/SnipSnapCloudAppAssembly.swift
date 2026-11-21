@@ -7,29 +7,29 @@ import SnipSnapPersistence
 public struct SnipSnapCloudAppServices {
   public let syncedContentSettings: SyncedContentSettingsModel
   public let syncSession: SnipSnapCloudSyncSession?
-  package typealias AccountHandlerFactory = @MainActor (
-    AppleAccountCacheCoordinatorHandler.SyncAction?,
-    AppleAccountCacheCoordinatorHandler.SyncAction?,
-    AppleAccountCacheCoordinatorHandler.ScheduleAction?
-  ) -> AppleAccountCacheCoordinatorHandler
-  private let accountHandlerFactory: AccountHandlerFactory?
+  package typealias SyncHandlerFactory = @MainActor (
+    SnipSnapCloudSyncHandler.SyncAction?,
+    SnipSnapCloudSyncHandler.SyncAction?,
+    SnipSnapCloudSyncHandler.SyncAction?
+  ) -> SnipSnapCloudSyncHandler
+  private let syncHandlerFactory: SyncHandlerFactory?
 
   package init(
     syncedContentSettings: SyncedContentSettingsModel,
     syncSession: SnipSnapCloudSyncSession?,
-    accountHandlerFactory: AccountHandlerFactory? = nil
+    syncHandlerFactory: SyncHandlerFactory? = nil
   ) {
     self.syncedContentSettings = syncedContentSettings
     self.syncSession = syncSession
-    self.accountHandlerFactory = accountHandlerFactory
+    self.syncHandlerFactory = syncHandlerFactory
   }
 
-  public func makeAccountCacheHandler(
-    syncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-    retrySyncWhenPossible: @escaping AppleAccountCacheCoordinatorHandler.SyncAction,
-    scheduleSyncAfterLocalChange: @escaping AppleAccountCacheCoordinatorHandler.ScheduleAction
-  ) -> AppleAccountCacheCoordinatorHandler? {
-    accountHandlerFactory?(syncWhenPossible, retrySyncWhenPossible, scheduleSyncAfterLocalChange)
+  public func makeCloudSyncHandler(
+    syncWhenPossible: @escaping SnipSnapCloudSyncHandler.SyncAction,
+    retrySyncWhenPossible: @escaping SnipSnapCloudSyncHandler.SyncAction,
+    scheduleSyncAfterLocalChange: @escaping SnipSnapCloudSyncHandler.SyncAction
+  ) -> SnipSnapCloudSyncHandler? {
+    syncHandlerFactory?(syncWhenPossible, retrySyncWhenPossible, scheduleSyncAfterLocalChange)
   }
 }
 
@@ -66,15 +66,6 @@ public enum SnipSnapCloudAppAssembly {
       syncModeStore: syncModeStore,
       cloudScope: namespace?.scope ?? "private",
       accountLineage: namespace?.accountLineage ?? identifier,
-      accountLineageProvider: {
-        let bound = CloudKitCallBound.standard
-        let recordID = try await bound.read(.small) {
-          try await container.configuredWith(configuration: bound.configuration(.small)) {
-            try await $0.userRecordID()
-          }
-        }
-        return recordID.recordName
-      },
       accountStateSource: accountStateSource,
       ownerName: CKCurrentUserDefaultName,
       controlTransport: CloudKitCollectionControlTransport(
@@ -99,6 +90,7 @@ public enum SnipSnapCloudAppAssembly {
     )
     let appOperationGate = AsyncOperationGate()
     let session = SnipSnapCloudSyncSession(
+      checkActiveAccount: { try await lifecycle.checkActiveAccount() },
       synchronize: { try await lifecycle.synchronize() },
       retry: { try await lifecycle.retrySynchronization() },
       scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
@@ -113,8 +105,8 @@ public enum SnipSnapCloudAppAssembly {
         automaticResults.continuation.yield(automaticSyncResult(for: error))
       }
     )
-    let accountHandlerFactory: SnipSnapCloudAppServices.AccountHandlerFactory = { sync, retry, schedule in
-      lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
+    let syncHandlerFactory: SnipSnapCloudAppServices.SyncHandlerFactory = { sync, retry, schedule in
+      lifecycle.makeCloudSyncHandler(operationGate: appOperationGate,
         syncWhenPossible: sync, retrySyncWhenPossible: retry,
         scheduleSyncAfterLocalChange: schedule)
     }
@@ -130,7 +122,7 @@ public enum SnipSnapCloudAppAssembly {
         deleteAction: { try await session.deleteSyncedContent() }
       ),
       syncSession: session,
-      accountHandlerFactory: accountHandlerFactory
+      syncHandlerFactory: syncHandlerFactory
     )
   }
 
@@ -265,8 +257,8 @@ public enum SnipSnapCloudAppAssembly {
         deleteAction: { try await session.deleteSyncedContent() }
       ),
       syncSession: session,
-      accountHandlerFactory: { sync, retry, schedule in
-        lifecycle.makeAccountCacheHandler(operationGate: appOperationGate,
+      syncHandlerFactory: { sync, retry, schedule in
+        lifecycle.makeCloudSyncHandler(operationGate: appOperationGate,
           syncWhenPossible: sync, retrySyncWhenPossible: retry,
           scheduleSyncAfterLocalChange: schedule)
       }

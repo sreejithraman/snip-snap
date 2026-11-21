@@ -273,8 +273,6 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         self.onSchedule = onSchedule
     }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { syncCalls += 1 }
     func scheduleSyncAfterLocalChange() async {
         scheduleCalls += 1
@@ -313,8 +311,6 @@ actor MacHeldAttachmentStatusHandler: OptionalCloudSyncHandling {
     private var release: CheckedContinuation<Void, Never>?
     private(set) var isReadHeld = false
     private(set) var explicitSyncs = 0
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { explicitSyncs += 1 }
     func scheduleSyncAfterLocalChange() async {}
     func isCloudSyncActive() async throws -> Bool { true }

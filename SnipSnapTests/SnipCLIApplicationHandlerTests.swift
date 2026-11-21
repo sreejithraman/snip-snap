@@ -380,7 +380,7 @@ final class SnipCLIApplicationHandlerTests: StoreBackedTestCase {
             model: model, coordinator: coordinator,
             syncedContentSettings: syncSettings ?? SyncedContentSettingsModel(mode: .iCloudSync),
             updates: SnipCLIApplicationUpdates(settings: UpdateChannelSettings(defaults: defaults())),
-            cloudSyncHandler: cloud, accountNoticeModel: nil, panel: { panel }
+            cloudSyncHandler: cloud, panel: { panel }
         )
     }
 
@@ -431,8 +431,6 @@ private final class ApplicationCLICloudEffects: OptionalCloudSyncHandling {
 
     init(retry: @escaping @MainActor () async -> Void) { self.retry = retry }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async {}
     func retrySyncWhenPossible() async { await retry() }
     func isCloudSyncActive() async throws -> Bool { true }

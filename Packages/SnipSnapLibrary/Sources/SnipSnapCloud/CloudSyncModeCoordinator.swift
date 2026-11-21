@@ -13,25 +13,24 @@ package enum ICloudAccountGateError: Error, Equatable, Sendable {
 private actor FullRecordSyncAdapter {
     private let raw: CloudFullSyncPersistence
     private let syncDriver: CloudFullSyncCoordinator
-    private let beforeApply: CloudFullSyncPersistence.ApplyHook
     private var pendingIssue: SyncedContentSyncIssue?
 
     init(
         raw: CloudFullSyncPersistence,
         transport: any CloudRecordTransport,
-        beforeApply: @escaping CloudFullSyncPersistence.ApplyHook
+        accountChanged: @escaping CloudFullSyncPersistence.ApplyHook
     ) {
         self.raw = raw
-        self.beforeApply = beforeApply
         syncDriver = CloudFullSyncCoordinator(
             store: raw,
             transport: transport,
-            fetchScope: .zones([raw.dataZone])
+            fetchScope: .zones([raw.dataZone]),
+            accountChanged: accountChanged
         )
     }
 
     func fetchRemote(
-        beforeApply: @escaping @Sendable () async throws -> Void
+        beforeApply: @escaping @Sendable () async throws -> Void = {}
     ) async throws {
         pendingIssue = nil
         let outcome = try await syncDriver.fetchRemote(beforeApply: beforeApply)
@@ -39,9 +38,9 @@ private actor FullRecordSyncAdapter {
     }
 
     func sendPending(
-        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void
+        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
     ) async throws {
-        let outcome = try await syncDriver.sendPending(beforeApply: beforeApply, beforeSend: beforeSend)
+        let outcome = try await syncDriver.sendPending(beforeSend: beforeSend)
         try reportCompletedSyncIssue(outcome)
     }
 
@@ -150,6 +149,7 @@ package actor ICloudSyncModeCoordinator {
     private let attachmentPolicy: CloudAttachmentCompatibilityPolicy
     private let makeTransport: TransportFactory
     private let accountStateSource: any ICloudAccountStateSource
+    private let initialAccountState: ICloudAccountState?
     private let checkSetupCollection: @Sendable () async throws -> Void
     private enum Operation { case enable, optOut, activeSync }
     private var currentOperation: Operation?
@@ -162,6 +162,7 @@ package actor ICloudSyncModeCoordinator {
         attachmentPolicy: CloudAttachmentCompatibilityPolicy = .openSourceDefault,
         makeTransport: @escaping TransportFactory,
         accountStateSource: (any ICloudAccountStateSource)? = nil,
+        initialAccountState: ICloudAccountState? = nil,
         checkSetupCollection: @escaping @Sendable () async throws -> Void = {}
     ) {
         precondition(namespace.zones.contains(textZone))
@@ -175,67 +176,26 @@ package actor ICloudSyncModeCoordinator {
         self.accountStateSource = accountStateSource ?? FixedICloudAccountStateSource(
             state: .available(accountLineage: namespace.accountLineage)
         )
+        self.initialAccountState = initialAccountState
         self.checkSetupCollection = checkSetupCollection
     }
 
     package func status() async throws -> ICloudSyncModeStatus {
-        try await persistence.reconcileAccountIsolationResolution()
-        return try await statusUnchecked(
-            accountState: await accountStateSource.currentAccountState()
-        )
+        try await statusUnchecked()
     }
 
-    @discardableResult
-    package func refreshAccountState() async throws -> ICloudSyncModeStatus {
-        let accountState = await accountStateSource.currentAccountState()
-        let initialStorage = try await persistence.snapshot()
-        if let isolation = initialStorage.accountIsolation,
-           isolation.resolution != .removing,
-           case .available(let accountLineage) = accountState,
-           accountLineage == isolation.namespace.accountLineage,
-           isolation.namespace == namespace.binding,
-           let recoveredMissingBytes = try await persistence.keepReturningAccountIsolation(
-               isolation.id,
-               preservingAttachments: { storeID in
-                   try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
-               }
-           ) {
-            if recoveredMissingBytes {
-                // Finish the safety copy first. A later explicit enable can start a
-                // fresh remote-first transition without holding account isolation open.
-                return try await statusUnchecked(accountState: accountState)
-            }
-            return try await enableOrRetry()
-        }
-        try await persistence.reconcileAccountIsolationResolution()
-        let storage = try await persistence.snapshot()
-        if storage.activeStore.kind == .iCloudSync, storage.accountIsolation == nil {
-            switch accountState {
-            case .noAccount:
-                _ = try await persistence.isolateActiveCloudStore(reason: .signedOut)
-            case .available(let accountLineage)
-                where accountLineage != namespace.accountLineage:
-                _ = try await persistence.isolateActiveCloudStore(reason: .accountChanged)
-            case .available where storage.transition?.phase == .swapped:
-                return try await enableOrRetry()
-            case .available, .restricted, .temporarilyUnavailable, .couldNotDetermine:
-                break
+    private func updateAccountStatus(_ accountState: ICloudAccountState) async throws -> ICloudSyncModeStatus {
+        let store = try await persistence.snapshot().activeStore
+        if let binding = store.namespace {
+            if case .noAccount = accountState {
+                try await persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountSignedOut)
+            } else if case .available(let lineage) = accountState, binding.accountLineage != lineage {
+                try await persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountChanged)
             }
         }
         return try await statusUnchecked(accountState: accountState)
     }
 
-    @discardableResult
-    package func resolveAccountIsolation(
-        _ choice: ICloudAccountIsolationChoice
-    ) async throws -> ICloudSyncModeStatus {
-        try await persistence.resolveAccountIsolation(choice)
-        return try await statusUnchecked(
-            accountState: await accountStateSource.currentAccountState()
-        )
-    }
-
-    /// The only active-store Cloud sync entry point later app assembly should use.
     @discardableResult
     package func syncActive() async throws -> ICloudSyncModeStatus {
         try begin(.activeSync)
@@ -243,27 +203,15 @@ package actor ICloudSyncModeCoordinator {
         defer { if !operationEnded { end() } }
         let accountState = await accountStateSource.currentAccountState()
         if accountAttentionReason(accountState) != nil {
-            end()
-            operationEnded = true
-            return try await refreshAccountState()
+            return try await updateAccountStatus(accountState)
         }
         let storage = try await persistence.snapshot()
-        if let isolation = storage.accountIsolation {
-            return ICloudSyncModeStatus(
-                state: .needsAttention,
-                activeStoreID: storage.activeStore.id,
-                attentionReason: isolation.reason == .signedOut ? .accountSignedOut : .accountChanged
-            )
-        }
         try await persistence.requireActiveNamespace(namespace.binding)
         let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
         let adapter = try await adapter(storeID: storage.activeStore.id)
         do {
-            try await lease.run { [self] in
-                try await requireMatchingAccount()
-                try await adapter.fetchRemote {
-                    try await self.requireMatchingAccount()
-                }
+            try await lease.run {
+                try await adapter.fetchRemote()
                 var clearedEarlierRetry = false
                 for _ in 0..<8 {
                     let evidence = try await adapter.enrollmentEvidence()
@@ -276,19 +224,15 @@ package actor ICloudSyncModeCoordinator {
                     guard evidence.hasPendingChanges, !evidence.blocksSending,
                           evidence.phase != .blocked
                     else { break }
-                    try await adapter.sendPending { _ in
-                        try await self.requireMatchingAccount()
-                    }
+                    try await adapter.sendPending()
                 }
             }
         } catch is ICloudAccountGateError {
-            end()
-            operationEnded = true
-            return try await refreshAccountState()
+            return try await updateAccountStatus(await accountStateSource.currentAccountState())
         }
         end()
         operationEnded = true
-        return try await statusUnchecked()
+        return try await statusUnchecked(accountState: accountState)
     }
 
     @discardableResult
@@ -313,10 +257,8 @@ package actor ICloudSyncModeCoordinator {
         var failure: ICloudSyncAttentionReason = .terminalFetchFailure
         do {
             let bridge = try await adapter(storeID: transition.candidateStoreID)
-            try await requireMatchingAccount()
-            try await bridge.fetchRemote {
-                try await self.requireMatchingAccount()
-            }
+            if initialAccountState == nil { try await requireMatchingAccount() }
+            try await bridge.fetchRemote()
             if let issue = await bridge.takeSyncIssue() { throw CloudSyncIssueError(issue) }
             let evidence = try await bridge.statusEvidence()
             guard evidence.retryableEventKeys.isEmpty else {
@@ -343,9 +285,7 @@ package actor ICloudSyncModeCoordinator {
                 try await candidate.applyCloudFullReenablePlan(plan)
                 approvedSnipIDs = plan.transfer.result.approvedSnipIDs
             } else {
-                try await requireMatchingAccount()
-                _ = try await preserveIsolatedAttachmentsForLocalCopy(storeID: transition.candidateStoreID)
-                try await requireMatchingAccount()
+                _ = try await preserveAttachments(storeID: transition.candidateStoreID)
                 let acceptedSnipIDs = try await bridge.acceptedSnipIDs()
                 let result = try await persistence.mergeCandidate(
                     source, for: transition, acceptedTargetSnipIDs: acceptedSnipIDs
@@ -437,7 +377,7 @@ package actor ICloudSyncModeCoordinator {
         do {
             try await requireMatchingAccount()
         } catch is ICloudAccountGateError {
-            return try await refreshAccountState()
+            return try await updateAccountStatus(await accountStateSource.currentAccountState())
         }
 
         if choice == .useCurrentCacheAfterStaleDataWarning {
@@ -473,7 +413,7 @@ package actor ICloudSyncModeCoordinator {
                 }
             } catch {
                 if error is ICloudAccountGateError {
-                    return try await refreshAccountState()
+                    return try await updateAccountStatus(await accountStateSource.currentAccountState())
                 }
                 if !isRetryableConnectivity(error) {
                     try? await persistence.recordAttention(.terminalFetchFailure)
@@ -487,7 +427,7 @@ package actor ICloudSyncModeCoordinator {
                 try await preserveAttachmentsForLocalCopy(storeID: initial.activeStore.id)
             } catch {
                 if error is ICloudAccountGateError {
-                    return try await refreshAccountState()
+                    return try await updateAccountStatus(await accountStateSource.currentAccountState())
                 }
                 if !isRetryableConnectivity(error) {
                     try? await persistence.recordAttention(.terminalFetchFailure)
@@ -531,7 +471,7 @@ package actor ICloudSyncModeCoordinator {
             attachmentPolicy: attachmentPolicy
         )
         return FullRecordSyncAdapter(raw: raw, transport: makeTransport()) {
-            if isCandidate && !isActive { try await self.requireMatchingAccount() }
+            try await self.requireMatchingAccount()
         }
     }
 
@@ -539,11 +479,11 @@ package actor ICloudSyncModeCoordinator {
         guard payloadZone != nil else { return }
         let lease = try await persistence.activeCloudMutation(storeID: storeID)
         try await lease.run {
-            _ = try await self.preserveIsolatedAttachmentsForLocalCopy(storeID: storeID)
+            _ = try await self.preserveAttachments(storeID: storeID)
         }
     }
 
-    private func preserveIsolatedAttachmentsForLocalCopy(storeID: UUID) async throws -> Bool {
+    private func preserveAttachments(storeID: UUID) async throws -> Bool {
         guard let payloadZone else { return false }
         let library = try await persistence.libraryForTransition(storeID: storeID)
         let coordinator = CloudAttachmentTransferCoordinator(
@@ -579,21 +519,6 @@ package actor ICloudSyncModeCoordinator {
         syncIssue: SyncedContentSyncIssue? = nil
     ) async throws -> ICloudSyncModeStatus {
         let storage = try await persistence.snapshot()
-        if let isolation = storage.accountIsolation {
-            let reason: ICloudSyncAttentionReason
-            if case .available(let lineage) = accountState,
-               lineage == isolation.namespace.accountLineage,
-               isolation.namespace != namespace.binding {
-                reason = .namespaceChanged
-            } else {
-                reason = isolation.reason == .signedOut ? .accountSignedOut : .accountChanged
-            }
-            return ICloudSyncModeStatus(
-                state: .needsAttention,
-                activeStoreID: storage.activeStore.id,
-                attentionReason: reason
-            )
-        }
         if storage.transition?.targetKind == .iCloudSync {
             let transitionAccountState: ICloudAccountState
             if let accountState {
@@ -608,6 +533,12 @@ package actor ICloudSyncModeCoordinator {
                     attentionReason: reason
                 )
             }
+        }
+        if storage.activeStore.kind == .localOnly, storage.activeStore.quarantinedNamespace != nil,
+            storage.transition == nil
+        {
+            return ICloudSyncModeStatus(state: .off, activeStoreID: storage.activeStore.id,
+                attentionReason: storage.attentionReason)
         }
         if let reason = storage.attentionReason, reason != .firstSyncFailed {
             return ICloudSyncModeStatus(

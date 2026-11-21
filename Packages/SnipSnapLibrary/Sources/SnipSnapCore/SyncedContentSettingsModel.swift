@@ -106,7 +106,7 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
     case .iCloudDataReset:
       String(localized: "iCloud deleted Snip Snap’s synced content. Sync is off so old data won’t upload again.", bundle: .main)
     case .iCloudAccountChanged:
-      String(localized: "Your previous account’s snips stay separate. Choose whether to keep them before syncing again.", bundle: .main)
+      String(localized: "The Apple Account changed. Sync is off and your snips are kept on this device.", bundle: .main)
     case .appDataIssue:
       String(localized: "Retry sync. If it still fails, update Snip Snap or contact support.", bundle: .main)
     }

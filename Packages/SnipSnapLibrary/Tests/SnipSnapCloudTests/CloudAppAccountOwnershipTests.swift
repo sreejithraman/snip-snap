@@ -7,6 +7,78 @@ import SnipSnapCore
 import XCTest
 
 final class CloudAppAccountOwnershipTests: XCTestCase {
+    func testGeneratedCollectionRolesDriveEveryAttachmentActionWithoutZoneGuessing() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+        let ownerName = CloudCollectionAssembly.productionControlID.zone.ownerName
+        let generated = CloudCollectionDescriptor.fresh(ownerName: ownerName)
+        let namespace = generated.namespace(cloudScope: "private", accountLineage: "account-a")
+        let binding = ICloudSyncNamespaceBinding(
+            scope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            generation: namespace.generation,
+            zones: Set(namespace.zones.map {
+                ICloudSyncZoneBinding(name: $0.name, ownerName: $0.ownerName)
+            })
+        )
+        let resolved = try SnipSnapCloudSyncHandler.validatedDescriptor(
+            CloudCollectionControlRecord(descriptor: generated, version: Data("1".utf8)),
+            matching: binding,
+            ownerName: ownerName,
+            reservedZones: []
+        )
+        XCTAssertEqual(resolved.metadataZone, generated.metadataZone)
+        XCTAssertEqual(resolved.payloadZone, generated.payloadZone)
+        XCTAssertTrue(resolved.metadataZone.name.hasPrefix("snips-"))
+        XCTAssertTrue(resolved.payloadZone.name.hasPrefix("payloads-"))
+
+        let stale = CloudCollectionDescriptor.fresh(ownerName: ownerName)
+        XCTAssertThrowsError(
+            try SnipSnapCloudSyncHandler.validatedDescriptor(
+                CloudCollectionControlRecord(descriptor: stale, version: Data("2".utf8)),
+                matching: binding,
+                ownerName: ownerName,
+                reservedZones: []
+            )
+        )
+
+        try await persistence.activateEmptyCollection(namespace: binding)
+        let control = FakeCloudControlTransport(server: FakeCloudServer())
+        await control.seedControl(generated)
+        let preparedURL = root.appendingPathComponent("prepared.bin")
+        let probe = AttachmentTransferProbe(preparedURL: preparedURL)
+        let handler = SnipSnapCloudSyncHandler(
+            persistence: { persistence },
+            controlTransport: control,
+            accountStateSource: FixedICloudAccountStateSource(state: .available(accountLineage: "account-a")),
+            makeAttachmentCoordinator: { _, resolvedNamespace, descriptor in
+                await probe.recordConfiguration(
+                    namespace: resolvedNamespace,
+                    payloadZone: descriptor.payloadZone
+                )
+                return probe
+            }
+        )
+        let attachmentID = UUID()
+
+        for use in [
+            SyncedAttachmentUse.preview, .open, .copy, .export,
+        ] {
+            let result = try await handler.prepareSyncedAttachment(attachmentID, for: use)
+            XCTAssertEqual(result, preparedURL)
+        }
+        try await handler.clearDownloadedFiles()
+
+        let uses = await probe.uses()
+        let clearCount = await probe.clearCount()
+        let configuration = await probe.configuration()
+        XCTAssertEqual(uses, [.preview, .open, .copy, .export])
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertEqual(configuration?.namespace, namespace)
+        XCTAssertEqual(configuration?.payloadZone, generated.payloadZone)
+    }
+
   func testAttachmentStatusUsesPersistedPublicationsWhenControlFails() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -51,7 +123,7 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     XCTAssertNotEqual(replacementStore.id, storage.activeStore.id)
     let replaced = try await fixture.handler.syncedAttachmentStates()
     XCTAssertTrue(replaced.isEmpty, "The prior store's publications must not appear in its replacement")
-    _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
+    try await fixture.persistence.keepCloudCacheLocally(storeID: replacementStore.id, reason: .accountSignedOut)
     do {
       _ = try await fixture.handler.syncedAttachmentStates()
       XCTFail("A local-only source cannot report retired iCloud publications")
@@ -106,9 +178,8 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
       controlTransport: FakeCloudControlTransport(server: server),
       makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
       makeDescriptor: { CloudCollectionDescriptor.fresh(ownerName: "owner") })
-    let handler = lifecycle.makeAccountCacheHandler(operationGate: AsyncOperationGate())
-    let notice = try await handler.refreshAppleAccountNotice()
-    XCTAssertNil(notice)
+    let result = try await lifecycle.synchronize()
+    XCTAssertEqual(result, .noChange)
     let lookups = await account.lookupCount()
     XCTAssertEqual(lookups, 0, "An unbound local library does not require a remote account check.")
   }
@@ -126,211 +197,48 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
       controlTransport: FakeCloudControlTransport(server: server),
       makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
       makeDescriptor: { descriptor })
-    let handler = lifecycle.makeAccountCacheHandler(operationGate: AsyncOperationGate())
-    let notice = try await handler.refreshAppleAccountNotice()
+    let handler = lifecycle.makeCloudSyncHandler(operationGate: AsyncOperationGate())
     let isActive = try await handler.isCloudSyncActive()
-    XCTAssertNil(notice)
     XCTAssertFalse(isActive)
     XCTAssertFalse(FileManager.default.fileExists(atPath: syncRoot.appendingPathComponent("activation.json").path))
   }
 
-  func testSameAccountReturnAndLaterLibraryWritesUseTheSameOwner() async throws {
+  func testSignOutPromotesAnAvailableDownloadBeforeItsCacheIsEvicted() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let firstLibrary = try await fixture.session.activeLibrary().library
-    try await Self.add("before sign out", to: firstLibrary)
-    await fixture.account.set(.noAccount)
-    let signedOut = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertEqual(signedOut, .signedOut)
-    let local = try await fixture.session.activeLibrary().library
-    try await Self.add("while signed out", to: local)
-    await fixture.account.set(.available(accountLineage: "account-a"))
+    let active = try await fixture.persistence.activeLibrary()
+    let store = try await fixture.persistence.snapshot().activeStore
+    let binding = try XCTUnwrap(store.namespace)
+    let library = try await fixture.persistence.libraryForTransition(storeID: store.id)
+    let file = fixture.root.appendingPathComponent("download-only.txt")
+    let bytes = Data("downloaded attachment".utf8)
+    try bytes.write(to: file)
+    let added = try await active.perform(.add(content: "file", origin: .quickEntry, source: nil,
+      listID: SnipList.inboxID, attachmentURLs: [file], requestID: UUID(), now: .distantPast),
+      sortedBy: .manual)
+    let id = try XCTUnwrap(added.snapshot.snips.first?.attachments.first?.id)
+    let durable = try XCTUnwrap(added.snapshot.attachmentURLs[id])
+    try await library.reconcileCloudAttachments(namespaceKey: binding.namespaceKey,
+      metadataZoneName: fixture.descriptor.metadataZone.name,
+      metadataOwnerName: fixture.descriptor.metadataZone.ownerName,
+      payloadZoneName: fixture.descriptor.payloadZone.name,
+      payloadOwnerName: fixture.descriptor.payloadZone.ownerName)
+    let stored = try await library.cloudAttachmentStorageSnapshot(namespaceKey: binding.namespaceKey)
+    let publication = try XCTUnwrap(stored.publications.first)
+    try await library.commitCloudAttachmentTransitions(namespaceKey: binding.namespaceKey,
+      transitions: [.remoteMetadataAccepted(metadata: publication.metadata,
+        metadataIdentity: publication.metadataIdentity, shadowData: Data(), systemFields: Data())])
+    let installer = CacheInstallingAttachment(library: library, namespaceKey: binding.namespaceKey)
+    let downloaded = try await installer.prepare(attachmentID: id, for: .open)
+    try FileManager.default.removeItem(at: durable)
 
-    let returned = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertNil(returned)
-    let active = try await fixture.persistence.snapshot()
-    XCTAssertEqual(active.activeStore.kind, .iCloudSync)
-    XCTAssertNil(active.accountIsolation)
-    let returnedLibrary = try await fixture.session.activeLibrary().library
-    try await Self.add("after return", to: returnedLibrary)
-    try await Self.add("through retained library", to: firstLibrary)
-    let snapshot = try await returnedLibrary.checkedSnapshot(sortedBy: .manual)
-    XCTAssertEqual(Set(snapshot.snips.map(\.content)), [
-      "before sign out", "while signed out", "after return", "through retained library",
-    ])
-    let final = try await fixture.persistence.snapshot()
-    XCTAssertEqual(final.activeStore.id, active.activeStore.id)
-    XCTAssertNil(final.accountIsolation)
-    try Self.assertManifestOwner(fixture.root, activeStoreID: active.activeStore.id)
-  }
-
-  func testKeepAndRemoveUseLocalStorageWithoutAControlRequest() async throws {
-    for choice in [AppleAccountCacheChoice.keepLocalCopy, .remove] {
-      let fixture = try await Fixture.make()
-      defer { try? FileManager.default.removeItem(at: fixture.root) }
-      let firstLibrary = try await fixture.session.activeLibrary().library
-      try await Self.add("account content", to: firstLibrary)
-      await fixture.account.set(.noAccount)
-      await fixture.control.rejectFetches()
-      let notice = try await fixture.handler.refreshAppleAccountNotice()
-      XCTAssertEqual(notice, .signedOut)
-      let isolated = try await fixture.persistence.snapshot()
-      let active = try await fixture.session.activeLibrary().library
-      try await Self.add("local content", to: active)
-
-      try await fixture.handler.resolveAppleAccountCache(choice)
-      let resolved = try await fixture.session.activeLibrary().library
-      try await Self.add("after choice", to: resolved)
-      let snapshot = try await resolved.checkedSnapshot(sortedBy: .manual)
-      let expected: Set<String> = choice == .keepLocalCopy
-        ? ["account content", "local content", "after choice"] : ["local content", "after choice"]
-      XCTAssertEqual(Set(snapshot.snips.map(\.content)), expected)
-      let final = try await fixture.persistence.snapshot()
-      XCTAssertEqual(final.activeStore.id, isolated.activeStore.id)
-      XCTAssertEqual(final.activeStore.kind, .localOnly)
-      XCTAssertNil(final.accountIsolation)
-      try Self.assertManifestOwner(fixture.root, activeStoreID: final.activeStore.id)
-      let fetches = await fixture.control.fetchCount()
-      XCTAssertEqual(fetches, 0)
-    }
-  }
-
-  func testFailedIsolationSwapFinishesWhenTheNoticeRefreshes() async throws {
-    let fixture = try await Fixture.make()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let firstLibrary = try await fixture.session.activeLibrary().library
-    try await Self.add("account content", to: firstLibrary)
-    await fixture.account.set(.noAccount)
-    fixture.swapFault.failNextSwap()
-    do {
-      _ = try await fixture.handler.refreshAppleAccountNotice()
-      XCTFail("The full disk must fail the isolation's pointer swap")
-    } catch SyncModePersistenceError.storageFailure {}
-
-    let notice = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertEqual(notice, .signedOut)
-    let isolated = try await fixture.persistence.snapshot()
-    XCTAssertEqual(isolated.activeStore.kind, .localOnly)
-    let local = try await fixture.session.activeLibrary().library
-    let hidden = try await local.checkedSnapshot(sortedBy: .manual)
-    XCTAssertTrue(hidden.snips.isEmpty, "The prior account's content must stay hidden")
-
-    try await fixture.handler.resolveAppleAccountCache(.remove)
-    let removed = try await fixture.persistence.snapshot()
-    XCTAssertNil(removed.accountIsolation)
-    XCTAssertEqual(removed.activeStore.kind, .localOnly)
-    let resolved = try await fixture.session.activeLibrary().library
-    let remaining = try await resolved.checkedSnapshot(sortedBy: .manual)
-    XCTAssertTrue(remaining.snips.isEmpty)
-  }
-
-  func testRepeatedSwapFailureStillShowsTheSignedOutNotice() async throws {
-    let fixture = try await Fixture.make()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let firstLibrary = try await fixture.session.activeLibrary().library
-    try await Self.add("account content", to: firstLibrary)
-    await fixture.account.set(.noAccount)
-    fixture.swapFault.failNextSwap()
-    do {
-      _ = try await fixture.handler.refreshAppleAccountNotice()
-      XCTFail("The full disk must fail the isolation's pointer swap")
-    } catch SyncModePersistenceError.storageFailure {}
-
-    fixture.swapFault.failNextSwap()
-    do {
-      let notice = try await fixture.handler.refreshAppleAccountNotice()
-      XCTAssertEqual(notice, .signedOut)
-    } catch {
-      XCTFail("A swap that fails again must not hide the signed-out notice: \(error)")
-    }
-    let declared = try await fixture.persistence.snapshot()
-    XCTAssertEqual(declared.activeStore.kind, .iCloudSync)
-
-    let notice = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertEqual(notice, .signedOut)
-    let isolated = try await fixture.persistence.snapshot()
-    XCTAssertEqual(isolated.activeStore.kind, .localOnly)
-    let local = try await fixture.session.activeLibrary().library
-    let hidden = try await local.checkedSnapshot(sortedBy: .manual)
-    XCTAssertTrue(hidden.snips.isEmpty, "The prior account's content must stay hidden")
-  }
-
-  func testFailedKeepLeavesTheAccountChoiceOpen() async throws {
-    let fixture = try await Fixture.make()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let firstLibrary = try await fixture.session.activeLibrary().library
-    try await Self.add("account content", to: firstLibrary)
-    await fixture.account.set(.noAccount)
-    fixture.swapFault.failNextSwap()
-    do {
-      _ = try await fixture.handler.refreshAppleAccountNotice()
-      XCTFail("The full disk must fail the isolation's pointer swap")
-    } catch SyncModePersistenceError.storageFailure {}
-
-    fixture.swapFault.failNextSwap()
-    do {
-      try await fixture.handler.resolveAppleAccountCache(.keepLocalCopy)
-      XCTFail("Keep Local Copy must report the failed swap")
-    } catch {
-      XCTAssertEqual(error as? SyncModePersistenceError, .storageFailure)
-    }
-
-    let notice = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertEqual(notice, .signedOut)
-    let afterFailedKeep = try await fixture.persistence.snapshot()
-    XCTAssertEqual(
-      afterFailedKeep.accountIsolation?.resolution, .undecided, "A failed Keep must not be stored")
-
-    try await fixture.handler.resolveAppleAccountCache(.remove)
-    let removed = try await fixture.persistence.snapshot()
-    XCTAssertNil(removed.accountIsolation)
-    XCTAssertEqual(removed.activeStore.kind, .localOnly)
-    let local = try await fixture.session.activeLibrary().library
-    let remaining = try await local.checkedSnapshot(sortedBy: .manual)
-    XCTAssertTrue(remaining.snips.isEmpty)
-  }
-
-  func testHandlerReadsCannotRecoverAnotherLiveRecordReservation() async throws {
-    let fixture = try await Fixture.make()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let source = try await fixture.persistence.snapshot().activeStore
-    let library = try await fixture.persistence.libraryForTransition(storeID: source.id)
-    let lease = try await fixture.persistence.activeCloudMutation(storeID: source.id)
-    let pause = OwnerPause()
-    let store = CloudFullSyncPersistence(library: library, namespace: fixture.namespace,
-      dataZone: fixture.descriptor.metadataZone, payloadZone: fixture.descriptor.payloadZone,
-      activeMutation: lease, afterCommitHook: { await pause.suspend() })
-    let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
-    try await store.stage(.fetched(batch), outbound: nil)
-    let commit = Task { try await store.applyStaged(batch.id) }
-    await pause.waitUntilSuspended()
-    let isActive = try await fixture.handler.isCloudSyncActive()
-    XCTAssertTrue(isActive)
-    _ = try await fixture.session.activeLibrary()
-    await fixture.account.set(.noAccount)
-    do {
-      _ = try await fixture.handler.refreshAppleAccountNotice()
-      XCTFail("Account isolation cannot pass the live record commit")
-    } catch SyncModePersistenceError.transitionInProgress {}
-    _ = try await fixture.handler.syncedAttachmentStates()
-    do {
-      _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
-      XCTFail("A status read cannot clear another live record reservation")
-    } catch SyncModePersistenceError.transitionInProgress {}
-    let unchanged = try await fixture.persistence.snapshot()
-    XCTAssertEqual(unchanged.activeStore.id, source.id)
-    XCTAssertNil(unchanged.accountIsolation)
-    await pause.resume()
-    try await commit.value
-
-    let notice = try await fixture.handler.refreshAppleAccountNotice()
-    XCTAssertEqual(notice, .signedOut)
-    let local = try await fixture.session.activeLibrary().library
-    try await Self.add("new local content", to: local)
-    let isolated = try await fixture.persistence.snapshot()
-    XCTAssertNotEqual(isolated.activeStore.id, source.id)
-    XCTAssertEqual(isolated.accountIsolation?.storeID, source.id)
-    try Self.assertManifestOwner(fixture.root, activeStoreID: isolated.activeStore.id)
+    try await fixture.persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountSignedOut)
+    try FileManager.default.removeItem(at: downloaded)
+    let reopened = try SwiftDataSyncModePersistence(rootURL: fixture.root)
+    let contents = try await reopened.activeLibrary().checkedSnapshot(sortedBy: .manual)
+    let local = try XCTUnwrap(contents.attachmentURLs[id])
+    XCTAssertNotEqual(local, downloaded)
+    XCTAssertEqual(try Data(contentsOf: local), bytes)
   }
 
   func testAttachmentUseKeepsItsSourceUntilTheFileOperationFinishes() async throws {
@@ -341,52 +249,39 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     let prepare = Task { try await fixture.handler.prepareSyncedAttachment(UUID(), for: .preview) }
     await pause.waitUntilSuspended()
     _ = try await fixture.persistence.activeLibrary()
-    do {
-      _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
-      XCTFail("The attachment's source cannot retire during its file operation")
-    } catch SyncModePersistenceError.transitionInProgress {}
+    let change = Task {
+      try await fixture.persistence.keepCloudCacheLocally(storeID: source.id, reason: .accountSignedOut)
+    }
+    try await waitForQueuedMutations(fixture.persistence, count: 1)
+    let unchanged = try await fixture.persistence.snapshot()
+    XCTAssertEqual(unchanged.activeStore.kind, .iCloudSync)
     await pause.resume()
     _ = try await prepare.value
-    let unchanged = try await fixture.persistence.snapshot()
-    XCTAssertEqual(unchanged.activeStore.id, source.id)
-    _ = try await fixture.persistence.isolateActiveCloudStore(reason: .signedOut)
+    try await change.value
+    let kept = try await fixture.persistence.snapshot()
+    XCTAssertEqual(kept.activeStore.id, source.id)
+    XCTAssertEqual(kept.activeStore.kind, .localOnly)
   }
 
-  private static func add(_ content: String, to library: any SnipLibrary) async throws {
-    _ = try await library.perform(.add(content: content, origin: .quickEntry, source: nil,
-      listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date()), sortedBy: .manual)
-  }
-
-  private static func assertManifestOwner(_ root: URL, activeStoreID: UUID) throws {
-    let manifest = try JSONDecoder().decode(SwiftDataSyncModePersistence.Manifest.self,
-      from: Data(contentsOf: root.appendingPathComponent("activation.json")))
-    XCTAssertEqual(manifest.activeStoreID, activeStoreID)
-  }
 }
 
 private struct Fixture: Sendable {
   let root: URL
   let persistence: SwiftDataSyncModePersistence
-  let swapFault: AccountIsolationSwapFault
-  let namespace: CloudSyncNamespace
   let descriptor: CloudCollectionDescriptor
-  let account: OwnerAccountSource
   let control: OwnerControlTransport
-  let handler: AppleAccountCacheCoordinatorHandler
-  let session: SnipSnapCloudSyncSession
+  let handler: SnipSnapCloudSyncHandler
 
   static func make(
     attachmentPause: OwnerPause? = nil,
     controlTransport: (any CloudCollectionControlTransport)? = nil,
-    makeAttachmentCoordinator: AppleAccountCacheCoordinatorHandler.AttachmentCoordinatorFactory? = nil
+    makeAttachmentCoordinator: SnipSnapCloudSyncHandler.AttachmentCoordinatorFactory? = nil
   ) async throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudAppOwner-\(UUID())")
     let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
     let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
     let server = FakeCloudServer()
-    let swapFault = AccountIsolationSwapFault()
-    let persistence = try SwiftDataSyncModePersistence(rootURL: root, manifestWriter: swapFault.write,
-      writeHook: swapFault.arm)
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
     let account = OwnerAccountSource()
     let initial = ICloudSyncModeCoordinator(persistence: persistence, namespace: namespace,
       textZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone,
@@ -408,7 +303,7 @@ private struct Fixture: Sendable {
       disable: { try await lifecycle.disableICloudSync($0) },
       delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() }, operationGate: gate)
-    let handler = lifecycle.makeAccountCacheHandler(operationGate: gate,
+    let handler = lifecycle.makeCloudSyncHandler(operationGate: gate,
       syncWhenPossible: { _ = try? await session.synchronize() },
       makeAttachmentCoordinator: { library, namespace, descriptor in
         if let makeAttachmentCoordinator {
@@ -416,8 +311,8 @@ private struct Fixture: Sendable {
         }
         return OwnerAttachmentCoordinator(pause: attachmentPause, root: root)
       })
-    return Fixture(root: root, persistence: persistence, swapFault: swapFault, namespace: namespace,
-      descriptor: descriptor, account: account, control: control, handler: handler, session: session)
+    return Fixture(root: root, persistence: persistence,
+      descriptor: descriptor, control: control, handler: handler)
   }
 }
 
@@ -615,4 +510,38 @@ private actor HeldControlDatabase {
     throw CKError(.permissionFailure)
   }
   func callCount() -> Int { calls }
+}
+
+private actor AttachmentTransferProbe: CloudAttachmentTransferring {
+    struct Configuration: Equatable, Sendable {
+        let namespace: CloudSyncNamespace
+        let payloadZone: CloudZoneID
+    }
+
+    private let preparedURL: URL
+    private var recordedUses: [SyncedAttachmentUse] = []
+    private var recordedClearCount = 0
+    private var recordedConfiguration: Configuration?
+
+    init(preparedURL: URL) {
+        self.preparedURL = preparedURL
+    }
+
+    func prepare(attachmentID: UUID, for use: SyncedAttachmentUse) -> URL {
+        _ = attachmentID
+        recordedUses.append(use)
+        return preparedURL
+    }
+
+    func clearDownloads() {
+        recordedClearCount += 1
+    }
+
+    func transferStates() -> [UUID: CloudAttachmentTransferState] { [:] }
+    func recordConfiguration(namespace: CloudSyncNamespace, payloadZone: CloudZoneID) {
+        recordedConfiguration = Configuration(namespace: namespace, payloadZone: payloadZone)
+    }
+    func uses() -> [SyncedAttachmentUse] { recordedUses }
+    func clearCount() -> Int { recordedClearCount }
+    func configuration() -> Configuration? { recordedConfiguration }
 }

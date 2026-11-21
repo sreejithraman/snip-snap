@@ -23,7 +23,7 @@ extension SwiftDataSyncModePersistence {
     _ operation: @Sendable () async throws -> Value
   ) async throws -> Value {
     try resolveActivationWrite()
-    guard storeID == manifest.activeStoreID, manifest.accountIsolation == nil,
+    guard storeID == manifest.activeStoreID,
       store(id: storeID)?.kind == .iCloudSync
     else { throw SyncModePersistenceError.namespaceMismatch }
     guard manifest.transition == nil else { throw SyncModePersistenceError.transitionInProgress }
@@ -46,6 +46,7 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
+    try await finishLegacyAccountCopy()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -54,6 +55,7 @@ extension SwiftDataSyncModePersistence {
   }
 
   fileprivate func managedArchive() async throws -> SnipLibraryArchive {
+    try await finishLegacyAccountCopy()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -63,6 +65,7 @@ extension SwiftDataSyncModePersistence {
   fileprivate func managedRecoverySnapshot(
     in scope: SnipRecoveryScope
   ) async throws -> SnipRecoverySnapshot {
+    try await finishLegacyAccountCopy()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -93,6 +96,7 @@ extension SwiftDataSyncModePersistence {
   private func managedWrite<Value: Sendable>(
     _ operation: @escaping @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
+    try await finishLegacyAccountCopy()
     await finishRecoveryQuarantines()
     if activeStoreActivity == .cloudMutation {
       diagnostics.record(.writeAdmission(.started, reason: .syncBusy))

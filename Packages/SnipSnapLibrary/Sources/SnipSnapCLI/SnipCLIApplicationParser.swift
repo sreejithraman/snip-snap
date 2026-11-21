@@ -19,8 +19,6 @@ enum SnipCLIApplicationParser {
       disable accepts --use-current-cache to explicitly keep this device's copy.
     sync clipboard status|enable|disable|retry
       enable and disable require --if-revision TOKEN from sync clipboard status.
-    sync account keep|remove --if-revision TOKEN [--yes]
-      remove requires --yes; TOKEN comes from sync status.
     diagnostics status|export PATH [--range 24h|7d]|clear --yes
     diagnostics recording on|off --if-revision TOKEN
     diagnostics logs [--range 24h|7d] [--errors-only] [--limit 1...2000]
@@ -116,11 +114,6 @@ enum SnipCLIApplicationParser {
         } else if args == ["cancel-setup"] { action = .cancelSyncSetup(expectedRevision: token) }
         else if args == ["clipboard", "enable"] || args == ["clipboard", "disable"] {
           action = .setClipboardSync(enabled: args[1] == "enable", expectedRevision: token)
-        } else if args.first == "account" {
-          let yes = try flag("--yes")
-          guard args.count == 2, let choice = SnipCLIAccountChoice(rawValue: args[1]),
-                choice != .remove || yes else { throw invalid() }
-          action = .resolveAccount(choice: choice, expectedRevision: token, confirmed: yes)
         } else { throw invalid() }
       }
     case "diagnostics":

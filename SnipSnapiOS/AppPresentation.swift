@@ -9,17 +9,3 @@ enum AppSheet: Identifiable, Hashable {
 
     var id: Self { self }
 }
-
-extension AppleAccountNoticeModel {
-    var message: String {
-        switch notice {
-        case .paused:
-            String(localized: "Your synced snips stay on this device. Snip Snap will try again when iCloud is available.")
-        case .signedOut, .accountChanged:
-            String(localized: "Snip Snap kept your previous account’s snips separate.")
-        case nil:
-            ""
-        }
-    }
-
-}

@@ -204,7 +204,7 @@
     "Some changes haven’t synced. Try again." : {},
     "Some synced content is still in iCloud. This device keeps a recovery copy." : {},
     "Sync clipboard history?" : {},
-    "Your previous account’s snips stay separate. Choose whether to keep them before syncing again." : {},
+    "The Apple Account changed. Sync is off and your snips are kept on this device." : {},
     "Can’t change your snips right now. Try again in a moment. If it still fails, contact support." : {},
     "Sync off" : {},
     "Sync on" : {},

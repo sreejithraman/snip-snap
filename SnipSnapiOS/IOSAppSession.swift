@@ -53,12 +53,11 @@ final class IOSAppSession {
     let model: IOSAppModel
     let clipboard: IOSClipboardModel
     let syncedContentSettings: SyncedContentSettingsModel
-    let accountNoticeModel: AppleAccountNoticeModel?
 
     private let shareImporter: IOSShareImportCoordinator?
     private let shareDestinationPublisher: ShareListCatalogPublisher?
-    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private let cloudSyncSession: (any IOSCloudSyncSessionHandling)?
+    private let cloudLifecycleHooks: SnipSnapCloudLifecycleHooks
     private var automaticSyncTask: Task<Void, Never>?
 
     init(
@@ -77,7 +76,6 @@ final class IOSAppSession {
         ),
         cloudSyncSession: (any IOSCloudSyncSessionHandling)? = nil,
         shareImportOperation: (@Sendable () async -> ShareImportSummary)? = nil,
-        accountNoticeModel: AppleAccountNoticeModel? = nil,
         cloudSyncHandler: (any OptionalCloudSyncHandling)? = nil,
         haptics: IOSHapticFeedback = IOSHapticFeedback(),
         clipboardRootURL: URL? = nil,
@@ -112,14 +110,16 @@ final class IOSAppSession {
             settings: syncedContentSettings,
             containerIdentifier: clipboardContainerIdentifier,
             generation: {
-                guard let cloudSyncSession else { return nil }
-                return try await cloudSyncSession.iosActiveLibrary().recoveryScope?.rawValue
+                guard let clipboardSyncRootURL else { return nil }
+                let namespace = SyncModeActivationManifestReader.activeCloudNamespace(
+                    atSyncModeRootURL: clipboardSyncRootURL
+                )
+                return SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)?.rawValue
             },
             diagnostics: diagnostics
         )
         self.clipboard = clipboard
         self.syncedContentSettings = syncedContentSettings
-        self.accountNoticeModel = accountNoticeModel
         self.cloudSyncSession = cloudSyncSession
 
         let activeShareImportOperation = shareImportOperation ?? shareImports.map { imports in
@@ -173,14 +173,6 @@ final class IOSAppSession {
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
             await cloudSyncSession?.scheduleAutomaticSync()
         }
-        accountNoticeModel?.setActiveLibraryChangeAction {
-            guard let cloudSyncSession else { return }
-            let active = try await cloudSyncSession.iosActiveLibrary()
-            await model.replaceLibrary(
-                active.library,
-                recoveryScope: active.recoveryScope
-            )
-        }
         if let cloudSyncSession {
             let results = cloudSyncSession.automaticSyncResults
             automaticSyncTask = Task { [weak self] in
@@ -200,7 +192,6 @@ final class IOSAppSession {
         if let shareImporter {
             await shareImporter.importPendingAndReload()
         }
-        await accountNoticeModel?.refresh()
     }
 
     func foreground() async {
@@ -208,7 +199,6 @@ final class IOSAppSession {
         await cloudLifecycleHooks.run()
         await clipboard.foreground()
         await shareImporter?.importPendingAndReload()
-        await accountNoticeModel?.refresh()
     }
 
     func syncWhenPossible() async {

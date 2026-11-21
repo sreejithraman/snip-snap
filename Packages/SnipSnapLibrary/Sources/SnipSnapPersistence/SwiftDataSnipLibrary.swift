@@ -86,6 +86,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   let retirementMarkers: StoreRetirementMarkers
   private(set) var container: ModelContainer?
   let isAvailable: Bool
+  let checksCloudEnrollment: Bool
   let afterMutationBeforeSave: @Sendable () throws -> Void
   let beforeImportCommit: @Sendable () async throws -> Void
   let diagnostics: AppDiagnosticRecorder
@@ -104,6 +105,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   package init(
     storeURL: URL,
     attachmentCacheRootURL: URL? = nil,
+    checksCloudEnrollment: Bool = true,
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     beforeImportCommit: @escaping @Sendable () async throws -> Void = {},
     resetRetiredTextNamespace: CloudSyncNamespaceKey? = nil,
@@ -111,6 +113,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     diagnostics: AppDiagnosticRecorder = .live
   ) throws {
     self.diagnostics = diagnostics
+    self.checksCloudEnrollment = checksCloudEnrollment
     let directory = storeURL.deletingLastPathComponent()
     try DurableFile.createDirectory(directory)
     let lockURL = storeURL.appendingPathExtension("lock")
@@ -177,6 +180,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     retirementMarkers = StoreRetirementMarkers(storeURL: storeURL)
     container = nil
     isAvailable = false
+    checksCloudEnrollment = true
     afterMutationBeforeSave = {}
     beforeImportCommit = {}
     seenRequestIDs = []

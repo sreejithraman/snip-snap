@@ -323,6 +323,7 @@ package actor CloudCollectionCoordinator {
   private let transport: any CloudCollectionControlTransport
   private let syncDriver: any CloudCollectionSyncDriver
   private let makeDescriptor: DescriptorFactory
+  private let beforeReplacingCollection: @Sendable () async throws -> Void
   private let afterStep: StepHook
   private let reservedZones: Set<CloudZoneID>
   private let operationGate: CloudCollectionOperationGate
@@ -337,6 +338,7 @@ package actor CloudCollectionCoordinator {
     makeDescriptor: @escaping DescriptorFactory,
     reservedZones: Set<CloudZoneID> = [],
     operationGate: CloudCollectionOperationGate = CloudCollectionOperationGate(),
+    beforeReplacingCollection: @escaping @Sendable () async throws -> Void = {},
     afterStep: @escaping StepHook = { _ in }
   ) {
     self.cloudScope = cloudScope
@@ -348,6 +350,7 @@ package actor CloudCollectionCoordinator {
     self.makeDescriptor = makeDescriptor
     self.reservedZones = reservedZones
     self.operationGate = operationGate
+    self.beforeReplacingCollection = beforeReplacingCollection
     self.afterStep = afterStep
   }
 
@@ -362,12 +365,14 @@ package actor CloudCollectionCoordinator {
       throw CloudCollectionError.noActiveCollection
     }
     try validate(current.descriptor)
+    try await beforeReplacingCollection()
     let fresh = makeDescriptor()
     try validate(fresh)
     try await localStore.stageCleanup(fresh.zones)
     try await transport.createZones(fresh.zones)
     try afterStep(.freshZonesCreated)
     let saved = try await transport.saveControl(fresh, replacing: current.version)
+    try await beforeReplacingCollection()
     switch saved {
     case .accepted(let accepted):
       try validate(accepted.descriptor)
@@ -442,6 +447,7 @@ package actor CloudCollectionCoordinator {
     }
     guard let control = try await transport.fetchControl() else {
       if local.activeNamespace != nil {
+        try await beforeReplacingCollection()
         try await localStore.markPurged()
         return .purged
       }
@@ -452,6 +458,7 @@ package actor CloudCollectionCoordinator {
       cloudScope: cloudScope,
       accountLineage: accountLineage
     )
+    if local.activeNamespace != remoteNamespace { try await beforeReplacingCollection() }
     try await localStore.finishCleanup(control.descriptor.zones)
     do {
       try await cleanPendingZones(protecting: control.descriptor.zones)
@@ -493,6 +500,7 @@ package actor CloudCollectionCoordinator {
       return .purged
     }
     guard let checked = try await transport.fetchControl() else {
+      try await beforeReplacingCollection()
       try await localStore.markPurged()
       return .purged
     }
@@ -503,6 +511,7 @@ package actor CloudCollectionCoordinator {
       accountLineage: accountLineage
     )
     guard checkedNamespace == remoteNamespace else {
+      try await beforeReplacingCollection()
       return try await adoptRemoteCollection(
         checked.descriptor,
         replacing: remoteNamespace,
@@ -565,6 +574,7 @@ package actor CloudCollectionCoordinator {
             return .purged
           }
           guard let checked = try await transport.fetchControl() else {
+            try await beforeReplacingCollection()
             try await localStore.markPurged()
             return .purged
           }
@@ -574,6 +584,7 @@ package actor CloudCollectionCoordinator {
             accountLineage: accountLineage
           )
           if checkedNamespace != namespace {
+            try await beforeReplacingCollection()
             priorNamespace = namespace
             descriptor = checked.descriptor
             continue
@@ -594,8 +605,6 @@ package actor CloudCollectionCoordinator {
           deletionState: deletionState,
           fallback: fallback
         )
-      } catch let isolation as CloudAccountIsolationError {
-        throw isolation
       } catch let account as ICloudAccountGateError
         where account == .accountChanged || account == .noAccount
       {

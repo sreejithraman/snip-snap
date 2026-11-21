@@ -32,8 +32,6 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
       .setSync(enabled: true, useCurrentCache: false, expectedRevision: "before"),
       .setSync(enabled: false, useCurrentCache: true, expectedRevision: "before"),
       .cancelSyncSetup(expectedRevision: "before"), .retrySync,
-      .resolveAccount(choice: .keep, expectedRevision: "before", confirmed: false),
-      .resolveAccount(choice: .remove, expectedRevision: "before", confirmed: true),
     ]
     for action in actions {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

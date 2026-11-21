@@ -9,6 +9,7 @@ public actor SnipSnapCloudSyncSession {
   package typealias ScheduleAction = @Sendable () async throws -> Void
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
 
+  private let checkAccountAction: SynchronizeAction
   private let synchronizeAction: SynchronizeAction
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
@@ -120,6 +121,7 @@ public actor SnipSnapCloudSyncSession {
   public nonisolated let automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult>
 
   package init(
+    checkActiveAccount: @escaping SynchronizeAction = { .noChange },
     synchronize: @escaping SynchronizeAction,
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
@@ -136,6 +138,7 @@ public actor SnipSnapCloudSyncSession {
   ) {
     self.operationGate = operationGate
     self.automaticSyncResults = automaticSyncResults
+    checkAccountAction = checkActiveAccount
     synchronizeAction = synchronize
     retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
@@ -145,6 +148,10 @@ public actor SnipSnapCloudSyncSession {
     deleteAction = delete
     libraryAction = activeLibrary
     self.automaticErrorHandler = automaticErrorHandler
+  }
+
+  public func checkActiveAccount() async throws -> SnipSnapCloudSyncResult {
+    try await operationGate.withLease(checkAccountAction)
   }
 
   public func synchronize() async throws -> SnipSnapCloudSyncResult {

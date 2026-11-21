@@ -168,8 +168,6 @@
 		A1000000000000000000000A /* SnipCompletionLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SnipCompletionLanguage.swift */; };
 		A1000000000000000000000B /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
 		A1000000000000000000000C /* AppIconDev.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* AppIconDev.icon */; };
-		A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppleAccountNoticeModel.swift */; };
-		A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppleAccountNoticeModel.swift */; };
 		A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AgentSnipContextLabel.swift */; };
 		A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AgentSnipContextLabel.swift */; };
 		AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2000000000000000000001 /* ExpandableSnipText.swift */; };
@@ -357,7 +355,6 @@
 		A20000000000000000000003 /* SnipCompletionLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipCompletionLanguage.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A20000000000000000000005 /* AppIconDev.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIconDev.icon; sourceTree = "<group>"; };
-		A20000000000000000000006 /* AppleAccountNoticeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAccountNoticeModel.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* AgentSnipContextLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSnipContextLabel.swift; sourceTree = "<group>"; };
 		AE2000000000000000000001 /* ExpandableSnipText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpandableSnipText.swift; sourceTree = "<group>"; };
 		BC2000000000000000000001 /* SnipMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnipMarkdown.swift; sourceTree = "<group>"; };
@@ -707,7 +704,6 @@
 				AB9200000000000000000001 /* ItemRowContent.swift */,
 				A20000000000000000000002 /* AppIcon.icon */,
 				A20000000000000000000005 /* AppIconDev.icon */,
-				A20000000000000000000006 /* AppleAccountNoticeModel.swift */,
 				200000000000000000000037 /* ComposerDraftStore.swift */,
 				A20000000000000000000004 /* Localizable.xcstrings */,
 				A20000000000000000000003 /* SnipCompletionLanguage.swift */,
@@ -1152,7 +1148,6 @@
 				10000000000000000000002D /* PreviewImageCache.swift in Sources */,
 				10000000000000000000002E /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000005 /* SnipCompletionLanguage.swift in Sources */,
-				A1000000000000000000000D /* AppleAccountNoticeModel.swift in Sources */,
 				A1000000000000000000000F /* AgentSnipContextLabel.swift in Sources */,
 				AF1000000000000000000001 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000001 /* ExpandableSnipText.swift in Sources */,
@@ -1246,7 +1241,6 @@
 				A91000000000000000000002 /* ListLens.metal in Sources */,
 				E10000000000000000000034 /* ComposerDraftStore.swift in Sources */,
 				A10000000000000000000006 /* SnipCompletionLanguage.swift in Sources */,
-				A1000000000000000000000E /* AppleAccountNoticeModel.swift in Sources */,
 				A10000000000000000000010 /* AgentSnipContextLabel.swift in Sources */,
 				AF1000000000000000000002 /* SFSymbolNames.swift in Sources */,
 				AE1000000000000000000002 /* ExpandableSnipText.swift in Sources */,

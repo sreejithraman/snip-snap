@@ -99,6 +99,7 @@ package actor CloudFullSyncCoordinator {
   private let store: any CloudFullSyncStore
   private let transport: any CloudRecordTransport
   private let fetchScope: CloudFetchScope
+  private let accountChanged: (@Sendable () async throws -> Void)?
   private let reportResult: @Sendable (SnipSnapCloudSyncResult) async throws -> Void
   private let diagnostics: AppDiagnosticRecorder
   private let operationGate = AsyncOperationGate()
@@ -109,12 +110,14 @@ package actor CloudFullSyncCoordinator {
     transport: any CloudRecordTransport,
     fetchScope: CloudFetchScope = .all,
     diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
+    accountChanged: (@Sendable () async throws -> Void)? = nil,
     reportResult: @escaping @Sendable (SnipSnapCloudSyncResult) async throws -> Void = { _ in }
   ) {
     self.store = store
     self.transport = transport
     self.fetchScope = fetchScope
     self.diagnostics = diagnostics
+    self.accountChanged = accountChanged
     self.reportResult = reportResult
   }
 
@@ -361,7 +364,8 @@ package actor CloudFullSyncCoordinator {
     while let event = await transport.pendingEvent() {
       switch event {
       case .accountChange:
-        try await beforeApply()
+        if let accountChanged { try await accountChanged() }
+        else { try await beforeApply() }
         try await transport.confirmApplied(event.id)
       case .checkpoint(_, let checkpoint):
         try await beforeStateSave()

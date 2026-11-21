@@ -103,60 +103,6 @@ package enum SyncModeStoreLifecycle: String, Codable, Equatable, Sendable {
   case creating, ready, recovery, isolated, retired, deleting
 }
 
-package enum ICloudAccountIsolationReason: String, Codable, Equatable, Sendable {
-  case signedOut, accountChanged
-}
-
-package enum ICloudAccountIsolationChoice: String, Codable, Equatable, Sendable {
-  case keepLocalCopy, remove
-}
-
-package enum ICloudAccountIsolationResolution: String, Codable, Equatable, Sendable {
-  case undecided, keepingLocalCopy, removing
-}
-
-package struct ICloudAccountIsolation: Codable, Equatable, Sendable {
-  package let id: UUID
-  package let storeID: UUID
-  package let replacementStoreID: UUID
-  package let namespace: ICloudSyncNamespaceBinding
-  package let reason: ICloudAccountIsolationReason
-  package var resolution: ICloudAccountIsolationResolution
-
-  package init(
-    id: UUID,
-    storeID: UUID,
-    replacementStoreID: UUID,
-    namespace: ICloudSyncNamespaceBinding,
-    reason: ICloudAccountIsolationReason,
-    resolution: ICloudAccountIsolationResolution = .undecided
-  ) {
-    self.id = id
-    self.storeID = storeID
-    self.replacementStoreID = replacementStoreID
-    self.namespace = namespace
-    self.reason = reason
-    self.resolution = resolution
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case id, storeID, replacementStoreID, namespace, reason, resolution
-  }
-
-  package init(from decoder: any Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    id = try values.decode(UUID.self, forKey: .id)
-    storeID = try values.decode(UUID.self, forKey: .storeID)
-    replacementStoreID = try values.decode(UUID.self, forKey: .replacementStoreID)
-    namespace = try values.decode(ICloudSyncNamespaceBinding.self, forKey: .namespace)
-    reason = try values.decode(ICloudAccountIsolationReason.self, forKey: .reason)
-    resolution = try values.decodeIfPresent(
-      ICloudAccountIsolationResolution.self,
-      forKey: .resolution
-    ) ?? .undecided
-  }
-}
-
 package enum SyncModeSyncProtocol: String, Codable, Equatable, Sendable {
   case retiredText = "legacyTextV1"
   case fullRecordV1
@@ -168,7 +114,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
   package let namespace: ICloudSyncNamespaceBinding?
   package let relativeRoot: String
   package var syncProtocol: SyncModeSyncProtocol
-  /// The exact cloud collection whose data this local-only store may rejoin.
+  /// The exact cloud collection whose data this local-only store may rejoin. A stopped cache keeps its original root.
   package var quarantinedNamespace: ICloudSyncNamespaceBinding?
   package var revision: UInt64
   package var lifecycle: SyncModeStoreLifecycle
@@ -231,7 +177,6 @@ package enum ICloudSyncAttentionReason: String, Codable, Equatable, Sendable {
 package struct SyncModeStorageSnapshot: Equatable, Sendable {
   package let activeStore: SyncModeStore
   package let transition: SyncModeTransition?
-  package let accountIsolation: ICloudAccountIsolation?
   package let attentionReason: ICloudSyncAttentionReason?
 }
 

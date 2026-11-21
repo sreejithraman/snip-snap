@@ -22,7 +22,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         withSyncEnable: Bool = false,
         withLimitAttachments: Bool = false,
         withEncryptedReset: Bool = false,
-        accountNotice: Bool = false,
         withCopyShareFixtures: Bool = false,
         withAgentSnips: Bool = false,
         withHapticsTrace: Bool = false,
@@ -57,9 +56,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         if withEncryptedReset {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] = "1"
-        }
-        if accountNotice {
-            app.launchEnvironment["SNIP_SNAP_UI_TEST_ACCOUNT_NOTICE"] = "signedOut"
         }
         if withCopyShareFixtures {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_COPY_SHARE"] = "1"
@@ -1247,27 +1243,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(attention.waitForExistence(timeout: 2))
     }
 
-    func testSignedOutNoticeOffersBothSafeChoicesWithoutAnAlert() {
-        continueAfterFailure = false
-        let app = launchApp(accountNotice: true)
-
-        let notice = app.staticTexts["apple-account-notice"]
-        XCTAssertTrue(notice.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["keep-account-cache"].exists)
-        XCTAssertTrue(app.buttons["remove-account-cache"].exists)
-        XCTAssertFalse(app.alerts.firstMatch.exists)
-
-        compactListTab(named: "Inbox", in: app).press(forDuration: 0.7)
-        let manager = app.descendants(matching: .any)["list-management-panel"]
-        XCTAssertTrue(manager.waitForExistence(timeout: 3))
-        let keepFrame = app.buttons["keep-account-cache"].frame
-        app.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: keepFrame.midX, dy: keepFrame.midY)).tap()
-        XCTAssertTrue(manager.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(notice.exists, "The backdrop must shield the account choice as it dismisses.")
-        app.buttons["keep-account-cache"].tap()
-        XCTAssertFalse(notice.waitForExistence(timeout: 1))
-    }
 
     func testCopiesTextOnlySnip() throws {
         continueAfterFailure = false

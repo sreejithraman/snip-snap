@@ -137,11 +137,10 @@ codes and Carbon modifier bits, or the supported double-Shift gestures.
 `agent-snips-only` remains an alias: `on` selects Agent only, and `off` selects All.
 Human only includes every snip whose capture origin is not Agent.
 
-Sync commands expose enable, disable, cancel setup, retry, clipboard sync, and
-account-notice resolution. They use the app's existing iCloud transitions and
-retry behavior. `sync disable --use-current-cache` explicitly chooses this
-device's current copy. Account removal requires `--yes`. Read status after a
-transition before issuing library commands.
+Sync commands expose enable, disable, cancel setup, retry, and clipboard sync.
+They use the app's existing iCloud transitions and retry behavior.
+`sync disable --use-current-cache` explicitly chooses this device's current copy.
+Read status after a transition before issuing library commands.
 
 `diagnostics logs` reads local history directly, even when the app is closed or
 unresponsive. It does not launch the app or wait for iCloud. By default it prints

@@ -11,7 +11,6 @@ final class SnipCLIApplicationActionTests: XCTestCase {
       .setSync(enabled: true, useCurrentCache: false, expectedRevision: "private-revision"),
       .setClipboardSync(enabled: true, expectedRevision: "private-revision"),
       .cancelSyncSetup(expectedRevision: "private-revision"),
-      .resolveAccount(choice: .keep, expectedRevision: "private-revision", confirmed: false),
       .exportDiagnostics(path: "/private/export"),
       .exportDiagnostics(path: "/private/export", range: .last7Days),
       .setDiagnosticRecording(enabled: false, expectedRevision: "private-revision"),
