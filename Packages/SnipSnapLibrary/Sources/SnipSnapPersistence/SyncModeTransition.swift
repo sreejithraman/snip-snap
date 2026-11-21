@@ -11,7 +11,7 @@ package struct SyncModeTransition: Codable, Equatable, Sendable {
   package let candidateStoreID: UUID
   package let targetKind: SyncModeStoreKind
   package let namespace: ICloudSyncNamespaceBinding?
-  package let syncProtocol: SyncModeSyncProtocol
+  package var syncProtocol: SyncModeSyncProtocol
 
   private var stage: Stage
   private var seeds: SeedHistory
@@ -448,7 +448,7 @@ extension SyncModeTransition {
     syncProtocol = try values.decodeIfPresent(
       SyncModeSyncProtocol.self,
       forKey: .syncProtocol
-    ) ?? .legacyTextV1
+    ) ?? .retiredText
     let phase = try values.decode(SyncModeTransitionPhase.self, forKey: .phase)
     let freezeToken = try values.decodeIfPresent(SyncModeFreezeToken.self, forKey: .freezeToken)
     let finalSnapshotTaken = try values.decode(Bool.self, forKey: .freezeSnapshotTaken)

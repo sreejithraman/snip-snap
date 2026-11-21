@@ -855,11 +855,7 @@ extension ICloudSyncModeCoordinatorTests {
         let fullBefore = try await active.cloudFullStorageSnapshot(
             namespaceKey: namespace.namespaceKey
         )
-        let legacyBefore = try await active.cloudTextSyncSnapshot(
-            namespaceKey: namespace.namespaceKey
-        )
         XCTAssertEqual(fullBefore.namespaceState.phase, .active)
-        XCTAssertTrue(legacyBefore.records.isEmpty)
 
         let firstStatus = try await coordinator.status()
         let secondStatus = try await coordinator.status()

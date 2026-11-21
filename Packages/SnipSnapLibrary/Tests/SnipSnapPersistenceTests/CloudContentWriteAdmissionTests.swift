@@ -27,8 +27,6 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       ("different namespace", .staged(id, try wrapped(changed(payload, key: "namespaceKey", value: "another")))),
       ("different batch ID", .staged(UUID(), envelope)),
       ("damaged stored key", .staged(id, envelope, "wrong-key")),
-      ("invalid wrapped legacy", .staged(id, try wrapped(Data([0xff]), format: .legacyTextV1))),
-      ("full payload labeled legacy", .staged(id, try wrapped(payload, format: .legacyTextV1))),
     ]
     for (label, evidence) in cases { try await verify(evidence, error: .invalidStore, label: label) }
   }
@@ -50,7 +48,6 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       ("reset mislabeled as review", .recovery("review-recovery-\(id.uuidString.lowercased())", envelope)),
       ("damaged stored key", .recovery(key, envelope, "wrong-key")),
       ("unknown recovery kind", .recovery(key, try wrapped(changed(payload, key: "kind", value: "futureReset")))),
-      ("reset labeled legacy", .recovery(key, try wrapped(payload, format: .legacyTextV1))),
     ]
     for (label, evidence) in cases { try await verify(evidence, error: .invalidStore, label: label) }
   }
@@ -89,13 +86,8 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       error: .modeTransitionInProgress, label: "valid committed reset")
   }
 
-  func testValidLegacyNonresetAndReviewEvidenceRemainsWritable() async throws {
+  func testValidNonresetAndReviewEvidenceRemainsWritable() async throws {
     let id = UUID()
-    let legacyBatch = try JSONSerialization.data(withJSONObject: ["fetched": ["_0": [
-      "id": id.uuidString, "items": [], "databaseEvents": [], "zoneEvents": [],
-    ]]])
-    let legacyRecovery = Data("{\"modeRetryDeletion\":{}}".utf8)
-    let legacyEnvelope = try wrapped(legacyRecovery, format: .legacyTextV1)
     let prior = try recovery(id: UUID(), kind: .retryableFetch)
     let review = SnipRecoveryRecord.list(RecoveredListEdit(id: UUID(), currentListID: SnipList.inbox.id,
       recovered: .inbox, conflictingFields: [.name]))
@@ -103,10 +95,6 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       "storageVersion": 1, "conflictKey": "review", "recovery": try json(JSONEncoder().encode(review)),
     ])
     let cases: [(String, Evidence)] = [
-      ("raw legacy batch", .staged(id, legacyBatch)),
-      ("wrapped legacy batch", .staged(id, try wrapped(legacyBatch, format: .legacyTextV1))),
-      ("raw legacy recovery", .recovery("\(id.uuidString.lowercased())-\(legacyRecovery.base64EncodedString())", legacyRecovery)),
-      ("wrapped legacy recovery", .recovery("\(id.uuidString.lowercased())-\(legacyEnvelope.base64EncodedString())", legacyEnvelope)),
       ("nonreset staged", .staged(id, try wrapped(JSONEncoder().encode(fullBatch(id: id,
         inputs: [recovery(id: id, kind: .retryableFetch)]))))),
       ("nonreset recovery", .recovery(recoveryKey(id), try wrapped(JSONEncoder().encode(recovery(id: id, kind: .retryableFetch))))),
@@ -226,36 +214,6 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
     let legacy = try JSONEncoder().encode(Set<CloudEntityReference>())
     try await verify(.enrollment(legacy), error: nil, label: "legacy enrollment set")
     try await verify(.enrollment(Data([0xff])), error: .invalidStore, label: "unreadable enrollment")
-  }
-
-  func testLegacyDatabaseResetEvidenceRefusesWritesAndPreservesOtherEvents() async throws {
-    let id = UUID()
-    for reason in ["deleted", "purged", "encryptedDataReset", "unknownReset"] {
-      let event: [String: Any] = ["zoneDeleted": [
-        "_0": ["name": "text", "ownerName": "owner"], "reason": reason,
-      ]]
-      let expected: SnipLibraryError? = switch reason {
-      case "deleted": nil
-      case "purged", "encryptedDataReset": .modeTransitionInProgress
-      default: .invalidStore
-      }
-      let batch = try JSONSerialization.data(withJSONObject: ["fetched": ["_0": [
-        "id": id.uuidString, "items": [], "databaseEvents": [event], "zoneEvents": [],
-      ]]])
-      let recovery = try JSONSerialization.data(withJSONObject: ["database": ["_0": event]])
-      for envelope in [false, true] {
-        let batchPayload = envelope ? try wrapped(batch, format: .legacyTextV1) : batch
-        let recoveryPayload = envelope ? try wrapped(recovery, format: .legacyTextV1) : recovery
-        try await verify(.staged(id, batchPayload), error: expected, label: "legacy staged \(reason)")
-        try await verify(.recovery("\(id.uuidString.lowercased())-\(recoveryPayload.base64EncodedString())",
-          recoveryPayload), error: expected, label: "legacy recovery \(reason)")
-      }
-    }
-    let changed = try JSONSerialization.data(withJSONObject: ["database": ["_0": [
-      "zoneChanged": ["_0": ["name": "text", "ownerName": "owner"]],
-    ]]])
-    try await verify(.recovery("\(id.uuidString.lowercased())-\(changed.base64EncodedString())", changed),
-      error: nil, label: "legacy zone changed")
   }
 
   private func verify(_ evidence: Evidence, error expectedError: SnipLibraryError?, label: String) async throws {

@@ -588,32 +588,6 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(reopenedStaged.isEmpty)
   }
 
-  func testFullStagingIgnoresLegacyTextWorkForTheSameNamespace() async throws {
-    let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudFullLegacyIsolationTests-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: root) }
-    let namespace = makeNamespace()
-    let zone = try XCTUnwrap(namespace.zones.first)
-    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
-    let legacy = SwiftDataCloudTextPersistence(
-      library: library,
-      namespace: namespace,
-      textZone: zone
-    )
-    let legacyBatch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
-    try await legacy.stage(.fetched(legacyBatch))
-    let full = CloudFullSyncPersistence(
-      library: library,
-      namespace: namespace,
-      dataZone: zone
-    )
-
-    let legacyStaged = try await legacy.stagedBatches()
-    let fullStaged = try await full.stagedBatches()
-    XCTAssertEqual(legacyStaged.map(\.id), [legacyBatch.id])
-    XCTAssertTrue(fullStaged.isEmpty)
-  }
-
   func testFetchedSnipBeforeListDuplicateAndReorderedBatchesConverge() async throws {
     let namespace = makeNamespace()
     let zone = try XCTUnwrap(namespace.zones.first)

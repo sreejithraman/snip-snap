@@ -5,47 +5,6 @@ import Synchronization
 import XCTest
 
 final class ICloudSyncModeCoordinatorTests: XCTestCase {
-    func failFirstSendRetryably(
-        coordinator: ICloudSyncModeCoordinator,
-        persistence: SwiftDataSyncModePersistence,
-        transport: FakeCloudRecordTransport,
-        namespace: CloudSyncNamespace,
-        failedSnipID: UUID
-    ) async throws -> ICloudSyncModeStatus {
-        await transport.pauseNextSend()
-        let enable = Task { try await coordinator.enableOrRetry() }
-        await transport.waitUntilSendPauses()
-        let storage = try await persistence.snapshot()
-        let transition = try XCTUnwrap(storage.transition)
-        let candidate = try await persistence.libraryForTransition(
-            storeID: transition.candidateStoreID
-        )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
-        let failed = try XCTUnwrap(cloud.records.first(where: { $0.snipID == failedSnipID }))
-        await transport.failNextSentItem(
-            CloudRecordID(
-                zone: CloudZoneID(name: failed.identity.zoneName, ownerName: failed.identity.ownerName),
-                name: failed.identity.recordName
-            ),
-            failure: .retryable
-        )
-        await transport.resumeSend()
-        return try await enable.value
-    }
-
-    func stripSyncProtocol(from value: Any) -> Any {
-        if let dictionary = value as? [String: Any] {
-            return dictionary.reduce(into: [String: Any]()) { result, entry in
-                guard entry.key != "syncProtocol" else { return }
-                result[entry.key] = stripSyncProtocol(from: entry.value)
-            }
-        }
-        if let array = value as? [Any] {
-            return array.map(stripSyncProtocol(from:))
-        }
-        return value
-    }
-
     func mutateManifest(
         at url: URL,
         mutation: (inout [String: Any]) throws -> Void
@@ -93,53 +52,10 @@ final class ICloudSyncModeCoordinatorTests: XCTestCase {
         _ = try await writer.send(
             CloudOutboundBatch(
                 operations: [
-                    .save(.text(id: id, snipID: UUID(), text: text))
+                    .save(try CloudFullRecordCodec.snipDraft(Snip(content: text, origin: .quickEntry), in: id.zone))
                 ]
             )
         )
-    }
-
-    func cloudRecordID(
-        for snipID: UUID,
-        persistence: SwiftDataSyncModePersistence,
-        namespace: CloudSyncNamespace
-    ) async throws -> CloudRecordID {
-        let storage = try await persistence.snapshot()
-        let transition = try XCTUnwrap(storage.transition)
-        let candidate = try await persistence.libraryForTransition(
-            storeID: transition.candidateStoreID
-        )
-        let cloud = try await candidate.cloudTextSyncSnapshot(namespaceKey: namespace.namespaceKey)
-        let record = try XCTUnwrap(cloud.records.first(where: { $0.snipID == snipID }))
-        return CloudRecordID(
-            zone: CloudZoneID(name: record.identity.zoneName, ownerName: record.identity.ownerName),
-            name: record.identity.recordName
-        )
-    }
-
-    func editRemote(
-        recordID: CloudRecordID,
-        snipID: UUID,
-        text: String,
-        server: FakeCloudServer
-    ) async throws {
-        let remote = try await server.snapshot(
-            for: recordID,
-            fields: ["schemaVersion", "snipID", "text"]
-        )
-        let current = try XCTUnwrap(remote)
-        let writer = FakeCloudRecordTransport(server: server)
-        let sent = try await writer.send(
-            CloudOutboundBatch(
-                operations: [
-                    .save(.text(id: recordID, snipID: snipID, text: text, base: current.shadow))
-                ]
-            )
-        )
-        guard sent.items.count == 1, case .saved = sent.items[0] else {
-            XCTFail("The remote edit was not accepted.")
-            return
-        }
     }
 
     func makeNamespace() -> CloudSyncNamespace {

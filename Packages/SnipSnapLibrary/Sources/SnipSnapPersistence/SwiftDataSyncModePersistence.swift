@@ -800,7 +800,7 @@ package actor SwiftDataSyncModePersistence {
     try recoveryQuarantineHook()
     try await library.markReadOnlyRecovery()
     if let namespace = store.namespace {
-      try await library.clearCloudTextSyncState(
+      try await library.clearCloudSyncState(
         namespaceKey: namespace.namespaceKey
       )
     }

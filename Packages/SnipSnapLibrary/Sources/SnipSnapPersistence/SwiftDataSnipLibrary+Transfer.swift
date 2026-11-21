@@ -115,7 +115,7 @@ extension SwiftDataSnipLibrary {
     } else {
       target = try await transferSnapshot(revision: targetRevision)
     }
-    let acceptedTargetTextBySnipID = try acceptedCloudTextValues()
+    let acceptedTargetTextBySnipID: [UUID: String] = [:]
     let acceptedTargetSnipIDs = Set(acceptedTargetTextBySnipID.keys)
     return try SnipLibraryTransferPlanner.plan(
       source: source,

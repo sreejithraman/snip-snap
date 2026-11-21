@@ -7,7 +7,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testStatusReadsSettingUpWhileEnableWaitsForRemoteFetch() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let server = FakeCloudServer()
         let namespace = makeNamespace()
         let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
@@ -37,7 +37,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let gate = WriteReservationGate()
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1, writeHook: gate.hit)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, writeHook: gate.hit)
         let library = try await persistence.activeLibrary()
         let write = Task {
             _ = try await library.perform(
@@ -76,7 +76,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let crash = WriteCrashInjector()
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1, writeHook: crash.hit)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, writeHook: crash.hit)
         do {
             try await add("not committed", to: try await persistence.activeLibrary())
             XCTFail("Expected the write crash.")
@@ -84,7 +84,7 @@ extension ICloudSyncModeCoordinatorTests {
         let crashedStorage = try await persistence.snapshot()
         XCTAssertEqual(crashedStorage.activeStore.revision, 1)
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let recoveredStorage = try await reopened.snapshot()
         XCTAssertEqual(recoveredStorage.activeStore.revision, 1)
         try await add("after reopen", to: try await reopened.activeLibrary())
@@ -98,7 +98,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let failure = ReadFailureInjector()
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: failure.check)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, readHook: failure.check)
         let library = try await persistence.activeLibrary()
         try await add("last known", to: library)
         failure.shouldFail = true
@@ -120,7 +120,7 @@ extension ICloudSyncModeCoordinatorTests {
 
         let reopened = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1
+            defaultSyncProtocol: .fullRecordV1
         )
         let reopenedStorage = try await reopened.snapshot()
         XCTAssertNil(reopenedStorage.attentionReason)
@@ -132,7 +132,7 @@ extension ICloudSyncModeCoordinatorTests {
         let failure = ReadFailureInjector()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             readHook: failure.check
         )
         let library = try await persistence.activeLibrary()
@@ -206,7 +206,7 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1
+            defaultSyncProtocol: .fullRecordV1
         )
         let library = try await persistence.activeLibrary()
         try await persistence.recordAttention(.terminalFetchFailure)
@@ -223,7 +223,7 @@ extension ICloudSyncModeCoordinatorTests {
         let failure = ReadFailureInjector()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             readHook: failure.check
         )
         let library = try await persistence.activeLibrary()
@@ -249,7 +249,7 @@ extension ICloudSyncModeCoordinatorTests {
         let overlap = ReadHealthOverlapGate()
         let persistence = try SwiftDataSyncModePersistence(
             rootURL: root,
-            defaultSyncProtocol: .legacyTextV1,
+            defaultSyncProtocol: .fullRecordV1,
             readHook: overlap.pauseFirstReadThenFailSecond
         )
         let fallback = try JSONSnipLibrary(fileURL: root.appendingPathComponent("fallback.json"))
@@ -276,7 +276,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let failure = ReadFailureInjector()
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1, readHook: failure.check)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, readHook: failure.check)
         let source = try await persistence.activeLibrary()
         try await add("kept", to: source)
         let sourceID = try await persistence.snapshot().activeStore.id
@@ -303,7 +303,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testTerminalFetchFailureNeedsAttentionWhileSourceStaysActive() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let sourceID = try await persistence.snapshot().activeStore.id
         let namespace = makeNamespace()
         let transport = FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
@@ -327,7 +327,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let crash = CrashInjector(point: .afterRetiredCleanupDeclared)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1, crashHook: crash.hit)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: crash.hit)
         let namespace = makeNamespace()
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
@@ -343,14 +343,14 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(crashedStorage.transition)
         XCTAssertEqual(try storeRootCount(in: root), 2)
 
-        _ = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        _ = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         XCTAssertEqual(try storeRootCount(in: root), 1)
     }
 
     func testOptOutPointerSwappedResumeDoesNotRequireOldICloudNamespace() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let namespace = makeNamespace()
         let enabled = ICloudSyncModeCoordinator(
             persistence: persistence,
@@ -392,7 +392,7 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let writer = FailNextManifestWriter()
         let persistence = try SwiftDataSyncModePersistence(
-            rootURL: root, defaultSyncProtocol: .legacyTextV1,
+            rootURL: root, defaultSyncProtocol: .fullRecordV1,
             crashHook: writer.armAtPointer,
             manifestWriter: writer.write
         )
@@ -420,7 +420,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testStatusReadsSyncingWhileFreshOptOutFetches() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let server = FakeCloudServer()
         let namespace = makeNamespace()
         let initial = ICloudSyncModeCoordinator(
@@ -452,7 +452,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testOptOutRefreshReservationBlocksWritesAndTransitionAdmissionUntilApplyFinishes() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let server = FakeCloudServer()
         let namespace = makeNamespace()
         let enabled = ICloudSyncModeCoordinator(
@@ -494,7 +494,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testActiveCloudApplyLeaseRejectsOptOutUntilApplyFinishes() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let server = FakeCloudServer()
         let namespace = makeNamespace()
         let initial = ICloudSyncModeCoordinator(
@@ -509,16 +509,16 @@ extension ICloudSyncModeCoordinatorTests {
             id: CloudRecordID(zone: textZone(namespace), name: "lease-test"),
             server: server
         )
-        let gate = CloudApplyGate()
+        let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
+        await transport.pauseNextFetch()
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
             namespace: namespace,
             textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) },
-            applyHook: gate.pause
+            makeTransport: { transport }
         )
         let syncing = Task { try await coordinator.syncActive() }
-        await gate.waitUntilPaused()
+        await transport.waitUntilFetchPauses()
         let liveStatus = try await coordinator.status()
         XCTAssertEqual(liveStatus.state, .syncing)
 
@@ -528,7 +528,7 @@ extension ICloudSyncModeCoordinatorTests {
         } catch {
             XCTAssertEqual(error as? SnipLibraryError, .modeTransitionInProgress)
         }
-        await gate.resume()
+        await transport.resumeFetch()
         let syncResult = try await syncing.value
         XCTAssertEqual(syncResult.state, .on)
         let finished = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
@@ -540,7 +540,7 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let writer = FailNextManifestWriter()
         let persistence = try SwiftDataSyncModePersistence(
-            rootURL: root, defaultSyncProtocol: .legacyTextV1,
+            rootURL: root, defaultSyncProtocol: .fullRecordV1,
             manifestWriter: writer.write,
             writeHook: writer.armAtWriteClear
         )

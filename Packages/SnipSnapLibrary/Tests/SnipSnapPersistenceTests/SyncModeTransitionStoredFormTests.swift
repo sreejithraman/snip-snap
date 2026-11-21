@@ -85,7 +85,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     let decoded = try JSONDecoder().decode(SyncModeTransition.self, from: Data(stored.utf8))
 
     XCTAssertNil(decoded.namespace)
-    XCTAssertEqual(decoded.syncProtocol, .legacyTextV1)
+    XCTAssertEqual(decoded.syncProtocol, .retiredText)
     XCTAssertEqual(
       try Self.canonical(Self.encoded(decoded)),
       try Self.canonical(Data(reencoded.utf8))
@@ -123,7 +123,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     let probe = StoredManifestProbe(root: root)
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1,
+      defaultSyncProtocol: .fullRecordV1,
       crashHook: probe.hit
     )
     let snip = try await addSnip("seed", to: persistence)
@@ -236,7 +236,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     let probe = StoredManifestProbe(root: root)
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1,
+      defaultSyncProtocol: .fullRecordV1,
       crashHook: probe.hit
     )
     _ = try await addSnip("seed", to: persistence)
@@ -280,7 +280,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     _ = try await addSnip("seed", to: persistence)
     let frozen = try await freezeEnable(persistence)
@@ -354,7 +354,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     _ = try await addSnip("seed", to: persistence)
     _ = try await freezeEnable(persistence)
@@ -362,7 +362,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
 
     let reopened = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     try trail.expect(
       [
@@ -386,7 +386,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     _ = try await addSnip("seed", to: persistence)
     let frozen = try await freezeEnable(persistence)
@@ -397,7 +397,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
       trail.last["approvedSnipIDs"]
     )
 
-    _ = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .legacyTextV1)
+    _ = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
 
     try trail.expect(
       [
@@ -417,7 +417,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     _ = try await addSnip("seed", to: persistence)
     let frozen = try await freezeEnable(persistence)
@@ -434,7 +434,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
 
     let reopened = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1
+      defaultSyncProtocol: .fullRecordV1
     )
     try trail.expect(
       [
@@ -465,7 +465,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
     let probe = StoredManifestProbe(root: root)
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1,
+      defaultSyncProtocol: .fullRecordV1,
       crashHook: probe.hit
     )
     try await persistence.activateEmptyCollection(namespace: Self.binding)
@@ -495,7 +495,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
 
     let reopened = try SwiftDataSyncModePersistence(
       rootURL: root,
-      defaultSyncProtocol: .legacyTextV1,
+      defaultSyncProtocol: .fullRecordV1,
       crashHook: probe.hit
     )
     try trail.expect(
@@ -872,7 +872,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
       fields += [
         ("targetKind", quoted("iCloudSync")),
         ("namespace", namespace),
-        ("syncProtocol", quoted("legacyTextV1")),
+        ("syncProtocol", quoted("fullRecordV1")),
       ]
     case .optOut:
       fields += [("targetKind", quoted("localOnly")), ("syncProtocol", quoted("fullRecordV1"))]
@@ -925,8 +925,8 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
   }
 
   private static let enableTargetFields =
-    #""namespace": \#(namespace), "syncProtocol": "legacyTextV1", "targetKind": "iCloudSync""#
-  private static let optOutTargetFields = #""syncProtocol": "legacyTextV1", "targetKind": "localOnly""#
+    #""namespace": \#(namespace), "syncProtocol": "fullRecordV1", "targetKind": "iCloudSync""#
+  private static let optOutTargetFields = #""syncProtocol": "fullRecordV1", "targetKind": "localOnly""#
 
   private static let namespace = """
     {

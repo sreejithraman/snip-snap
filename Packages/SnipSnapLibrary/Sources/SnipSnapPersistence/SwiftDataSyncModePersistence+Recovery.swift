@@ -72,6 +72,26 @@ extension SwiftDataSyncModePersistence {
         value.attentionReason = .storageFailure
       }
     }
+    // The active pointer is authoritative even when an old enable was interrupted.
+    // Keep every ready store on disk and discard only the retired transport's work.
+    if value.transition?.syncProtocol == .retiredText {
+      value.stopTrackingSetupRetryCandidate()
+      value.transition = nil
+      value.checkedEnableStoreID = nil
+    }
+    for index in value.stores.indices where value.stores[index].syncProtocol == .retiredText {
+      let store = value.stores[index]
+      if store.id == value.activeStoreID, let namespace = store.namespace,
+        let root = storeRoots[store.id]
+      {
+        _ = try SwiftDataSnipLibrary(
+          storeURL: root.appendingPathComponent("snips.store"),
+          attachmentCacheRootURL: cacheRootURL(base: attachmentCacheRootURL, storeID: store.id),
+          resetRetiredTextNamespace: namespace.namespaceKey
+        )
+      }
+      value.stores[index].syncProtocol = .fullRecordV1
+    }
     value.transition?.interruptByReopen()
   }
 
