@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sat, 21 Nov 2026 14:09:16 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.295</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.295-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>295</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.295/Snip-Snap-0.6.1.zip" length="17690153" type="application/octet-stream" sparkle:edSignature="TCLLaOx+R0n0t/2TWVisBhOqRDZemzISyk22/P8IQmilLX/ksAuWPmaUsW9ETFM7aheFFFEmZ0rRkOCkSMgNBg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 295 — Mac
+
+- Simplify sync mode activation to an atomic store swap
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sat, 21 Nov 2026 08:19:25 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.294</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.294-mac.txt</sparkle:fullReleaseNotesLink>

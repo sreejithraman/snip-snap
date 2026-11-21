@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 295
+
+## Mac
+
+- Simplify sync mode activation to an atomic store swap
+
+## iOS
+
+- Simplify sync mode activation to an atomic store swap
