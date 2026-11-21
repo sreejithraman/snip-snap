@@ -289,8 +289,10 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
         try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.removeSnip(let id), .exactSnip(let expected)):
+      // Attachment-only edits bump the timestamp without changing the synced snip fields.
       guard id == expected.snipID,
         let record = snips.first(where: { $0.id == id }),
+        record.updatedAt == expected.updatedAt,
         try matches(record, expected: expected, metadata: metadata, context: context)
       else { throw CloudFullStorageError.staleLocalEntity }
     case (.removeList(let id), .exactList(let expected)):
@@ -449,8 +451,20 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     case .removeSnip(let id):
       try context.setSnipPinnedAt(nil, id: id)
       let references = try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>())
-      guard !references.contains(where: { $0.snipID == id }) else {
-        throw CloudFullStorageError.invalidLocalMutation
+      // Attachment metadata can arrive in a later fetch than its parent tombstone.
+      let retainedIDs = Set(references.filter { $0.snipID != id }.map(\.attachmentID))
+      let removed = references.filter { $0.snipID == id }
+      for reference in removed {
+        context.delete(reference)
+      }
+      // Keep detached durable records available for a later remote reparent.
+      let orphanedIDs = Set(removed.map(\.attachmentID)).subtracting(retainedIDs)
+      if !orphanedIDs.isEmpty {
+        for attachment in try context.fetch(FetchDescriptor<StoredAttachmentRecord>())
+          where orphanedIDs.contains(attachment.id) && attachment.relativePath.hasPrefix("CloudDownloads/")
+        {
+          context.delete(attachment)
+        }
       }
       for record in try context.fetch(FetchDescriptor<StoredSnipRecord>()) where record.id == id {
         context.delete(record)

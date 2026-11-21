@@ -8,6 +8,191 @@ import XCTest
 @testable import SnipSnapCloud
 
 final class CloudAttachmentTransferTests: XCTestCase {
+  func testCreatorDeletingSyncedSnipWithAttachmentDoesNotRecoverOnPeer() async throws {
+    try await assertSyncedSnipDeletion(fromPeer: false)
+  }
+
+  func testPeerDeletingSyncedSnipWithAttachmentDoesNotRecoverOnCreator() async throws {
+    try await assertSyncedSnipDeletion(fromPeer: true)
+  }
+
+  private func assertSyncedSnipDeletion(fromPeer: Bool) async throws {
+    let (creator, peer) = try await makeSyncedAttachmentClients()
+    defer { try? FileManager.default.removeItem(at: creator.root) }
+    let (deleting, receiving) = fromPeer ? (peer, creator) : (creator, peer)
+    _ = try await deleting.library.perform(.delete(ids: [creator.snipID]), sortedBy: .manual)
+    let deletion = try await deleting.sync.sendPendingUntilSettled()
+    XCTAssertTrue(deletion.settled)
+    try await receiving.sync.fetchRemote()
+    let received = try await receiving.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertTrue(received.snips.isEmpty)
+    let storage = try await snapshot(receiving.library, receiving.namespace)
+    XCTAssertTrue(storage.publications.isEmpty)
+
+    let newID = try await addTextSnip(to: receiving, content: "New edit after deletion")
+    let outbound = try await receiving.sync.sendPendingUntilSettled()
+    XCTAssertTrue(outbound.settled)
+    try await deleting.sync.fetchRemote()
+    let final = try await deleting.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(final.snips.map(\.id), [newID])
+  }
+
+  func testRemoteSnipAndAttachmentDeletionPreservesConcurrentTextEdit() async throws {
+    let (creator, peer) = try await makeSyncedAttachmentClients()
+    defer { try? FileManager.default.removeItem(at: creator.root) }
+    let peerStorage = try await snapshot(peer.library, peer.namespace)
+    let attachment = try XCTUnwrap(peerStorage.publications.first)
+    let downloads = CloudAttachmentTransferCoordinator(
+      library: peer.library, namespace: peer.namespace,
+      payloadZone: CloudAttachmentRecordCodec.recordID(attachment.metadata.payloadIdentity).zone,
+      transport: peer.transport, maximumCacheBytes: 1_024
+    )
+    _ = try await downloads.prepare(attachmentID: attachment.metadata.attachmentID, for: .open)
+    _ = try await peer.library.perform(.update(
+      id: peer.snipID, content: "Concurrent edit", attachmentURLs: nil,
+      expectedUpdatedAt: nil, now: Date()
+    ), sortedBy: .manual)
+    _ = try await creator.library.perform(.delete(ids: [creator.snipID]), sortedBy: .manual)
+    let deletion = try await creator.sync.sendPendingUntilSettled()
+    XCTAssertTrue(deletion.settled)
+    try await peer.sync.fetchRemote()
+    let received = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(received.snips.map(\.content), ["Concurrent edit"])
+    XCTAssertNotEqual(received.snips.first?.id, creator.snipID)
+    let outbound = try await peer.sync.sendPendingUntilSettled()
+    XCTAssertTrue(outbound.settled)
+    try await creator.sync.fetchRemote()
+    let final = try await creator.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(final.snips.map(\.content), ["Concurrent edit"])
+  }
+
+  func testAttachmentAddedAfterStagingSnipDeletionSurvivesReplan() async throws {
+    let (creator, peer) = try await makeSyncedAttachmentClients()
+    defer { try? FileManager.default.removeItem(at: creator.root) }
+    _ = try await creator.library.perform(.delete(ids: [creator.snipID]), sortedBy: .manual)
+    let deletion = try await creator.sync.sendPendingUntilSettled()
+    XCTAssertTrue(deletion.settled)
+    let fetched = try await peer.transport.fetch(scope: .zones([
+      CloudZoneID(name: "data", ownerName: "owner")
+    ]))
+    try await peer.store.stage(.fetched(fetched))
+
+    let before = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    let original = try XCTUnwrap(before.snips.first)
+    let source = creator.root.appendingPathComponent("new-local.txt")
+    try Data("New local bytes".utf8).write(to: source)
+    _ = try await peer.library.perform(.editAttachments(
+      snipID: original.id, content: original.content,
+      edits: original.attachments.map { .existing(attachmentID: $0.id) } + [.added(sourceURL: source)],
+      expectedUpdatedAt: original.updatedAt, now: Date()
+    ), sortedBy: .manual)
+
+    try await peer.store.applyStaged(fetched.id)
+    try await peer.transport.confirmApplied(fetched.id)
+    let after = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    let recovered = try XCTUnwrap(after.snips.first)
+    XCTAssertNotEqual(recovered.id, original.id)
+    XCTAssertEqual(recovered.attachments.map(\.fileName), ["new-local.txt"])
+    let outbound = try await peer.sync.sendPendingUntilSettled()
+    XCTAssertTrue(outbound.settled)
+  }
+
+  func testSyncedMergeMovesAttachmentToOnlyTheMergedSnip() async throws {
+    try await assertSyncedMerge(fromPeer: false)
+  }
+
+  func testPeerMergePreservesTheCreatorsLocalAttachment() async throws {
+    try await assertSyncedMerge(fromPeer: true)
+  }
+
+  func testPeerMergePreservesDurableAttachmentWhenMetadataArrivesFirst() async throws {
+    try await assertSyncedMerge(fromPeer: true, splitFetch: true)
+  }
+
+  func testPeerMergeDoesNotRestoreAnAttachmentRemovedOnTheCreator() async throws {
+    try await assertSyncedMerge(fromPeer: true, removedOnReceiver: true)
+  }
+
+  private func assertSyncedMerge(
+    fromPeer: Bool,
+    splitFetch: Bool = false,
+    removedOnReceiver: Bool = false
+  ) async throws {
+    let (creator, peer) = try await makeSyncedAttachmentClients()
+    defer { try? FileManager.default.removeItem(at: creator.root) }
+    let (merging, receiving) = fromPeer ? (peer, creator) : (creator, peer)
+    let other = try await addTextSnip(to: merging, content: "Second snip")
+    let uploaded = try await merging.sync.sendPendingUntilSettled()
+    XCTAssertTrue(uploaded.settled)
+    try await receiving.sync.fetchRemote()
+    let merged = try await merging.library.perform(
+      .merge(ids: [creator.snipID, other], now: Date()), sortedBy: .manual
+    )
+    guard case .merged(let snip) = merged.outcome else { return XCTFail("Expected merged snip") }
+    if removedOnReceiver {
+      try await keepAttachments([], ofSnip: creator.snipID, in: receiving.library)
+    }
+    if splitFetch {
+      let published = try await snapshot(receiving.library, receiving.namespace)
+      let pointer = try XCTUnwrap(published.publications.first)
+      let pointerID = CloudAttachmentRecordCodec.recordID(pointer.metadataIdentity)
+      let plan = try await merging.store.pendingChanges()
+      let move = try XCTUnwrap(plan.operations.first { $0.id == pointerID })
+      let sentMove = try await merging.transport.send(CloudOutboundBatch(operations: [move]))
+      try await merging.transport.confirmApplied(sentMove.id)
+      try await receiving.sync.fetchRemote()
+      let sentSnips = try await merging.transport.send(CloudOutboundBatch(
+        operations: plan.operations.filter { $0.id != pointerID }
+      ))
+      try await merging.transport.confirmApplied(sentSnips.id)
+    } else {
+      let sent = try await merging.sync.sendPendingUntilSettled()
+      XCTAssertTrue(sent.settled)
+    }
+    try await receiving.sync.fetchRemote()
+    let received = try await receiving.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(received.snips.map(\.id), [snip.id])
+    if removedOnReceiver {
+      XCTAssertTrue(received.snips.flatMap(\.attachments).isEmpty)
+      return
+    }
+    let attachmentID = try XCTUnwrap(snip.attachments.first?.id)
+    XCTAssertEqual(received.snips.flatMap(\.attachments).map(\.id), [attachmentID])
+    let storage = try await snapshot(receiving.library, receiving.namespace)
+    let attachment = try publication(of: attachmentID, in: storage)
+    let downloads = CloudAttachmentTransferCoordinator(
+      library: receiving.library, namespace: receiving.namespace,
+      payloadZone: CloudAttachmentRecordCodec.recordID(attachment.metadata.payloadIdentity).zone,
+      transport: receiving.transport, maximumCacheBytes: 1_024
+    )
+    let opened = try await downloads.prepare(attachmentID: attachmentID, for: .open)
+    XCTAssertEqual(try Data(contentsOf: opened), Data("original payload".utf8))
+  }
+
+  private func makeSyncedAttachmentClients() async throws -> (AttachmentClient, AttachmentClient) {
+    let creator = try await makeAttachmentClient(fileNames: ["original"])
+    let sent = try await creator.sync.sendPendingUntilSettled()
+    XCTAssertTrue(sent.settled)
+    let peer = try attachmentClient(
+      root: creator.root, storeURL: creator.root.appendingPathComponent("peer.store"),
+      namespace: creator.namespace, server: creator.server, snipID: creator.snipID
+    )
+    try await peer.sync.fetchRemote()
+    let received = try await peer.library.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(received.snips.first?.attachments.count, 1)
+    return (creator, peer)
+  }
+
+  private func addTextSnip(to client: AttachmentClient, content: String) async throws -> UUID {
+    let result = try await client.library.perform(.add(
+      content: content, origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+      attachmentURLs: [], requestID: UUID(), now: Date()
+    ), sortedBy: .manual)
+    let id: UUID?
+    if case .add(.added(let addedID)) = result.outcome { id = addedID } else { id = nil }
+    return try XCTUnwrap(id)
+  }
+
   func testNormalSyncPublishesPayloadBeforeMetadataAndRemoteClientSeesAttachment() async throws {
     let root = temporaryDirectory()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

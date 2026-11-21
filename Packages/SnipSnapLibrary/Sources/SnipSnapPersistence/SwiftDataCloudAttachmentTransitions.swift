@@ -47,7 +47,7 @@ extension SwiftDataSnipLibrary {
     var legacyOrderSnips: Set<UUID> = []
     for transition in transitions {
       switch transition {
-      case .remoteMetadataAccepted(let metadata, let identity, let shadow, _) where resolveMetadata != nil:
+      case .remoteMetadataAccepted(let metadata, let identity, let shadow, _):
         materializedAttachmentIDs.insert(metadata.attachmentID)
         let row = byAttachment[metadata.attachmentID]
         guard case .fetched(let base)? = resolveMetadata?(identity, row?.metadataShadowData, shadow) else {
@@ -149,14 +149,14 @@ extension SwiftDataSnipLibrary {
         context.delete(row)
       }
     }
-    func removeMaterialized(attachmentID: UUID, snipID: UUID) {
+    func removeMaterialized(attachmentID: UUID, snipID: UUID, keepingRecord: Bool = false) {
       let references = storedReferences[attachmentID] ?? []
       for reference in references where reference.snipID == snipID {
         context.delete(reference)
       }
       let remaining = references.filter { $0.snipID != snipID }
       storedReferences[attachmentID] = remaining
-      guard remaining.isEmpty else { return }
+      guard remaining.isEmpty, !keepingRecord else { return }
       for attachment in storedAttachments.removeValue(forKey: attachmentID) ?? [] {
         context.delete(attachment)
       }
@@ -226,6 +226,14 @@ extension SwiftDataSnipLibrary {
           if row.payloadIdentity != metadata.payloadIdentity {
             removeCache(for: metadata.attachmentID)
           }
+          let changedParent = row.snipID != metadata.snipID
+          if changedParent {
+            removeMaterialized(
+              attachmentID: row.attachmentID, snipID: row.snipID,
+              keepingRecord: row.lifecycle.localSourceRelativePath != nil
+                && row.payloadIdentity == metadata.payloadIdentity
+            )
+          }
           row.snipID = metadata.snipID
           row.position = metadata.position
           row.fileName = metadata.fileName
@@ -236,7 +244,9 @@ extension SwiftDataSnipLibrary {
             payloadIdentity: metadata.payloadIdentity,
             metadataRecord: metadataRecord
           )
-          refreshedAttachmentIDs.insert(metadata.attachmentID)
+          if changedParent || row.lifecycle.localSourceRelativePath == nil {
+            refreshedAttachmentIDs.insert(metadata.attachmentID)
+          }
         } else {
           let row = StoredCloudAttachmentPublication(
             namespaceKey: namespaceKey,
@@ -473,6 +483,44 @@ extension SwiftDataSnipLibrary {
     return refreshedAttachmentIDs
   }
 
+  func materializeFetchedAttachments(
+    namespaceKey: String,
+    refreshedAttachmentIDs: Set<UUID>,
+    newSnipIDs: Set<UUID> = [],
+    context: ModelContext
+  ) throws {
+    try materializeCloudAttachments(
+      namespaceKey: namespaceKey,
+      refreshedAttachmentIDs: refreshedAttachmentIDs,
+      newSnipIDs: newSnipIDs,
+      context: context
+    )
+    guard !refreshedAttachmentIDs.isEmpty || !newSnipIDs.isEmpty else { return }
+    let durable = try Self.cloudAttachmentPublications(namespaceKey: namespaceKey, context: context)
+      .filter {
+        $0.lifecycle.localSourceRelativePath != nil && $0.lifecycle.isMetadataAccepted
+          && (refreshedAttachmentIDs.contains($0.attachmentID) || newSnipIDs.contains($0.snipID))
+      }
+    guard !durable.isEmpty else { return }
+    let parentIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>()).map(\.id))
+    let linkedIDs = Set(try context.fetch(FetchDescriptor<StoredSnipAttachmentReference>()).map(\.attachmentID))
+    let records = Dictionary(uniqueKeysWithValues:
+      try context.fetch(FetchDescriptor<StoredAttachmentRecord>()).map { ($0.id, $0) }
+    )
+    // A remote detach retains the durable record. A local removal deletes it.
+    for row in durable where parentIDs.contains(row.snipID) && !linkedIDs.contains(row.attachmentID) {
+      guard let record = records[row.attachmentID],
+        record.relativePath == row.lifecycle.localSourceRelativePath,
+        record.byteCount == row.byteCount
+      else { continue }
+      record.fileName = row.fileName
+      record.contentType = row.contentType
+      context.insert(StoredSnipAttachmentReference(
+        snipID: row.snipID, attachmentID: row.attachmentID, position: row.position
+      ))
+    }
+  }
+
   package func commitCloudAttachmentTransitions(
     namespaceKey: CloudSyncNamespaceKey,
     transitions: [CloudAttachmentTransition],
@@ -510,7 +558,7 @@ extension SwiftDataSnipLibrary {
       transitions: transitions,
       context: context
     )
-    try materializeCloudAttachments(
+    try materializeFetchedAttachments(
       namespaceKey: namespaceKey,
       refreshedAttachmentIDs: refreshedAttachmentIDs,
       context: context
