@@ -39,7 +39,8 @@ extension SwiftDataSyncModePersistence {
   package func discardFailedICloudEnable(
     transitionID: UUID,
     reason: ICloudSyncAttentionReason?,
-    preserveNewBases: Bool = false
+    preserveNewBases: Bool = false,
+    followsFailedSend: Bool = false
   ) async throws {
     guard let transition = manifest.transition, transition.id == transitionID,
       transition.targetKind == .iCloudSync, transition.sourceStoreID == manifest.activeStoreID
@@ -54,7 +55,10 @@ extension SwiftDataSyncModePersistence {
       )
     }
     guard manifest.transition?.id == transitionID else { return }
-    try abortUnactivatedCandidate(reason: reason)
+    // A later enable can keep ambiguous fetched attachments after an earlier send.
+    // No attachment IDs or provider results need to outlive the discarded candidate.
+    let mayHaveSent = followsFailedSend || transition.sendAttempt != nil
+    try abortUnactivatedCandidate(reason: mayHaveSent ? .firstSyncFailed : reason)
   }
 
   package func restartAfterFirstSendFailure(

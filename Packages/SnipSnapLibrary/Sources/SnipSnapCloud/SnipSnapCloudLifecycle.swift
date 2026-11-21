@@ -429,7 +429,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       )
     case .needsAttention:
       if let error = Self.accountGateError(for: status.attentionReason) { throw error }
-      throw CloudCollectionError.syncNeedsAttention
+      // The new store may already be active with recovered snips to review.
+      guard status.attentionReason == nil, try await hasFinishedICloudSwitch()
+      else { throw CloudCollectionError.syncNeedsAttention }
     case .off:
       throw CloudCollectionError.syncNeedsAttention
     }

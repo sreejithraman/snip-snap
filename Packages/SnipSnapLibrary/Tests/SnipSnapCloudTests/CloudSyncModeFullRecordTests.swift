@@ -1287,9 +1287,11 @@ extension ICloudSyncModeCoordinatorTests {
         try await add("base", to: source)
         let sourceSnapshot = await source.snapshot(sortedBy: .manual)
         let base = try XCTUnwrap(sourceSnapshot.snips.first)
-        let namespace = makeNamespace()
-        let zone = textZone(namespace)
+        let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+        let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
+        let zone = descriptor.metadataZone
         let server = FakeCloudServer()
+        await server.seedControl(descriptor)
         let coordinator = ICloudSyncModeCoordinator(
             persistence: persistence,
             namespace: namespace,
@@ -1332,10 +1334,21 @@ extension ICloudSyncModeCoordinatorTests {
             .save(CloudFullRecordCodec.snipDraft(remote, accepted: accepted))
         ]))
 
-        let result = try await coordinator.enableOrRetry()
-        XCTAssertEqual(result.state, .needsAttention)
-        let active = try await persistence.activeLibrary()
-        let final = await active.snapshot(sortedBy: .manual)
+        let lifecycle = SnipSnapICloudSyncLifecycle(
+            rootURL: root,
+            sourceLibrary: local,
+            syncModeStore: SnipSyncModeStore(persistence),
+            cloudScope: namespace.cloudScope,
+            accountLineage: namespace.accountLineage,
+            ownerName: "owner",
+            controlTransport: FakeCloudControlTransport(server: server),
+            makeRecordTransport: { FakeCloudRecordTransport(server: server, namespace: $0.namespace) },
+            makeDescriptor: { descriptor }
+        )
+        let enabled = try await lifecycle.enableICloudSync()
+        XCTAssertEqual(enabled, .enabled)
+        let active = try await lifecycle.activeLibrary()
+        let final = try await active.library.checkedSnapshot(sortedBy: .manual)
         XCTAssertEqual(final.snips.first(where: { $0.id == base.id })?.content, "server value")
         XCTAssertEqual(final.snips.first(where: { $0.id != base.id })?.content, "local value")
         XCTAssertEqual(final.snips.count, 2)

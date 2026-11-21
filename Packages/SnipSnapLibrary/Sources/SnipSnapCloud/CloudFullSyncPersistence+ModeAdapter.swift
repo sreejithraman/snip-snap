@@ -200,7 +200,8 @@ extension CloudFullSyncPersistence {
   package func makeReenableApplyPlan(
     source: SnipLibraryTransferSnapshot,
     transitionID: UUID,
-    targetRevision: UInt64
+    targetRevision: UInt64,
+    keepFetchedAttachments: Bool = false
   ) async throws -> CloudFullReenableApplyPlan? {
     let sourceBundle = try CloudDormantAcceptedBaseBundle.decode(source.opaqueSyncStatePayload)
     let exactEntries = sourceBundle.entries.filter { $0.namespaceKey == namespaceKey.rawValue }
@@ -398,23 +399,20 @@ extension CloudFullSyncPersistence {
       replacingTargetSnipIDs: replacingSnips,
       replacingTargetListIDs: replacingLists
     )
-    // A missing local attachment can be a remote addition. Keep the fetched
-    // attachment on a replaced snip unless its ID is already in the merged library.
-    let mergedAttachmentIDs = Set(transfer.snips.flatMap(\.attachments).map(\.id))
-    let retainedAttachments = Dictionary(uniqueKeysWithValues: target.snips
-      .filter { replacingSnips.contains($0.id) }
-      .map { snip in
-        (snip.id, snip.attachments.filter { !mergedAttachmentIDs.contains($0.id) })
-      })
-    let retainedIDs = Set(retainedAttachments.values.flatMap { $0 }.map(\.id))
-    let snips = transfer.snips.map { snip in
-      var merged = snip
-      merged.attachments.append(contentsOf: retainedAttachments[snip.id] ?? [])
-      return merged
+    var snips = transfer.snips
+    var attachmentData = transfer.attachmentData
+    if keepFetchedAttachments {
+      // After a partial send an absent local attachment might have been added on a peer.
+      let mergedAttachmentIDs = Set(snips.flatMap(\.attachments).map(\.id))
+      let replaced = Dictionary(uniqueKeysWithValues: target.snips
+        .filter { replacingSnips.contains($0.id) }.map { ($0.id, $0.attachments) })
+      for index in snips.indices {
+        for attachment in replaced[snips[index].id] ?? [] where !mergedAttachmentIDs.contains(attachment.id) {
+          snips[index].attachments.append(attachment)
+          attachmentData[attachment.id] = target.attachmentData[attachment.id]
+        }
+      }
     }
-    let attachmentData = transfer.attachmentData.merging(
-      target.attachmentData.filter { retainedIDs.contains($0.key) }
-    ) { local, _ in local }
     return try CloudFullReenableApplyPlan(
       transitionID: transitionID,
       namespaceKey: namespaceKey.rawValue,

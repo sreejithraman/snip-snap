@@ -408,9 +408,14 @@ package actor SwiftDataSyncModePersistence {
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) async throws -> SyncModeTransition {
-    _ = try beginTransition(to: targetKind, namespace: namespace)
+    let started = try beginTransition(to: targetKind, namespace: namespace)
     if targetKind == .iCloudSync {
-      try await reconcileFullReenableIntent()
+      do {
+        try await reconcileFullReenableIntent()
+      } catch let cancellation as CancellationError {
+        try await discardFailedICloudEnable(transitionID: started.id, reason: nil)
+        throw cancellation
+      }
     }
     guard let transition = manifest.transition else {
       throw SyncModePersistenceError.transitionInProgress
