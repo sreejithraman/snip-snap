@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import SnipSnapPersistence
 
 package struct CloudCollectionDescriptor: Codable, Equatable, Sendable {
   package let generation: UUID
