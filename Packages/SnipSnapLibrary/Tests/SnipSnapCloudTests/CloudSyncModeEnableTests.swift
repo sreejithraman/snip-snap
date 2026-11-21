@@ -58,6 +58,13 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let original = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("Local/snips.store"))
         try await add("before setup", to: original)
+        let replay = SnipLibraryCommand.add(
+            content: "already deleted", origin: .quickEntry, source: nil,
+            listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()
+        )
+        let added = try await original.perform(replay, sortedBy: .manual)
+        let deleted = try XCTUnwrap(added.snapshot.snips.first { $0.content == "already deleted" })
+        _ = try await original.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
         let syncRoot = root.appendingPathComponent("SyncMode")
         let assembly = SnipLibraryAssembly(library: original, syncModeRootURL: syncRoot)
         XCTAssertFalse(SyncModeActivationManifestReader.hasActivationManifest(atSyncModeRootURL: syncRoot))
@@ -99,8 +106,8 @@ extension ICloudSyncModeCoordinatorTests {
         let outcome = try await enabling.value
         XCTAssertEqual(outcome, .enabled)
         await fulfillment(of: [scheduled], timeout: 5)
-        let visible = try await assembly.library.checkedSnapshot(sortedBy: .manual)
-        XCTAssertEqual(Set(visible.snips.map(\.content)), ["before setup", "during fetch"])
+        let replayed = try await assembly.library.perform(replay, sortedBy: .manual)
+        XCTAssertEqual(Set(replayed.snapshot.snips.map(\.content)), ["before setup", "during fetch"])
         let cloud = await server.storedTextValues()
         XCTAssertEqual(Set(cloud), ["before setup", "during fetch"])
     }
@@ -195,6 +202,36 @@ extension ICloudSyncModeCoordinatorTests {
         let retryStorage = try await reopened.snapshot()
         XCTAssertEqual(retryResult.state, .on)
         XCTAssertNotEqual(retryStorage.activeStore.id, originalID)
+    }
+
+    func testEditAfterThePointerWasPublishedSurvivesAWriteErrorAndReopen() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = FailNextManifestWriter(publishesBeforeFailure: true)
+        let persistence = try SwiftDataSyncModePersistence(
+            rootURL: root, crashHook: writer.armAtPointer, manifestWriter: writer.write
+        )
+        let library = try await persistence.activeLibrary()
+        let source = try await persistence.snapshot().activeStore
+        try await add("from the source", to: library)
+        let namespace = makeNamespace()
+        let server = FakeCloudServer()
+        let coordinator = ICloudSyncModeCoordinator(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
+        )
+
+        let enabled = try await coordinator.enableOrRetry()
+        XCTAssertEqual(enabled.state, .on)
+        XCTAssertNotEqual(enabled.activeStoreID, source.id)
+        try await add("saved after the write error", to: library)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+        let active = try await reopened.snapshot()
+        XCTAssertEqual(active.activeStore.id, enabled.activeStoreID)
+        XCTAssertNil(active.transition)
+        let reopenedLibrary = try await reopened.activeLibrary()
+        let visible = try await reopenedLibrary.checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(Set(visible.snips.map(\.content)), ["from the source", "saved after the write error"])
     }
 
     func testCancellationBeforeSwapDiscardsCandidateAndLeavesSourceWritable() async throws {

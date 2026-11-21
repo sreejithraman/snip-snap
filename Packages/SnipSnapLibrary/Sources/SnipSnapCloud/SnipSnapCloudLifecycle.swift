@@ -420,20 +420,22 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       }
     )
     let status = try await mode.enableOrRetry()
-    switch status.state {
-    case .on:
-      break
-    case .settingUp, .syncing:
-      return .settingUp(
-        status.syncIssue ?? status.attentionReason.flatMap(Self.issue(for:))
-      )
-    case .needsAttention:
-      if let error = Self.accountGateError(for: status.attentionReason) { throw error }
-      // The new store may already be active with recovered snips to review.
-      guard status.attentionReason == nil, try await hasFinishedICloudSwitch()
-      else { throw CloudCollectionError.syncNeedsAttention }
-    case .off:
-      throw CloudCollectionError.syncNeedsAttention
+    if !status.activatedCloudStore {
+      switch status.state {
+      case .on:
+        break
+      case .settingUp, .syncing:
+        return .settingUp(
+          status.syncIssue ?? status.attentionReason.flatMap(Self.issue(for:))
+        )
+      case .needsAttention:
+        if let error = Self.accountGateError(for: status.attentionReason) { throw error }
+        // The new store may already be active with recovered snips to review.
+        guard status.attentionReason == nil, try await hasFinishedICloudSwitch()
+        else { throw CloudCollectionError.syncNeedsAttention }
+      case .off:
+        throw CloudCollectionError.syncNeedsAttention
+      }
     }
     await clearCollectionCoordinator()
     collectionCoordinator = try makeCollectionCoordinator(modePersistence)

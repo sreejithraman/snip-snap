@@ -174,6 +174,12 @@ final class FailNextManifestWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var failNext = false
 
+    private let publishesBeforeFailure: Bool
+
+    init(publishesBeforeFailure: Bool = false) {
+        self.publishesBeforeFailure = publishesBeforeFailure
+    }
+
     func armAtPointer(_ point: SyncModeCrashPoint) {
         guard point == .beforePointerSwap else { return }
         lock.withLock { failNext = true }
@@ -184,8 +190,9 @@ final class FailNextManifestWriter: @unchecked Sendable {
             defer { failNext = false }
             return failNext
         }
-        if shouldFail { throw FailingManifestWriter.Failure.injected }
+        if shouldFail, !publishesBeforeFailure { throw FailingManifestWriter.Failure.injected }
         try data.write(to: url, options: .atomic)
+        if shouldFail { throw FailingManifestWriter.Failure.injected }
     }
 }
 

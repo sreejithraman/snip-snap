@@ -296,7 +296,10 @@ package actor ICloudSyncModeCoordinator {
         let initial = try await persistence.snapshot()
         if initial.activeStore.kind == .iCloudSync {
             try await persistence.requireActiveNamespace(namespace.binding)
-            if initial.transition?.phase == .swapped { try await finishSwap() }
+            if initial.transition?.phase == .swapped {
+                try await finishSwap()
+                return await statusAfterActivation(storeID: initial.activeStore.id)
+            }
             return try await statusUnchecked()
         }
         if payloadZone != nil {
@@ -374,7 +377,18 @@ package actor ICloudSyncModeCoordinator {
             throw error
         }
         try await finishSwap()
-        return try await statusUnchecked(activatedCloudStore: true)
+        return await statusAfterActivation(storeID: transition.candidateStoreID)
+    }
+
+    private func statusAfterActivation(storeID: UUID) async -> ICloudSyncModeStatus {
+        let current = try? await statusUnchecked()
+        return ICloudSyncModeStatus(
+            state: current?.state ?? .needsAttention,
+            activeStoreID: storeID,
+            attentionReason: current?.attentionReason,
+            syncIssue: current?.syncIssue,
+            activatedCloudStore: true
+        )
     }
 
     private nonisolated func validateAttachmentCompatibility(_ snapshot: SnipLibrarySnapshot) throws {
@@ -560,8 +574,7 @@ package actor ICloudSyncModeCoordinator {
 
     private func statusUnchecked(
         accountState: ICloudAccountState? = nil,
-        syncIssue: SyncedContentSyncIssue? = nil,
-        activatedCloudStore: Bool = false
+        syncIssue: SyncedContentSyncIssue? = nil
     ) async throws -> ICloudSyncModeStatus {
         let storage = try await persistence.snapshot()
         if let isolation = storage.accountIsolation {
@@ -635,9 +648,7 @@ package actor ICloudSyncModeCoordinator {
         let state: ICloudSyncModeState = !evidence.needsAttention && [.active, .seeding].contains(evidence.phase)
             ? .on
             : .needsAttention
-        return ICloudSyncModeStatus(
-            state: state, activeStoreID: storage.activeStore.id, activatedCloudStore: activatedCloudStore
-        )
+        return ICloudSyncModeStatus(state: state, activeStoreID: storage.activeStore.id)
     }
 
     private func begin(_ operation: Operation) throws {

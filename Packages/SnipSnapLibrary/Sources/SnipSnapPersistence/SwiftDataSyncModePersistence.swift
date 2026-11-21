@@ -185,6 +185,8 @@ package actor SwiftDataSyncModePersistence {
   var manifest: Manifest
   /// Until first setup, the original SwiftData file is still the local store.
   private var initialLocalLibrary: SwiftDataSnipLibrary?
+  // An I/O error after atomic replacement can leave a published pointer.
+  private var unconfirmedActivation: Manifest?
 
   /// Reconciles of an account-isolation choice take turns, so a background status never runs a
   /// second Keep merge.
@@ -299,6 +301,7 @@ package actor SwiftDataSyncModePersistence {
   }
 
   private func materializeLocalSourceInTurn() async throws {
+    try resolveActivationWrite()
     guard let source = initialLocalLibrary, let active = store(id: manifest.activeStoreID) else { return }
     let original = try await source.transferSnapshot(revision: activeStoreRevision)
     let root = storeURL(active)
@@ -313,21 +316,17 @@ package actor SwiftDataSyncModePersistence {
       try Task.checkCancellation()
       // While there is no manifest, the next attempt always copies the live source again.
       try DurableFile.write(Data("1".utf8), to: initialImportMarkerURL)
-      try Self.write(manifest, to: manifestURL, using: manifestWriter)
+      try publishActivation(manifest)
     } catch {
-      // If the atomic write published the pointer before reporting an I/O
-      // error, keep the complete copy it selects and route later edits there.
-      if FileManager.default.fileExists(atPath: manifestURL.path) {
-        initialLocalLibrary = nil
-      } else {
+      if unconfirmedActivation == nil, initialLocalLibrary != nil {
         try? removeStoreFiles(active)
       }
       throw error
     }
-    initialLocalLibrary = nil
   }
 
   package func snapshot() async throws -> SyncModeStorageSnapshot {
+    try resolveActivationWrite()
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
@@ -453,7 +452,7 @@ package actor SwiftDataSyncModePersistence {
     try Task.checkCancellation()
     next.activeStoreID = transition.candidateStoreID
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
-    try commit(next)
+    try publishActivation(next)
     try crashHook(.afterPointerSwap)
   }
 
@@ -467,7 +466,9 @@ package actor SwiftDataSyncModePersistence {
     for index in next.stores.indices where next.stores[index].lifecycle == .retired {
       next.stores[index].lifecycle = .deleting
     }
-    try commit(next)
+    // The durable swap already selects the candidate. Let retirement cleanup
+    // persist this bookkeeping as roots are removed.
+    manifest = next
     try crashHook(.afterRetiredCleanupDeclared)
   }
 
@@ -698,6 +699,7 @@ package actor SwiftDataSyncModePersistence {
   package func abortUnactivatedCandidate(
     transitionID: UUID, reason: ICloudSyncAttentionReason?
   ) throws {
+    try resolveActivationWrite()
     guard let transition = manifest.transition, transition.id == transitionID,
       manifest.activeStoreID == transition.sourceStoreID
     else { return }
@@ -773,6 +775,7 @@ package actor SwiftDataSyncModePersistence {
   }
 
   func commit(_ next: Manifest) throws {
+    guard unconfirmedActivation == nil else { throw SyncModePersistenceError.storageFailure }
     try Self.validate(next)
     if initialLocalLibrary != nil {
       manifest = next
@@ -784,6 +787,48 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.storageFailure
     }
     manifest = next
+  }
+
+  private func publishActivation(_ next: Manifest) throws {
+    try Self.validate(next)
+    do {
+      try Self.write(next, to: manifestURL, using: manifestWriter)
+      manifest = next
+      initialLocalLibrary = nil
+    } catch {
+      unconfirmedActivation = next
+      try resolveActivationWrite()
+      guard manifest == next, initialLocalLibrary == nil else {
+        throw SyncModePersistenceError.storageFailure
+      }
+    }
+  }
+
+  func resolveActivationWrite() throws {
+    guard let attempted = unconfirmedActivation else { return }
+    do {
+      let installed: Manifest
+      do {
+        installed = try JSONDecoder().decode(
+          Manifest.self, from: Data(contentsOf: manifestURL)
+        )
+      } catch CocoaError.fileReadNoSuchFile where initialLocalLibrary != nil {
+        unconfirmedActivation = nil
+        return
+      }
+      if installed == attempted {
+        try DurableFile.applyDataProtection(to: manifestURL)
+        try DurableFile.syncFile(manifestURL)
+        try DurableFile.syncDirectory(rootURL)
+        manifest = installed
+        initialLocalLibrary = nil
+      } else if installed != manifest || initialLocalLibrary != nil {
+        throw SyncModePersistenceError.invalidManifest
+      }
+      unconfirmedActivation = nil
+    } catch {
+      throw SyncModePersistenceError.storageFailure
+    }
   }
 
   private static func newStore(

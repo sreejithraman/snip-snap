@@ -14,6 +14,7 @@ extension SwiftDataSnipLibrary {
       try Data(contentsOf: $0)
     }
     let transferMetadata = try Self.transferMetadata(context: context)
+    let requests = try context.fetch(FetchDescriptor<StoredRequestRecord>())
     return SnipLibraryTransferSnapshot(
       revision: revision,
       snips: current.snips,
@@ -21,7 +22,8 @@ extension SwiftDataSnipLibrary {
       attachmentData: attachmentData,
       legacyManualPositions: transferMetadata.legacyManualPositions,
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
-      opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
+      opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload,
+      additionalSeenRequestIDs: Set(requests.map(\.id))
     )
   }
 

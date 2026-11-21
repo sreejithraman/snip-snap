@@ -1,3 +1,4 @@
+import CryptoKit
 import SnipSnapCore
 @testable import SnipSnapPersistence
 @testable import SnipSnapCloud
