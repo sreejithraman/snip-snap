@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Sat, 21 Nov 2026 15:21:55 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.296</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.296-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>296</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.296/Snip-Snap-0.6.1.zip" length="17570813" type="application/octet-stream" sparkle:edSignature="/3dgmfKjFYIWWMBm8Z3RUIonjv1z6jTpV7AmnAPTwhKxIA+9CU5o8quVf0W6wOSdWWev4jSXsFbdTc65DVPqCg=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 296 — Mac
+
+- Keep the local library when the Apple Account changes
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sat, 21 Nov 2026 14:09:16 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.295</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.295-mac.txt</sparkle:fullReleaseNotesLink>
