@@ -1,6 +1,15 @@
 import SnipSnapCore
 
 extension SnipSnapCloudSyncResult {
+  public var syncStopIssue: SyncedContentSyncIssue? {
+    switch self {
+    case .iCloudDataReset: .iCloudDataReset
+    case .iCloudSignedOut: .signInRequired
+    case .iCloudAccountChanged: .iCloudAccountChanged
+    default: nil
+    }
+  }
+
   @MainActor
   @discardableResult
   public func applyEnableProgress(
@@ -27,17 +36,14 @@ extension SnipSnapCloudSyncResult {
   }
 }
 
-package enum CloudAccountIsolationError: Error, Equatable, Sendable {
-  case signedOut
-  case accountChanged
-
-  var syncResult: SnipSnapCloudSyncResult {
-    self == .signedOut ? .iCloudSignedOut : .iCloudAccountChanged
-  }
-}
-
 func automaticSyncResult(for error: any Error) -> SnipSnapCloudSyncResult {
-  if let isolation = error as? CloudAccountIsolationError { return isolation.syncResult }
+  if let account = error as? ICloudAccountGateError {
+    switch account {
+    case .noAccount: return .iCloudSignedOut
+    case .accountChanged: return .iCloudAccountChanged
+    default: break
+    }
+  }
   return .syncIssue(SnipSnapCloudSyncIssueMapper.issue(for: error))
 }
 

@@ -155,9 +155,9 @@ final class SnipCLIApplicationParserTests: XCTestCase {
     XCTAssertThrowsError(try SnipCLIApplicationParser.parse([
       "sync", "account", "remove", "--if-revision", revision,
     ]))
-    XCTAssertEqual(try SnipCLIApplicationParser.parse([
-      "sync", "account", "remove", "--if-revision", revision, "--yes",
-    ]), .extended(.application(.resolveAccount(choice: .remove, expectedRevision: revision, confirmed: true))))
+    XCTAssertThrowsError(try SnipCLIApplicationParser.parse([
+      "sync", "account", "keep", "--if-revision", revision,
+    ]))
   }
 
   func testMalformedOptionsFailWithUsageInsteadOfSilentlyChangingState() throws {

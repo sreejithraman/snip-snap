@@ -1,15 +1,5 @@
 import Foundation
 
-public enum AppleAccountCacheChoice: Equatable, Sendable {
-    case keepLocalCopy
-    case remove
-}
-
-public protocol AppleAccountCacheHandling: Sendable {
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice?
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws
-}
-
 public enum SyncedAttachmentUse: Equatable, Sendable {
     case preview
     case open
@@ -35,7 +25,7 @@ public struct SyncedAttachmentCacheSnapshot: Equatable, Sendable {
 }
 
 /// One main-app owner for optional sync and verified, on-demand attachment files.
-public protocol OptionalCloudSyncHandling: AppleAccountCacheHandling {
+public protocol OptionalCloudSyncHandling: Sendable {
     func syncWhenPossible() async
     func retrySyncWhenPossible() async
     func scheduleSyncAfterLocalChange() async
@@ -63,12 +53,6 @@ public extension OptionalCloudSyncHandling {
     func scheduleSyncAfterLocalChange() async {
         await syncWhenPossible()
     }
-}
-
-public enum AppleAccountNotice: Equatable, Sendable {
-    case paused
-    case signedOut
-    case accountChanged
 }
 
 public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {

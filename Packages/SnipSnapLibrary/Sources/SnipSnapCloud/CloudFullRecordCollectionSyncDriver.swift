@@ -24,6 +24,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
   private let persistence: SwiftDataSyncModePersistence
   private let makeTransport: TransportFactory
   private let beforeRecordWork: @Sendable (CloudRecordWorkContext) async throws -> Void
+  private let accountChanged: @Sendable (CloudRecordWorkContext) async throws -> Void
   private let automaticResultHandler: @Sendable (CloudRecordWorkContext, SnipSnapCloudSyncResult) async throws -> Void
   private var active: Owner?
 
@@ -31,11 +32,13 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     persistence: SwiftDataSyncModePersistence,
     makeTransport: @escaping TransportFactory,
     beforeRecordWork: @escaping @Sendable (CloudRecordWorkContext) async throws -> Void = { _ in },
+    accountChanged: @escaping @Sendable (CloudRecordWorkContext) async throws -> Void = { _ in },
     automaticResultHandler: @escaping @Sendable (CloudRecordWorkContext, SnipSnapCloudSyncResult) async throws -> Void = { _, _ in }
   ) {
     self.persistence = persistence
     self.makeTransport = makeTransport
     self.beforeRecordWork = beforeRecordWork
+    self.accountChanged = accountChanged
     self.automaticResultHandler = automaticResultHandler
   }
 
@@ -89,7 +92,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let storage = try await persistence.snapshot()
     let context = CloudRecordWorkContext(collection: collection, storeID: storage.activeStore.id)
     guard storage.activeStore.namespace == context.binding,
-      storage.activeStore.kind == .iCloudSync, storage.accountIsolation == nil
+      storage.activeStore.kind == .iCloudSync
     else { throw CloudRecordWorkError.replaced }
     if let active, active.context == context { return active }
     let previous = active
@@ -102,7 +105,8 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
       dataZone: collection.metadataZone, payloadZone: collection.payloadZone, activeMutation: lease
     )
     let transport = makeTransport(collection)
-    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport) { [weak self] result in
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport,
+      accountChanged: { [accountChanged] in try await accountChanged(context) }) { [weak self] result in
       guard let self else { return }
       try await self.deliver(result, from: context)
     }
@@ -130,24 +134,28 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let storage = try await persistence.snapshot()
     guard active?.context == context, storage.activeStore.id == context.storeID,
       storage.activeStore.namespace == context.binding, storage.activeStore.kind == .iCloudSync,
-      storage.accountIsolation == nil, storage.transition == nil
+      storage.transition == nil
     else { throw CloudRecordWorkError.replaced }
   }
 
   private func requireCurrent(_ context: CloudRecordWorkContext) async throws {
     try await requireActive(context)
-    try await beforeRecordWork(context)
+    do {
+      try await beforeRecordWork(context)
+    } catch where (error as? CloudCollectionError) == .syncNeedsAttention
+      || (error as? CKError)?.code == .notAuthenticated
+    {
+      // Earlier record work can see the new database before the consumer
+      // reaches the account event. Confirm the account without consuming it.
+      try await accountChanged(context)
+      throw error
+    }
     try await requireActive(context)
   }
 
   private func deliver(_ result: SnipSnapCloudSyncResult, from context: CloudRecordWorkContext) async throws {
     guard active?.context == context else { return }
-    do { try await requireActive(context) }
-    catch CloudRecordWorkError.replaced {
-      guard result == .iCloudAccountChanged || result == .iCloudSignedOut,
-        try await persistence.snapshot().accountIsolation?.storeID == context.storeID
-      else { return }
-    }
+    try await requireActive(context)
     try await automaticResultHandler(context, result)
     if [.iCloudDataReset, .iCloudAccountChanged, .iCloudSignedOut].contains(result),
       active?.context == context { await invalidate() }

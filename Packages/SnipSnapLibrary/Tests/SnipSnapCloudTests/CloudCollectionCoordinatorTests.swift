@@ -1554,7 +1554,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let results = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let session = SnipSnapCloudSyncSession(
       synchronize: { .noChange },
-      scheduleAutomaticSync: { throw CloudAccountIsolationError.accountChanged },
+      scheduleAutomaticSync: { throw ICloudAccountGateError.accountChanged },
       enable: { .enabled },
       delete: { .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore },
@@ -1788,7 +1788,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       _ = try await coordinator.retrySynchronization()
       XCTFail("Retry must report an Apple Account change")
     } catch {
-      XCTAssertEqual(error as? CloudAccountIsolationError, .accountChanged)
+      XCTAssertEqual(error as? ICloudAccountGateError, .accountChanged)
     }
   }
 
@@ -1931,20 +1931,22 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let server = FakeCloudServer()
     let control = FakeCloudControlTransport(server: server)
     await control.seedControl(old)
-    let account = PausingCollectionAccountSource()
+    let checkedControl = PausingCollectionControlTransport(base: control)
     let oldRecords = LifecycleAutomaticTransportProbe()
     let freshRecords = LifecycleAutomaticTransportProbe()
     let results = CollectionResultRecorder()
     let lifecycle = SnipSnapICloudSyncLifecycle(
       rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
-      cloudScope: "private", accountLineage: "account-a", accountStateSource: account, ownerName: "owner",
-      controlTransport: control,
+      cloudScope: "private", accountLineage: "account-a", ownerName: "owner",
+      controlTransport: checkedControl,
       makeRecordTransport: { $0.namespace.generation == old.generation ? oldRecords : freshRecords },
       makeDescriptor: { fresh }, automaticResultHandler: results.append
     )
     _ = try await lifecycle.synchronize()
     let pause = CollectionWorkPause()
-    await account.pauseNextCheck(pause)
+    defer { Task { await pause.resume() } }
+    let paused = expectation(description: "Old record work reached the control fetch")
+    await checkedControl.pauseNextFetch(pause) { paused.fulfill() }
     let finished = expectation(description: "Old record work returns after replacement")
     let sendTask: Task<Bool, Never>?
     if purge {
@@ -1959,7 +1961,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         catch { return false }
       }
     }
-    await pause.waitUntilSuspended()
+    guard await XCTWaiter.fulfillment(of: [paused], timeout: 2) == .completed else {
+      XCTFail("Old record work did not reach the control fetch")
+      return
+    }
 
     await control.seedControl(fresh)
     let adopted = try await lifecycle.synchronize()
@@ -1970,7 +1975,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let beforeRelease = try await persistence.snapshot().activeStore
     XCTAssertNotEqual(beforeRelease.id, original.id)
     await pause.resume()
-    await fulfillment(of: [finished], timeout: 2)
+    guard await XCTWaiter.fulfillment(of: [finished], timeout: 2) == .completed else {
+      XCTFail("Old record work did not finish after the control fetch resumed")
+      return
+    }
     if let sendTask {
       let allowed = await sendTask.value
       XCTAssertFalse(allowed)
@@ -2930,7 +2938,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(enableResult, .enabled)
   }
 
-  func testModeLifecycleIsolatesCloudStoreBeforeSyncWhenAppleAccountChanges() async throws {
+  func testModeLifecycleKeepsCloudStoreLocallyBeforeSyncWhenAppleAccountChanges() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudAccountLifecycleGate-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -2969,8 +2977,46 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 
     let storage = try await persistence.snapshot()
     XCTAssertEqual(storage.activeStore.kind, .localOnly)
-    XCTAssertEqual(storage.accountIsolation?.reason, .accountChanged)
-    XCTAssertEqual(storage.accountIsolation?.namespace.accountLineage, "account-a")
+    XCTAssertEqual(storage.attentionReason, .accountChanged)
+    XCTAssertEqual(storage.activeStore.quarantinedNamespace?.accountLineage, "account-a")
+  }
+
+  func testMailboxAccountChangeStopsTheActiveEngineAndKeepsItsLibrary() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let previous = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(previous))
+    let source = try await persistence.activeLibrary()
+    _ = try await source.perform(.add(content: "keep from the old account", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(),
+      now: .distantPast), sortedBy: .manual)
+    let control = FakeCloudControlTransport(server: FakeCloudServer())
+    await control.seedControl(previous)
+    let account = MutableCollectionAccountStateSource("account-a")
+    let records = LifecycleAutomaticTransportProbe()
+    let stopped = expectation(description: "Engine account event stops sync")
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: root, sourceLibrary: source, syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private", accountLineage: "account-a", accountStateSource: account,
+      ownerName: "owner", controlTransport: control, makeRecordTransport: { _ in records },
+      makeDescriptor: { previous }, automaticResultHandler: {
+        if $0 == .iCloudAccountChanged { stopped.fulfill() }
+      }
+    )
+    _ = try await lifecycle.synchronize()
+    await account.setLineage("account-b")
+    await control.removeControl()
+    let earlierBatch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil)
+    await records.enqueueAccountChange(after: .fetched(earlierBatch))
+    await fulfillment(of: [stopped], timeout: 5)
+    let snapshot = try await source.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(snapshot.snips.map(\.content), ["keep from the old account"])
+    let storage = try await persistence.snapshot()
+    XCTAssertEqual(storage.activeStore.kind, .localOnly)
+    let events = await records.events()
+    XCTAssertTrue(events.contains("reset"))
+    XCTAssertFalse(events.contains("sent"))
   }
 
   func testAutomaticSchedulingDoesNoCloudWorkWhileAccountIsTemporarilyUnavailable() async throws {
@@ -3013,13 +3059,13 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(recordEvents, [])
     XCTAssertEqual(
       automaticSyncResult(for:
-        CloudAccountIsolationError.signedOut
+        ICloudAccountGateError.noAccount
       ),
       .iCloudSignedOut
     )
     XCTAssertEqual(
       automaticSyncResult(for:
-        CloudAccountIsolationError.accountChanged
+        ICloudAccountGateError.accountChanged
       ),
       .iCloudAccountChanged
     )
@@ -3047,7 +3093,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       syncModeStore: nil,
       cloudScope: "private",
       accountLineage: "account-a",
-      accountLineageProvider: { "account-a" },
       accountStateSource: account,
       ownerName: "owner",
       controlTransport: control,
@@ -3125,7 +3170,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       XCTAssertEqual(error as? ICloudAccountGateError, .accountChanged)
     }
     let storage = try await persistence.snapshot()
-    XCTAssertEqual(storage.activeStore.namespace, binding(active))
+    XCTAssertEqual(storage.activeStore.quarantinedNamespace, binding(active))
   }
 
   func testModeLifecycleCanEnableAgainAfterDiscardingPurgedCache() async throws {
@@ -3695,7 +3740,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await local.adopt(namespace(next))
     let nextStoreID = try await persistence.snapshot().activeStore.id
     let unrelated = try await local.markPurged(
-      ifMatching: workContext(next, storeID: nextStoreID)
+      storeID: nextStoreID, namespace: binding(next)
     )
     let kept = try decodedCollectionStateFile(at: root)
     XCTAssertNotNil(unrelated)
@@ -3705,7 +3750,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try await local.adopt(namespace(old))
     let oldStoreID = try await persistence.snapshot().activeStore.id
     let matching = try await local.markPurged(
-      ifMatching: workContext(old, storeID: oldStoreID)
+      storeID: oldStoreID, namespace: binding(old)
     )
     let cleared = try decodedCollectionStateFile(at: root)
     XCTAssertNotNil(matching)
@@ -3866,20 +3911,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     try JSONDecoder().decode(
       CollectionStateFile.self,
       from: Data(contentsOf: collectionStateURL(at: root))
-    )
-  }
-
-  private func workContext(
-    _ descriptor: CloudCollectionDescriptor,
-    storeID: UUID
-  ) -> CloudRecordWorkContext {
-    CloudRecordWorkContext(
-      collection: CloudCollectionSyncContext(
-        namespace: namespace(descriptor),
-        metadataZone: descriptor.metadataZone,
-        payloadZone: descriptor.payloadZone
-      ),
-      storeID: storeID
     )
   }
 
@@ -4139,7 +4170,7 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   private var nextSendResult: CloudCollectionSendResult = .sent
   private var nextFetchIssue: SyncedContentSyncIssue?
   private var nextSendIssue: SyncedContentSyncIssue?
-  private var nextFetchIsolation: CloudAccountIsolationError?
+  private var nextFetchIsolation: ICloudAccountGateError?
   private var shouldPauseNextFetch = false
   private var pausedFetch = false
   private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -4186,7 +4217,7 @@ private actor TestCloudCollectionSyncDriver: CloudCollectionSyncDriver {
   func resetNextSend(_ result: CloudCollectionSendResult) { nextSendResult = result }
   func failNextFetch(_ issue: SyncedContentSyncIssue) { nextFetchIssue = issue }
   func failNextSend(_ issue: SyncedContentSyncIssue) { nextSendIssue = issue }
-  func isolateNextFetch(_ error: CloudAccountIsolationError) { nextFetchIsolation = error }
+  func isolateNextFetch(_ error: ICloudAccountGateError) { nextFetchIsolation = error }
 
   func pauseNextFetch() { shouldPauseNextFetch = true }
 
@@ -4220,6 +4251,10 @@ private actor LifecycleAutomaticTransportProbe: CloudRecordTransport,
   private func didCompleteWork() { workCompleted?(); workCompleted = nil }
   func enqueue(_ batch: CloudSyncBatch) {
     mailbox.append(.batch(CloudPendingBatch(batch: batch, outbound: nil)))
+  }
+  func enqueueAccountChange(after batch: CloudSyncBatch) {
+    enqueue(batch)
+    mailbox.append(.accountChange(UUID()))
   }
   func pendingEvent() -> CloudRecordTransportEvent? { mailbox.first }
   func events() -> [String] { recorded }
@@ -4265,12 +4300,15 @@ private actor CollectionWorkPause {
   private var released = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
   private var release: CheckedContinuation<Void, Never>?
-  func suspend() async {
+  func suspend(onEntry: @Sendable () -> Void = {}) async {
     if released { return }
     suspended = true
     waiters.forEach { $0.resume() }
     waiters = []
-    await withCheckedContinuation { release = $0 }
+    await withCheckedContinuation {
+      release = $0
+      onEntry()
+    }
   }
   func waitUntilSuspended() async {
     if suspended { return }
@@ -4279,15 +4317,33 @@ private actor CollectionWorkPause {
   func resume() { released = true; release?.resume(); release = nil }
 }
 
-private actor PausingCollectionAccountSource: ICloudAccountStateSource {
-  private var pause: CollectionWorkPause?
-  func pauseNextCheck(_ value: CollectionWorkPause) { pause = value }
-  func currentAccountState() async -> ICloudAccountState {
+private actor PausingCollectionControlTransport: CloudCollectionControlTransport {
+  private let base: FakeCloudControlTransport
+  private var pause: (CollectionWorkPause, @Sendable () -> Void)?
+
+  init(base: FakeCloudControlTransport) { self.base = base }
+
+  func pauseNextFetch(_ value: CollectionWorkPause, onEntry: @escaping @Sendable () -> Void) {
+    pause = (value, onEntry)
+  }
+
+  func fetchControl() async -> CloudCollectionControlRecord? {
     let next = pause
     pause = nil
-    await next?.suspend()
-    return .available(accountLineage: "account-a")
+    let record = await base.fetchControl()
+    if let (pause, onEntry) = next { await pause.suspend(onEntry: onEntry) }
+    return record
   }
+
+  func createZones(_ zones: Set<CloudZoneID>) async { await base.createZones(zones) }
+
+  func saveControl(
+    _ descriptor: CloudCollectionDescriptor, replacing version: Data?
+  ) async -> CloudCollectionControlSaveResult {
+    await base.saveControl(descriptor, replacing: version)
+  }
+
+  func deleteZones(_ zones: Set<CloudZoneID>) async throws { try await base.deleteZones(zones) }
 }
 
 private final class CollectionResultRecorder: @unchecked Sendable {

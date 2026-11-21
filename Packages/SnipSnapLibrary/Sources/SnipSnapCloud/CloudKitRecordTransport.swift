@@ -197,6 +197,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
 
     private func confirmApplied(_ batchID: UUID, durableAdmission: CloudRecordOutboundAdmission?) throws {
         guard let event = try mailbox.confirm(batchID) else { return }
+        if runningEngine?.unverifiedAccountEvent == batchID {
+            runningEngine?.unverifiedAccountEvent = nil
+        }
         if let durableAdmission {
             outboundQueue.confirmAdmission(batchID, durable: durableAdmission)
         } else if case .batch(let pending) = event {
@@ -440,7 +443,9 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             running.cycles.end(.send)
             finishSentBatch(of: running)
         case .accountChange:
-            mailbox.append(.accountChange(UUID()))
+            let id = UUID()
+            running.unverifiedAccountEvent = id
+            mailbox.append(.accountChange(id))
         case .other:
             break
         }
@@ -460,7 +465,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         from syncEngine: any CloudKitRecordEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         guard let running = session(for: syncEngine) else { return nil }
-        guard running.initialFetch == .completed, !mailbox.blocksRecordProvider,
+        guard running.initialFetch == .completed, running.unverifiedAccountEvent == nil,
+              !mailbox.blocksRecordProvider,
               !outboundQueue.admission.blocksAll else {
             recordDiagnosticSnapshot()
             return nil
@@ -473,7 +479,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
             return nil
         }
-        guard isCurrent(running), running.initialFetch == .completed, !mailbox.blocksRecordProvider,
+        guard isCurrent(running), running.initialFetch == .completed,
+              running.unverifiedAccountEvent == nil, !mailbox.blocksRecordProvider,
               !outboundQueue.admission.blocksAll else { return nil }
         let pendingIDs = Set(syncEngine.pendingRecordZoneChanges.filter {
             scope.contains($0)
@@ -507,7 +514,8 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
             }
         )
         guard let batch, isCurrent(running), outboundQueue.cycle?.id == sendCycle.id,
-              !outboundQueue.admission.blocksAll, !mailbox.blocksRecordProvider else { return nil }
+              running.unverifiedAccountEvent == nil, !outboundQueue.admission.blocksAll,
+              !mailbox.blocksRecordProvider else { return nil }
         let suppliedIDs = Set((batch.recordsToSave.map(\.recordID) + batch.recordIDsToDelete)
             .map(CloudKitRecordMapper.id(for:)))
         guard Set(outboundQueue.cycle?.operations(pendingIDs: suppliedIDs).map(\.id) ?? []) == suppliedIDs
@@ -768,6 +776,9 @@ private final class RunningEngine {
     var serialization: Data?
     var initialFetch: InitialFetch
     var cycles = EngineCycles.idle
+    // The engine clears its pending requests on an account change. Hold the
+    // provider until the ordered consumer has checked the new account.
+    var unverifiedAccountEvent: UUID?
     var explicitTransfer = ExplicitTransfer.idle
     var fetchedBatch = FetchedBatchDraft()
     var sentBatch = SentBatchDraft()

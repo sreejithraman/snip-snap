@@ -201,14 +201,9 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let completion = try await prepareAutomaticConsumer(fixture)
     let control = FakeCloudControlTransport(server: FakeCloudServer())
     await control.seedControl(fixture.descriptor)
-    let handler = AppleAccountCacheCoordinatorHandler(
+    let handler = SnipSnapCloudSyncHandler(
       persistence: { fixture.persistence }, controlTransport: control,
       accountStateSource: FixedICloudAccountStateSource(state: .available(accountLineage: "account")),
-      makeSyncCoordinator: { persistence, namespace, descriptor in
-        ICloudSyncModeCoordinator(persistence: persistence, namespace: namespace,
-          textZone: descriptor.metadataZone, payloadZone: descriptor.payloadZone,
-          makeTransport: { FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace) })
-      },
       makeAttachmentCoordinator: { _, _, _ in AdmissionAttachment(pause: pause, root: fixture.root) },
       ownerName: "owner", reservedZones: [])
     let attachment = Task { try await handler.prepareSyncedAttachment(UUID(), for: .preview) }

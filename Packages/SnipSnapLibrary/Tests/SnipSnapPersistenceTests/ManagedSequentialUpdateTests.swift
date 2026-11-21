@@ -76,10 +76,6 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     await fulfillment(of: [held], timeout: 2)
 
     do {
-      _ = try await persistence.isolateActiveCloudStore(reason: .signedOut)
-      XCTFail("Account isolation must wait for sync to release the store")
-    } catch SyncModePersistenceError.transitionInProgress {}
-    do {
       try await persistence.discardActiveCloudCollection()
       XCTFail("Discarding the synced collection must wait for sync to release the store")
     } catch SyncModePersistenceError.transitionInProgress {}

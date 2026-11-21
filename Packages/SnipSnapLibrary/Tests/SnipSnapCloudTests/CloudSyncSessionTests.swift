@@ -249,7 +249,7 @@ final class CloudSyncSessionTests: XCTestCase {
       sourceLibrary: PausingSourceLibrary(base: local, probe: probe)
     )
     let session = try XCTUnwrap(services.syncSession)
-    let handler = try XCTUnwrap(services.makeAccountCacheHandler(
+    let handler = try XCTUnwrap(services.makeCloudSyncHandler(
       syncWhenPossible: {},
       retrySyncWhenPossible: {},
       scheduleSyncAfterLocalChange: {}

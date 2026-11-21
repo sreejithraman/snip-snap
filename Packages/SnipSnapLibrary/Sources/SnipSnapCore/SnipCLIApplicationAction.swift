@@ -37,11 +37,6 @@ public enum SnipCLIShortcutBinding: Codable, Equatable, Sendable {
   case chord(keyCode: UInt32, modifiers: UInt32, label: String)
 }
 
-public enum SnipCLIAccountChoice: String, Codable, Sendable {
-  case keep
-  case remove
-}
-
 public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
   case settingsShow
   case setSetting(key: SnipCLIApplicationSetting, value: String, expectedRevision: String)
@@ -54,7 +49,6 @@ public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
   case clipboardSyncStatus
   case setClipboardSync(enabled: Bool, expectedRevision: String)
   case retryClipboardSync
-  case resolveAccount(choice: SnipCLIAccountChoice, expectedRevision: String, confirmed: Bool)
   case exportDiagnostics(path: String, range: AppDiagnosticExportRange? = nil)
   case diagnosticsStatus
   case diagnosticLogs(range: AppDiagnosticExportRange, limit: Int, errorsOnly: Bool)
@@ -91,7 +85,6 @@ public enum SnipCLIApplicationAction: Codable, Equatable, Sendable {
     case .setSync(let enabled, let cache, _): .setSync(enabled: enabled, useCurrentCache: cache, expectedRevision: "")
     case .cancelSyncSetup: .cancelSyncSetup(expectedRevision: "")
     case .setClipboardSync(let enabled, _): .setClipboardSync(enabled: enabled, expectedRevision: "")
-    case .resolveAccount(let choice, _, let confirmed): .resolveAccount(choice: choice, expectedRevision: "", confirmed: confirmed)
     case .exportDiagnostics(_, let range): .exportDiagnostics(path: "", range: range)
     case .setDiagnosticRecording(let enabled, _): .setDiagnosticRecording(enabled: enabled, expectedRevision: "")
     case .clearDiagnostics(_, let confirmed): .clearDiagnostics(expectedRevision: "", confirmed: confirmed)

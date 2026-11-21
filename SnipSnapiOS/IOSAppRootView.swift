@@ -162,13 +162,6 @@ struct IOSAppRootView: View {
             }
         }
 #endif
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let accountNoticeModel = session.accountNoticeModel,
-               accountNoticeModel.notice != nil
-            {
-                AppleAccountNoticeBanner(model: accountNoticeModel)
-            }
-        }
         .glassMenuHost(isBlocked: sheet != nil || model.newListMoveRequest != nil || model.isSearchPresented || copyShare.shareRequest != nil)
         .sheet(item: $sheet, onDismiss: {
             settingsBackupLifetime.end(library: model)
@@ -304,7 +297,7 @@ struct IOSAppRootView: View {
             for await _ in NotificationCenter.default.notifications(
                 named: SnipSnapCloudNotifications.accountChanged
             ) {
-                await session.foreground()
+                await session.syncWhenPossible()
             }
         }
         .task(id: scenePhase) { await pollClipboardWhileActive() }
@@ -801,55 +794,6 @@ struct CompactLibrarySearchHost: View {
                 if !presented { model.isSearchPresented = false }
             }
     }
-}
-
-private struct AppleAccountNoticeBanner: View {
-    let model: AppleAccountNoticeModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: model.systemImage)
-                    .appFont(.title3, weight: .semibold)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.title)
-                        .appFont(.headline)
-                        .accessibilityIdentifier("apple-account-notice")
-                    Text(model.message)
-                        .appFont(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if model.showsResolutionActions {
-                HStack(spacing: 12) {
-                    AppPrimaryActionButton {
-                        Task { await model.resolve(.keepLocalCopy) }
-                    } label: {
-                        Text("Keep on this device")
-                    }
-                    .accessibilityIdentifier("keep-account-cache")
-                    Button("Remove from this device", role: .destructive) {
-                        Task { await model.resolve(.remove) }
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("remove-account-cache")
-                }
-                .disabled(model.isResolving)
-            }
-            if let errorMessage = model.errorMessage {
-                Text(errorMessage)
-                    .appFont(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial)
-        .overlay(alignment: .bottom) { Divider() }
-    }
-
 }
 
 extension View {

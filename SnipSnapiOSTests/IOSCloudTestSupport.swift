@@ -47,8 +47,6 @@ actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         self.onSchedule = onSchedule
     }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { syncCalls += 1 }
     func scheduleSyncAfterLocalChange() async {
         scheduleCalls += 1
@@ -202,8 +200,6 @@ actor MutableIOSCloudSyncHandler: OptionalCloudSyncHandling {
         self.states = states
     }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async {}
     func isCloudSyncActive() async throws -> Bool { active }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
@@ -236,8 +232,6 @@ actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
         self.results = results
     }
 
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async {}
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { states }
@@ -282,8 +276,6 @@ actor HeldAttachmentStatusHandler: OptionalCloudSyncHandling {
         queuedActiveReads.forEach { $0.resume() }
         queuedActiveReads.removeAll()
     }
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? { nil }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {}
     func syncWhenPossible() async { explicitSyncs += 1 }
     func scheduleSyncAfterLocalChange() async { schedules += 1 }
     func isCloudSyncActive() async throws -> Bool {

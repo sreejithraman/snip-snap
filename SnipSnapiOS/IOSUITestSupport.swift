@@ -275,18 +275,6 @@ actor RecoveryUITestSnipLibrary: SnipLibrary {
 #endif
 
 #if DEBUG
-actor UITestAppleAccountCacheHandler: AppleAccountCacheHandling {
-    private var didResolve = false
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
-        didResolve ? nil : .signedOut
-    }
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
-        didResolve = true
-    }
-}
-#endif
-
-#if DEBUG
 @MainActor
 func seedListHistoryUITestFixture(in model: IOSAppModel) async {
     guard ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_LIST_HISTORY"] == "1" else { return }

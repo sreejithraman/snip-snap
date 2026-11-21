@@ -995,53 +995,6 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(model.snips.map(\.content), ["Merged after enable"])
     }
 
-    func testAccountNoticeInvokesHandlerAndHidesAfterKeepLocalCopy() async {
-        let handler = IOSAppleAccountCacheHandlerProbe()
-        let model = AppleAccountNoticeModel(notice: .signedOut, handler: handler)
-        XCTAssertEqual(model.notice, .signedOut)
-
-        await model.resolve(.keepLocalCopy)
-
-        XCTAssertNil(model.notice)
-        let choices = await handler.choices()
-        XCTAssertEqual(choices, [.keepLocalCopy])
-    }
-
-    func testLocalOnlyAssemblyCannotShowAnAccountNoticeWithoutAHandler() {
-        let model = AppleAccountNoticeModel(notice: .accountChanged, handler: nil)
-        XCTAssertNil(model.notice)
-    }
-
-    func testPausedNoticeRendersWithoutCacheChoices() {
-        let model = AppleAccountNoticeModel(
-            notice: .paused,
-            handler: IOSAppleAccountCacheHandlerProbe()
-        )
-
-        XCTAssertEqual(model.title, "Sync paused")
-        XCTAssertTrue(model.message.contains("stay on this device"))
-        XCTAssertFalse(model.showsResolutionActions)
-    }
-
-    func testAccountNoticeRefreshReadsTheProductionHandlerSeam() async {
-        let handler = IOSAppleAccountCacheHandlerProbe(notices: [.accountChanged, nil])
-        let model = AppleAccountNoticeModel(handler: handler)
-        let rebinds = IOSAccountLibraryRebindCounter()
-        model.setActiveLibraryChangeAction { await rebinds.record() }
-
-        await model.refresh()
-        XCTAssertEqual(model.notice, .accountChanged)
-
-        await model.resolve(.remove)
-        XCTAssertNil(model.notice)
-        let choices = await handler.choices()
-        let refreshCount = await handler.refreshCount()
-        let rebindCount = await rebinds.value()
-        XCTAssertEqual(choices, [.remove])
-        XCTAssertEqual(refreshCount, 2)
-        XCTAssertEqual(rebindCount, 2)
-    }
-
     func testReplacingLibraryRefreshesCloudModeInBothDirections() async {
         let id = UUID()
         let localURL = URL(fileURLWithPath: "/tmp/rebound-local.txt")
@@ -1143,33 +1096,4 @@ private struct AutomaticSyncFixture {
             session.model.snips.map(\.content) == [Self.markerContent]
         }
     }
-}
-
-private actor IOSAppleAccountCacheHandlerProbe: AppleAccountCacheHandling {
-    private var received: [AppleAccountCacheChoice] = []
-    private var notices: [AppleAccountNotice?]
-    private var noticeReads = 0
-
-    init(notices: [AppleAccountNotice?] = []) {
-        self.notices = notices
-    }
-
-    func refreshAppleAccountNotice() async throws -> AppleAccountNotice? {
-        defer { noticeReads += 1 }
-        return notices.indices.contains(noticeReads) ? notices[noticeReads] : nil
-    }
-
-    func resolveAppleAccountCache(_ choice: AppleAccountCacheChoice) async throws {
-        received.append(choice)
-    }
-
-    func choices() -> [AppleAccountCacheChoice] { received }
-    func refreshCount() -> Int { noticeReads }
-}
-
-private actor IOSAccountLibraryRebindCounter {
-    private var count = 0
-
-    func record() { count += 1 }
-    func value() -> Int { count }
 }
