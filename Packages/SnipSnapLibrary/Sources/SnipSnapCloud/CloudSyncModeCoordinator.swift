@@ -689,6 +689,17 @@ package actor ICloudSyncModeCoordinator {
             return try await refreshAccountState()
         }
 
+        if choice == .useCurrentCacheAfterStaleDataWarning {
+            let source = try await persistence.libraryForTransition(storeID: initial.activeStore.id)
+            let stored = try await source.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+            // A blocked collection has durable evidence against reusing its cache.
+            // A local copy would drop that evidence and could later be uploaded.
+            if stored.namespaceState.phase == .blocked {
+                try await persistence.recordAttention(.enrollmentBlocked)
+                return try await statusUnchecked()
+            }
+        }
+
         if initial.transition == nil, choice == .refreshThenCopy {
             let lease = try await persistence.activeCloudMutationLease(
                 storeID: initial.activeStore.id, purpose: .modeChange)
