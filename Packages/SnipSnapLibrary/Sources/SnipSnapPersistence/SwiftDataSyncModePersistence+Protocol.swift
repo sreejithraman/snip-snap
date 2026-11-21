@@ -17,19 +17,8 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func recordSendAttempt(_ attempt: SyncModeSendAttempt) throws {
-    try commitSendAttempt(attempt, setupRetryOffers: nil, holding: [])
-  }
-
-  func commitSendAttempt(
-    _ attempt: SyncModeSendAttempt,
-    setupRetryOffers: [CloudSetupRetryOffer]?,
-    holding pointerDeletes: [CloudSetupPointerDeleteHold]
-  ) throws {
     var next = manifest
-    next.migrateSetupRetryHistory()
     try next.updateTransition(orThrow: .namespaceMismatch) { try $0.recordSendAttempt(attempt) }
-    try next.recordSetupRetryOffers(setupRetryOffers, for: attempt)
-    next.holdSetupPointerDeletes(pointerDeletes, in: attempt.namespace)
     try crashHook(.beforeSendAttemptManifest)
     try commit(next)
   }
@@ -47,6 +36,29 @@ extension SwiftDataSyncModePersistence {
     try commit(next)
   }
 
+  package func discardFailedICloudEnable(
+    transitionID: UUID,
+    reason: ICloudSyncAttentionReason?,
+    preserveNewBases: Bool = false
+  ) async throws {
+    guard let transition = manifest.transition, transition.id == transitionID,
+      transition.targetKind == .iCloudSync, transition.sourceStoreID == manifest.activeStoreID,
+      fullReenableMergeInFlight != transitionID
+    else { return }
+    if preserveNewBases, transition.sendAttempt != nil,
+      let candidate = try? libraryForTransition(storeID: transition.candidateStoreID)
+    {
+      // Accepted records first created during enrollment can serve as normal merge
+      // ancestors. Keep the existing ancestors from before this enable.
+      try? await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
+    }
+    guard manifest.transition?.id == transitionID, fullReenableMergeInFlight != transitionID
+    else { return }
+    // A later enable can keep ambiguous fetched attachments after an earlier send.
+    // No attachment IDs or provider results need to outlive the discarded candidate.
+    try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? reason : .firstSyncFailed)
+  }
+
   package func restartAfterFirstSendFailure(
     reason: ICloudSyncAttentionReason?,
     settlement: SyncModeSeedSettlementProof?
@@ -56,13 +68,13 @@ extension SwiftDataSyncModePersistence {
       [.enrollmentApproved, .firstSendStarted, .firstSendComplete].contains(transition.phase)
     else { return }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
+    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     try crashHook(.afterRetryBasePromotion)
     let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
-    guard manifest.transition == transition else { return }
     var next = manifest
     try next.updateTransition {
       try $0.restartAfterFirstSendFailure(
@@ -72,6 +84,58 @@ extension SwiftDataSyncModePersistence {
     }
     next.attentionReason = reason
     try commit(next)
+  }
+
+  private func promoteAcceptedFullRetryBases(
+    transition: SyncModeTransition,
+    candidate: SwiftDataSnipLibrary
+  ) async throws {
+    guard transition.syncProtocol == .fullRecordV1,
+      let attempt = transition.sendAttempt,
+      let namespace = transition.namespace,
+      attempt.namespace == namespace
+    else { return }
+    let namespaceKey = namespace.namespaceKey
+    let stored = try await candidate.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
+    let accepted = Dictionary(uniqueKeysWithValues:
+      (stored.readyEntities + stored.deferredEntities).map { ($0.reference, $0) }
+    )
+    let source = try libraryForTransition(storeID: transition.sourceStoreID)
+    let existingReferences = Set(try await source.dormantCloudBases().lazy
+      .filter { $0.namespaceKey == namespaceKey.rawValue }.map(\.reference))
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    var bases: [CloudDormantBase] = []
+    for operation in attempt.operations where operation.kind == .save {
+      guard let reference = operation.reference, !existingReferences.contains(reference),
+        let entity = accepted[reference],
+        entity.identity == operation.recordIdentity
+      else { continue }
+      let payload = try encoder.encode(CloudAcceptedEntityInput(
+        reference: entity.reference,
+        identity: entity.identity,
+        schemaVersion: entity.schemaVersion,
+        acceptedData: entity.acceptedData,
+        presenceData: entity.presenceData,
+        shadowData: entity.shadowData,
+        systemFields: entity.systemFields,
+        dependencyListID: entity.dependencyListID
+      ))
+      bases.append(CloudDormantBase(
+        namespaceKey: namespaceKey.rawValue,
+        reference: entity.reference,
+        identity: entity.identity,
+        payload: payload
+      ))
+    }
+    let crashHook = self.crashHook
+    try await source.storeDormantCloudBases(
+      namespaceKey: namespaceKey,
+      bases: bases,
+      afterStagingFirst: {
+        try crashHook(.duringRetryBasePromotionStaging)
+      }
+    )
   }
 
   package func prepareRetryFetch(settlement: SyncModeSeedSettlementProof) async throws {
@@ -87,20 +151,22 @@ extension SwiftDataSyncModePersistence {
         transitionID: transition.id
       )
     }
-    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
     guard transition.awaitsAcceptedServerCapture else { return }
+    try await promoteAcceptedFullRetryBases(transition: transition, candidate: candidate)
     let settledState = try await settledSeedState(
       transition: transition,
       candidate: candidate,
       settlement: settlement
     )
-    guard manifest.transition == transition else { throw SyncModePersistenceError.transitionInProgress }
     var next = manifest
     try next.updateTransition {
       try $0.settleInterruptedUpload(
         acceptedSeedIDs: settledState.acceptedSeedIDs,
         provenance: settledState.provenance
       )
+    }
+    if transition.sendAttempt != nil {
+      next.attentionReason = .firstSyncFailed
     }
     try crashHook(.beforeRetryFetchSettlementCommit)
     try commit(next)

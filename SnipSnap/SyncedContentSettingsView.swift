@@ -26,7 +26,7 @@ struct SyncedContentSettingsView: View {
                     Toggle("Sync with iCloud", isOn: syncEnabled)
                         .disabled(!canChangeSync)
                         .accessibilityIdentifier("icloud-sync-toggle")
-                    if model.peerCopyOffer == nil { syncMessage }
+                    syncMessage
                 }
 
                 if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
@@ -40,28 +40,6 @@ struct SyncedContentSettingsView: View {
                     .disabled(isRetryingSync)
                     .accessibilityIdentifier("retry-icloud-sync")
                 }
-            }
-
-            if let offer = model.peerCopyOffer {
-                Section("Restore from iCloud") {
-                    Text("These snips were deleted on this device and are still in iCloud.")
-                    ForEach(offer.copies) { copy in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(copy.content)
-                            Text(copy.listName).foregroundStyle(.secondary)
-                            ForEach(copy.attachmentNames.indices, id: \.self) { index in
-                                Label(copy.attachmentNames[index], systemImage: "paperclip").foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Button("Restore and Enable Sync") {
-                        Task { await model.restoreSetupPeerCopies(offer) }
-                    }
-                    Button("Cancel Setup") {
-                        Task { await model.cancelICloudSyncSetup() }
-                    }
-                }
-                .disabled(isRetryingSync)
             }
 
             Section("Clipboard") {

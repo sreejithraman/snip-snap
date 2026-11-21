@@ -444,13 +444,8 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
             let earlier = await transport.headEvent()
             let account = try XCTUnwrap(earlier)
             XCTAssertTrue(account.isAccountChange)
-            let accepted = CloudSetupRetryCapture.acceptedPointerDeletes(in: returned, outbound: offer)
-            XCTAssertEqual(accepted.map { $0.1 }, cycleAlreadyFinished ? [] : [attachmentID])
-            let duplicated = CloudOutboundBatch(operations: offer.operations + [.delete(pointer, base: nil)])
-            XCTAssertTrue(CloudSetupRetryCapture.acceptedPointerDeletes(in: returned, outbound: duplicated).isEmpty)
+            XCTAssertEqual(returned.items.contains(.deleted(pointer)), !cycleAlreadyFinished)
 
-            // The test can pass the synthetic account event to inspect the queue; setup cannot
-            // do that while the live account check fails.
             try await transport.confirmApplied(account.id)
             let next = await transport.headEvent()
             let head = try XCTUnwrap(next)

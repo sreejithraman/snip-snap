@@ -17,7 +17,6 @@ extension SwiftDataSnipLibrary {
     metadataOwnerName: String,
     payloadZoneName: String,
     payloadOwnerName: String,
-    setupReplacementAllocations: [UUID: CloudSetupPointerDelete.Replacement] = [:],
     digestFile: @Sendable (URL) throws -> Data = AttachmentFileIO.digest(at:)
   ) throws {
     let namespaceKey = namespaceKey.rawValue
@@ -42,8 +41,6 @@ extension SwiftDataSnipLibrary {
       context: context
     )
     let byAttachment = Dictionary(uniqueKeysWithValues: existing.map { ($0.attachmentID, $0) })
-    var occupiedPayloads = Set(existing.map(\.payloadIdentity))
-      .union(existing.compactMap { $0.lifecycle.replacedPayload?.identity })
     var local: [UUID: (UUID, Int, SnipAttachment)] = [:]
     for snip in loaded.state.snips {
       for (position, attachment) in snip.attachments.enumerated() {
@@ -154,23 +151,17 @@ extension SwiftDataSnipLibrary {
           ownerName: metadataOwnerName,
           recordName: "a-\(attachmentID.uuidString.lowercased())"
         )
-        let payloadIdentity: CloudTextStorageIdentity
-        if localSourcePath != nil, let binding = setupReplacementAllocations[attachmentID],
-          binding.matchesSource(snipID: value.0, sha256: digest, byteCount: value.2.byteCount),
-          binding.payloadIdentity.zoneName == payloadZoneName, binding.payloadIdentity.ownerName == payloadOwnerName,
-          occupiedPayloads.insert(binding.payloadIdentity).inserted
-        {
-          payloadIdentity = binding.payloadIdentity
-        } else {
-          payloadIdentity = CloudTextStorageIdentity(
-            zoneName: payloadZoneName, ownerName: payloadOwnerName, recordName: UUID().uuidString.lowercased()
-          )
-        }
+        let payloadRecordName = UUID().uuidString.lowercased()
+        let payloadIdentity = CloudTextStorageIdentity(
+          zoneName: payloadZoneName,
+          ownerName: payloadOwnerName,
+          recordName: payloadRecordName
+        )
         try lock.check()
         let upload = try stageCloudAttachmentUpload(
           sourceURL: sourceURL,
           namespaceKey: namespaceKey,
-          payloadRecordName: payloadIdentity.recordName
+          payloadRecordName: payloadRecordName
         )
         createdUploadFiles.append(upload.url)
         let row = StoredCloudAttachmentPublication(

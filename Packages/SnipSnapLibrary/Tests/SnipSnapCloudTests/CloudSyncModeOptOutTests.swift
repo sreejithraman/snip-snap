@@ -38,7 +38,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(copiedTexts, ["cached"])
     }
 
-    func testCrashBeforePointerSwapLeavesAResumableBootstrapAndAfterSwapLeavesCloudActive() async throws {
+    func testFailureBeforePointerSwapKeepsSourceAndFailureAfterSwapKeepsCloudActive() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let injector = CrashInjector(point: .beforePointerSwap)
@@ -62,7 +62,8 @@ extension ICloudSyncModeCoordinatorTests {
         let crashed = try await persistence.snapshot()
         let sentBeforeSwap = await server.storedTextValues()
         XCTAssertEqual(crashed.activeStore.id, originalID)
-        XCTAssertEqual(crashed.transition?.phase, .candidateReady)
+        XCTAssertNil(crashed.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
         XCTAssertEqual(sentBeforeSwap, ["durable"])
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
@@ -100,7 +101,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(final.transition?.phase, .pointerSwapped)
     }
 
-    func testCrashAfterCandidateMergeDurabilityReopensWithoutStrandingLocalEnrollment() async throws {
+    func testFailedCandidateMergeKeepsLocalSourceRetryableAfterReopen() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let injector = CrashInjector(point: .afterCandidateMergeDurability)
@@ -122,7 +123,8 @@ extension ICloudSyncModeCoordinatorTests {
         } catch CrashInjector.Failure.injected {}
         let crashed = try await persistence.snapshot()
         XCTAssertEqual(crashed.activeStore.id, originalID)
-        XCTAssertEqual(crashed.transition?.phase, .candidateReady)
+        XCTAssertNil(crashed.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let retry = ICloudSyncModeCoordinator(
@@ -520,7 +522,7 @@ extension ICloudSyncModeCoordinatorTests {
         try await add("source remains writable", to: source)
     }
 
-    func testEnrollmentApprovalCrashReappliesApprovalAfterReopen() async throws {
+    func testFailedEnrollmentApprovalKeepsLocalSourceRetryableAfterReopen() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let injector = CrashInjector(point: .afterEnrollmentApproval)
@@ -539,7 +541,9 @@ extension ICloudSyncModeCoordinatorTests {
             XCTFail("Expected the approval crash.")
         } catch CrashInjector.Failure.injected {}
         let crashed = try await persistence.snapshot()
-        XCTAssertEqual(crashed.transition?.phase, .remoteFetched)
+        XCTAssertEqual(crashed.activeStore.kind, .localOnly)
+        XCTAssertNil(crashed.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
 
         let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
         let retry = ICloudSyncModeCoordinator(

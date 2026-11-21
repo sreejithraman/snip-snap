@@ -25,17 +25,6 @@ extension SnipSnapCloudSyncResult {
     }
     return true
   }
-
-  @MainActor
-  public func applyDeferredEnableCompletion(
-    to settings: SyncedContentSettingsModel,
-    started: SyncedContentSyncStart,
-    reload: @MainActor () async throws -> Void,
-    acknowledge: SyncedContentSettingsModel.AcknowledgeEnableAction
-  ) async throws -> Bool {
-    guard case .deferredICloudSyncEnabled(let completion) = self else { return false }
-    return try await settings.completeCheckedEnable(completion, started: started, reload: reload, acknowledge: acknowledge)
-  }
 }
 
 package enum CloudAccountIsolationError: Error, Equatable, Sendable {

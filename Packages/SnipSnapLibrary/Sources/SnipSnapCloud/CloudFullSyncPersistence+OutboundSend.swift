@@ -7,9 +7,7 @@ extension CloudFullSyncPersistence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let archivedIDs = corruptShadowRecovery(in: stored).blockedRecordIDs
-    let protection = await setupPointerDeleteProtection()
-    return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery)
-      .union(archivedIDs).union(protection.payloads.map(Self.recordID)),
+    return CloudRecordOutboundAdmission(blockedRecordIDs: try Self.failedFetchRecordIDs(recovery).union(archivedIDs),
       blocksAll: stored.namespaceState.phase == .blocked || recovery.contains { $0.kind == .destructiveReset })
   }
 
@@ -47,12 +45,7 @@ extension CloudFullSyncPersistence {
       issues.append(.appDataIssue)
     }
     issues += attachments.publications.compactMap(\.lastFailure).map(Self.syncIssue(for:))
-    let protection = await setupPointerDeleteProtection()
-    if attachments.publications.contains(where: { !$0.isLocallyPresent && protection.pointers.contains($0.metadataIdentity) }) {
-      issues.append(.appDataIssue)
-    }
-    issues += attachments.cleanups.filter { !protection.payloads.contains($0.identity) }
-      .compactMap(\.lastFailure).map(Self.syncIssue(for:))
+    issues += attachments.cleanups.compactMap(\.lastFailure).map(Self.syncIssue(for:))
     return CloudSyncIssueError.preferredIssue(from: issues)
   }
 
@@ -118,8 +111,7 @@ extension CloudFullSyncPersistence {
         metadataZoneName: dataZone.name,
         metadataOwnerName: dataZone.ownerName,
         payloadZoneName: payloadZone.name,
-        payloadOwnerName: payloadZone.ownerName,
-        setupReplacementAllocations: try await setupReplacementAllocations?() ?? [:]
+        payloadOwnerName: payloadZone.ownerName
       )
     }
     let local = try await library.checkedSnapshot(sortedBy: .manual)
@@ -278,12 +270,10 @@ extension CloudFullSyncPersistence {
       }
     }
     if let payloadZone {
-      let protection = await setupPointerDeleteProtection()
       let attachmentPlan = Self.attachmentOperations(
         attachments,
         dataZone: dataZone,
-        payloadZone: payloadZone,
-        protection: protection
+        payloadZone: payloadZone
       )
       if !attachmentPlan.invalidPublicationIDs.isEmpty
         || !attachmentPlan.invalidCleanupIdentities.isEmpty
@@ -335,8 +325,7 @@ extension CloudFullSyncPersistence {
   private static func attachmentOperations(
     _ snapshot: CloudAttachmentStorageSnapshot,
     dataZone: CloudZoneID,
-    payloadZone: CloudZoneID,
-    protection: CloudSetupDeleteProtection = CloudSetupDeleteProtection()
+    payloadZone: CloudZoneID
   ) -> AttachmentOperationPlan {
     let publications = snapshot.publications.sorted {
       $0.metadata.attachmentID.uuidString < $1.metadata.attachmentID.uuidString
@@ -348,7 +337,6 @@ extension CloudFullSyncPersistence {
     var plan = AttachmentOperationPlan()
     for publication in publications where publication.isLocallyPresent
       && !publication.payloadAccepted
-      && !protection.payloads.contains(publication.metadata.payloadIdentity)
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {
@@ -377,7 +365,6 @@ extension CloudFullSyncPersistence {
       }
     }
     for publication in publications where !publication.isLocallyPresent
-      && !protection.pointers.contains(publication.metadataIdentity)
       && !isTerminalAttachmentFailure(publication.lastFailure)
     {
       do {
@@ -393,7 +380,7 @@ extension CloudFullSyncPersistence {
     let namedPayloads = Set(publications.map(\.metadata.payloadIdentity))
       .union(publications.compactMap(\.priorPayloadIdentity))
     for cleanup in snapshot.cleanups where !isTerminalAttachmentFailure(cleanup.lastFailure) {
-      guard !protection.payloads.contains(cleanup.identity), !namedPayloads.contains(cleanup.identity) else { continue }
+      guard !namedPayloads.contains(cleanup.identity) else { continue }
       if let blockedByAttachmentID = cleanup.blockedByAttachmentID,
         let replacement = publicationByID[blockedByAttachmentID],
         !replacement.metadataAccepted

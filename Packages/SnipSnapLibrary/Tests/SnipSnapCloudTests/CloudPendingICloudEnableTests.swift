@@ -316,6 +316,27 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     XCTAssertEqual(startupSettings().state, .ready)
   }
 
+  @MainActor
+  func testLateOrdinaryEnableReloadsButCannotOverrideAStopOrCancel() async throws {
+      let settings = SyncedContentSettingsModel(mode: .localOnly, initialState: .enabling(.checkingAccount),
+          cancelEnableAction: { .cancelled }, hasFailedPendingEnable: { true })
+      let started = settings.recordSyncStarted()
+      var reloads = 0
+      try await SnipSnapCloudSyncResult.iCloudSyncEnabled.applyEnableProgress(to: settings, started: started) {
+          reloads += 1
+          settings.recordSyncStopped(.iCloudAccountChanged)
+      }
+      XCTAssertEqual(settings.state, .failed(.iCloudAccountChanged))
+      XCTAssertEqual(settings.mode, .localOnly)
+      let beforeCancel = settings.recordSyncStarted()
+      await settings.cancelICloudSyncSetup()
+      try await SnipSnapCloudSyncResult.iCloudSyncSettingUp(.checkingAccount)
+          .applyEnableProgress(to: settings, started: beforeCancel) { reloads += 1 }
+      XCTAssertEqual(reloads, 1)
+      XCTAssertEqual(settings.state, .ready)
+      XCTAssertEqual(settings.mode, .localOnly)
+  }
+
   // MARK: Stored marker format
 
   func testEveryStoredMarkerFormRestartsWithTodaysSettingsState() throws {
@@ -391,6 +412,54 @@ final class CloudPendingICloudEnableTests: XCTestCase {
     let seen = await probe.seenMarker
     XCTAssertEqual(seen, Data("pending".utf8))
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+  }
+
+  func testEnableKeepsLocalStoreIfCollectionChangesDuringFirstSend() async throws {
+    let source = try await seededSource()
+    let persistence = try SwiftDataSyncModePersistence(rootURL: syncRoot)
+    let original = try await persistence.snapshot().activeStore
+    let server = FakeCloudServer()
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    await server.seedControl(descriptor)
+    let transport = FakeCloudRecordTransport(
+      server: server,
+      namespace: descriptor.namespace(cloudScope: "private", accountLineage: "account-a")
+    )
+    await transport.pauseNextSend()
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: syncRoot,
+      sourceLibrary: source,
+      syncModeStore: SnipSyncModeStore(persistence),
+      cloudScope: "private",
+      accountLineage: "account-a",
+      ownerName: "owner",
+      controlTransport: FakeCloudControlTransport(server: server),
+      makeRecordTransport: { _ in transport },
+      makeDescriptor: { descriptor }
+    )
+
+    let enabling = Task { try await lifecycle.enableICloudSync() }
+    await transport.waitUntilSendPauses()
+    await server.seedControl(.fresh(ownerName: "owner"))
+    await transport.resumeSend()
+    do {
+      _ = try await enabling.value
+      XCTFail("Setup must stop when the collection changes before activation")
+    } catch CloudCollectionError.syncNeedsAttention {}
+
+    let after = try await persistence.snapshot()
+    XCTAssertEqual(after.activeStore.id, original.id)
+    XCTAssertNil(after.transition)
+    let local = try await persistence.activeLibrary()
+    let kept = try await local.checkedSnapshot(sortedBy: .manual)
+    XCTAssertEqual(kept.snips.map(\.content), ["stay local"])
+    _ = try await local.perform(
+      .add(
+        content: "still writable", origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+        attachmentURLs: [], requestID: UUID(), now: .now
+      ),
+      sortedBy: .manual
+    )
   }
 
   func testOfflineEnableWritesRetryMarkerAndCancelRemovesIt() async throws {
@@ -613,23 +682,17 @@ private actor PendingMarkerProbe {
   }
 }
 
-actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
+private actor PendingOfflineThenOnlineControlTransport: CloudCollectionControlTransport {
   private let base: FakeCloudControlTransport
   private var isOffline = true
-  private var shouldFailNextFetch = false
 
   init(server: FakeCloudServer) {
     base = FakeCloudControlTransport(server: server)
   }
 
   func goOnline() { isOffline = false }
-  func failNextFetch() { shouldFailNextFetch = true }
 
   func fetchControl() async throws -> CloudCollectionControlRecord? {
-    if shouldFailNextFetch {
-      shouldFailNextFetch = false
-      throw CloudSyncIssueError(.waitingForConnection)
-    }
     guard !isOffline else { throw CloudSyncIssueError(.waitingForConnection) }
     return await base.fetchControl()
   }

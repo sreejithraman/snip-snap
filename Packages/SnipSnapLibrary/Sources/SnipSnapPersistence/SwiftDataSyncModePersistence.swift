@@ -6,13 +6,12 @@ public enum SyncModeActivationManifestReader {
     case localOnly
     case settingUp(ICloudSyncNamespaceBinding)
     case needsAttention(ICloudSyncNamespaceBinding)
-    case checkingEnable(ICloudSyncNamespaceBinding)
     case active(ICloudSyncNamespaceBinding)
 
     public var namespace: ICloudSyncNamespaceBinding? {
       switch self {
       case .localOnly: nil
-      case .settingUp(let value), .needsAttention(let value), .checkingEnable(let value), .active(let value): value
+      case .settingUp(let value), .needsAttention(let value), .active(let value): value
       }
     }
   }
@@ -87,7 +86,6 @@ public enum SyncModeActivationManifestReader {
       guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
       else { return .localOnly }
       if active.kind == .iCloudSync, let namespace = active.namespace {
-        if manifest.checkedEnableStoreID == active.id { return .checkingEnable(namespace) }
         return .active(namespace)
       }
       guard active.kind == .localOnly,
@@ -95,7 +93,10 @@ public enum SyncModeActivationManifestReader {
         transition.targetKind == .iCloudSync,
         let namespace = transition.namespace
       else { return .localOnly }
-      return manifest.attentionReason == nil ? .settingUp(namespace) : .needsAttention(namespace)
+      switch manifest.attentionReason {
+      case nil, .firstSyncFailed: return .settingUp(namespace)
+      default: return .needsAttention(namespace)
+      }
     } catch {
       return .localOnly
     }
@@ -148,8 +149,6 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
   case afterRetryBasePromotion
   case beforeRetryFetchSettlementCommit
   case duringRetryBasePromotionStaging
-  case afterSetupPointerDeleteRetention
-  case afterSetupPointerDeleteHandoff
   case beforePointerSwap
   case afterPointerSwap
   case afterRetiredCleanupDeclared
@@ -193,12 +192,10 @@ package actor SwiftDataSyncModePersistence {
     var accountIsolation: ICloudAccountIsolation?
     var attentionReason: ICloudSyncAttentionReason?
     var writeReservation: SyncModeWriteReservation?
-    var retainedSetupPointerDeletes: [CloudRetainedSetupPointerDeletes] = []
-    var checkedEnableStoreID: UUID?
 
     private enum CodingKeys: String, CodingKey {
       case version, activeStoreID, stores, transition, accountIsolation
-      case attentionReason, writeReservation, retainedSetupPointerDeletes, checkedEnableStoreID
+      case attentionReason, writeReservation
     }
 
     init(
@@ -237,10 +234,6 @@ package actor SwiftDataSyncModePersistence {
         SyncModeWriteReservation.self,
         forKey: .writeReservation
       )
-      retainedSetupPointerDeletes = try values.decodeIfPresent(
-        [CloudRetainedSetupPointerDeletes].self, forKey: .retainedSetupPointerDeletes
-      ) ?? []
-      checkedEnableStoreID = try values.decodeIfPresent(UUID.self, forKey: .checkedEnableStoreID)
     }
 
     mutating func updateTransition(
@@ -418,9 +411,14 @@ package actor SwiftDataSyncModePersistence {
     to targetKind: SyncModeStoreKind,
     namespace: ICloudSyncNamespaceBinding?
   ) async throws -> SyncModeTransition {
-    _ = try beginTransition(to: targetKind, namespace: namespace)
+    let started = try beginTransition(to: targetKind, namespace: namespace)
     if targetKind == .iCloudSync {
-      try await reconcileFullReenableIntent()
+      do {
+        try await reconcileFullReenableIntent()
+      } catch let cancellation as CancellationError {
+        try await discardFailedICloudEnable(transitionID: started.id, reason: nil)
+        throw cancellation
+      }
     }
     guard let transition = manifest.transition else {
       throw SyncModePersistenceError.transitionInProgress
@@ -443,8 +441,8 @@ package actor SwiftDataSyncModePersistence {
         fullReenableMergeInFlight != transition.id,
         !hasStoreFile(id: transition.candidateStoreID)
       {
-        // Before the swap the source still holds the library. Keep its send history
-        // before replacing the missing candidate.
+        // Before the swap, the source still holds the library, so a fresh candidate loses
+        // nothing.
         try abortUnactivatedCandidate(reason: nil)
         let operation: StaticString = transition.targetKind == .iCloudSync
           ? "sync.setup" : "sync.disable"
@@ -453,7 +451,7 @@ package actor SwiftDataSyncModePersistence {
         // Finish only a rollback this process couldn't commit, so another operation's work in
         // flight is never undone.
         guard transition == strandedRollback else { return transition }
-        if transition.phase == .candidateDeclared {
+        if transition.phase == .candidateDeclared || targetKind == .iCloudSync {
           try abortUnactivatedCandidate(reason: nil)
         } else if transition.phase == .sourceFrozen, !transition.hasDurableFullReenableIntent {
           try unfreezeBeforePointerSwap()
@@ -491,8 +489,9 @@ package actor SwiftDataSyncModePersistence {
     var declared = manifest
     declared.stores.append(candidate)
     declared.transition = transition
-    declared.migrateSetupRetryHistory()
-    declared.attentionReason = nil
+    if declared.attentionReason != .firstSyncFailed {
+      declared.attentionReason = nil
+    }
     try commit(declared)
     try crashHook(.afterCandidateManifest)
     do {
@@ -522,7 +521,9 @@ package actor SwiftDataSyncModePersistence {
   package func recordPreparationComplete() throws {
     var next = manifest
     try next.updateTransition { try $0.recordPreparationComplete() }
-    next.attentionReason = nil
+    if next.attentionReason != .firstSyncFailed {
+      next.attentionReason = nil
+    }
     try commit(next)
   }
 
@@ -538,8 +539,7 @@ package actor SwiftDataSyncModePersistence {
     try commit(next)
   }
 
-  package func swapPointer(requiresCheckedEnable: Bool = false) throws {
-    try Task.checkCancellation()
+  package func swapPointer() throws {
     var next = manifest
     try next.updateTransition { try $0.swapPointer() }
     guard let transition = manifest.transition,
@@ -548,33 +548,18 @@ package actor SwiftDataSyncModePersistence {
     guard hasStoreFile(id: transition.candidateStoreID) else {
       throw SyncModePersistenceError.missingStore
     }
-    let deferred = pendingSetupPointerDeletes(for: transition)
-    if requiresCheckedEnable || !deferred.isEmpty {
-      guard transition.targetKind == .iCloudSync else { throw SyncModePersistenceError.invalidManifest }
-      next.checkedEnableStoreID = transition.candidateStoreID
-    }
     try crashHook(.beforePointerSwap)
     next.activeStoreID = transition.candidateStoreID
-    let sourceIndex = try storeIndex(id: transition.sourceStoreID)
-    next.stores[sourceIndex].lifecycle = .retired
-    if deferred.isEmpty { next.stores[sourceIndex].setupRetryHistory = nil }
+    next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
     try commit(next)
     try crashHook(.afterPointerSwap)
   }
 
   package func finishTransition() throws {
-    guard let transition = manifest.transition, transition.phase == .pointerSwapped else {
+    guard manifest.transition?.phase == .pointerSwapped else {
       throw SyncModePersistenceError.transitionInProgress
     }
-    let deferred = pendingSetupPointerDeletes(for: transition)
     var next = manifest
-    if let namespace = transition.namespace, manifest.checkedEnableStoreID == transition.candidateStoreID {
-      if !deferred.isEmpty { try crashHook(.afterSetupPointerDeleteHandoff) }
-      try SyncModeDeferredEnableCompletion(binding: namespace, storeID: transition.candidateStoreID, issue: nil)
-        .record(at: rootURL)
-      next.checkedEnableStoreID = nil
-    }
-    next.stores[try storeIndex(id: transition.sourceStoreID)].setupRetryHistory = nil
     next.transition = nil
     next.attentionReason = nil
     for index in next.stores.indices where next.stores[index].lifecycle == .retired {
@@ -671,9 +656,7 @@ package actor SwiftDataSyncModePersistence {
       candidate.lifecycle = .ready
       var activated = manifest
       activated.stores[try storeIndex(id: candidate.id)] = candidate
-      let sourceIndex = try storeIndex(id: current.id)
-      activated.stores[sourceIndex].lifecycle = .recovery
-      activated.stores[sourceIndex].setupRetryHistory = nil
+      activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
       activated.activeStoreID = candidate.id
       try commit(activated)
       do {
@@ -819,7 +802,7 @@ package actor SwiftDataSyncModePersistence {
       manifest.activeStoreID == transition.sourceStoreID,
       transition.phase != .pointerSwapped
     else { return }
-    try abortUnactivatedCandidate(reason: nil)
+    try abortUnactivatedCandidate(reason: transition.sendAttempt == nil ? nil : .firstSyncFailed)
   }
 
   func abortUnactivatedCandidate(reason: ICloudSyncAttentionReason?) throws {
@@ -828,9 +811,10 @@ package actor SwiftDataSyncModePersistence {
     if let index = next.stores.firstIndex(where: { $0.id == transition.candidateStoreID }) {
       next.stores[index].lifecycle = .deleting
     }
-    next.stopTrackingSetupRetryCandidate()
     next.transition = nil
-    next.attentionReason = reason
+    if next.attentionReason != .firstSyncFailed {
+      next.attentionReason = reason
+    }
     // Commit before removing any files. A candidate whose files are gone but whose manifest
     // entry survives a failed commit is reopened empty by the next enable.
     try commitRollback(next)
@@ -845,7 +829,7 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  func commitRollback(_ next: Manifest) throws {
+  private func commitRollback(_ next: Manifest) throws {
     do {
       try commit(next)
     } catch {
@@ -896,15 +880,7 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  func commit(_ proposed: Manifest) throws {
-    var next = proposed
-    if next.activeStoreID != manifest.activeStoreID,
-      let history = store(id: manifest.activeStoreID)?.setupRetryHistory
-    {
-      for evidence in history.namespaces {
-        try next.retainSetupPointerDeletes(evidence.acceptedPointerDeletes, in: evidence.namespace)
-      }
-    }
+  func commit(_ next: Manifest) throws {
     try Self.validate(next)
     do {
       try Self.write(next, to: manifestURL, using: manifestWriter)

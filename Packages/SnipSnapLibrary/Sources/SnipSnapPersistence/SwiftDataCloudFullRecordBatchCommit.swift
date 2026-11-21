@@ -16,8 +16,6 @@ extension SwiftDataSnipLibrary {
   package func commitCloudFullBatch(
     _ batch: CloudFullBatchCommit,
     resolveAttachmentMetadata: CloudAttachmentMetadataRebase.Resolve? = nil,
-    deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
-    setupReplacements: Set<CloudSetupPointerDelete.Replacement> = [],
     legacyPayloadReplay: LegacyStagedPayloadReplayProof? = nil,
     afterSave: @Sendable () -> Void = {}
   ) throws -> CloudFullBatchCommitResult {
@@ -480,8 +478,6 @@ extension SwiftDataSnipLibrary {
         namespaceKey: batch.namespaceKey,
         transitions: batch.attachmentTransitions,
         resolveMetadata: resolveAttachmentMetadata,
-        deferredSetupPointerDeletes: deferredSetupPointerDeletes,
-        setupReplacements: setupReplacements,
         context: context
       )
       for mutation in snipDeletions {

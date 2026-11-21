@@ -13,8 +13,6 @@ public actor SnipSnapCloudSyncSession {
   private let retryAction: SynchronizeAction
   private let scheduleAction: ScheduleAction
   private let enableAction: SyncedContentSettingsModel.EnableAction
-  private let restoreSetupPeerCopiesAction: SyncedContentSettingsModel.RestorePeerCopiesAction
-  private let acknowledgeEnableAction: SyncedContentSettingsModel.AcknowledgeEnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
   private let deleteAction: DeleteAction
@@ -126,10 +124,6 @@ public actor SnipSnapCloudSyncSession {
     retry: SynchronizeAction? = nil,
     scheduleAutomaticSync: @escaping ScheduleAction = {},
     enable: @escaping SyncedContentSettingsModel.EnableAction,
-    restoreSetupPeerCopies: @escaping SyncedContentSettingsModel.RestorePeerCopiesAction = { _ in
-      throw CloudCollectionError.syncNeedsAttention
-    },
-    acknowledgeEnable: @escaping SyncedContentSettingsModel.AcknowledgeEnableAction = { _, _ in .stale },
     cancelEnable: @escaping SyncedContentSettingsModel.CancelEnableAction = { .cancelled },
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
@@ -146,8 +140,6 @@ public actor SnipSnapCloudSyncSession {
     retryAction = retry ?? synchronize
     scheduleAction = scheduleAutomaticSync
     enableAction = enable
-    restoreSetupPeerCopiesAction = restoreSetupPeerCopies
-    acknowledgeEnableAction = acknowledgeEnable
     cancelEnableAction = cancelEnable
     disableAction = disable
     deleteAction = delete
@@ -169,17 +161,6 @@ public actor SnipSnapCloudSyncSession {
 
   public func enableICloudSync() async throws -> SyncedContentEnableOutcome {
     try await operationGate.withLease(enableAction)
-  }
-
-  package func restoreSetupPeerCopies(_ offer: SyncedContentPeerCopyOffer) async throws -> SyncedContentEnableOutcome {
-    try await operationGate.withLease { [restoreSetupPeerCopiesAction] in try await restoreSetupPeerCopiesAction(offer) }
-  }
-
-  public func acknowledgeDeferredEnableCompletion(
-    for completion: SnipSnapDeferredEnableCompletion,
-    whileCurrent isCurrent: @escaping SyncedContentSettingsModel.EnableCompletionIsCurrent = { true }
-  ) async throws -> SyncedContentEnableAcknowledgement {
-    try await operationGate.withLease { [acknowledgeEnableAction] in try await acknowledgeEnableAction(completion, isCurrent) }
   }
 
   @discardableResult

@@ -4,12 +4,10 @@ import SwiftData
 enum CloudFullReceiptOperation: Equatable {
   case committedBatch(UUID)
   case reenableTransition(UUID)
-  case setupReplacementRemap(from: UUID, proof: String)
 
   var operationID: UUID {
     switch self {
     case .committedBatch(let id), .reenableTransition(let id): id
-    case .setupReplacementRemap(let from, _): from
     }
   }
 
@@ -26,7 +24,6 @@ enum CloudFullReceiptOperation: Equatable {
     switch self {
     case .committedBatch: "full-batch"
     case .reenableTransition: "full-reenable"
-    case .setupReplacementRemap(_, let proof): "setup-replacement-v2-\(proof)"
     }
   }
 }

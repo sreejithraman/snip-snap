@@ -129,7 +129,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNotEqual(retryStorage.activeStore.id, originalID)
     }
 
-    func testFailedFirstSendKeepsSourceActiveAndRetryRefetchesFinalWrites() async throws {
+    func testFailedFirstSendDiscardsCandidateAndRetriesFromWritableSource() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
@@ -151,6 +151,10 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(failedResult.state, .settingUp)
         XCTAssertNil(failedResult.attentionReason)
         XCTAssertEqual(failedStorage.activeStore.id, originalID)
+        XCTAssertNil(failedStorage.transition)
+        XCTAssertEqual(try storeRootCount(in: root), 1)
+        let kept = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
+        XCTAssertEqual(kept.snips.map(\.content), ["retry me"])
         try await add("written after failed send", to: try await persistence.activeLibrary())
 
         let retryTransport = FakeCloudRecordTransport(server: server, namespace: namespace)

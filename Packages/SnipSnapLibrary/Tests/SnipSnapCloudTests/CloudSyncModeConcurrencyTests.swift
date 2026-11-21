@@ -295,7 +295,7 @@ extension ICloudSyncModeCoordinatorTests {
         } catch ReadFailureInjector.Failure.injected {}
         let failed = try await persistence.snapshot()
         XCTAssertEqual(failed.activeStore.id, sourceID)
-        XCTAssertEqual(failed.transition?.phase, .remoteFetched)
+        XCTAssertNil(failed.transition)
         XCTAssertEqual(failed.attentionReason, .transitionFailure)
         try await add("still writable", to: source)
     }
@@ -396,6 +396,7 @@ extension ICloudSyncModeCoordinatorTests {
             crashHook: writer.armAtPointer,
             manifestWriter: writer.write
         )
+        try await add("kept", to: try await persistence.activeLibrary())
         let sourceID = try await persistence.snapshot().activeStore.id
         let namespace = makeNamespace()
         let coordinator = ICloudSyncModeCoordinator(
@@ -412,8 +413,8 @@ extension ICloudSyncModeCoordinatorTests {
         }
         let failed = try await persistence.snapshot()
         XCTAssertEqual(failed.activeStore.id, sourceID)
-        XCTAssertEqual(failed.transition?.phase, .candidateReady)
-        XCTAssertEqual(failed.attentionReason, .transitionFailure)
+        XCTAssertNil(failed.transition)
+        XCTAssertEqual(failed.attentionReason, .firstSyncFailed)
         try await add("source stays writable", to: try await persistence.activeLibrary())
     }
 
