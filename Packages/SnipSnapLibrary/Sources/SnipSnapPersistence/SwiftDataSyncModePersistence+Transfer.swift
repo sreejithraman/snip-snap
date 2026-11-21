@@ -187,12 +187,6 @@ extension SwiftDataSyncModePersistence {
     fullReenableMergeInFlight = transition.id
     defer { if fullReenableMergeInFlight == transition.id { fullReenableMergeInFlight = nil } }
     var intent = initialIntent
-    if try await hasDeletedSetupSnip(in: transition) {
-      // A previous setup can have staged or applied a plan before checking the
-      // source deletion. Re-fetch before either result can authorize enrollment.
-      try resetFullReenableIntent(intent, reason: .transferConflict)
-      return
-    }
     let candidate = try libraryForTransition(storeID: transition.candidateStoreID)
     let proof = CloudFullReenableCommitProof(
       namespaceKey: transition.namespace?.namespaceKey ?? CloudSyncNamespaceKey(rawValue: ""),

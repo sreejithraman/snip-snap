@@ -11,7 +11,6 @@ extension SwiftDataSyncModePersistence {
     // The revision advances before the store write starts. A leftover reservation means the
     // write may or may not have reached SwiftData, so keep that revision and reopen writes.
     value.writeReservation = nil
-    value.migrateSetupRetryHistory()
     if case .declared(let isolation) = try value.accountIsolationPhase() {
       guard let replacementRoot = storeRoots[isolation.replacementStoreID] else {
         throw SyncModePersistenceError.invalidManifest
@@ -64,10 +63,7 @@ extension SwiftDataSyncModePersistence {
           try FileManager.default.removeItem(at: storeRoot)
         }
         value.stores.removeAll { $0.id == store.id }
-        if value.transition?.candidateStoreID == store.id {
-          value.stopTrackingSetupRetryCandidate()
-          value.transition = nil
-        }
+        if value.transition?.candidateStoreID == store.id { value.transition = nil }
       } catch {
         value.attentionReason = .storageFailure
       }
@@ -75,9 +71,7 @@ extension SwiftDataSyncModePersistence {
     // The active pointer is authoritative even when an old enable was interrupted.
     // Keep every ready store on disk and discard only the retired transport's work.
     if value.transition?.syncProtocol == .retiredText {
-      value.stopTrackingSetupRetryCandidate()
       value.transition = nil
-      value.checkedEnableStoreID = nil
     }
     for index in value.stores.indices where value.stores[index].syncProtocol == .retiredText {
       let store = value.stores[index]
@@ -134,15 +128,8 @@ extension SwiftDataSyncModePersistence {
     guard value.version == 2,
       let active = value.stores.first(where: { $0.id == value.activeStoreID }),
       active.lifecycle == .ready || active.lifecycle == .retired,
-      Set(value.stores.map(\.id)).count == value.stores.count,
-      Set(value.retainedSetupPointerDeletes.map(\.namespace.namespaceKey)).count == value.retainedSetupPointerDeletes.count,
-      value.retainedSetupPointerDeletes.allSatisfy(\.isValid)
+      Set(value.stores.map(\.id)).count == value.stores.count
     else { throw SyncModePersistenceError.invalidManifest }
-    if let checked = value.checkedEnableStoreID {
-      guard checked == active.id, value.transition?.phase == .pointerSwapped,
-        value.transition?.candidateStoreID == checked, active.kind == .iCloudSync
-      else { throw SyncModePersistenceError.invalidManifest }
-    }
     for store in value.stores {
       guard (store.kind == .iCloudSync) == (store.namespace != nil),
         (store.kind == .localOnly || store.quarantinedNamespace == nil),

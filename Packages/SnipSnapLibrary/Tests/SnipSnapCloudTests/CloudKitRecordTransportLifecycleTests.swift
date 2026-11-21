@@ -116,34 +116,6 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertEqual(unconfigured.factory.calls.map(\.receivedEngineState), [false])
     }
 
-    func testProviderUsesDesiredOperationsWhenEngineStillHasStaleDeleteIDs() async throws {
-        for includesPointerSave in [false, true] {
-            let fixture = makeFixture()
-            let transport = fixture.transport
-            let pointer = fixture.recordID("pointer")
-            let payload = fixture.recordID("payload")
-            let unrelated = fixture.recordID("unrelated")
-            var planned: [CloudOutboundOperation] = [.delete(unrelated, base: nil)]
-            if includesPointerSave { planned.append(.save(makeDraft(pointer, "same pointer, new metadata"))) }
-            try await transport.startEngine(state: nil, initialOutbound: .init(operations: planned),
-                outboundAdmission: .init(blockedRecordIDs: [payload]))
-            let engine = try fixture.engine(0)
-            await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
-            try await transport.confirmAllEvents()
-            let pointerID = CloudKitRecordMapper.recordID(for: pointer)
-            let payloadID = CloudKitRecordMapper.recordID(for: payload)
-            let unrelatedID = CloudKitRecordMapper.recordID(for: unrelated)
-            if includesPointerSave { engine.remove(pendingRecordZoneChanges: [.saveRecord(pointerID)]) }
-            engine.add(pendingRecordZoneChanges: [.deleteRecord(pointerID), .deleteRecord(payloadID)])
-            await transport.emit(.willSendChanges, from: engine)
-            XCTAssertTrue(engine.pendingRecordZoneChanges.contains(.deleteRecord(pointerID)))
-            let provided = await transport.nextRecordZoneChangeBatch(scope: .all, from: engine)
-            let batch = try XCTUnwrap(provided)
-            XCTAssertEqual(batch.recordsToSave.map(\.recordID), includesPointerSave ? [pointerID] : [])
-            XCTAssertEqual(batch.recordIDsToDelete, [unrelatedID])
-        }
-    }
-
     // MARK: Automatic cycles
 
     func testAutomaticFetchCycleQueuesOneBatchWithTheLatestEngineStateThenACheckpoint() async throws {
@@ -411,52 +383,6 @@ final class CloudKitRecordTransportLifecycleTests: XCTestCase {
         XCTAssertTrue(sent.items.isEmpty)
         let queuedSend = await transport.headEvent()
         XCTAssertEqual(queuedSend?.id, sent.id)
-    }
-
-    func testExplicitSendAccountErrorReturnsAcceptedDeletesIfTheCycleHasNotAlreadyFinished() async throws {
-        for cycleAlreadyFinished in [false, true] {
-            let fixture = makeFixture()
-            let transport = fixture.transport
-            try await transport.start(state: nil)
-            let engine = try fixture.engine(0)
-            await transport.emit(.willFetchChanges, fixture.zoneFetched(0), .didFetchChanges, from: engine)
-            try await transport.confirmAllEvents()
-
-            let attachmentID = UUID()
-            let pointer = fixture.recordID("a-\(attachmentID.uuidString.lowercased())")
-            let deferred = fixture.recordID("a-\(UUID().uuidString.lowercased())")
-            let offer = CloudOutboundBatch(operations: [.delete(pointer, base: nil), .delete(deferred, base: nil)])
-            let pointerID = CloudKitRecordMapper.recordID(for: pointer)
-            engine.onSend { engine, options in
-                await transport.emit(.willSendChanges, from: engine)
-                engine.remove(pendingRecordZoneChanges: [.deleteRecord(CloudKitRecordMapper.recordID(for: deferred))])
-                let offered = await transport.nextRecordZoneChangeBatch(scope: options.scope, from: engine)
-                XCTAssertEqual(offered?.recordIDsToDelete, [pointerID])
-                await transport.emit(.accountChange, .sentRecordZoneChanges(
-                    savedRecords: [], deletedRecordIDs: [pointerID], failedRecordSaves: [], failedRecordDeletes: []
-                ), from: engine)
-                if cycleAlreadyFinished { await transport.emit(.didSendChanges, from: engine) }
-                throw ckError(.notAuthenticated)
-            }
-
-            let returned = try await transport.send(offer)
-            XCTAssertEqual(returned.databaseEvents, [.failed(nil, .authenticationRequired)])
-            let earlier = await transport.headEvent()
-            let account = try XCTUnwrap(earlier)
-            XCTAssertTrue(account.isAccountChange)
-            let accepted = CloudSetupRetryCapture.acceptedPointerDeletes(in: returned, outbound: offer)
-            XCTAssertEqual(accepted.map { $0.1 }, cycleAlreadyFinished ? [] : [attachmentID])
-            let duplicated = CloudOutboundBatch(operations: offer.operations + [.delete(pointer, base: nil)])
-            XCTAssertTrue(CloudSetupRetryCapture.acceptedPointerDeletes(in: returned, outbound: duplicated).isEmpty)
-
-            // The test can pass the synthetic account event to inspect the queue; setup cannot
-            // do that while the live account check fails.
-            try await transport.confirmApplied(account.id)
-            let next = await transport.headEvent()
-            let head = try XCTUnwrap(next)
-            XCTAssertEqual(head.sentBatch?.items, [.deleted(pointer)])
-            XCTAssertEqual(head.id == returned.id, !cycleAlreadyFinished)
-        }
     }
 
     func testSecondExplicitTransferDuringAnEngineCallThrowsSyncAlreadyRunning() async throws {

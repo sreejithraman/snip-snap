@@ -3,16 +3,10 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 extension CloudFullSyncPersistence {
-  func commitStagedBatch(
-    _ batch: CloudFullBatchCommit, deferredSetupPointerDeletes: [UUID: CloudSetupPointerDelete.Deferral] = [:],
-    setupReplacements: Set<CloudSetupPointerDelete.Replacement> = []
-  ) async throws {
-    let legacyPayloadReplay = deferredSetupPointerDeletes.isEmpty && setupReplacements.isEmpty
-      ? legacyStagedPayloadReplayProof(for: batch) : nil
+  func commitStagedBatch(_ batch: CloudFullBatchCommit) async throws {
     _ = try await library.commitCloudFullBatch(
       batch, resolveAttachmentMetadata: attachmentMetadataRebase(for: batch),
-      deferredSetupPointerDeletes: deferredSetupPointerDeletes, setupReplacements: setupReplacements,
-      legacyPayloadReplay: legacyPayloadReplay
+      legacyPayloadReplay: legacyStagedPayloadReplayProof(for: batch)
     )
   }
 

@@ -118,34 +118,6 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
-  /// Drops an uncommitted plan after its owner has chosen to refetch it.
-  package func discardStagedCloudFullFetch(_ batch: CloudFullBatchCommit) throws {
-    guard batch.storageVersion == 1, let raw = batch.rawBatchData, batch.outboundBindings.isEmpty else {
-      throw CloudFullStorageError.invalidBatchReplay
-    }
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    let id = "\(batch.namespaceKey)|\(batch.batchID.uuidString.lowercased())"
-    guard let current = try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
-      .first(where: { $0.id == id })
-    else { return }
-    guard let envelope = CloudWirePayloadEnvelope.decode(current.payload),
-      envelope.format == .fullRecordV1
-    else { throw CloudFullStorageError.invalidBatchReplay }
-    let staged = try JSONDecoder().decode(CloudFullBatchCommit.self, from: envelope.payload)
-    guard staged.rawBatchData == raw, staged.outboundBindings.isEmpty,
-      try SwiftDataCloudFullOperationReceipts.digest(
-        for: .committedBatch(batch.batchID), namespaceKey: batch.namespaceKey, context: context
-      ) == nil
-    else { throw CloudFullStorageError.invalidBatchReplay }
-    context.delete(current)
-    try afterMutationBeforeSave()
-    try lock.check()
-    try context.save()
-  }
-
   /// Replaces only an uncommitted plan for the same durable raw transport batch.
   package func replaceStagedCloudFullBatch(_ batch: CloudFullBatchCommit) throws {
     guard batch.storageVersion == 1, let raw = batch.rawBatchData else {

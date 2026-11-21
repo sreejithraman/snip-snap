@@ -14,17 +14,6 @@ package struct CloudSnipMergeFields: Codable, Equatable, Sendable {
   package var pinnedAt: Date?
   package var placement: CloudSnipPlacement
   package var updatedAt: Date
-  private var sortedSetupSourceAttachmentIDs: [UUID]?
-
-  package var setupSourceAttachmentIDs: Set<UUID>? {
-    get { sortedSetupSourceAttachmentIDs.map(Set.init) }
-    set { sortedSetupSourceAttachmentIDs = newValue?.sorted { $0.uuidString < $1.uuidString } }
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case id, requestID, createdAt, originRaw, text, source, isDone, pinnedAt, placement, updatedAt
-    case sortedSetupSourceAttachmentIDs = "setupSourceAttachmentIDs"
-  }
 
   package init(
     id: UUID,
@@ -212,38 +201,26 @@ package enum CloudThreeWayMerge {
     local: CloudSnipMergeFields,
     server: CloudSnipMergeFields
   ) throws -> CloudSnipMergeResult {
-    try snip(bases: (base, base), local: local, server: server)
-  }
-
-  static func snip(
-    bases: (local: CloudSnipMergeFields, server: CloudSnipMergeFields),
-    local: CloudSnipMergeFields,
-    server: CloudSnipMergeFields
-  ) throws -> CloudSnipMergeResult {
-    guard metadata(local) == metadata(bases.local),
-      metadata(server) == metadata(bases.server),
-      local.id == server.id
-    else {
+    let baseMetadata = (base.id, base.requestID, base.createdAt, base.originRaw)
+    guard metadata(local) == baseMetadata, metadata(server) == baseMetadata else {
       throw CloudMergeError.immutableMetadata
     }
 
-    let text = field(\.text, bases: bases, local: local, server: server)
-    let source = field(\.source, bases: bases, local: local, server: server)
-    let pinnedAt = field(\.pinnedAt, bases: bases, local: local, server: server)
-    let isDone = field(\.isDone, bases: bases, local: local, server: server)
-    let placement = field(\.placement, bases: bases, local: local, server: server)
+    let text = field(base: base.text, local: local.text, server: server.text)
+    let source = field(base: base.source, local: local.source, server: server.source)
+    let pinnedAt = field(base: base.pinnedAt, local: local.pinnedAt, server: server.pinnedAt)
+    let isDone = field(base: base.isDone, local: local.isDone, server: server.isDone)
+    let placement = placement(base: base.placement, local: local.placement, server: server.placement)
     var conflictFields: Set<CloudSnipConflictField> = []
     if text.conflict { conflictFields.insert(.text) }
     if source.conflict { conflictFields.insert(.source) }
     if isDone.conflict { conflictFields.insert(.isDone) }
-    if placement.conflict, local.placement.listID != server.placement.listID {
-      conflictFields.insert(.placement)
-    }
+    if placement.conflict { conflictFields.insert(.placement) }
     let merged = CloudSnipMergeFields(
-      id: server.id,
-      requestID: server.requestID,
-      createdAt: server.createdAt,
-      originRaw: server.originRaw,
+      id: base.id,
+      requestID: base.requestID,
+      createdAt: base.createdAt,
+      originRaw: base.originRaw,
       text: text.value,
       source: source.value,
       isDone: isDone.value,
@@ -263,21 +240,17 @@ package enum CloudThreeWayMerge {
     local: CloudListMergeFields,
     server: CloudListMergeFields
   ) throws -> CloudListMergeResult {
-    try list(bases: (base, base), local: local, server: server)
-  }
-
-  static func list(
-    bases: (local: CloudListMergeFields, server: CloudListMergeFields),
-    local: CloudListMergeFields,
-    server: CloudListMergeFields
-  ) throws -> CloudListMergeResult {
-    guard local.id == bases.local.id, server.id == bases.server.id, local.id == server.id else {
+    guard local.id == base.id, server.id == base.id else {
       throw CloudMergeError.immutableMetadata
     }
-    let desiredName = field(\.desiredName, bases: bases, local: local, server: server)
-    let systemImage = field(\.systemImage, bases: bases, local: local, server: server)
-    let color = field(\.color, bases: bases, local: local, server: server)
-    let orderKey = field(\.orderKey, bases: bases, local: local, server: server).value
+    let desiredName = field(
+      base: base.desiredName, local: local.desiredName, server: server.desiredName)
+    let systemImage = field(
+      base: base.systemImage, local: local.systemImage, server: server.systemImage)
+    let color = field(
+      base: base.color, local: local.color, server: server.color)
+    let orderKey = order(
+      base: base.orderKey, local: local.orderKey, server: server.orderKey)
     var conflictFields: Set<CloudListConflictField> = []
     if desiredName.conflict { conflictFields.insert(.desiredName) }
     if systemImage.conflict { conflictFields.insert(.systemImage) }
@@ -303,17 +276,37 @@ package enum CloudThreeWayMerge {
     (value.id, value.requestID, value.createdAt, value.originRaw)
   }
 
-  private static func field<Fields, Value: Equatable>(
-    _ keyPath: KeyPath<Fields, Value>,
-    bases: (local: Fields, server: Fields),
-    local: Fields,
-    server: Fields
+  private static func field<Value: Equatable>(
+    base: Value,
+    local: Value,
+    server: Value
   ) -> (value: Value, conflict: Bool) {
-    let localValue = local[keyPath: keyPath]
-    let serverValue = server[keyPath: keyPath]
-    if localValue == serverValue { return (serverValue, false) }
-    if localValue == bases.local[keyPath: keyPath] { return (serverValue, false) }
-    if serverValue == bases.server[keyPath: keyPath] { return (localValue, false) }
-    return (serverValue, true)
+    if local == server { return (local, false) }
+    if local == base { return (server, false) }
+    if server == base { return (local, false) }
+    return (server, true)
+  }
+
+  private static func placement(
+    base: CloudSnipPlacement,
+    local: CloudSnipPlacement,
+    server: CloudSnipPlacement
+  ) -> (value: CloudSnipPlacement, conflict: Bool) {
+    if local == server { return (local, false) }
+    if local == base { return (server, false) }
+    if server == base { return (local, false) }
+    if local.listID == server.listID { return (server, false) }
+    return (server, true)
+  }
+
+  private static func order(
+    base: SnipOrderKey,
+    local: SnipOrderKey,
+    server: SnipOrderKey
+  ) -> SnipOrderKey {
+    if local == server { return local }
+    if local == base { return server }
+    if server == base { return local }
+    return server
   }
 }

@@ -228,18 +228,13 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
     return try await download(attachmentID: attachmentID)
   }
 
-  /// Promotes attachments into durable local storage, downloading cache misses first.
+  /// Promotes every attachment into durable local storage, downloading cache misses first.
   /// Returns whether any missing bytes had to be recovered from CloudKit.
-  package func preserveAllAttachmentsForLocalCopy(
-    excluding attachmentIDsWithLocalBytes: Set<UUID> = [],
-    removedAttachmentIDsBySnip: [UUID: Set<UUID>] = [:]
-  ) async throws -> Bool {
+  package func preserveAllAttachmentsForLocalCopy() async throws -> Bool {
     let snapshot = try await library.checkedSnapshot(sortedBy: .manual)
-    let attachmentIDs = snapshot.snips.flatMap { snip in
-      snip.attachments.map(\.id).filter { removedAttachmentIDsBySnip[snip.id]?.contains($0) != true }
-    }
+    let attachmentIDs = snapshot.snips.flatMap(\.attachments).map(\.id)
     var recoveredMissingBytes = false
-    for attachmentID in attachmentIDs where !attachmentIDsWithLocalBytes.contains(attachmentID) {
+    for attachmentID in attachmentIDs {
       // Re-evaluate each entry because an earlier download may evict a later one.
       let isReady = try await library.materializeCloudAttachmentForLocalCopy(
         namespaceKey: namespaceKey,

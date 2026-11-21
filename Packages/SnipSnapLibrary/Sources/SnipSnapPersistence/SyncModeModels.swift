@@ -172,7 +172,6 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
   package var quarantinedNamespace: ICloudSyncNamespaceBinding?
   package var revision: UInt64
   package var lifecycle: SyncModeStoreLifecycle
-  var setupRetryHistory: CloudSetupRetryHistory?
 
   package init(
     id: UUID,
@@ -196,7 +195,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, kind, namespace, relativeRoot, syncProtocol, quarantinedNamespace
-    case revision, lifecycle, setupRetryHistory
+    case revision, lifecycle
   }
 
   package init(from decoder: any Decoder) throws {
@@ -215,10 +214,6 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
     )
     revision = try values.decode(UInt64.self, forKey: .revision)
     lifecycle = try values.decode(SyncModeStoreLifecycle.self, forKey: .lifecycle)
-    setupRetryHistory = try values.decodeIfPresent(
-      CloudSetupRetryHistory.self,
-      forKey: .setupRetryHistory
-    )
   }
 }
 

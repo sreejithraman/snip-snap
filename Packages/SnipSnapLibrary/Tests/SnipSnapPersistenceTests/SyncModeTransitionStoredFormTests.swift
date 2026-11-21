@@ -6,6 +6,36 @@ import XCTest
 /// Pins the stored `transition` object in `activation.json`. Older and newer builds read each
 /// other's manifests, so these tests compare stored JSON, not the Swift type's fields.
 final class SyncModeTransitionStoredFormTests: XCTestCase {
+  func testManifestDecodesWithRetiredSetupRetryKeys() throws {
+    let legacy = """
+      {
+        "version": 2,
+        "activeStoreID": "\(ID.sourceStore)",
+        "stores": [{
+          "id": "\(ID.sourceStore)",
+          "kind": "localOnly",
+          "relativeRoot": "stores/localOnly-\(ID.sourceStore.uuidString.lowercased())",
+          "revision": 3,
+          "lifecycle": "ready",
+          "setupRetryHistory": {"namespaces": [], "trackedCandidateStoreID": "\(ID.candidateStore)"}
+        }],
+        "retainedSetupPointerDeletes": [],
+        "checkedEnableStoreID": "\(ID.candidateStore)"
+      }
+      """
+    let manifest = try JSONDecoder().decode(
+      SwiftDataSyncModePersistence.Manifest.self, from: Data(legacy.utf8)
+    )
+    try SwiftDataSyncModePersistence.validate(manifest)
+    XCTAssertEqual(manifest.activeStoreID, ID.sourceStore)
+    XCTAssertEqual(manifest.stores.first?.revision, 3)
+
+    let rewritten = String(decoding: try JSONEncoder().encode(manifest), as: UTF8.self)
+    XCTAssertFalse(rewritten.contains("setupRetryHistory"))
+    XCTAssertFalse(rewritten.contains("retainedSetupPointerDeletes"))
+    XCTAssertFalse(rewritten.contains("checkedEnableStoreID"))
+  }
+
   // MARK: Golden round trip
 
   func testEveryStoredTransitionShapeRoundTripsUnchanged() throws {
@@ -308,45 +338,6 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
       ],
       after: "restart after first-send failure"
     )
-  }
-
-  func testLegacyReadyCandidateWithoutSendIDsPreservesRetryEvidenceThroughCancel() async throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-    _ = try await persistence.beginTransition(to: .iCloudSync, namespace: Self.binding)
-
-    let tracked = try SwiftDataSyncModePersistence(rootURL: root)
-    let trackedEvidence = await tracked.setupRetryEvidence(namespace: Self.binding)
-    XCTAssertNil(trackedEvidence)
-
-    // A legacy list-only send could return to candidateReady with no send attempt or snip IDs.
-    let manifestURL = root.appendingPathComponent("activation.json")
-    var legacy = try JSONDecoder().decode(
-      SwiftDataSyncModePersistence.Manifest.self,
-      from: Data(contentsOf: manifestURL)
-    )
-    let sourceIndex = try XCTUnwrap(legacy.stores.firstIndex { $0.id == legacy.activeStoreID })
-    legacy.stores[sourceIndex].setupRetryHistory = nil
-    try JSONEncoder().encode(legacy).write(to: manifestURL, options: .atomic)
-
-    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
-    try await reopened.cancelPendingICloudEnable()
-    let evidence = await reopened.setupRetryEvidence(namespace: Self.binding)
-    let list = CloudSetupRetryRecordKey(
-      reference: try XCTUnwrap(Self.listOperation.reference),
-      identity: Self.listOperation.recordIdentity
-    )
-    XCTAssertTrue(try XCTUnwrap(evidence).requiresRecovery(for: list))
-
-    let otherGeneration = ICloudSyncNamespaceBinding(
-      scope: Self.binding.scope,
-      accountLineage: Self.binding.accountLineage,
-      generation: UUID(),
-      zones: Self.binding.zones
-    )
-    let otherEvidence = await reopened.setupRetryEvidence(namespace: otherGeneration)
-    XCTAssertNil(otherEvidence)
   }
 
   func testReopenAtSourceFrozenAwaitsCaptureUntilTheRetryFetchSettles() async throws {
