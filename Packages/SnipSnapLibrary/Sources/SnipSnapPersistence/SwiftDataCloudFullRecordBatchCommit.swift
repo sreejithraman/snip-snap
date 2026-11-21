@@ -259,6 +259,7 @@ extension SwiftDataSnipLibrary {
     }
     do {
       var newSnipIDs: Set<UUID> = []
+      var snipDeletions: [CloudFullLocalMutation] = []
       for change in batch.recoveryChanges {
         try lock.check()
         try Self.applyFullRecoveryChange(change, namespaceKey: batch.namespaceKey, context: context)
@@ -314,7 +315,12 @@ extension SwiftDataSnipLibrary {
               context: context
             )
           }
-          try Self.applyLocalMutation(item.localMutation, context: context)
+          switch item.localMutation {
+          case .removeSnip, .recoverDeletedSnip:
+            snipDeletions.append(item.localMutation)
+          default:
+            try Self.applyLocalMutation(item.localMutation, context: context)
+          }
           continue
         }
         if value.reference.kind == .snip, value.dependencyListID == nil {
@@ -478,8 +484,12 @@ extension SwiftDataSnipLibrary {
         setupReplacements: setupReplacements,
         context: context
       )
+      for mutation in snipDeletions {
+        try lock.check()
+        try Self.applyLocalMutation(mutation, context: context)
+      }
       try lock.check()
-      try materializeCloudAttachments(
+      try materializeFetchedAttachments(
         namespaceKey: batch.namespaceKey,
         refreshedAttachmentIDs: refreshedAttachmentIDs,
         newSnipIDs: newSnipIDs,

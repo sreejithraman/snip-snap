@@ -137,17 +137,33 @@ struct CloudFullBatchPlanner {
     }
     var attachmentTransitions: [CloudAttachmentTransition] = []
     var resolvedFetchIDs: Set<CloudRecordID> = []
-    for normalizedItem in results {
+    let entityResults = try results.filter { normalizedItem in
       let result = normalizedItem.fetchResult
       switch try attachmentPlanner.reduce(result) {
       case .unhandled:
-        break
+        return true
       case .handled(let transition):
         if case .record(let snapshot) = result { resolvedFetchIDs.insert(snapshot.id) }
         if case .deleted(let id) = result { resolvedFetchIDs.insert(id) }
         if let transition { attachmentTransitions.append(transition) }
-        continue
+        return false
       }
+    }
+    let publications = Dictionary(uniqueKeysWithValues: attachmentStorage.publications.map {
+      ($0.metadata.attachmentID, $0)
+    })
+    let deletedMetadata = Set(attachmentTransitions.compactMap { transition -> CloudTextStorageIdentity? in
+      if case .remoteMetadataDeleted(let identity) = transition { return identity }
+      return nil
+    })
+    let incomingParents = Dictionary(attachmentTransitions.compactMap { transition -> (UUID, UUID)? in
+      if case .remoteMetadataAccepted(let metadata, _, _, _) = transition {
+        return (metadata.attachmentID, metadata.snipID)
+      }
+      return nil
+    }, uniquingKeysWith: { _, last in last })
+    for normalizedItem in entityResults {
+      let result = normalizedItem.fetchResult
       if case .saved(let snapshot) = normalizedItem {
         if let item = try Self.savedItem(snapshot, accepted: byReference) {
           items.append(item)
@@ -176,7 +192,10 @@ struct CloudFullBatchPlanner {
           accepted,
           namespaceKey: namespaceKey,
           local: local,
-          hasPendingDelete: pendingDeletes[accepted.reference] != nil
+          hasPendingDelete: pendingDeletes[accepted.reference] != nil,
+          publications: publications,
+          deletedMetadata: deletedMetadata,
+          incomingParents: incomingParents
         )
         items.append(plan.item)
         if pendingDeletes[accepted.reference]?.identity == accepted.identity {
@@ -647,20 +666,38 @@ struct CloudFullBatchPlanner {
     _ accepted: CloudAcceptedEntity,
     namespaceKey: CloudSyncNamespaceKey,
     local: SnipLibrarySnapshot,
-    hasPendingDelete: Bool
+    hasPendingDelete: Bool,
+    publications: [UUID: CloudAttachmentPublication],
+    deletedMetadata: Set<CloudTextStorageIdentity>,
+    incomingParents: [UUID: UUID]
   ) throws -> DeletedRecordPlan {
     let input = CloudFullSyncPersistence.acceptedInput(accepted)
     switch accepted.reference.kind {
     case .snip:
       let current = local.snips.first { $0.id == accepted.reference.domainID }
       let acceptedRecord = try CloudFullSyncPersistence.snipRecord(accepted)
+      let remainingAttachments = current?.attachments.filter { attachment in
+        if let parent = incomingParents[attachment.id], parent != current?.id { return false }
+        return publications[attachment.id].map { !deletedMetadata.contains($0.metadataIdentity) } ?? true
+      } ?? []
+      // A remote removal can leave gaps in the accepted positions.
+      let positions = remainingAttachments.compactMap { publications[$0.id]?.metadata.position }
+      let hasLocalReorder = zip(positions, positions.dropFirst()).contains { $0 > $1 }
+      let hasLocalAttachmentEdits = remainingAttachments.contains { attachment in
+        guard let publication = publications[attachment.id] else { return true }
+        let metadata = publication.metadata
+        return !publication.metadataAccepted || !publication.isLocallyPresent
+          || metadata.snipID != current?.id
+          || metadata.fileName != attachment.fileName || metadata.contentType != attachment.contentType
+          || metadata.byteCount != attachment.byteCount
+      }
       let shouldRecover = try current.map { snip in
         if hasPendingDelete { return false }
         return !CloudFullSyncPersistence.sameSnipFields(
           try CloudFullSyncPersistence.snipFields(acceptedRecord),
           CloudFullSyncPersistence.snipFields(snip, accepted: acceptedRecord)
         )
-          || !snip.attachments.isEmpty
+          || hasLocalAttachmentEdits || hasLocalReorder
       } ?? false
       let key = CloudConflictKey.make(
         namespaceKey: namespaceKey,
@@ -683,7 +720,7 @@ struct CloudFullBatchPlanner {
           isDone: snip.isDone,
           pinnedAt: snip.pinnedAt,
           manualSortKey: snip.manualSortKey,
-          attachments: snip.attachments
+          attachments: remainingAttachments
         )
       }
       return DeletedRecordPlan(item: CloudFullBatchItem(
