@@ -861,7 +861,7 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     let failing = try failingLibrary(storeURL: storeURL)
 
     do {
-      try await failing.quarantineCloudNamespaceState(namespaceKey: namespace)
+      try await failing.promoteAvailableCloudAttachments(namespaceKey: namespace)
       XCTFail("The injected save failure must abort iCloud data reset recovery.")
     } catch is InjectedSaveFailure {}
 
@@ -877,8 +877,9 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: firstCache), firstBytes)
     XCTAssertEqual(try Data(contentsOf: secondCache), secondBytes)
 
-    try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+    try await library.promoteAvailableCloudAttachments(namespaceKey: namespace)
 
+    try await library.clearCloudSyncState(namespaceKey: namespace, afterReset: true)
     let isolated = try await attachmentStorage(library)
     XCTAssertTrue(isolated.publications.isEmpty)
     XCTAssertTrue(isolated.cleanups.isEmpty)
@@ -890,8 +891,6 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
       XCTAssertEqual(keptURL.path, durableCopyURL(storeURL: storeURL, metadata: metadata).path)
       XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
     }
-    XCTAssertFalse(FileManager.default.fileExists(atPath: firstCache.path))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: secondCache.path))
   }
 
   // MARK: Downloads while metadata waits to sync
@@ -1108,7 +1107,7 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
 
     do {
-      try await reopened.quarantineCloudNamespaceState(namespaceKey: namespace)
+      try await reopened.promoteAvailableCloudAttachments(namespaceKey: namespace)
     } catch {
       return XCTFail(
         "A partial file from an interrupted durable copy must not block iCloud data reset recovery: \(error)"
@@ -1177,7 +1176,7 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
 
     do {
-      try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+      try await library.promoteAvailableCloudAttachments(namespaceKey: namespace)
       XCTFail("iCloud data reset recovery must not replace bytes another attachment references.")
     } catch {
       XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)
@@ -1246,7 +1245,7 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertTrue(downloaded.attachment.relativePath.hasPrefix("CloudDownloads/"))
 
     do {
-      try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+      try await library.promoteAvailableCloudAttachments(namespaceKey: namespace)
       XCTFail("iCloud data reset recovery must not replace a differently cased reference.")
     } catch {
       XCTAssertEqual(error as? SnipLibraryError, .attachmentCopyFailed)

@@ -1191,15 +1191,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(app.buttons["import-backup"].exists)
     }
 
-    func testEncryptedDataResetTurnsSyncOffWithoutOfferingARecoveryUpload() {
+    func testEncryptedDataResetShowsThatTheLocalLibraryWasKept() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true, withEncryptedReset: true)
         openSettings(in: app)
 
         XCTAssertTrue(app.staticTexts["Sync turned off"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["encrypted-reset-restore"].exists)
-        XCTAssertFalse(app.buttons["encrypted-reset-start-empty"].exists)
-        XCTAssertFalse(app.buttons["encrypted-reset-keep-off"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "your library is kept on this device"
+        )).firstMatch.exists)
         XCTAssertTrue(app.switches["icloud-sync-toggle"].value as? String == "0")
     }
 

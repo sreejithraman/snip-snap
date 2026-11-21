@@ -15,7 +15,7 @@ private struct StoredSnipRecoveryReview: Codable, Equatable {
 }
 
 extension SwiftDataSnipLibrary {
-  private static let recoveryReviewPrefix = "review-recovery-"
+  static let recoveryReviewPrefix = "review-recovery-"
 
   static func insertRecoveryReviewIfNeeded(
     _ recovery: SnipRecoveryRecord,

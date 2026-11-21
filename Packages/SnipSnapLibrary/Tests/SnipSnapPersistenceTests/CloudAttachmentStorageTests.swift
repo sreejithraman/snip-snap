@@ -556,18 +556,17 @@ final class CloudAttachmentStorageTests: XCTestCase {
       withDestinationURL: actualNamespaceRoot
     )
 
-    try await library.quarantineCloudNamespaceState(namespaceKey: namespace)
+    try await library.promoteAvailableCloudAttachments(namespaceKey: namespace)
 
     let snapshot = await library.snapshot(sortedBy: .manual)
     let keptURL = try XCTUnwrap(snapshot.attachmentURLs[attachmentID])
+    try await library.clearCloudSyncState(namespaceKey: namespace, afterReset: true)
     let cloudState = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespace)
     XCTAssertFalse(keptURL.path.contains("CloudDownloads"))
     XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
     XCTAssertTrue(cloudState.publications.isEmpty)
     XCTAssertTrue(cloudState.cleanups.isEmpty)
     XCTAssertTrue(cloudState.cacheEntries.isEmpty)
-    XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: actualNamespaceRoot.path))
   }
 
   func testCacheInstallDoesNotRequireDirectoryReadAccessToAStagedFile() async throws {

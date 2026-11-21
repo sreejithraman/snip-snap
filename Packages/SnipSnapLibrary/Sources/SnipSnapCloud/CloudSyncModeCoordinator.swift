@@ -188,9 +188,9 @@ package actor ICloudSyncModeCoordinator {
         let store = try await persistence.snapshot().activeStore
         if let binding = store.namespace {
             if case .noAccount = accountState {
-                try await persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountSignedOut)
+                try await persistence.keepCloudCacheLocally(storeID: store.id, namespace: binding, reason: .accountSignedOut)
             } else if case .available(let lineage) = accountState, binding.accountLineage != lineage {
-                try await persistence.keepCloudCacheLocally(storeID: store.id, reason: .accountChanged)
+                try await persistence.keepCloudCacheLocally(storeID: store.id, namespace: binding, reason: .accountChanged)
             }
         }
         return try await statusUnchecked(accountState: accountState)
@@ -383,8 +383,7 @@ package actor ICloudSyncModeCoordinator {
         if choice == .useCurrentCacheAfterStaleDataWarning {
             let source = try await persistence.libraryForTransition(storeID: initial.activeStore.id)
             let stored = try await source.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
-            // A blocked collection has durable evidence against reusing its cache.
-            // A local copy would drop that evidence and could later be uploaded.
+            // Do not transfer an unresolved cloud collection.
             if stored.namespaceState.phase == .blocked {
                 try await persistence.recordAttention(.enrollmentBlocked)
                 return try await statusUnchecked()

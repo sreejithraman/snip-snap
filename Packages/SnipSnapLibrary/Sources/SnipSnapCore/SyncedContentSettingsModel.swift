@@ -104,7 +104,7 @@ public enum SyncedContentSyncIssue: Codable, Equatable, Sendable {
     case .setupBlocked(let message):
       String(localized: "\(message) Remove or replace these attachments, then retry sync.", bundle: .main)
     case .iCloudDataReset:
-      String(localized: "iCloud deleted Snip Snap’s synced content. Sync is off so old data won’t upload again.", bundle: .main)
+      String(localized: "iCloud reset Snip Snap’s synced data. Sync is off, and your library is kept on this device.", bundle: .main)
     case .iCloudAccountChanged:
       String(localized: "The Apple Account changed. Sync is off and your snips are kept on this device.", bundle: .main)
     case .appDataIssue:

@@ -23,6 +23,7 @@ extension SwiftDataSyncModePersistence {
       }
       value.transition = nil
     }
+    try recoverInterruptedReset(&value, rootURL: rootURL, storeRoots: storeRoots)
     try recoverLegacyAccountCopy(&value, storeRoots: storeRoots)
     if let activeIndex = value.stores.firstIndex(where: { $0.id == value.activeStoreID }),
       value.stores[activeIndex].lifecycle == .creating
@@ -79,6 +80,78 @@ extension SwiftDataSyncModePersistence {
         )
       }
       value.stores[index].syncProtocol = .fullRecordV1
+    }
+  }
+
+  /// Reads the reset marker written by pre-#122 builds. A newer interrupted
+  /// purge can instead leave the source marked deleting with reset rows in it.
+  private struct LegacyCollectionState: Decodable {
+    struct Reset: Decodable {
+      struct Namespace: Decodable {
+        let cloudScope: String
+        let accountLineage: String
+        let generation: UUID
+        let zones: Set<ICloudSyncZoneBinding>
+
+        var binding: ICloudSyncNamespaceBinding {
+          ICloudSyncNamespaceBinding(
+            scope: cloudScope, accountLineage: accountLineage, generation: generation, zones: zones
+          )
+        }
+      }
+      let priorNamespace: Namespace
+      let recoveryStoreID: UUID?
+    }
+    let encryptedDataReset: Reset?
+  }
+
+  static func clearLegacyCloudReset(
+    at rootURL: URL, matching namespace: ICloudSyncNamespaceBinding, storeID: UUID
+  ) throws {
+    let url = rootURL.appendingPathComponent("cloud-collection-state.json")
+    guard let data = try? Data(contentsOf: url),
+      let reset = try? JSONDecoder().decode(LegacyCollectionState.self, from: data).encryptedDataReset,
+      reset.priorNamespace.binding == namespace,
+      reset.recoveryStoreID == nil || reset.recoveryStoreID == storeID,
+      var fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return }
+    fields.removeValue(forKey: "encryptedDataReset")
+    try DurableFile.write(JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]), to: url)
+  }
+
+  private static func recoverInterruptedReset(
+    _ manifest: inout Manifest, rootURL: URL, storeRoots: [UUID: URL]
+  ) throws {
+    guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }),
+      manifest.accountIsolation == nil
+    else { return }
+    let stateURL = rootURL.appendingPathComponent("cloud-collection-state.json")
+    let reset = (try? JSONDecoder().decode(LegacyCollectionState.self,
+      from: Data(contentsOf: stateURL)))?.encryptedDataReset
+    if let reset, active.namespace == reset.priorNamespace.binding,
+      reset.recoveryStoreID == nil || reset.recoveryStoreID == active.id
+    {
+      manifest.attentionReason = .namespaceChanged
+      return
+    }
+    guard active.kind == .localOnly, active.quarantinedNamespace == nil else { return }
+    for index in manifest.stores.indices.reversed() {
+      let store = manifest.stores[index]
+      guard let namespace = store.namespace, let root = storeRoots[store.id],
+        store.lifecycle == .recovery || store.lifecycle == .deleting
+      else { continue }
+      let file = root.appendingPathComponent("snips.store")
+      guard FileManager.default.fileExists(atPath: file.path) else { continue }
+      let hasLegacyMarker = reset?.priorNamespace.binding == namespace
+        && (reset?.recoveryStoreID == nil || reset?.recoveryStoreID == store.id)
+      let hasRecordedPurge = store.lifecycle == .deleting
+        && SwiftDataSnipLibrary.StoreRetirementMarkers(storeURL: file).phase != .writable
+        && ((try? SwiftDataSnipLibrary.hasPendingCloudReset(at: file)) == true)
+      guard hasLegacyMarker || hasRecordedPurge else { continue }
+      manifest.accountIsolation = LegacyAccountCopy(id: store.id, storeID: store.id,
+        replacementStoreID: active.id)
+      manifest.attentionReason = .namespaceChanged
+      return
     }
   }
 

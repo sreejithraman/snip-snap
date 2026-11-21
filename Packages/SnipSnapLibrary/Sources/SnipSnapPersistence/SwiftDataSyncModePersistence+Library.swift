@@ -47,6 +47,7 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
     try await finishLegacyAccountCopy()
+    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -56,6 +57,7 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedArchive() async throws -> SnipLibraryArchive {
     try await finishLegacyAccountCopy()
+    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -66,6 +68,7 @@ extension SwiftDataSyncModePersistence {
     in scope: SnipRecoveryScope
   ) async throws -> SnipRecoverySnapshot {
     try await finishLegacyAccountCopy()
+    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -97,6 +100,7 @@ extension SwiftDataSyncModePersistence {
     _ operation: @escaping @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
     try await finishLegacyAccountCopy()
+    try await finishKeptReset()
     await finishRecoveryQuarantines()
     if activeStoreActivity == .cloudMutation {
       diagnostics.record(.writeAdmission(.started, reason: .syncBusy))

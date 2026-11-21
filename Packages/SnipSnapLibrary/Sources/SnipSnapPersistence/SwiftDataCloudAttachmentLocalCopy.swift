@@ -3,83 +3,17 @@ import SnipSnapCore
 import SwiftData
 
 extension SwiftDataSnipLibrary {
-  /// Moves any available downloaded bytes into durable local attachment storage, then removes
-  /// namespace-bound attachment queues, shadows, uploads, staging files, and cache rows.
-  package func quarantineCloudNamespaceState(namespaceKey: CloudSyncNamespaceKey) throws {
-    let namespaceKey = namespaceKey.rawValue
-    guard let container else { throw SnipLibraryError.storeUnavailable }
-    let lock = try SnipStoreFileLock(url: lockURL)
-    defer { withExtendedLifetime(lock) {} }
-    let context = Self.makeContext(container: container)
-    let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
-    let publications = Dictionary(uniqueKeysWithValues: try Self.cloudAttachmentPublications(
-      namespaceKey: namespaceKey,
-      context: context
-    ).map { ($0.attachmentID, $0) })
-    var durableCopies: [CloudAttachmentDurableCopy] = []
-    do {
-      for attachment in loaded.attachments where attachment.relativePath.hasPrefix("CloudDownloads/") {
-        try lock.check()
-        let source = try attachmentURL(relativePath: attachment.relativePath)
-        guard FileManager.default.fileExists(atPath: source.path),
-          let publication = publications[attachment.id]
-        else { continue }
-        let copy = try copyCloudAttachmentToDurableStorage(
-          attachmentID: attachment.id,
-          fileName: attachment.fileName,
-          source: source,
-          expectedByteCount: publication.byteCount,
-          expectedSHA256: publication.sha256,
-          storedAttachments: loaded.attachments
-        )
-        durableCopies.append(copy)
-        attachment.relativePath = copy.relativePath
-      }
-      for row in try Self.cloudAttachmentPublications(
-        namespaceKey: namespaceKey,
-        context: context
-      ) { context.delete(row) }
-      for row in try Self.cloudAttachmentCleanups(namespaceKey: namespaceKey, context: context) {
-        context.delete(row)
-      }
-      for row in try Self.cloudAttachmentCacheEntries(
-        namespaceKey: namespaceKey,
-        context: context
-      ) { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudEngineState>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudStagedBatch>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudRecoveryEvent>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudNamespaceState>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudEntityRecord>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudFullEnrollment>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudDormantBaseRecord>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudMappingQuarantine>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudFullBatchReceipt>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      for row in try context.fetch(FetchDescriptor<StoredCloudPendingDelete>())
-        where row.namespaceKey == namespaceKey { context.delete(row) }
-      try afterMutationBeforeSave()
-      try lock.check()
-      try context.save()
-    } catch {
-      context.rollback()
-      for copy in durableCopies.reversed() { copy.rollBack() }
-      throw error
+  /// Promotes every verified download still available on the device. A missing
+  /// download keeps its attachment metadata; a failed durable copy stops the transition.
+  package func promoteAvailableCloudAttachments(namespaceKey: CloudSyncNamespaceKey) throws {
+    let snapshot = try checkedSnapshot(sortedBy: .manual)
+    for attachment in snapshot.snips.flatMap(\.attachments)
+      where attachment.relativePath.hasPrefix("CloudDownloads/")
+    {
+      _ = try materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespaceKey, attachmentID: attachment.id, allowingMissingPublication: true
+      )
     }
-    try lock.check()
-    try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
   }
 
   /// Makes a durable copy of the bytes present on this device. Cloud-only
@@ -117,7 +51,8 @@ extension SwiftDataSnipLibrary {
   /// Returns `false` only when the bytes are unavailable here but recoverable from CloudKit.
   package func materializeCloudAttachmentForLocalCopy(
     namespaceKey: CloudSyncNamespaceKey,
-    attachmentID: UUID
+    attachmentID: UUID,
+    allowingMissingPublication: Bool = false
   ) throws -> Bool {
     let namespaceKey = namespaceKey.rawValue
     guard let container else { throw SnipLibraryError.storeUnavailable }
@@ -134,6 +69,7 @@ extension SwiftDataSnipLibrary {
     ).first(where: { $0.attachmentID == attachmentID })
     guard let publication else {
       guard !attachment.relativePath.hasPrefix("CloudDownloads/") else {
+        if allowingMissingPublication { return false }
         throw SnipLibraryError.attachmentCopyFailed
       }
       let durable = try attachmentURL(relativePath: attachment.relativePath)

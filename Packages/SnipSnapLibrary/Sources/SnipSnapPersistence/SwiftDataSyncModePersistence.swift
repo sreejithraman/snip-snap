@@ -4,13 +4,14 @@ import SnipSnapCore
 public enum SyncModeActivationManifestReader {
   public enum ICloudStartupState: Equatable, Sendable {
     case localOnly
+    case keptAfterReset
     case settingUp(ICloudSyncNamespaceBinding)
     case needsAttention(ICloudSyncNamespaceBinding)
     case active(ICloudSyncNamespaceBinding)
 
     public var namespace: ICloudSyncNamespaceBinding? {
       switch self {
-      case .localOnly: nil
+      case .localOnly, .keptAfterReset: nil
       case .settingUp(let value), .needsAttention(let value), .active(let value): value
       }
     }
@@ -98,6 +99,9 @@ public enum SyncModeActivationManifestReader {
       guard manifest.accountIsolation == nil,
         let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID })
       else { return .localOnly }
+      if active.kind == .localOnly, manifest.attentionReason == .namespaceChanged {
+        return .keptAfterReset
+      }
       if active.kind == .iCloudSync, let namespace = active.namespace {
         return .active(namespace)
       }
@@ -196,6 +200,7 @@ package actor SwiftDataSyncModePersistence {
   // Advance before crossing to SwiftData. A mode change checks the revision again
   // when it swaps, so work on a stale source snapshot can never replace an edit.
   var activeStoreRevision: UInt64 = 0
+  var clearedResetStoreID: UUID?
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
@@ -326,6 +331,7 @@ package actor SwiftDataSyncModePersistence {
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     try resolveActivationWrite()
     try await finishLegacyAccountCopy()
+    try await finishKeptReset()
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
@@ -386,7 +392,7 @@ package actor SwiftDataSyncModePersistence {
     }
     if targetKind == .iCloudSync,
       let quarantine = store(id: manifest.activeStoreID)?.quarantinedNamespace,
-      quarantine != namespace
+      quarantine != namespace, manifest.attentionReason != .namespaceChanged
     {
       throw SyncModePersistenceError.namespaceMismatch
     }
@@ -409,7 +415,7 @@ package actor SwiftDataSyncModePersistence {
     var declared = manifest
     declared.stores.append(candidate)
     declared.transition = transition
-    declared.attentionReason = nil
+    if declared.attentionReason != .namespaceChanged { declared.attentionReason = nil }
     try commit(declared)
     do {
       try crashHook(.afterCandidateManifest)
@@ -450,6 +456,7 @@ package actor SwiftDataSyncModePersistence {
     try crashHook(.beforePointerSwap)
     try Task.checkCancellation()
     next.activeStoreID = transition.candidateStoreID
+    if next.attentionReason == .namespaceChanged { next.attentionReason = nil }
     next.stores[try storeIndex(id: transition.sourceStoreID)].lifecycle = .retired
     try publishActivation(next)
     try crashHook(.afterPointerSwap)
@@ -473,7 +480,7 @@ package actor SwiftDataSyncModePersistence {
 
   package func recordAttention(_ reason: ICloudSyncAttentionReason) throws {
     var next = manifest
-    next.attentionReason = reason
+    if next.attentionReason != .namespaceChanged { next.attentionReason = reason }
     try commit(next)
   }
 
@@ -568,93 +575,6 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  /// Replaces the active synced cache and queues its store for deletion.
-  package func discardActiveCloudCollection() async throws {
-    _ = try await discardActiveCloudCollection(matching: nil)
-  }
-
-  package func discardActiveCloudCollection(
-    storeID: UUID, namespace: ICloudSyncNamespaceBinding
-  ) async throws -> UUID? {
-    try await discardActiveCloudCollection(matching: (storeID, namespace))
-  }
-
-  private func discardActiveCloudCollection(
-    matching expected: (UUID, ICloudSyncNamespaceBinding)?
-  ) async throws -> UUID? {
-    if let expected {
-      guard manifest.activeStoreID == expected.0,
-        store(id: expected.0)?.namespace == expected.1
-      else { return nil }
-    }
-    guard manifest.transition == nil,
-      let current = store(id: manifest.activeStoreID),
-      current.kind == .iCloudSync
-    else {
-      if store(id: manifest.activeStoreID)?.kind == .localOnly { return nil }
-      throw SyncModePersistenceError.transitionInProgress
-    }
-    try beginStoreReplacement()
-    defer { finishStoreReplacement() }
-    let original = manifest
-    var candidate = Self.newStore(
-      kind: .localOnly,
-      namespace: nil,
-      syncProtocol: current.syncProtocol
-    )
-    var declared = manifest
-    declared.stores.append(candidate)
-    declared.attentionReason = nil
-    try commit(declared)
-    do {
-      let candidateRoot = storeURL(candidate)
-      _ = try SwiftDataSnipLibrary(
-        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
-        attachmentCacheRootURL: Self.cacheRootURL(
-          base: attachmentCacheRootURL,
-          storeID: candidate.id
-        )
-      )
-      try DurableFile.syncDirectory(candidateRoot)
-      try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
-      let currentLibrary = try libraryForTransition(storeID: current.id)
-      try await writeHook(.beforeStoreRetirement)
-      try await currentLibrary.markReadOnlyRecovery()
-      candidate.lifecycle = .ready
-      var activated = manifest
-      activated.stores[try storeIndex(id: candidate.id)] = candidate
-      activated.stores[try storeIndex(id: current.id)].lifecycle = .deleting
-      activated.activeStoreID = candidate.id
-      try commit(activated)
-      try? cleanupRetiredStores()
-      return candidate.id
-    } catch {
-      if let currentLibrary = try? libraryForTransition(storeID: current.id) {
-        try? await currentLibrary.removeReadOnlyRecoveryMarker()
-      }
-      try commit(original)
-      try? removeStoreFiles(candidate)
-      throw error
-    }
-  }
-
-  /// Queues a prior synced cache for deletion without changing the active library.
-  package func discardInactiveCloudCollection(storeID: UUID) throws {
-    guard storeID != manifest.activeStoreID,
-      let index = manifest.stores.firstIndex(where: { $0.id == storeID })
-    else { return }
-    guard manifest.stores[index].kind == .iCloudSync,
-      manifest.transition?.sourceStoreID != storeID,
-      manifest.transition?.candidateStoreID != storeID,
-      manifest.accountIsolation?.storeID != storeID,
-      manifest.accountIsolation?.replacementStoreID != storeID
-    else { throw SyncModePersistenceError.transitionInProgress }
-    var deleting = manifest
-    deleting.stores[index].lifecycle = .deleting
-    try commit(deleting)
-    try? cleanupRetiredStores()
-  }
-
   func finishRecoveryQuarantines() async {
     for store in manifest.stores where store.lifecycle == .recovery {
       do {
@@ -707,7 +627,7 @@ package actor SwiftDataSyncModePersistence {
       next.stores[index].lifecycle = .deleting
     }
     next.transition = nil
-    next.attentionReason = reason
+    if next.attentionReason != .namespaceChanged { next.attentionReason = reason }
     // Commit before removing any files. A candidate whose files are gone but whose manifest
     // entry survives a failed commit is reopened empty by the next enable.
     try commitRollback(next)

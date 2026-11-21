@@ -81,36 +81,20 @@ package struct CloudCollectionLocalState: Equatable, Sendable {
   package let activeNamespace: CloudSyncNamespace?
   package let cleanupZones: Set<CloudZoneID>
   package let deletionState: CloudCollectionDeletionState
-  package let encryptedDataReset: CloudEncryptedDataReset?
+  package let keptAfterReset: Bool
 
   package init(
     hasSyncedBefore: Bool,
     activeNamespace: CloudSyncNamespace?,
     cleanupZones: Set<CloudZoneID>,
     deletionState: CloudCollectionDeletionState = .none,
-    encryptedDataReset: CloudEncryptedDataReset? = nil
+    keptAfterReset: Bool = false
   ) {
     self.hasSyncedBefore = hasSyncedBefore
     self.activeNamespace = activeNamespace
     self.cleanupZones = cleanupZones
     self.deletionState = deletionState
-    self.encryptedDataReset = encryptedDataReset
-  }
-}
-
-package struct CloudEncryptedDataReset: Codable, Equatable, Sendable {
-  package let id: UUID
-  package let priorNamespace: CloudSyncNamespace
-  package let recoveryStoreID: UUID?
-
-  package init(
-    id: UUID = UUID(),
-    priorNamespace: CloudSyncNamespace,
-    recoveryStoreID: UUID? = nil
-  ) {
-    self.id = id
-    self.priorNamespace = priorNamespace
-    self.recoveryStoreID = recoveryStoreID
+    self.keptAfterReset = keptAfterReset
   }
 }
 
@@ -141,10 +125,9 @@ package protocol CloudCollectionLocalStore: Sendable {
   func stageCleanup(_ zones: Set<CloudZoneID>) async throws
   func finishCleanup(_ zones: Set<CloudZoneID>) async throws
   func adopt(_ namespace: CloudSyncNamespace) async throws
-  func markPurged() async throws
+  func stopAfterDataReset(in namespace: CloudSyncNamespace) async throws -> Bool
   func markDeletionPending() async throws
   func markDeletionCompleted() async throws
-  func beginEncryptedDataReset(from namespace: CloudSyncNamespace) async throws
 }
 
 package enum CloudCollectionFetchResult: Equatable, Sendable {
@@ -241,15 +224,19 @@ package actor CloudCollectionBootstrapper {
     self.reservedZones = reservedZones
   }
 
-  package func activeOrCreate() async throws -> CloudCollectionDescriptor {
-    if let current = try await transport.fetchControl() {
+  package func activeOrCreate(
+    afterReset reset: ICloudSyncNamespaceBinding? = nil
+  ) async throws -> CloudCollectionDescriptor {
+    let current = try await transport.fetchControl()
+    if let current, canUse(current.descriptor, afterReset: reset) {
       try validate(current.descriptor)
       return current.descriptor
     }
     let fresh = makeDescriptor()
     try validate(fresh)
+    guard canUse(fresh, afterReset: reset) else { throw CloudCollectionError.invalidDescriptor }
     try await transport.createZones(fresh.zones)
-    switch try await transport.saveControl(fresh, replacing: nil) {
+    switch try await transport.saveControl(fresh, replacing: current?.version) {
     case .accepted(let accepted):
       try validate(accepted.descriptor)
       return accepted.descriptor
@@ -265,8 +252,19 @@ package actor CloudCollectionBootstrapper {
           // The next generation-gated sync retries the durable cleanup work.
         }
       }
+      guard canUse(winner.descriptor, afterReset: reset) else {
+        throw CloudCollectionError.syncNeedsAttention
+      }
       return winner.descriptor
     }
+  }
+
+  private func canUse(_ descriptor: CloudCollectionDescriptor, afterReset reset: ICloudSyncNamespaceBinding?) -> Bool {
+    guard let reset else { return true }
+    return descriptor.generation != reset.generation
+      && descriptor.zones.allSatisfy { zone in
+        !reset.zones.contains(ICloudSyncZoneBinding(name: zone.name, ownerName: zone.ownerName))
+      }
   }
 
   private func validate(_ descriptor: CloudCollectionDescriptor) throws {
@@ -441,15 +439,11 @@ package actor CloudCollectionCoordinator {
     try beginOperation()
     defer { finishOperation() }
     let local = try await localStore.state()
-    if local.encryptedDataReset != nil {
-      try await localStore.markPurged()
-      return .purged
-    }
+    if local.keptAfterReset { return .requiresEnable }
     guard let control = try await transport.fetchControl() else {
-      if local.activeNamespace != nil {
+      if let active = local.activeNamespace {
         try await beforeReplacingCollection()
-        try await localStore.markPurged()
-        return .purged
+        return try await stopAfterDataReset(in: active)
       }
       return .requiresEnable
     }
@@ -458,7 +452,12 @@ package actor CloudCollectionCoordinator {
       cloudScope: cloudScope,
       accountLineage: accountLineage
     )
-    if local.activeNamespace != remoteNamespace { try await beforeReplacingCollection() }
+    if let active = local.activeNamespace, active != remoteNamespace {
+      try await beforeReplacingCollection()
+      if active.generation == remoteNamespace.generation {
+        return try await stopAfterDataReset(in: active)
+      }
+    }
     try await localStore.finishCleanup(control.descriptor.zones)
     do {
       try await cleanPendingZones(protecting: control.descriptor.zones)
@@ -496,13 +495,11 @@ package actor CloudCollectionCoordinator {
 
     let fetchResult = try await syncDriver.fetch(context(control.descriptor))
     if fetchResult == .purged {
-      try await localStore.markPurged()
-      return .purged
+      return try await stopAfterDataReset(in: remoteNamespace)
     }
     guard let checked = try await transport.fetchControl() else {
       try await beforeReplacingCollection()
-      try await localStore.markPurged()
-      return .purged
+      return try await stopAfterDataReset(in: remoteNamespace)
     }
     try validate(checked.descriptor)
     try await localStore.finishCleanup(checked.descriptor.zones)
@@ -512,6 +509,9 @@ package actor CloudCollectionCoordinator {
     )
     guard checkedNamespace == remoteNamespace else {
       try await beforeReplacingCollection()
+      if remoteNamespace.generation == checkedNamespace.generation {
+        return try await stopAfterDataReset(in: remoteNamespace)
+      }
       return try await adoptRemoteCollection(
         checked.descriptor,
         replacing: remoteNamespace,
@@ -521,8 +521,7 @@ package actor CloudCollectionCoordinator {
     }
     let sendResult = try await syncDriver.send(context(checked.descriptor))
     if sendResult == .purged {
-      try await localStore.markPurged()
-      return .purged
+      return try await stopAfterDataReset(in: remoteNamespace)
     }
     if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
     let state = try await localStore.state()
@@ -562,21 +561,18 @@ package actor CloudCollectionCoordinator {
         case .transfer:
           let fetchResult = try await syncDriver.fetch(context(descriptor))
           if fetchResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return try await stopAfterDataReset(in: namespace)
           }
           fallback = adoptionResult(namespace, fetchResult: fetchResult, settled: false)
         case .retry:
           try await syncDriver.prepareManualRetry(context(descriptor))
           let fetchResult = try await syncDriver.fetch(context(descriptor))
           if fetchResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return try await stopAfterDataReset(in: namespace)
           }
           guard let checked = try await transport.fetchControl() else {
             try await beforeReplacingCollection()
-            try await localStore.markPurged()
-            return .purged
+            return try await stopAfterDataReset(in: namespace)
           }
           try validate(checked.descriptor)
           let checkedNamespace = checked.descriptor.namespace(
@@ -585,14 +581,16 @@ package actor CloudCollectionCoordinator {
           )
           if checkedNamespace != namespace {
             try await beforeReplacingCollection()
+            if checkedNamespace.generation == namespace.generation {
+              return try await stopAfterDataReset(in: namespace)
+            }
             priorNamespace = namespace
             descriptor = checked.descriptor
             continue
           }
           let sendResult = try await syncDriver.send(context(descriptor))
           if sendResult == .purged {
-            try await localStore.markPurged()
-            return .purged
+            return try await stopAfterDataReset(in: namespace)
           }
           fallback = adoptionResult(
             namespace,
@@ -647,9 +645,6 @@ package actor CloudCollectionCoordinator {
   package func enableSync() async throws -> CloudCollectionStatus {
     try beginOperation()
     defer { finishOperation() }
-    if try await localStore.state().encryptedDataReset != nil {
-      try await localStore.markPurged()
-    }
     if let current = try await transport.fetchControl() {
       try validate(current.descriptor)
       try await localStore.finishCleanup(current.descriptor.zones)
@@ -663,8 +658,7 @@ package actor CloudCollectionCoordinator {
       }
       let result = try await syncDriver.fetch(context(current.descriptor))
       if result == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return try await stopAfterDataReset(in: namespace)
       }
       if let issue = result.issue { throw CloudSyncIssueError(issue) }
       return .enabled(namespace)
@@ -686,8 +680,7 @@ package actor CloudCollectionCoordinator {
       try await localStore.finishCleanup(accepted.descriptor.zones)
       let fetchResult = try await syncDriver.fetch(context(accepted.descriptor))
       if fetchResult == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return try await stopAfterDataReset(in: namespace)
       }
       if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: accepted.descriptor.zones)
@@ -701,13 +694,18 @@ package actor CloudCollectionCoordinator {
       try await localStore.adopt(namespace)
       let fetchResult = try await syncDriver.fetch(context(winning.descriptor))
       if fetchResult == .purged {
-        try await localStore.markPurged()
-        return .purged
+        return try await stopAfterDataReset(in: namespace)
       }
       if let issue = fetchResult.issue { throw CloudSyncIssueError(issue) }
       try await cleanPendingZones(protecting: winning.descriptor.zones)
       return .enabled(namespace)
     }
+  }
+
+  private func stopAfterDataReset(in namespace: CloudSyncNamespace) async throws -> CloudCollectionStatus {
+    guard try await localStore.stopAfterDataReset(in: namespace) else { return .requiresEnable }
+    await syncDriver.invalidate()
+    return .purged
   }
 
   private func cleanPendingZones(protecting active: Set<CloudZoneID>) async throws {

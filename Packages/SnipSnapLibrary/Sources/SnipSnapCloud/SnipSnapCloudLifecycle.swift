@@ -61,114 +61,6 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case oldSyncedContentRemovalCompleted
 }
 
-/// The pending iCloud enable marker. No marker means no enable is pending: it finished,
-/// was cancelled, or never started.
-enum PendingICloudSyncEnable {
-  private enum Phase: Equatable {
-    case pending
-    case retrying(SyncedContentSyncIssue)
-    case needsAttention(SyncedContentSyncIssue)
-  }
-
-  private static let fileName = "icloud-sync-enable-pending"
-  private static let pendingValue = "pending"
-  private static let legacyFailedValue = Data("needs-attention".utf8)
-  private static let legacyRetryPrefix = "retry:"
-  private static let retryPrefix = "retry-v2:"
-  private static let failurePrefix = "failure-v2:"
-
-  static func exists(at rootURL: URL) -> Bool {
-    switch phase(at: rootURL) {
-    case .pending, .retrying: true
-    case .needsAttention, nil: false
-    }
-  }
-
-  static func needsAttention(at rootURL: URL) -> Bool {
-    failureIssue(at: rootURL) != nil
-  }
-
-  static func failureIssue(at rootURL: URL) -> SyncedContentSyncIssue? {
-    guard case .needsAttention(let issue) = phase(at: rootURL) else { return nil }
-    return issue
-  }
-
-  static func retryIssue(at rootURL: URL) -> SyncedContentSyncIssue? {
-    guard case .retrying(let issue) = phase(at: rootURL) else { return nil }
-    return issue
-  }
-
-  fileprivate static func mark(at rootURL: URL) throws {
-    try write(.pending, at: rootURL)
-  }
-
-  fileprivate static func markNeedsAttention(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
-    try? write(.needsAttention(issue), at: rootURL)
-  }
-
-  fileprivate static func markRetrying(_ issue: SyncedContentSyncIssue, at rootURL: URL) {
-    try? write(.retrying(issue), at: rootURL)
-  }
-
-  fileprivate static func clear(at rootURL: URL) throws {
-    do {
-      try FileManager.default.removeItem(at: url(at: rootURL))
-    } catch CocoaError.fileNoSuchFile {}
-  }
-
-  private static func url(at rootURL: URL) -> URL {
-    rootURL.appendingPathComponent(fileName, isDirectory: false)
-  }
-
-  private static func phase(at rootURL: URL) -> Phase? {
-    guard let data = try? Data(contentsOf: url(at: rootURL)) else { return nil }
-    if data == legacyFailedValue { return .needsAttention(.appDataIssue) }
-    guard let value = String(data: data, encoding: .utf8) else { return .pending }
-    if value.hasPrefix(failurePrefix) {
-      return .needsAttention(issue(in: value, after: failurePrefix) ?? .appDataIssue)
-    }
-    if let issue = issue(in: value, after: retryPrefix) ?? legacyRetryIssue(in: value) {
-      return .retrying(issue)
-    }
-    return .pending
-  }
-
-  private static func write(_ phase: Phase, at rootURL: URL) throws {
-    let value: String
-    switch phase {
-    case .pending: value = pendingValue
-    case .retrying(let issue): value = try retryPrefix + payload(for: issue)
-    case .needsAttention(let issue): value = try failurePrefix + payload(for: issue)
-    }
-    try DurableFile.write(Data(value.utf8), to: url(at: rootURL))
-  }
-
-  private static func payload(for issue: SyncedContentSyncIssue) throws -> String {
-    try JSONEncoder().encode(issue).base64EncodedString()
-  }
-
-  private static func issue(in value: String, after prefix: String) -> SyncedContentSyncIssue? {
-    guard value.hasPrefix(prefix),
-      let payload = Data(base64Encoded: String(value.dropFirst(prefix.count)))
-    else { return nil }
-    return try? JSONDecoder().decode(SyncedContentSyncIssue.self, from: payload)
-  }
-
-  private static func legacyRetryIssue(in value: String) -> SyncedContentSyncIssue? {
-    guard value.hasPrefix(legacyRetryPrefix) else { return nil }
-    return switch String(value.dropFirst(legacyRetryPrefix.count)) {
-    case "waiting-for-connection": .waitingForConnection
-    case "icloud-unavailable": .iCloudUnavailable
-    case "retrying-soon": .retryingSoon
-    case "checking-account": .checkingAccount
-    case "account-temporarily-unavailable": .accountTemporarilyUnavailable
-    case "some-changes-pending": .someChangesPending
-    case "attachment-unavailable": .attachmentUnavailable
-    default: nil
-    }
-  }
-}
-
 package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   package typealias RecordTransportFactory = @Sendable (
     CloudCollectionSyncContext
@@ -227,6 +119,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func enableICloudSync() async throws -> SyncedContentEnableOutcome {
+    _ = try await stopRecordedResetIfNeeded()
     try PendingICloudSyncEnable.mark(at: rootURL)
     return try await resumePendingEnable()
   }
@@ -319,9 +212,6 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       rootURL: rootURL,
       persistence: modePersistence
     )
-    if try await collectionLocal.state().encryptedDataReset != nil {
-      try await collectionLocal.markPurged()
-    }
     let bootstrap = CloudCollectionBootstrapper(
       ownerName: ownerName,
       localStore: collectionLocal,
@@ -330,7 +220,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       reservedZones: reservedZones
     )
     let descriptor: CloudCollectionDescriptor
-    if kept != nil {
+    if kept != nil, !storage.keptAfterCloudReset {
       // Read the existing control record before allowing the kept library to rejoin.
       guard let remote = try await controlTransport.fetchControl() else {
         throw CloudCollectionError.noActiveCollection
@@ -338,12 +228,16 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       try remote.descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
       descriptor = remote.descriptor
     } else {
-      descriptor = try await bootstrap.activeOrCreate()
+      descriptor = try await bootstrap.activeOrCreate(
+        afterReset: storage.keptAfterCloudReset ? kept : nil
+      )
     }
     let namespace = descriptor.namespace(cloudScope: cloudScope, accountLineage: lineage)
-    if let kept, kept != namespace.binding { throw SyncModePersistenceError.namespaceMismatch }
+    if let kept, !storage.keptAfterCloudReset, kept != namespace.binding {
+      throw SyncModePersistenceError.namespaceMismatch
+    }
     accountLineage = lineage
-    if kept != nil {
+    if kept != nil, !storage.keptAfterCloudReset {
       try await requireAccountLineage(lineage)
       let resumed = try await modePersistence.resumeKeptCloudCache(in: namespace.binding) { library in
         let records = CloudFullSyncPersistence(library: library, namespace: namespace,
@@ -403,6 +297,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func checkActiveAccount() async throws -> SnipSnapCloudSyncResult {
+    if try await stopRecordedResetIfNeeded() { return .iCloudDataReset }
     do {
       _ = try await checkedActiveBinding()
       return .noChange
@@ -423,6 +318,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   private func synchronize(
     retryingUserRecoverableFailures: Bool
   ) async throws -> SnipSnapCloudSyncResult {
+    if try await stopRecordedResetIfNeeded() { return .iCloudDataReset }
     do {
       if let coordinator = try await activeCollectionCoordinator() {
         if PendingICloudSyncEnable.exists(at: rootURL), let persistence {
@@ -458,6 +354,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func scheduleAutomaticSync() async throws {
+    if try await stopRecordedResetIfNeeded() {
+      automaticResultHandler(.iCloudDataReset)
+      return
+    }
     do {
       guard let coordinator = try await activeCollectionCoordinator(),
         let persistence,
@@ -473,6 +373,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
 
   package func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
     guard let persistence else { return }
+    if try await stopRecordedResetIfNeeded() {
+      automaticResultHandler(.iCloudDataReset)
+      return
+    }
     let coordinator: CloudCollectionCoordinator
     do {
       guard let active = try await activeCollectionCoordinator() else { return }
@@ -484,7 +388,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     }
     if choice == .refreshThenCopy {
       let result = syncResult(for: try await coordinator.synchronize())
-      if result == .iCloudDataReset { throw CloudCollectionError.syncNeedsAttention }
+      if result == .iCloudDataReset {
+        await clearCollectionCoordinator()
+        automaticResultHandler(result)
+        return
+      }
     }
     let snapshot = try await persistence.snapshot()
     guard snapshot.activeStore.kind == .iCloudSync,
@@ -523,6 +431,10 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
   }
 
   package func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
+    if try await stopRecordedResetIfNeeded() {
+      automaticResultHandler(.iCloudDataReset)
+      throw CloudCollectionError.noActiveCollection
+    }
     do {
       guard let coordinator = try await activeCollectionCoordinator() else {
         throw CloudCollectionError.noActiveCollection
@@ -648,32 +560,29 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     return binding
   }
 
+  private func stopRecordedResetIfNeeded() async throws -> Bool {
+    guard let persistence else { return false }
+    let store = try await persistence.snapshot().activeStore
+    guard let namespace = store.namespace,
+      try await persistence.recoverRecordedCloudReset(storeID: store.id, namespace: namespace)
+    else { return false }
+    await clearCollectionCoordinator()
+    return true
+  }
+
   private func stopSync(for error: ICloudAccountGateError) async throws -> SnipSnapCloudSyncResult? {
-    guard error == .noAccount || error == .accountChanged,
-      let persistence
-    else { return nil }
+    guard error == .noAccount || error == .accountChanged, let persistence else { return nil }
     let store = try await persistence.snapshot().activeStore
     guard let namespace = store.namespace else { return nil }
-    let signedOut = error == .noAccount
     await clearCollectionCoordinator()
-    let local = try SwiftDataCloudCollectionLocalStore(rootURL: rootURL, persistence: persistence)
-    if try await local.finishRecordedReset(storeID: store.id, namespace: namespace) != nil {
-      try PendingICloudSyncEnable.clear(at: rootURL)
-      return .iCloudDataReset
-    }
+    let signedOut = error == .noAccount
     let result = try await persistence.keepCloudCacheLocally(
-      storeID: store.id, reason: signedOut ? .accountSignedOut : .accountChanged
+      storeID: store.id, namespace: namespace, reason: signedOut ? .accountSignedOut : .accountChanged
     )
     switch result {
-    case .kept:
-      try PendingICloudSyncEnable.clear(at: rootURL)
-      return signedOut ? .iCloudSignedOut : .iCloudAccountChanged
-    case .resetPending:
-      guard try await local.markPurged(storeID: store.id, namespace: namespace) != nil else { return nil }
-      try PendingICloudSyncEnable.clear(at: rootURL)
-      return .iCloudDataReset
-    case .sourceReplaced:
-      return nil
+    case .kept: return signedOut ? .iCloudSignedOut : .iCloudAccountChanged
+    case .keptAfterReset: return .iCloudDataReset
+    case .sourceReplaced: return nil
     }
   }
 
@@ -702,20 +611,30 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
 
   private func requireCurrentCollectionForRecordWork(_ context: CloudRecordWorkContext) async throws {
     try await requireLocalRecordContext(context)
-    try await requireControlRecord(for: context.binding)
+    let descriptor = try await currentControlDescriptor()
     try await requireLocalRecordContext(context)
+    if descriptor?.namespace(
+      cloudScope: context.binding.scope, accountLineage: context.binding.accountLineage
+    ).binding == context.binding { return }
+    if descriptor == nil || descriptor?.generation == context.binding.generation {
+      // A different account may return no control record for this collection.
+      try await requireAccountLineage(context.binding.accountLineage)
+      if try await keepLibraryAfterReset(context) { automaticResultHandler(.iCloudDataReset) }
+      throw CloudRecordWorkError.replaced
+    }
+    throw CloudCollectionError.syncNeedsAttention
+  }
+
+  private func currentControlDescriptor() async throws -> CloudCollectionDescriptor? {
+    let descriptor = try await controlTransport.fetchControl()?.descriptor
+    try descriptor?.validate(ownerName: ownerName, reservedZones: reservedZones)
+    return descriptor
   }
 
   private func requireControlRecord(for binding: ICloudSyncNamespaceBinding) async throws {
-    guard let remote = try await controlTransport.fetchControl() else {
-      throw CloudCollectionError.syncNeedsAttention
-    }
-    try remote.descriptor.validate(ownerName: ownerName, reservedZones: reservedZones)
-    guard remote.descriptor.namespace(
+    guard try await currentControlDescriptor()?.namespace(
       cloudScope: binding.scope, accountLineage: binding.accountLineage
-    ).binding == binding else {
-      throw CloudCollectionError.syncNeedsAttention
-    }
+    ).binding == binding else { throw CloudCollectionError.syncNeedsAttention }
   }
 
   private func makeCollectionCoordinator(
@@ -739,9 +658,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
         try await self.requireLocalRecordContext(context)
         try await self.requireAccountLineage(context.binding.accountLineage)
       },
-      automaticResultHandler: { [weak self, local] context, result in
+      automaticResultHandler: { [weak self] context, result in
         guard let self else { return }
-        try await self.deliverAutomaticResult(result, from: context, ownerID: ownerID, local: local)
+        try await self.deliverAutomaticResult(result, from: context, ownerID: ownerID)
       }
     )
     return CloudCollectionCoordinator(
@@ -791,11 +710,18 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     else { throw CloudRecordWorkError.replaced }
   }
 
+  private func keepLibraryAfterReset(_ context: CloudRecordWorkContext) async throws -> Bool {
+    guard let persistence, try await persistence.keepCloudCacheLocally(
+      storeID: context.storeID, namespace: context.binding, reason: .namespaceChanged
+    ) == .keptAfterReset else { return false }
+    await clearCollectionCoordinator()
+    return true
+  }
+
   private func deliverAutomaticResult(
     _ result: SnipSnapCloudSyncResult,
     from context: CloudRecordWorkContext,
-    ownerID: UUID,
-    local: SwiftDataCloudCollectionLocalStore
+    ownerID: UUID
   ) async throws {
     guard collectionOwnerID == ownerID else { return }
     do { try await requireLocalRecordContext(context) }
@@ -807,9 +733,9 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       return
     }
     if result == .iCloudDataReset {
-      guard let replacementID = try await local.markPurged(storeID: context.storeID, namespace: context.binding),
-        let persistence, try await persistence.snapshot().activeStore.id == replacementID
-      else { return }
+      guard try await keepLibraryAfterReset(context) else { return }
+      automaticResultHandler(result)
+      return
     }
     guard collectionOwnerID == ownerID else { return }
     automaticResultHandler(result)

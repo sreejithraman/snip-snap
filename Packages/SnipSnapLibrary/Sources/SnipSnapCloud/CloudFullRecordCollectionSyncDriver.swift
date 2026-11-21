@@ -62,10 +62,11 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
   package func prepareAutomaticSync(_ context: CloudCollectionSyncContext) async throws {
     let owner = try await recordOwner(context)
     try await requireActive(owner.context)
-    try await owner.coordinator.prepareAutomaticSync(
+    let outcome = try await owner.coordinator.prepareAutomaticSync(
       beforeApply: { try await self.requireCurrent(owner.context) },
       beforeStateSave: { try await self.requireActive(owner.context) }
     )
+    if outcome.result == .iCloudDataReset { try await deliver(outcome.result, from: owner.context) }
   }
 
   package func send(_ context: CloudCollectionSyncContext) async throws -> CloudCollectionSendResult {

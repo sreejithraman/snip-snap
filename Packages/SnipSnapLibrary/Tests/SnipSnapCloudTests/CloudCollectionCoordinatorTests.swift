@@ -1911,7 +1911,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(events.filter { $0 == "started" }.count, 1)
   }
 
-  func testQueuedOldPurgeCannotDiscardTheAdoptedStoreOrPublishItsResult() async throws {
+  func testQueuedOldPurgeCannotStopTheAdoptedStoreOrPublishItsResult() async throws {
     try await verifyReplacedRecordWork(purge: true)
   }
 
@@ -2018,8 +2018,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     catch SyncModePersistenceError.namespaceMismatch {}
     do { try await store.stage(.fetched(batch), outbound: nil); XCTFail("Old stage must fail admission") }
     catch SyncModePersistenceError.namespaceMismatch {}
-    let discarded = try await persistence.discardActiveCloudCollection(storeID: original.id, namespace: binding(old))
-    XCTAssertNil(discarded)
+    let stopped = try await persistence.keepCloudCacheLocally(
+      storeID: original.id, namespace: binding(old), reason: .namespaceChanged)
+    XCTAssertEqual(stopped, .sourceReplaced)
     let activeAfter = try await persistence.snapshot().activeStore
     XCTAssertEqual(activeAfter, activeBefore)
   }
@@ -2625,7 +2626,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let events = await driver.events()
     XCTAssertEqual(result, .purged)
     XCTAssertNil(state.activeNamespace)
-    XCTAssertNil(state.encryptedDataReset)
+    XCTAssertTrue(state.keptAfterReset)
     XCTAssertEqual(events, [.fetched(namespace(remote))])
   }
 
@@ -2659,7 +2660,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(status, .purged)
     XCTAssertTrue(state.hasSyncedBefore)
     XCTAssertNil(state.activeNamespace)
-    XCTAssertNil(state.encryptedDataReset)
+    XCTAssertTrue(state.keptAfterReset)
     XCTAssertEqual(localEvents, [.purged])
     XCTAssertTrue(events.isEmpty)
   }
@@ -2692,7 +2693,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let events = await driver.events()
     XCTAssertEqual(resetResult, .purged)
     XCTAssertNil(state.activeNamespace)
-    XCTAssertNil(state.encryptedDataReset)
+    XCTAssertTrue(state.keptAfterReset)
     XCTAssertEqual(events.filter { if case .sent = $0 { true } else { false } }.count, 1)
   }
 
@@ -2747,13 +2748,13 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(secondResetResult, .purged)
     XCTAssertNil(firstState.activeNamespace)
     XCTAssertNil(secondState.activeNamespace)
-    XCTAssertNil(firstState.encryptedDataReset)
-    XCTAssertNil(secondState.encryptedDataReset)
+    XCTAssertTrue(firstState.keptAfterReset)
+    XCTAssertTrue(secondState.keptAfterReset)
     XCTAssertFalse(firstDriverEvents.contains { if case .sent = $0 { true } else { false } })
     XCTAssertFalse(secondDriverEvents.contains { if case .sent = $0 { true } else { false } })
   }
 
-  func testPurgeKeepsSyncOffUntilACloudCollectionReturns() async throws {
+  func testPurgeKeepsSyncOffEvenAfterAnotherCollectionAppears() async throws {
     let old = descriptor(
       generation: "94949494-9494-9494-9494-949494949494",
       metadata: "off-old-metadata",
@@ -2790,15 +2791,15 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let localState = await local.state()
     let driverEvents = await driver.events()
     XCTAssertEqual(resetResult, .purged)
-    XCTAssertEqual(laterResult, .adoptedRemoteCollection(namespace(replacement)))
+    XCTAssertEqual(laterResult, .requiresEnable)
 
     XCTAssertEqual(control, replacement)
-    XCTAssertEqual(localState.activeNamespace, namespace(replacement))
-    XCTAssertNil(localState.encryptedDataReset)
-    XCTAssertEqual(driverEvents, [.fetched(namespace(replacement))])
+    XCTAssertNil(localState.activeNamespace)
+    XCTAssertTrue(localState.keptAfterReset)
+    XCTAssertTrue(driverEvents.isEmpty)
   }
 
-  func testLegacyEncryptedResetMarkerDiscardsItsRecoveryStoreOnReopen() async throws {
+  func testLegacyEncryptedResetMarkerKeepsBothStoresOnReopen() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("EncryptedResetRecovery-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -2863,27 +2864,34 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
         systemFields: Data("fields".utf8)
       )]
     )
-    let firstLocal = try SwiftDataCloudCollectionLocalStore(
-      rootURL: root,
-      persistence: persistence
-    )
-    try await firstLocal.beginEncryptedDataReset(from: namespace(old))
-    let reopenedLocal = try SwiftDataCloudCollectionLocalStore(
-      rootURL: root,
-      persistence: persistence
-    )
-    let state = try await reopenedLocal.state()
-    let active = try await persistence.activeLibrary().snapshot(sortedBy: .manual)
+    // A pre-#122 build already swapped to an empty local store before it quit.
+    try await persistence.activateEmptyCollection(namespace: nil)
+    let replacement = try await persistence.activeLibrary()
+    _ = try await replacement.perform(.add(
+      content: "edit in the replacement", origin: .quickEntry, source: nil,
+      listID: SnipList.inbox.id, attachmentURLs: [], requestID: UUID(), now: Date()
+    ), sortedBy: .manual)
+    try JSONEncoder().encode(CollectionStateFile(version: 1, hasSyncedBefore: true,
+      cleanupZones: [], deletionState: nil,
+      encryptedDataReset: .init(id: UUID(), priorNamespace: namespace(old), recoveryStoreID: oldStoreID)
+    )).write(to: collectionStateURL(at: root))
 
-    XCTAssertNotNil(state.encryptedDataReset)
+    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+    let local = try SwiftDataCloudCollectionLocalStore(rootURL: root, persistence: reopened)
+    let state = try await local.state()
+    let library = try await reopened.activeLibrary()
+    let active = try await library.checkedSnapshot(sortedBy: .manual)
+
+    XCTAssertTrue(state.keptAfterReset)
     XCTAssertNil(state.activeNamespace)
-    XCTAssertTrue(active.snips.isEmpty)
-    do {
-      _ = try await persistence.libraryForTransition(storeID: oldStoreID)
-      XCTFail("The legacy recovery cache must be deleted")
-    } catch {
-      XCTAssertEqual(error as? SyncModePersistenceError, .missingStore)
-    }
+    XCTAssertEqual(Set(active.snips.map(\.content)),
+      ["keep through encrypted reset", "edit in the replacement"])
+    let kept = try XCTUnwrap(active.snips.first { $0.id == snipID })
+    XCTAssertEqual(kept.attachments.count, 2)
+    let path = try XCTUnwrap(active.attachmentURLs[kept.attachments[0].id])
+    XCTAssertEqual(try Data(contentsOf: path), bytes)
+    _ = try await library.perform(.update(id: snipID, content: "updated after reopen",
+      attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
   }
 
   func testModeLifecycleReopensAfterPurgeAndRequiresExplicitEnable() async throws {
@@ -3173,7 +3181,7 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertEqual(storage.activeStore.quarantinedNamespace, binding(active))
   }
 
-  func testModeLifecycleCanEnableAgainAfterDiscardingPurgedCache() async throws {
+  func testExplicitEnableAfterPurgeMergesTheKeptLibraryIntoAFreshGeneration() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("EncryptedResetLifecycleEnable-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -3189,11 +3197,10 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     let persistence = try SwiftDataSyncModePersistence(rootURL: root)
     try await persistence.activateEmptyCollection(namespace: binding(old))
-    let oldStoreID = try await persistence.snapshot().activeStore.id
     let oldLibrary = try await persistence.activeLibrary()
     _ = try await oldLibrary.perform(
       .add(
-        content: "purged cache must be discarded",
+        content: "kept local snip",
         origin: .quickEntry,
         source: nil,
         listID: SnipList.inbox.id,
@@ -3228,12 +3235,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     await transport.removeControl()
     let first = lifecycle()
     let purgeResult = try await first.synchronize()
-    do {
-      _ = try await persistence.libraryForTransition(storeID: oldStoreID)
-      XCTFail("The purged cache must not remain available")
-    } catch {
-      XCTAssertEqual(error as? SyncModePersistenceError, .missingStore)
-    }
     let localLibrary = try await persistence.activeLibrary()
     _ = try await localLibrary.perform(
       .add(
@@ -3248,22 +3249,25 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       sortedBy: .manual
     )
 
+    await transport.seedControl(old)
     let reopened = lifecycle()
-    try await reopened.enableICloudSync()
-    let nextSync = try await reopened.synchronize()
+    let enable = try await reopened.enableICloudSync()
+    XCTAssertEqual(enable, .enabled)
+    _ = try await reopened.retrySynchronization()
     let activeSnapshot = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
     let cloudText = await server.storedTextValues()
+    let oldRecords = await server.storedRecordTypes(in: old.metadataZone)
+    XCTAssertTrue(oldRecords.isEmpty)
 
     let state = try await SwiftDataCloudCollectionLocalStore(
       rootURL: root,
       persistence: persistence
     ).state()
     XCTAssertEqual(purgeResult, .iCloudDataReset)
-    XCTAssertEqual(nextSync, .syncScheduled)
     XCTAssertEqual(state.activeNamespace, namespace(fresh))
-    XCTAssertNil(state.encryptedDataReset)
-    XCTAssertEqual(activeSnapshot.snips.map(\.content), ["new local work"])
-    XCTAssertEqual(cloudText, ["new local work"])
+    XCTAssertFalse(state.keptAfterReset)
+    XCTAssertEqual(Set(activeSnapshot.snips.map(\.content)), ["kept local snip", "new local work"])
+    XCTAssertEqual(Set(cloudText), ["kept local snip", "new local work"])
   }
 
   func testResetBetweenFetchAndSendStopsTheOldGenerationSend() async throws {
@@ -3660,25 +3664,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     )
     XCTAssertTrue(Set(keys).isSubset(of: CollectionStateFile.keys))
 
-    let resetRoot = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudCollectionStateReset-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: resetRoot) }
-    let old = descriptor(
-      generation: "60606060-6060-6060-6060-606060606060",
-      metadata: "state-file-reset-metadata",
-      payload: "state-file-reset-payload"
-    )
-    let persistence = try SwiftDataSyncModePersistence(rootURL: resetRoot)
-    try await persistence.activateEmptyCollection(namespace: binding(old))
-    let resetting = try SwiftDataCloudCollectionLocalStore(
-      rootURL: resetRoot,
-      persistence: persistence
-    )
-    try await resetting.beginEncryptedDataReset(from: namespace(old))
-    let resetFile = try decodedCollectionStateFile(at: resetRoot)
-    XCTAssertEqual(resetFile.version, 1)
-    XCTAssertTrue(resetFile.hasSyncedBefore)
-    XCTAssertEqual(resetFile.encryptedDataReset?.priorNamespace, namespace(old))
   }
 
   func testSyncHistorySurvivesPurgeAndReopen() async throws {
@@ -3706,7 +3691,8 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertTrue(adoptedState.hasSyncedBefore)
     XCTAssertEqual(adoptedState.activeNamespace, namespace(active))
 
-    try await staged.markPurged()
+    let stopped = try await staged.stopAfterDataReset(in: namespace(active))
+    XCTAssertTrue(stopped)
     let purgedState = try await staged.state()
     XCTAssertTrue(purgedState.hasSyncedBefore)
     XCTAssertNil(purgedState.activeNamespace)
@@ -3716,46 +3702,6 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertTrue(reopenedState.hasSyncedBefore)
     XCTAssertNil(reopenedState.activeNamespace)
     XCTAssertEqual(reopenedState.cleanupZones, [cleanup])
-  }
-
-  func testRecordWorkPurgeClearsOnlyTheMatchingResetMarker() async throws {
-    let root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("CloudResetMarkerPurge-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let old = descriptor(
-      generation: "62626262-6262-6262-6262-626262626262",
-      metadata: "marker-old-metadata",
-      payload: "marker-old-payload"
-    )
-    let next = descriptor(
-      generation: "63636363-6363-6363-6363-636363636363",
-      metadata: "marker-next-metadata",
-      payload: "marker-next-payload"
-    )
-    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-    try await persistence.activateEmptyCollection(namespace: binding(old))
-    let local = try SwiftDataCloudCollectionLocalStore(rootURL: root, persistence: persistence)
-    try await local.beginEncryptedDataReset(from: namespace(old))
-
-    try await local.adopt(namespace(next))
-    let nextStoreID = try await persistence.snapshot().activeStore.id
-    let unrelated = try await local.markPurged(
-      storeID: nextStoreID, namespace: binding(next)
-    )
-    let kept = try decodedCollectionStateFile(at: root)
-    XCTAssertNotNil(unrelated)
-    XCTAssertTrue(kept.hasSyncedBefore)
-    XCTAssertEqual(kept.encryptedDataReset?.priorNamespace, namespace(old))
-
-    try await local.adopt(namespace(old))
-    let oldStoreID = try await persistence.snapshot().activeStore.id
-    let matching = try await local.markPurged(
-      storeID: oldStoreID, namespace: binding(old)
-    )
-    let cleared = try decodedCollectionStateFile(at: root)
-    XCTAssertNotNil(matching)
-    XCTAssertTrue(cleared.hasSyncedBefore)
-    XCTAssertNil(cleared.encryptedDataReset)
   }
 
   func testZoneCleanupFailureWithoutPendingDeletionFailsTheSync() async throws {
@@ -3943,7 +3889,13 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
 }
 
 /// Mirrors the `cloud-collection-state.json` form that builds through 961da819 decode.
-private struct CollectionStateFile: Decodable {
+private struct CollectionStateFile: Codable {
+  struct LegacyReset: Codable {
+    let id: UUID
+    let priorNamespace: CloudSyncNamespace
+    let recoveryStoreID: UUID?
+  }
+
   static let keys: Set<String> = [
     "version", "hasSyncedBefore", "cleanupZones", "deletionState", "encryptedDataReset",
   ]
@@ -3952,7 +3904,7 @@ private struct CollectionStateFile: Decodable {
   let hasSyncedBefore: Bool
   let cleanupZones: Set<CloudZoneID>
   let deletionState: CloudCollectionDeletionState?
-  let encryptedDataReset: CloudEncryptedDataReset?
+  let encryptedDataReset: LegacyReset?
 }
 
 private actor MutableCollectionAccountStateSource: ICloudAccountStateSource {
@@ -4056,7 +4008,7 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
   private var known: Bool
   private var cleanup: Set<CloudZoneID> = []
   private var deletionState: CloudCollectionDeletionState = .none
-  private var reset: CloudEncryptedDataReset?
+  private var keptAfterReset = false
   private var log: [Event] = []
 
   init(active: CloudSyncNamespace?, hasSyncedBefore: Bool) {
@@ -4070,7 +4022,7 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
       activeNamespace: active,
       cleanupZones: cleanup,
       deletionState: deletionState,
-      encryptedDataReset: reset
+      keptAfterReset: keptAfterReset
     )
   }
 
@@ -4086,25 +4038,22 @@ private actor TestCloudCollectionLocalStore: CloudCollectionLocalStore {
 
   func adopt(_ namespace: CloudSyncNamespace) {
     active = namespace
+    keptAfterReset = false
     known = true
     log.append(.adopted(namespace.generation))
   }
 
-  func markPurged() {
+  func stopAfterDataReset(in namespace: CloudSyncNamespace) -> Bool {
+    guard active == namespace else { return false }
     active = nil
+    keptAfterReset = true
     known = true
     log.append(.purged)
+    return true
   }
 
   func markDeletionPending() { deletionState = .pending }
   func markDeletionCompleted() { deletionState = .completed }
-
-  func beginEncryptedDataReset(from namespace: CloudSyncNamespace) {
-    if reset == nil {
-      reset = CloudEncryptedDataReset(priorNamespace: namespace, recoveryStoreID: UUID())
-      active = nil
-    }
-  }
 
   func activeNamespace() -> CloudSyncNamespace? { active }
   func events() -> [Event] { log }

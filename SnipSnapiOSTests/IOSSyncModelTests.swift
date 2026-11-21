@@ -64,14 +64,13 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .ready)
     }
 
-    func testPurgeReplacesTheLibraryAndExplainsWhySyncStopped() async {
-        let oldLibrary = ModelTestLibrary(
-            snips: [Snip(content: "Old collection", origin: .quickEntry)]
-        )
-        let emptyLibrary = ModelTestLibrary(snips: [])
+    func testPurgeKeepsTheLibraryAndExplainsWhySyncStopped() async {
+        let snip = Snip(content: "Kept snip", origin: .quickEntry)
+        let oldLibrary = ModelTestLibrary(snips: [snip])
+        let localLibrary = ModelTestLibrary(snips: [snip])
         let cloudSession = IOSCloudSyncSessionProbe(
             result: .iCloudDataReset,
-            activeLibrary: emptyLibrary
+            activeLibrary: localLibrary
         )
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let session = IOSAppSession(
@@ -83,10 +82,11 @@ final class IOSSyncModelTests: IOSModelTestCase {
 
         await session.syncWhenPossible()
 
-        XCTAssertTrue(session.model.snips.isEmpty)
+        XCTAssertEqual(session.model.snips.map(\.content), ["Kept snip"])
         XCTAssertEqual(settings.mode, .localOnly)
         XCTAssertEqual(settings.state, .failed(.iCloudDataReset))
         XCTAssertEqual(settings.statusTitle, "Sync turned off")
+        XCTAssertTrue(settings.detail.contains("your library is kept on this device"))
     }
 
     /// Each stop result and the issue Settings shows for it.
