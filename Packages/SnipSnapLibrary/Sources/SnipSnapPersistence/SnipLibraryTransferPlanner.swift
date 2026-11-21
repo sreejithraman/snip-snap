@@ -9,6 +9,7 @@ package struct SnipLibraryTransferPlan: Sendable {
   package let attachmentData: [UUID: Data]
   package let attachmentFileURLs: [UUID: URL]
   package let attachmentFileDigests: [UUID: Data]
+  let unavailableDownloadIDs: Set<UUID>
   package let opaqueSyncStatePayload: Data
   package let additionalSeenRequestIDs: Set<UUID>
   package let result: SnipLibraryTransferResult
@@ -21,7 +22,8 @@ package enum SnipLibraryTransferPlanner {
     transitionID: UUID,
     replacingTargetSnipIDs: Set<UUID> = [],
     replacingTargetListIDs: Set<UUID> = [],
-    acceptedTargetSnipIDs: Set<UUID> = []
+    acceptedTargetSnipIDs: Set<UUID> = [],
+    keepingUnavailableDownloads: Bool = false
   ) throws -> SnipLibraryTransferPlan {
     let targetDigest = digest(snapshot: target)
     let targetBundle = try CloudDormantAcceptedBaseBundle.decode(target.opaqueSyncStatePayload)
@@ -61,9 +63,13 @@ package enum SnipLibraryTransferPlanner {
 
     let targetAttachments = attachmentMap(target.snips)
     let sourceAttachments = attachmentMap(source.snips)
+    var unavailableDownloadIDs: Set<UUID> = []
     for (id, sourceAttachment) in sourceAttachments {
-      guard let sourceDigest = attachmentDigest(id: id, in: source) else {
-        throw SnipLibraryError.attachmentCopyFailed
+      let sourceDigest = attachmentDigest(id: id, in: source)
+      if sourceDigest == nil {
+        guard keepingUnavailableDownloads, sourceAttachment.relativePath.hasPrefix("CloudDownloads/")
+        else { throw SnipLibraryError.attachmentCopyFailed }
+        unavailableDownloadIDs.insert(id)
       }
       if let targetAttachment = targetAttachments[id] {
         guard targetAttachment == sourceAttachment,
@@ -127,6 +133,7 @@ package enum SnipLibraryTransferPlanner {
       attachmentFileDigests: target.attachmentFileDigests.merging(
         source.attachmentFileDigests.filter { !targetAttachmentIDs.contains($0.key) }
       ) { target, _ in target },
+      unavailableDownloadIDs: unavailableDownloadIDs,
       opaqueSyncStatePayload: mergedSyncPayload,
       additionalSeenRequestIDs: source.additionalSeenRequestIDs,
       result: SnipLibraryTransferResult(

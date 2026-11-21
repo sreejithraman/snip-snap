@@ -447,7 +447,6 @@ package actor CloudCollectionCoordinator {
       }
       return .requiresEnable
     }
-    try validate(control.descriptor)
     let remoteNamespace = control.descriptor.namespace(
       cloudScope: cloudScope,
       accountLineage: accountLineage
@@ -458,6 +457,7 @@ package actor CloudCollectionCoordinator {
         return try await stopAfterDataReset(in: active)
       }
     }
+    try validate(control.descriptor)
     try await localStore.finishCleanup(control.descriptor.zones)
     do {
       try await cleanPendingZones(protecting: control.descriptor.zones)
@@ -501,8 +501,6 @@ package actor CloudCollectionCoordinator {
       try await beforeReplacingCollection()
       return try await stopAfterDataReset(in: remoteNamespace)
     }
-    try validate(checked.descriptor)
-    try await localStore.finishCleanup(checked.descriptor.zones)
     let checkedNamespace = checked.descriptor.namespace(
       cloudScope: cloudScope,
       accountLineage: accountLineage
@@ -512,6 +510,7 @@ package actor CloudCollectionCoordinator {
       if remoteNamespace.generation == checkedNamespace.generation {
         return try await stopAfterDataReset(in: remoteNamespace)
       }
+      try validate(checked.descriptor)
       return try await adoptRemoteCollection(
         checked.descriptor,
         replacing: remoteNamespace,
@@ -519,6 +518,8 @@ package actor CloudCollectionCoordinator {
         request: request
       )
     }
+    try validate(checked.descriptor)
+    try await localStore.finishCleanup(checked.descriptor.zones)
     let sendResult = try await syncDriver.send(context(checked.descriptor))
     if sendResult == .purged {
       return try await stopAfterDataReset(in: remoteNamespace)
@@ -574,7 +575,6 @@ package actor CloudCollectionCoordinator {
             try await beforeReplacingCollection()
             return try await stopAfterDataReset(in: namespace)
           }
-          try validate(checked.descriptor)
           let checkedNamespace = checked.descriptor.namespace(
             cloudScope: cloudScope,
             accountLineage: accountLineage
@@ -584,6 +584,7 @@ package actor CloudCollectionCoordinator {
             if checkedNamespace.generation == namespace.generation {
               return try await stopAfterDataReset(in: namespace)
             }
+            try validate(checked.descriptor)
             priorNamespace = namespace
             descriptor = checked.descriptor
             continue

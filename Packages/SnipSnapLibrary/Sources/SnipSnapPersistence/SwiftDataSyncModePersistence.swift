@@ -200,7 +200,6 @@ package actor SwiftDataSyncModePersistence {
   // Advance before crossing to SwiftData. A mode change checks the revision again
   // when it swaps, so work on a stale source snapshot can never replace an edit.
   var activeStoreRevision: UInt64 = 0
-  var clearedResetStoreID: UUID?
   var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
@@ -331,7 +330,6 @@ package actor SwiftDataSyncModePersistence {
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     try resolveActivationWrite()
     try await finishLegacyAccountCopy()
-    try await finishKeptReset()
     await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore

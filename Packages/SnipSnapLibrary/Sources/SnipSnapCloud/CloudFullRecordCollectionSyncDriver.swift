@@ -135,7 +135,7 @@ package actor CloudFullRecordCollectionSyncDriver: CloudCollectionSyncDriver {
     let storage = try await persistence.snapshot()
     guard active?.context == context, storage.activeStore.id == context.storeID,
       storage.activeStore.namespace == context.binding, storage.activeStore.kind == .iCloudSync,
-      storage.transition == nil
+      storage.transition == nil, storage.attentionReason != .namespaceChanged
     else { throw CloudRecordWorkError.replaced }
   }
 

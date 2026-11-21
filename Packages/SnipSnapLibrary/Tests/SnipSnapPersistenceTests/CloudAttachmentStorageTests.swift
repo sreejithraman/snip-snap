@@ -567,6 +567,8 @@ final class CloudAttachmentStorageTests: XCTestCase {
     XCTAssertTrue(cloudState.publications.isEmpty)
     XCTAssertTrue(cloudState.cleanups.isEmpty)
     XCTAssertTrue(cloudState.cacheEntries.isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: actualNamespaceRoot.path))
   }
 
   func testCacheInstallDoesNotRequireDirectoryReadAccessToAStagedFile() async throws {

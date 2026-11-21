@@ -12,7 +12,9 @@ extension SwiftDataSyncModePersistence {
   }
 
   package func activeCloudMutation(storeID: UUID) throws -> SyncModeActiveMutation {
-    guard storeID == manifest.activeStoreID, store(id: storeID)?.kind == .iCloudSync else {
+    guard storeID == manifest.activeStoreID, store(id: storeID)?.kind == .iCloudSync,
+      manifest.attentionReason != .namespaceChanged
+    else {
       throw SyncModePersistenceError.namespaceMismatch
     }
     return SyncModeActiveMutation(persistence: self, storeID: storeID)
@@ -24,7 +26,7 @@ extension SwiftDataSyncModePersistence {
   ) async throws -> Value {
     try resolveActivationWrite()
     guard storeID == manifest.activeStoreID,
-      store(id: storeID)?.kind == .iCloudSync
+      store(id: storeID)?.kind == .iCloudSync, manifest.attentionReason != .namespaceChanged
     else { throw SyncModePersistenceError.namespaceMismatch }
     guard manifest.transition == nil else { throw SyncModePersistenceError.transitionInProgress }
     guard !activeStoreBusy else { throw SyncModePersistenceError.transitionInProgress }
@@ -47,7 +49,6 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
     try await finishLegacyAccountCopy()
-    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -57,7 +58,6 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedArchive() async throws -> SnipLibraryArchive {
     try await finishLegacyAccountCopy()
-    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -68,7 +68,6 @@ extension SwiftDataSyncModePersistence {
     in scope: SnipRecoveryScope
   ) async throws -> SnipRecoverySnapshot {
     try await finishLegacyAccountCopy()
-    try await finishKeptReset()
     await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
@@ -100,7 +99,6 @@ extension SwiftDataSyncModePersistence {
     _ operation: @escaping @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
     try await finishLegacyAccountCopy()
-    try await finishKeptReset()
     await finishRecoveryQuarantines()
     if activeStoreActivity == .cloudMutation {
       diagnostics.record(.writeAdmission(.started, reason: .syncBusy))

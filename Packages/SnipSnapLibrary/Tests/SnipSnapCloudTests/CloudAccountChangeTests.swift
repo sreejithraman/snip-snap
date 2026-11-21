@@ -180,7 +180,7 @@ final class CloudAccountChangeTests: XCTestCase {
     let eventsAtStop = await fixture.records.events()
     XCTAssertFalse(eventsAtStop.contains { if case .sent = $0 { return true }; return false })
 
-    try FileManager.default.removeItem(at: downloaded)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: downloaded.path))
     let editedSnip = try await library.perform(.update(id: snip.id, content: "edited locally",
       attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
     XCTAssertEqual(editedSnip.snapshot.snips.first?.content, "edited locally")

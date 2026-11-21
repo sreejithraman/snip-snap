@@ -139,8 +139,11 @@ extension SwiftDataSnipLibrary {
           }
           continue
         }
+        // A retired generation may leave attachment metadata for bytes this
+        // device never downloaded. There is no local file to queue for upload.
+        guard let localSourcePath else { continue }
         let sourceURL = try Self.validatedChild(
-          relativePath: value.2.relativePath,
+          relativePath: localSourcePath,
           root: attachmentRootURL
         )
         try lock.check()

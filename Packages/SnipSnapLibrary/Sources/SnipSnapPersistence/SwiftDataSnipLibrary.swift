@@ -406,7 +406,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     return context
   }
 
-  static func makeContainer(storeURL: URL) throws -> ModelContainer {
+  private static func makeContainer(storeURL: URL) throws -> ModelContainer {
     let schema = Schema(versionedSchema: SnipSnapSchemaV9.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",

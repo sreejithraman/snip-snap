@@ -2894,6 +2894,38 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
   }
 
+  func testInterruptedMissingControlPurgeKeepsTheRetiredSourceOnReopen() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("CloudLegacyPurge-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let persistence = try SwiftDataSyncModePersistence(rootURL: root)
+    try await persistence.activateEmptyCollection(namespace: binding(descriptor))
+    let source = try await persistence.snapshot().activeStore
+    let library = try await persistence.libraryForTransition(storeID: source.id)
+    _ = try await library.perform(.add(content: "before the purge", origin: .quickEntry,
+      source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()),
+      sortedBy: .manual)
+    try await persistence.activateEmptyCollection(namespace: nil)
+    let url = root.appendingPathComponent("activation.json")
+    var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    var stores = try XCTUnwrap(manifest["stores"] as? [[String: Any]])
+    let index = try XCTUnwrap(stores.firstIndex { $0["id"] as? String == source.id.uuidString })
+    stores[index]["lifecycle"] = "deleting"
+    manifest["stores"] = stores
+    try JSONSerialization.data(withJSONObject: manifest).write(to: url, options: .atomic)
+
+    let reopened = try SwiftDataSyncModePersistence(rootURL: root)
+    let storage = try await reopened.snapshot()
+    XCTAssertEqual(storage.activeStore.id, source.id)
+    XCTAssertTrue(storage.keptAfterCloudReset)
+    let writable = try await reopened.activeLibrary()
+    let snapshot = try await writable.checkedSnapshot(sortedBy: .manual)
+    let snip = try XCTUnwrap(snapshot.snips.first)
+    XCTAssertEqual(snip.content, "before the purge")
+    _ = try await writable.perform(.update(id: snip.id, content: "edited after reopen",
+      attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
+  }
+
   func testModeLifecycleReopensAfterPurgeAndRequiresExplicitEnable() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("EncryptedResetLifecycleReopen-\(UUID().uuidString)")
@@ -3198,9 +3230,9 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     let persistence = try SwiftDataSyncModePersistence(rootURL: root)
     try await persistence.activateEmptyCollection(namespace: binding(old))
     let oldLibrary = try await persistence.activeLibrary()
-    _ = try await oldLibrary.perform(
+    let added = try await oldLibrary.perform(
       .add(
-        content: "kept local snip",
+        content: "unresolved local draft",
         origin: .quickEntry,
         source: nil,
         listID: SnipList.inbox.id,
@@ -3210,6 +3242,34 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
       ),
       sortedBy: .manual
     )
+    let keptSnip = try XCTUnwrap(added.snapshot.snips.first)
+    let oldStoreID = try await persistence.snapshot().activeStore.id
+    let oldStore = try await persistence.libraryForTransition(storeID: oldStoreID)
+    var remoteSnip = keptSnip
+    remoteSnip.content = "kept local snip"
+    let serverRecord = try CloudKitRecordMapper.snapshot(
+      CloudKitRecordMapper.record(for: CloudFullRecordCodec.snipDraft(remoteSnip, in: old.metadataZone))
+    )
+    let cloud = CloudFullSyncPersistence(library: oldStore, namespace: namespace(old),
+      dataZone: old.metadataZone, payloadZone: old.payloadZone)
+    let change = CloudFetchedBatch(id: UUID(), items: [.record(serverRecord)], engineState: nil)
+    try await cloud.stage(.fetched(change))
+    try await cloud.applyStaged(change.id)
+    let missingID = UUID()
+    try await oldStore.commitCloudAttachmentTransitions(
+      namespaceKey: namespace(old).namespaceKey,
+      transitions: [.remoteMetadataAccepted(
+        metadata: CloudAttachmentMetadataValue(
+          attachmentID: missingID, snipID: keptSnip.id, position: 0, fileName: "evicted.txt",
+          contentType: "text/plain", byteCount: 3, sha256: Data(repeating: 1, count: 32),
+          payloadIdentity: CloudTextStorageIdentity(zoneName: old.payloadZone.name,
+            ownerName: old.payloadZone.ownerName, recordName: UUID().uuidString.lowercased())),
+        metadataIdentity: CloudTextStorageIdentity(zoneName: old.metadataZone.name,
+          ownerName: old.metadataZone.ownerName, recordName: "a-\(missingID.uuidString.lowercased())"),
+        shadowData: Data(), systemFields: Data()
+      )]
+    )
+    try Data("1".utf8).write(to: persistence.initialImportMarkerURL)
     let modeStore = SnipSyncModeStore(persistence)
     let source = try JSONSnipLibrary(
       fileURL: root.appendingPathComponent("source.json", isDirectory: false)
@@ -3268,6 +3328,16 @@ final class CloudCollectionCoordinatorTests: XCTestCase {
     XCTAssertFalse(state.keptAfterReset)
     XCTAssertEqual(Set(activeSnapshot.snips.map(\.content)), ["kept local snip", "new local work"])
     XCTAssertEqual(Set(cloudText), ["kept local snip", "new local work"])
+    let keptAfterEnable = try XCTUnwrap(activeSnapshot.snips.first { $0.id == keptSnip.id })
+    XCTAssertEqual(keptAfterEnable.attachments.map(\.id), [missingID])
+    XCTAssertNil(activeSnapshot.attachmentURLs[missingID])
+    let active = try await reopened.activeLibrary()
+    let scope = try XCTUnwrap(active.recoveryScope)
+    let recovery = try await active.library.recoverySnapshot(in: scope)
+    let choice = try XCTUnwrap(recovery.pendingSnips.first)
+    XCTAssertEqual(choice.recovered.content, "unresolved local draft")
+    let resolved = try await active.library.resolveRecovery(choice.id, in: scope, choice: .useRecovered)
+    XCTAssertEqual(resolved.snips.first { $0.id == keptSnip.id }?.content, "unresolved local draft")
   }
 
   func testResetBetweenFetchAndSendStopsTheOldGenerationSend() async throws {

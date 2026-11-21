@@ -155,7 +155,9 @@ extension SwiftDataSnipLibrary {
     for batch in try Self.cloudStagedBatches(namespaceKey: namespaceKey, context: context) {
       context.delete(batch)
     }
-    for event in try Self.cloudRecoveryEvents(namespaceKey: namespaceKey, context: context) {
+    let events = try Self.cloudRecoveryEvents(namespaceKey: namespaceKey, context: context)
+    if afterReset { try Self.updateRecoveryAttachmentPaths(events: events, context: context) }
+    for event in events {
       if !afterReset || !event.eventKey.hasPrefix(Self.recoveryReviewPrefix) { context.delete(event) }
     }
     for state in try Self.cloudNamespaceStates(namespaceKey: namespaceKey, context: context) {
@@ -207,10 +209,15 @@ extension SwiftDataSnipLibrary {
       for row in try context.fetch(FetchDescriptor<StoredCloudTextRecord>())
         where row.namespaceKey == namespaceKey { context.delete(row) }
     }
-    guard context.hasChanges else { return }
-    try afterMutationBeforeSave()
-    try lock.check()
-    try context.save()
+    if context.hasChanges {
+      try afterMutationBeforeSave()
+      try lock.check()
+      try context.save()
+    }
+    if afterReset {
+      try lock.check()
+      try cloudAttachmentFiles.removeNamespaceFiles(namespaceKey: namespaceKey)
+    }
   }
 
   private static func replaceCloudEngineState(

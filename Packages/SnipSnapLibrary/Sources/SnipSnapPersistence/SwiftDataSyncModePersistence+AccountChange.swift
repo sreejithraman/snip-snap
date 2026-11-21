@@ -63,9 +63,10 @@ extension SwiftDataSyncModePersistence {
       reset = try await library.hasPendingCloudReset()
     }
     guard let stopReason = reset ? .namespaceChanged : reason else { return .sourceReplaced }
-    if reset, manifest.attentionReason != .namespaceChanged { try recordAttention(.namespaceChanged) }
     if reset {
-      try await library.promoteAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
+      // Close outbound admission durably before retiring the old sync rows.
+      if manifest.attentionReason != .namespaceChanged { try recordAttention(.namespaceChanged) }
+      try await finishReset(library, namespace: namespace, storeID: storeID)
     } else {
       await library.keepAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
     }
@@ -80,26 +81,15 @@ extension SwiftDataSyncModePersistence {
     next.stores[index] = next.stores[index].keepingLocally()
     next.attentionReason = stopReason
     try publishActivation(next)
-    if reset { try await clearKeptResetState() }
     return reset ? .keptAfterReset : .kept
   }
 
-  func finishKeptReset() async throws {
-    guard clearedResetStoreID != manifest.activeStoreID, manifest.attentionReason == .namespaceChanged,
-      store(id: manifest.activeStoreID)?.quarantinedNamespace != nil
-    else { return }
-    try await activeStoreTurns.withLease { try await self.clearKeptResetState() }
-  }
-
-  private func clearKeptResetState() async throws {
-    let storeID = manifest.activeStoreID
-    guard clearedResetStoreID != storeID, manifest.attentionReason == .namespaceChanged,
-      let namespace = store(id: storeID)?.quarantinedNamespace
-    else { return }
-    let library = try libraryForTransition(storeID: storeID)
+  private func finishReset(
+    _ library: SwiftDataSnipLibrary, namespace: ICloudSyncNamespaceBinding, storeID: UUID
+  ) async throws {
+    try await library.promoteAvailableCloudAttachments(namespaceKey: namespace.namespaceKey)
     try await library.clearCloudSyncState(namespaceKey: namespace.namespaceKey, afterReset: true)
     try Self.clearLegacyCloudReset(at: rootURL, matching: namespace, storeID: storeID)
-    clearedResetStoreID = storeID
   }
 
   /// A stopped cache retains the original engine and record state. Only its exact
@@ -167,9 +157,8 @@ extension SwiftDataSyncModePersistence {
     let target = try libraryForTransition(storeID: legacy.storeID)
     if let binding = store(id: legacy.storeID)?.quarantinedNamespace {
       if manifest.attentionReason == .namespaceChanged {
-        try await target.promoteAvailableCloudAttachments(namespaceKey: binding.namespaceKey)
         try PendingICloudSyncEnable.clear(at: rootURL)
-        try await clearKeptResetState()
+        try await finishReset(target, namespace: binding, storeID: legacy.storeID)
       } else {
         await target.keepAvailableCloudAttachments(namespaceKey: binding.namespaceKey)
       }

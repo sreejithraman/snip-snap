@@ -65,7 +65,7 @@ extension SwiftDataSyncModePersistence {
         }
         value.stores.removeAll { $0.id == store.id }
       } catch {
-        value.attentionReason = .storageFailure
+        if value.attentionReason != .namespaceChanged { value.attentionReason = .storageFailure }
       }
     }
     for index in value.stores.indices where value.stores[index].syncProtocol == .retiredText {
@@ -84,7 +84,7 @@ extension SwiftDataSyncModePersistence {
   }
 
   /// Reads the reset marker written by pre-#122 builds. A newer interrupted
-  /// purge can instead leave the source marked deleting with reset rows in it.
+  /// purge can instead leave the source marked read-only and deleting.
   private struct LegacyCollectionState: Decodable {
     struct Reset: Decodable {
       struct Namespace: Decodable {
@@ -144,10 +144,11 @@ extension SwiftDataSyncModePersistence {
       guard FileManager.default.fileExists(atPath: file.path) else { continue }
       let hasLegacyMarker = reset?.priorNamespace.binding == namespace
         && (reset?.recoveryStoreID == nil || reset?.recoveryStoreID == store.id)
-      let hasRecordedPurge = store.lifecycle == .deleting
+      // The previous purge swap marked its source read-only before selecting an
+      // empty local store. Ordinary mode transitions never wrote that marker.
+      let interruptedPurge = store.lifecycle == .deleting
         && SwiftDataSnipLibrary.StoreRetirementMarkers(storeURL: file).phase != .writable
-        && ((try? SwiftDataSnipLibrary.hasPendingCloudReset(at: file)) == true)
-      guard hasLegacyMarker || hasRecordedPurge else { continue }
+      guard hasLegacyMarker || interruptedPurge else { continue }
       manifest.accountIsolation = LegacyAccountCopy(id: store.id, storeID: store.id,
         replacementStoreID: active.id)
       manifest.attentionReason = .namespaceChanged

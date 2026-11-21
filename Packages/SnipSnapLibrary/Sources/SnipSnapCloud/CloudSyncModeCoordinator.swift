@@ -250,7 +250,7 @@ package actor ICloudSyncModeCoordinator {
         }
         if payloadZone != nil {
             let local = try await persistence.activeLibrary().checkedSnapshot(sortedBy: .manual)
-            try validateAttachmentCompatibility(local)
+            try validateAttachmentCompatibility(local, keepingUnavailableDownloads: initial.keptAfterCloudReset)
         }
 
         let transition = try await persistence.beginTransition(to: .iCloudSync, namespace: namespace.binding)
@@ -277,10 +277,12 @@ package actor ICloudSyncModeCoordinator {
             failure = .transitionFailure
             try Task.checkCancellation()
             let source = try await persistence.sourceSnapshot(for: transition) { snapshot in
-                try self.validateAttachmentCompatibility(snapshot)
+                try self.validateAttachmentCompatibility(
+                    snapshot, keepingUnavailableDownloads: initial.keptAfterCloudReset
+                )
             }
             let approvedSnipIDs: Set<UUID>
-            if let plan = try await bridge.makeReenableApplyPlan(source: source, transitionID: transition.id) {
+            if !initial.keptAfterCloudReset, let plan = try await bridge.makeReenableApplyPlan(source: source, transitionID: transition.id) {
                 let candidate = try await persistence.libraryForTransition(storeID: transition.candidateStoreID)
                 try await candidate.applyCloudFullReenablePlan(plan)
                 approvedSnipIDs = plan.transfer.result.approvedSnipIDs
@@ -333,9 +335,13 @@ package actor ICloudSyncModeCoordinator {
         )
     }
 
-    private nonisolated func validateAttachmentCompatibility(_ snapshot: SnipLibrarySnapshot) throws {
+    private nonisolated func validateAttachmentCompatibility(
+        _ snapshot: SnipLibrarySnapshot, keepingUnavailableDownloads: Bool = false
+    ) throws {
         guard payloadZone != nil else { return }
-        let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(in: snapshot, policy: attachmentPolicy)
+        let unsupported = CloudAttachmentTransferCoordinator.unsupportedFiles(
+            in: snapshot, policy: attachmentPolicy, keepingUnavailableDownloads: keepingUnavailableDownloads
+        )
         if !unsupported.isEmpty { throw CloudAttachmentSetupError.unsupportedFiles(unsupported) }
     }
 

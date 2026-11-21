@@ -291,11 +291,15 @@ package actor CloudAttachmentTransferCoordinator: CloudAttachmentTransferring {
 
   package static func unsupportedFiles(
     in snapshot: SnipLibrarySnapshot,
-    policy: CloudAttachmentCompatibilityPolicy
+    policy: CloudAttachmentCompatibilityPolicy,
+    keepingUnavailableDownloads: Bool = false
   ) -> [CloudUnsupportedAttachment] {
     let inputs = snapshot.snips.flatMap { snip in
-      snip.attachments.map { attachment in
-        CompatibilityInput(
+      snip.attachments.compactMap { attachment -> CompatibilityInput? in
+        if keepingUnavailableDownloads, attachment.relativePath.hasPrefix("CloudDownloads/"),
+          snapshot.attachmentURLs[attachment.id] == nil
+        { return nil }
+        return CompatibilityInput(
           attachmentID: attachment.id,
           snipID: snip.id,
           fileName: attachment.fileName,

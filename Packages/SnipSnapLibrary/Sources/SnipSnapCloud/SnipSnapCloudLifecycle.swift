@@ -347,6 +347,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
         }
       }
       return .noChange
+    } catch CloudRecordWorkError.replaced {
+      guard try await persistence?.snapshot().keptAfterCloudReset == true else {
+        throw CloudRecordWorkError.replaced
+      }
+      return .iCloudDataReset
     } catch let error as ICloudAccountGateError {
       guard let result = try await stopSync(for: error) else { throw error }
       return result
@@ -611,11 +616,14 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
 
   private func requireCurrentCollectionForRecordWork(_ context: CloudRecordWorkContext) async throws {
     try await requireLocalRecordContext(context)
-    let descriptor = try await currentControlDescriptor()
+    let descriptor = try await controlTransport.fetchControl()?.descriptor
     try await requireLocalRecordContext(context)
     if descriptor?.namespace(
       cloudScope: context.binding.scope, accountLineage: context.binding.accountLineage
-    ).binding == context.binding { return }
+    ).binding == context.binding {
+      try descriptor?.validate(ownerName: ownerName, reservedZones: reservedZones)
+      return
+    }
     if descriptor == nil || descriptor?.generation == context.binding.generation {
       // A different account may return no control record for this collection.
       try await requireAccountLineage(context.binding.accountLineage)
@@ -706,7 +714,7 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     let snapshot = try await persistence.snapshot()
     guard snapshot.activeStore.id == context.storeID,
       snapshot.activeStore.namespace == context.binding,
-      snapshot.activeStore.kind == .iCloudSync
+      snapshot.activeStore.kind == .iCloudSync, snapshot.attentionReason != .namespaceChanged
     else { throw CloudRecordWorkError.replaced }
   }
 

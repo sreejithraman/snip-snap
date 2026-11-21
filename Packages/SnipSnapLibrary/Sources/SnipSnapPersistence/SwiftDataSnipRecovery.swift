@@ -2,7 +2,7 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
-private struct StoredSnipRecoveryReview: Codable, Equatable {
+private struct StoredSnipRecoveryReview: Codable, Equatable, Sendable {
   let storageVersion: Int
   let conflictKey: String
   let recovery: SnipRecoveryRecord
@@ -41,6 +41,81 @@ extension SwiftDataSnipLibrary {
         payload: payload
       )
     )
+  }
+
+  static func updateRecoveryAttachmentPaths(
+    events: [StoredCloudRecoveryEvent], context: ModelContext
+  ) throws {
+    let paths = Dictionary(uniqueKeysWithValues:
+      try context.fetch(FetchDescriptor<StoredAttachmentRecord>()).map { ($0.id, $0.relativePath) })
+    for event in events where event.eventKey.hasPrefix(recoveryReviewPrefix) {
+      let review = try recoveryReview(from: event)
+      guard case .snip(let item) = review.recovery else { continue }
+      var snip = item.recovered
+      for index in snip.attachments.indices {
+        if let path = paths[snip.attachments[index].id] { snip.attachments[index].relativePath = path }
+      }
+      guard snip != item.recovered else { continue }
+      let updated = RecoveredSnip(id: item.id, currentSnipID: item.currentSnipID,
+        recovered: snip, conflictingFields: item.conflictingFields, state: item.state)
+      event.payload = try recoveryReviewData(
+        StoredSnipRecoveryReview(conflictKey: review.conflictKey, recovery: .snip(updated)))
+    }
+  }
+
+  /// Recovery choices contain local edits that may exist nowhere in the snip
+  /// table. Carry them into the fresh collection with the kept library.
+  func copyRecoveryReviews(
+    from source: CloudSyncNamespaceKey, to candidate: SwiftDataSnipLibrary,
+    namespaceKey: CloudSyncNamespaceKey
+  ) async throws {
+    let (reviews, conflicts) = try recoveryReviewTransfer(namespaceKey: source.rawValue)
+    try await candidate.importRecoveryReviews(reviews, conflicts: conflicts, namespaceKey: namespaceKey.rawValue)
+  }
+
+  private func recoveryReviewTransfer(
+    namespaceKey: String
+  ) throws -> ([StoredSnipRecoveryReview], [CloudConflictInput]) {
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    let reviews = try Self.recoveryReviews(namespaceKey: namespaceKey, context: context)
+    let keys = Set(reviews.map(\.conflictKey))
+    let keysByID = Dictionary(uniqueKeysWithValues: keys.map {
+      (StoredCloudFullConflict.key(namespaceKey: namespaceKey, conflictKey: $0), $0)
+    })
+    let conflicts = try context.fetch(FetchDescriptor<StoredCloudFullConflict>())
+      .compactMap { row -> CloudConflictInput? in
+        guard let key = keysByID[row.id] else { return nil }
+        guard let kind = CloudEntityKind(rawValue: row.kind),
+          let format = CloudConflictFormat(rawValue: row.format)
+        else { throw SnipLibraryError.invalidStore }
+        return CloudConflictInput(key: key,
+          reference: CloudEntityReference(kind: kind, domainID: row.domainID),
+          format: format, payload: row.payload)
+      }
+    return (reviews, conflicts)
+  }
+
+  private func importRecoveryReviews(
+    _ reviews: [StoredSnipRecoveryReview], conflicts: [CloudConflictInput], namespaceKey: String
+  ) throws {
+    guard !reviews.isEmpty else { return }
+    guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    for conflict in conflicts {
+      try Self.insertConflictIfNeeded(conflict, namespaceKey: namespaceKey, context: context)
+    }
+    for review in reviews {
+      try Self.insertRecoveryReviewIfNeeded(review.recovery, namespaceKey: namespaceKey,
+        conflictKey: review.conflictKey, context: context)
+    }
+    try afterMutationBeforeSave()
+    try lock.check()
+    try context.save()
   }
 
   public func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot {

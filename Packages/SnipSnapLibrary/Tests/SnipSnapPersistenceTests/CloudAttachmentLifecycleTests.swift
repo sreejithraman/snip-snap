@@ -891,6 +891,8 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
       XCTAssertEqual(keptURL.path, durableCopyURL(storeURL: storeURL, metadata: metadata).path)
       XCTAssertEqual(try Data(contentsOf: keptURL), bytes)
     }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: firstCache.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: secondCache.path))
   }
 
   // MARK: Downloads while metadata waits to sync

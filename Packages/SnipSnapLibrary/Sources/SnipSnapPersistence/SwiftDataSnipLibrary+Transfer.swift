@@ -121,6 +121,7 @@ extension SwiftDataSnipLibrary {
           // An unrelated transfer must not promote or require its evictable bytes.
           if attachment.relativePath.hasPrefix("CloudDownloads/"),
             currentAttachments[attachment.id] == attachment
+              || plan.unavailableDownloadIDs.contains(attachment.id)
           { continue }
           let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
           guard !safeName.isEmpty else { throw SnipLibraryError.attachmentCopyFailed }
