@@ -7,6 +7,7 @@ import XCTest
 /// other's manifests, so these tests compare stored JSON, not the Swift type's fields.
 final class SyncModeTransitionStoredFormTests: XCTestCase {
   func testManifestDecodesWithRetiredSetupRetryKeys() throws {
+    let sourceStoreID = try XCTUnwrap(UUID(uuidString: ID.sourceStore))
     let legacy = """
       {
         "version": 2,
@@ -14,7 +15,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
         "stores": [{
           "id": "\(ID.sourceStore)",
           "kind": "localOnly",
-          "relativeRoot": "stores/localOnly-\(ID.sourceStore.uuidString.lowercased())",
+          "relativeRoot": "stores/localOnly-\(ID.sourceStore.lowercased())",
           "revision": 3,
           "lifecycle": "ready",
           "setupRetryHistory": {"namespaces": [], "trackedCandidateStoreID": "\(ID.candidateStore)"}
@@ -27,7 +28,7 @@ final class SyncModeTransitionStoredFormTests: XCTestCase {
       SwiftDataSyncModePersistence.Manifest.self, from: Data(legacy.utf8)
     )
     try SwiftDataSyncModePersistence.validate(manifest)
-    XCTAssertEqual(manifest.activeStoreID, ID.sourceStore)
+    XCTAssertEqual(manifest.activeStoreID, sourceStoreID)
     XCTAssertEqual(manifest.stores.first?.revision, 3)
 
     let rewritten = String(decoding: try JSONEncoder().encode(manifest), as: UTF8.self)
