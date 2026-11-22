@@ -202,4 +202,20 @@ final class LibrarySidebarPanObserverTests: XCTestCase {
         XCTAssertTrue(delegate.gestureRecognizer?(sidebarPan, shouldBeRequiredToFailBy: scrollPan) == true)
         XCTAssertFalse(delegate.gestureRecognizer?(sidebarPan, shouldBeRequiredToFailBy: tap) == true)
     }
+
+    func testTouchesOutsideRootViewHierarchyAreIgnored() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let rootView = UIView(frame: window.bounds)
+        let sidebarRow = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 56))
+        let contextMenuOverlay = UIView(frame: window.bounds)
+        rootView.addSubview(sidebarRow)
+        window.addSubview(rootView)
+        window.addSubview(contextMenuOverlay)
+
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(rootView, rootView: rootView))
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(sidebarRow, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(contextMenuOverlay, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(nil, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(sidebarRow, rootView: nil))
+    }
 }

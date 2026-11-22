@@ -209,13 +209,17 @@ struct LibraryRailView: View {
         max(44, scaledNewListControlLength)
     }
 
+    private var newListIconSlotWidth: CGFloat {
+        min(newListControlLength, RailButton<EmptyView>.length)
+    }
+
     private var pinnedNewListHorizontalPadding: CGFloat {
-        max(Self.inset, (LibrarySidebarSizing.railWidth - newListControlLength) / 2)
+        max(Self.inset, (LibrarySidebarSizing.railWidth - newListIconSlotWidth) / 2)
     }
 
     private var pinnedNewListLabelLeadingPadding: CGFloat {
         let titleOrigin = Self.inset + RailButton<EmptyView>.length + RailButton<EmptyView>.titleLeadingGap
-        return max(RailButton<EmptyView>.titleLeadingGap, titleOrigin - (pinnedNewListHorizontalPadding + newListControlLength))
+        return max(RailButton<EmptyView>.titleLeadingGap, titleOrigin - (pinnedNewListHorizontalPadding + newListIconSlotWidth))
     }
 
     init(
@@ -464,7 +468,7 @@ struct LibraryRailView: View {
                     HStack(spacing: 0) {
                         Image(systemName: newListStyle.systemImage)
                             .font(.system(size: 18, weight: .medium))
-                            .frame(width: newListControlLength, height: newListControlLength)
+                            .frame(width: newListIconSlotWidth, height: newListControlLength)
                         Text("New List")
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -663,6 +667,7 @@ struct LibrarySidebarPanObserver: UIViewRepresentable {
         weak var attachmentView: UIView?
         private weak var attachedWindow: UIWindow?
         private var recognizer: UIPanGestureRecognizer?
+        private var touchStart: CGPoint?
         private var isTracking = false
         private var wasInterrupted = false
 
@@ -711,11 +716,19 @@ struct LibrarySidebarPanObserver: UIViewRepresentable {
             abs(movement.x) > abs(movement.y)
         }
 
+        /// Native context menus and toolbar menus present in window-level overlay containers
+        /// outside the root view controller's hierarchy; ignore touches landing on them.
+        static func isTouchInRootHierarchy(_ touchView: UIView?, rootView: UIView?) -> Bool {
+            guard let touchView, let rootView else { return false }
+            return touchView.isDescendant(of: rootView)
+        }
+
         func attach(to window: UIWindow?) {
             guard attachedWindow !== window else { return }
             if let recognizer { attachedWindow?.removeGestureRecognizer(recognizer) }
             recognizer = nil
             attachedWindow = window
+            touchStart = nil
             isTracking = false
             wasInterrupted = false
             guard let window else { return }
@@ -744,6 +757,7 @@ struct LibrarySidebarPanObserver: UIViewRepresentable {
                 isInterrupted ? .cancelled : recognizer.state
             )
             if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
+                touchStart = nil
                 isTracking = false
                 wasInterrupted = false
             }
@@ -760,21 +774,27 @@ struct LibrarySidebarPanObserver: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            touchStart = nil
             guard let window = attachedWindow,
+                  Self.isTouchInRootHierarchy(touch.view, rootView: window.rootViewController?.view),
                   let hitRect = currentHitRect(in: window) else { return false }
-            return hitRect.contains(touch.location(in: window))
+            let location = touch.location(in: window)
+            guard hitRect.contains(location) else { return false }
+            touchStart = location
+            return true
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             isTracking = false
             wasInterrupted = false
+            defer { if !isTracking { touchStart = nil } }
             guard let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
                   let window = attachedWindow,
                   let hitRect = currentHitRect(in: window) else { return false }
             let translation = recognizer.translation(in: window)
             let velocity = recognizer.velocity(in: window)
             let location = recognizer.location(in: window)
-            let start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+            let start = touchStart ?? CGPoint(x: location.x - translation.x, y: location.y - translation.y)
             guard hitRect.contains(start) else { return false }
             // A physical device can report zero translation at shouldBegin.
             let initialMovement = velocity == .zero ? translation : velocity

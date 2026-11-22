@@ -686,7 +686,8 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func dragSidebarRow(_ row: XCUIElement, by offset: CGVector) {
-        let start = row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let startX: CGFloat = offset.dx < 0 ? 0.85 : 0.5
+        let start = row.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
     }
@@ -735,12 +736,18 @@ final class SnipSnapiOSUITests: XCTestCase {
         waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
 
         // Dragging horizontally from anywhere on a sidebar row grows and shrinks it without tapping the row.
+        let newList = app.buttons["new-list"]
+        XCTAssertTrue(newList.waitForExistence(timeout: 3))
+        XCTAssertLessThan(newList.frame.width, 80, "New List stays compact on the thin rail.")
+
         dragSidebarRow(clipboard, by: CGVector(dx: 200, dy: 0))
         waitForClipboardRowWidth(in: app, "Dragged wider from row center") { $0 > 150 }
+        XCTAssertGreaterThan(newList.frame.width, 150, "New List expands into a pill with the sidebar.")
         XCTAssertTrue(inbox.isSelected, "A horizontal resize drag on Clipboard must not select Clipboard.")
 
         dragSidebarRow(clipboard, by: CGVector(dx: -200, dy: 0))
         waitForClipboardRowWidth(in: app, "Dragged back to the rail from row center") { $0 < 80 }
+        XCTAssertLessThan(newList.frame.width, 80, "New List collapses back to a circle on the thin rail.")
         XCTAssertTrue(inbox.isSelected, "Collapsing from Clipboard must not select Clipboard.")
 
         // Points come from the row itself: on the open Duo, the app's XCTest origin can be offset
