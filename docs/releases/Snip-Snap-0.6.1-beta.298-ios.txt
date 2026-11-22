@@ -1,0 +1,3 @@
+Snip Snap 0.6.1 Beta 298 — iOS
+
+- Let users drag anywhere on the iOS sidebar to resize and align its edges
