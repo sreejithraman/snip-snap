@@ -1,4 +1,6 @@
 import SnipSnapCore
+import SwiftUI
+import UIKit
 import XCTest
 @testable import SnipSnapiOS
 
@@ -139,5 +141,81 @@ final class LibrarySidebarSizingTests: XCTestCase {
             XCTAssertNil(LibrarySidebarExpandedWidth(rawValue: junk), junk)
         }
         XCTAssertEqual(LibrarySidebarExpandedWidth.default, .points(240))
+    }
+
+    func testDragDetentTracksRailExpandedAndHingeZones() {
+        XCTAssertEqual(flat.dragDetent(at: 80), .rail)
+        XCTAssertEqual(flat.dragDetent(at: 139.9), .rail)
+        XCTAssertEqual(flat.dragDetent(at: 140), .expanded)
+        XCTAssertEqual(flat.dragDetent(at: 320), .expanded)
+        XCTAssertEqual(book.dragDetent(at: 347), .expanded)
+        XCTAssertEqual(book.dragDetent(at: 348), .hinge)
+        XCTAssertEqual(book.dragDetent(at: 380), .hinge)
+    }
+}
+
+@MainActor
+final class LibrarySidebarPanObserverTests: XCTestCase {
+    func testHitRectCoversEntireSidebarPlusTrailingSeam() {
+        let frame = CGRect(x: 0, y: 0, width: 80, height: 669)
+        let ltr = LibrarySidebarPanObserver.Coordinator.hitRect(
+            for: frame, layoutDirection: .leftToRight, seamOverhang: 16
+        )
+        XCTAssertEqual(ltr, CGRect(x: 0, y: 0, width: 96, height: 669))
+
+        let rtl = LibrarySidebarPanObserver.Coordinator.hitRect(
+            for: CGRect(x: 720, y: 0, width: 80, height: 669),
+            layoutDirection: .rightToLeft,
+            seamOverhang: 16
+        )
+        XCTAssertEqual(rtl, CGRect(x: 704, y: 0, width: 96, height: 669))
+
+        XCTAssertTrue(
+            LibrarySidebarPanObserver.Coordinator.hitRect(
+                for: .zero, layoutDirection: .leftToRight, seamOverhang: 16
+            ).isNull
+        )
+    }
+
+    func testOnlyStrictlyHorizontalMovementBeginsSidebarPan() {
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isHorizontalMovement(CGPoint(x: 12, y: 4)))
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isHorizontalMovement(CGPoint(x: -12, y: 11)))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isHorizontalMovement(CGPoint(x: 10, y: 10)))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isHorizontalMovement(CGPoint(x: 4, y: 18)))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isHorizontalMovement(.zero))
+    }
+
+    func testSidebarPanBlocksScrollAndRowTapsOnceRecognized() {
+        let coordinator = LibrarySidebarPanObserver.Coordinator(
+            layoutDirection: .leftToRight,
+            canBegin: { true },
+            onPan: { _, _, _ in }
+        )
+        let sidebarPan = UIPanGestureRecognizer()
+        let scrollView = UIScrollView()
+        let scrollPan = scrollView.panGestureRecognizer
+        let tap = UITapGestureRecognizer()
+        let delegate: UIGestureRecognizerDelegate = coordinator
+
+        XCTAssertFalse(coordinator.gestureRecognizer(sidebarPan, shouldRecognizeSimultaneouslyWith: scrollPan))
+        XCTAssertFalse(coordinator.gestureRecognizer(sidebarPan, shouldRecognizeSimultaneouslyWith: tap))
+        XCTAssertTrue(delegate.gestureRecognizer?(sidebarPan, shouldBeRequiredToFailBy: scrollPan) == true)
+        XCTAssertFalse(delegate.gestureRecognizer?(sidebarPan, shouldBeRequiredToFailBy: tap) == true)
+    }
+
+    func testTouchesOutsideRootViewHierarchyAreIgnored() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let rootView = UIView(frame: window.bounds)
+        let sidebarRow = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 56))
+        let contextMenuOverlay = UIView(frame: window.bounds)
+        rootView.addSubview(sidebarRow)
+        window.addSubview(rootView)
+        window.addSubview(contextMenuOverlay)
+
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(rootView, rootView: rootView))
+        XCTAssertTrue(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(sidebarRow, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(contextMenuOverlay, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(nil, rootView: rootView))
+        XCTAssertFalse(LibrarySidebarPanObserver.Coordinator.isTouchInRootHierarchy(sidebarRow, rootView: nil))
     }
 }

@@ -113,23 +113,25 @@ extension ToolbarContent {
 }
 
 enum NewListButtonStyle: String {
+    case pinnedAddList
     case roundPlus
     case roundCompose
     case inlinePlus
     case inlineStackBadgePlus
 
-    static let current: NewListButtonStyle = TryOverride.value("SNIP_SNAP_NEW_LIST_BUTTON") ?? .roundPlus
+    static let current: NewListButtonStyle = TryOverride.value("SNIP_SNAP_NEW_LIST_BUTTON") ?? .pinnedAddList
 
     var systemImage: String {
         switch self {
+        case .pinnedAddList: "text.badge.plus"
         case .roundPlus, .inlinePlus: "plus"
         case .roundCompose: "square.and.pencil"
         case .inlineStackBadgePlus: "rectangle.stack.badge.plus"
         }
     }
 
-    /// Round styles pin a glass circle to the bottom of the rail; the others follow the last list.
-    var isPinned: Bool { self == .roundPlus || self == .roundCompose }
+    /// Pinned styles keep a glass button at the bottom of the rail; the others follow the last list.
+    var isPinned: Bool { self == .pinnedAddList || self == .roundPlus || self == .roundCompose }
 }
 
 extension Array where Element == LibraryPage {
@@ -181,8 +183,10 @@ private struct LibrarySidebarContainer: ViewModifier {
 }
 
 /// The library's list column beside the page card. It is a thin rail of marks, or a wider sidebar
-/// that also shows names. Dragging its trailing edge resizes it; the toggle at its top switches looks.
-/// With a hardware keyboard, the arrow keys move between its pages while no text is being edited.
+/// that also shows names. Dragging horizontally anywhere on the column (or across its trailing
+/// seam) grows and shrinks it directly; dragging small past the threshold collapses it to the rail.
+/// With a hardware keyboard, the arrow keys move between its pages while no text is being edited,
+/// and Control-Command-S toggles between the rail and named widths.
 struct LibraryRailView: View {
     /// Rows keep this inset on both sides, so a mark stays put as the column widens.
     private static let inset: CGFloat = 12
@@ -195,10 +199,28 @@ struct LibraryRailView: View {
     @Environment(\.glassMenuPresentation) private var glassMenuPresentation
     @AppStorage private var isExpanded: Bool
     @AppStorage private var expandedWidth: LibrarySidebarExpandedWidth
-    @State private var stripDrag: StripDrag?
+    @State private var dragTravel: CGFloat?
+    @State private var lastDragDetent: LibrarySidebarSizing.DragDetent?
     @State private var scrollPosition = ScrollPosition()
-    @GestureState private var isDraggingStrip = false
+    @ScaledMetric(relativeTo: .body) private var scaledNewListControlLength: CGFloat = 44
     private let newListStyle = NewListButtonStyle.current
+
+    private var newListControlLength: CGFloat {
+        max(44, scaledNewListControlLength)
+    }
+
+    private var newListIconSlotWidth: CGFloat {
+        min(newListControlLength, RailButton<EmptyView>.length)
+    }
+
+    private var pinnedNewListHorizontalPadding: CGFloat {
+        max(Self.inset, (LibrarySidebarSizing.railWidth - newListIconSlotWidth) / 2)
+    }
+
+    private var pinnedNewListLabelLeadingPadding: CGFloat {
+        let titleOrigin = Self.inset + RailButton<EmptyView>.length + RailButton<EmptyView>.titleLeadingGap
+        return max(RailButton<EmptyView>.titleLeadingGap, titleOrigin - (pinnedNewListHorizontalPadding + newListIconSlotWidth))
+    }
 
     init(
         model: IOSAppModel, sheet: Binding<AppSheet?>, defaults: LibrarySidebarDefaults,
@@ -233,11 +255,6 @@ struct LibraryRailView: View {
     }
 
     private var nameOpacity: Double { LibrarySidebarSizing.nameOpacity(at: width) }
-
-    /// How far the finger has widened the column, while a resize is under way.
-    private var dragTravel: CGFloat? {
-        if case .resizing(let travel) = stripDrag { travel } else { nil }
-    }
 
     var body: some View {
         ScrollView {
@@ -285,54 +302,51 @@ struct LibraryRailView: View {
                 }
             }
             .padding(.horizontal, Self.inset)
-            .padding(.vertical, 12)
+            // Aligns the first row visually with the detail card's large navigation title.
+            .padding(.top, 19)
+            .padding(.bottom, 12)
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
         .scrollPosition($scrollPosition)
+        // Clears iPad window controls in windowed mode without reserving space when absent.
+        .containerCornerOffset(.top)
         .background {
             // Text editing keeps the arrow keys; elsewhere they move between pages like a sidebar list.
             Group {
-                Button("Previous Page") { selectAdjacentPage(by: -1) }
-                    .keyboardShortcut(.upArrow, modifiers: [])
-                Button("Next Page") { selectAdjacentPage(by: 1) }
-                    .keyboardShortcut(.downArrow, modifiers: [])
+                Group {
+                    Button("Previous Page") { selectAdjacentPage(by: -1) }
+                        .keyboardShortcut(.upArrow, modifiers: [])
+                    Button("Next Page") { selectAdjacentPage(by: 1) }
+                        .keyboardShortcut(.downArrow, modifiers: [])
+                }
+                .disabled(isPageChangeBlocked)
+                Button(widthToggleTitle) { toggleWidth() }
+                    .keyboardShortcut("s", modifiers: [.command, .control])
             }
-            .disabled(isPageChangeBlocked)
             .frame(width: 0, height: 0)
             .opacity(0)
             .accessibilityHidden(true)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            widthToggle
-                // Clears iPad window controls, which sit in the window's top-leading corner.
-                .containerCornerOffset(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, Self.inset + 6)
-                .padding(.top, 4)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if newListStyle.isPinned {
                 newListButton
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, Self.inset + 2)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, newListStyle == .pinnedAddList ? pinnedNewListHorizontalPadding : Self.inset + 2)
+                    // Matches CompactLibraryControls bottom spacing so the button aligns with the composer row.
+                    .padding(.top, SnipSnapSpacing.relatedContent)
+                    .padding(.bottom, 6)
             }
         }
         .frame(width: width)
-        .overlay(alignment: .trailing) {
-            resizeHandle
-                .alignmentGuide(HorizontalAlignment.trailing) { $0[HorizontalAlignment.trailing] - Self.handleOverhang }
+        .background {
+            LibrarySidebarPanObserver(
+                layoutDirection: layoutDirection,
+                canBegin: { !isResizeBlocked },
+                onPan: handlePan
+            )
         }
-        .onChange(of: isDraggingStrip) { _, isActive in
-            // A canceled drag never ends, so a resize settles where it stopped.
-            guard !isActive else { return }
-            if let dragTravel {
-                settle(travel: dragTravel, predictedTravel: dragTravel)
-            } else {
-                stripDrag = nil
-            }
-        }
+        .accessibilityAction(named: widthToggleTitle) { toggleWidth() }
     }
 
     /// A sheet, menu, search, or list edit owns the moment; switching pages under it would abandon that work.
@@ -341,90 +355,69 @@ struct LibraryRailView: View {
             || model.isSearchPresented || model.editingListID != nil
     }
 
+    /// Modal presentations cover the sidebar, so horizontal drags must not resize behind them.
+    private var isResizeBlocked: Bool {
+        sheet != nil || glassMenuPresentation?.isPresented == true || model.newListMoveRequest != nil
+    }
+
     private func selectAdjacentPage(by offset: Int) {
         guard let page = model.pages.page(offset, from: model.selectedPage) else { return }
         model.selectPage(page)
         scrollPosition.scrollTo(id: page)
     }
 
-    private var widthToggleTitle: Text {
-        isExpanded ? Text("Hide List Names") : Text("Show List Names")
+    private var widthToggleTitle: LocalizedStringKey {
+        isExpanded ? "Hide List Names" : "Show List Names"
     }
 
-    private var widthToggle: some View {
-        Button {
-            withAnimation(settleAnimation) { isExpanded.toggle() }
-        } label: {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+    private func toggleWidth() {
+        withAnimation(settleAnimation) { isExpanded.toggle() }
+    }
+
+    private func handlePan(
+        translation: CGSize,
+        predictedTranslation: CGSize,
+        state: UIGestureRecognizer.State
+    ) {
+        let travel = widening(translation)
+        switch state {
+        case .began:
+            let initialDetent = sizing.dragDetent(at: settledWidth)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                dragTravel = travel
+            }
+            let currentDetent = sizing.dragDetent(at: sizing.dragWidth(settledWidth + travel))
+            if currentDetent != initialDetent {
+                model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+            }
+            lastDragDetent = currentDetent
+        case .changed:
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                dragTravel = travel
+            }
+            let currentDetent = sizing.dragDetent(at: sizing.dragWidth(settledWidth + travel))
+            if let lastDragDetent, currentDetent != lastDragDetent {
+                model.haptics.emit(.selection, for: model.haptics.beginInteraction())
+            }
+            lastDragDetent = currentDetent
+        case .ended:
+            lastDragDetent = nil
+            settle(travel: travel, predictedTravel: widening(predictedTranslation))
+        case .cancelled, .failed:
+            lastDragDetent = nil
+            if let activeTravel = dragTravel {
+                settle(travel: activeTravel, predictedTravel: activeTravel)
+            }
+        default:
+            break
         }
-        .buttonStyle(.plain)
-        .hoverEffect(.highlight)
-        .help(widthToggleTitle)
-        .keyboardShortcut("s", modifiers: [.command, .control])
-        .accessibilityLabel(widthToggleTitle)
-        .accessibilityIdentifier("sidebar-width-toggle")
-        .accessibilityShowsLargeContentViewer {
-            Label { widthToggleTitle } icon: { Image(systemName: "sidebar.left") }
-        }
     }
 
-    private static let handleWidth: CGFloat = 20
-    /// How far the strip reaches over the card. The rest sits on the column, clear of the card's rows.
-    private static let handleOverhang: CGFloat = 6
-    private static let grabberWidth: CGFloat = 5
-
-    /// An invisible strip along the column's trailing edge. The toggle offers the same change to
-    /// assistive technologies, so the strip stays out of their way.
-    private var resizeHandle: some View {
-        Color.clear
-            .frame(width: Self.handleWidth)
-            .contentShape(Rectangle())
-            .overlay(alignment: .trailing) {
-                if dragTravel != nil {
-                    // Centered on the column's edge.
-                    Capsule()
-                        .fill(.tertiary)
-                        .frame(width: Self.grabberWidth, height: 40)
-                        .padding(.trailing, Self.handleOverhang - Self.grabberWidth / 2)
-                }
-            }
-            .gesture(resizeGesture)
-            .accessibilityHidden(true)
-    }
-
-    /// A drag on the resize strip. One that starts mostly vertical is ignored until it ends.
-    private enum StripDrag: Equatable {
-        case resizing(travel: CGFloat)
-        case ignored
-    }
-
-    private var resizeGesture: some Gesture {
-        // Global, because the strip moves with the edge it drags.
-        DragGesture(minimumDistance: 6, coordinateSpace: .global)
-            .updating($isDraggingStrip) { _, isActive, _ in isActive = true }
-            .onChanged { value in
-                guard stripDrag != .ignored else { return }
-                let translation = value.translation
-                if stripDrag == nil, abs(translation.height) > abs(translation.width) {
-                    stripDrag = .ignored
-                } else {
-                    stripDrag = .resizing(travel: widening(translation))
-                }
-            }
-            .onEnded { value in
-                guard let dragTravel else {
-                    stripDrag = nil
-                    return
-                }
-                settle(travel: dragTravel, predictedTravel: widening(value.predictedEndTranslation))
-            }
-    }
-
-    /// Global coordinates don't mirror, so a right-to-left column widens as the finger moves left.
+    /// Window coordinates don't mirror, so a right-to-left column widens as the finger moves left.
     private func widening(_ translation: CGSize) -> CGFloat {
         layoutDirection == .rightToLeft ? -translation.width : translation.width
     }
@@ -444,7 +437,7 @@ struct LibraryRailView: View {
                     isExpanded = true
                 }
             }
-            stripDrag = nil
+            dragTravel = nil
         }
     }
 
@@ -468,7 +461,34 @@ struct LibraryRailView: View {
 
     private var newListButton: some View {
         Group {
-            if newListStyle.isPinned {
+            if newListStyle == .pinnedAddList {
+                Button {
+                    Task { await model.openNewList() }
+                } label: {
+                    HStack(spacing: 0) {
+                        Image(systemName: newListStyle.systemImage)
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: newListIconSlotWidth, height: newListControlLength)
+                        Text("New List")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.leading, pinnedNewListLabelLeadingPadding)
+                            .padding(.trailing, 16)
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: newListControlLength, alignment: .leading)
+                            .clipped()
+                            .opacity(nameOpacity)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: Capsule())
+                .help("New List")
+                .accessibilityLabel("New List")
+                .accessibilityShowsLargeContentViewer {
+                    Label("New List", systemImage: newListStyle.systemImage)
+                }
+            } else if newListStyle.isPinned {
                 Button {
                     Task { await model.openNewList() }
                 } label: {
@@ -504,7 +524,8 @@ struct LibraryRailView: View {
 
 /// A row of the list column: the mark, then the name once the column is wide enough to show it.
 private struct RailButton<Mark: View>: View {
-    private static var length: CGFloat { 56 }
+    static var length: CGFloat { 56 }
+    static var titleLeadingGap: CGFloat { 4 }
     private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     let title: String
     let isSelected: Bool
@@ -534,7 +555,7 @@ private struct RailButton<Mark: View>: View {
                     Spacer(minLength: 0)
                     if let count { CountBadge(count: count) }
                 }
-                .padding(.leading, 4)
+                .padding(.leading, Self.titleLeadingGap)
                 .padding(.trailing, 12)
                 .frame(
                     minWidth: 0, maxWidth: .infinity,
@@ -585,5 +606,216 @@ private struct RailIcon: View {
         Image(systemName: systemImage)
             .font(.system(size: 22, weight: .medium))
             .foregroundStyle(color)
+    }
+}
+
+/// Recognizes horizontal resize drags starting anywhere on the library sidebar (or just across
+/// its trailing seam) while letting vertical drags scroll the sidebar and taps/long-presses
+/// reach its rows.
+struct LibrarySidebarPanObserver: UIViewRepresentable {
+    /// How far past the sidebar's trailing edge a resize drag may also begin, over the card seam.
+    static let seamOverhang: CGFloat = 16
+    static let velocityProjection: CGFloat = 0.2
+
+    let layoutDirection: LayoutDirection
+    let canBegin: () -> Bool
+    let onPan: (_ translation: CGSize, _ predictedTranslation: CGSize, _ state: UIGestureRecognizer.State) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(layoutDirection: layoutDirection, canBegin: canBegin, onPan: onPan)
+    }
+
+    func makeUIView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        context.coordinator.attachmentView = view
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.attach(to: window)
+        }
+        return view
+    }
+
+    func updateUIView(_ view: AttachmentView, context: Context) {
+        context.coordinator.layoutDirection = layoutDirection
+        context.coordinator.canBegin = canBegin
+        context.coordinator.onPan = onPan
+    }
+
+    static func dismantleUIView(_ view: AttachmentView, coordinator: Coordinator) {
+        coordinator.attach(to: nil)
+    }
+
+    final class AttachmentView: UIView {
+        var onWindowChange: ((UIWindow?) -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var layoutDirection: LayoutDirection
+        var canBegin: () -> Bool
+        var onPan: (CGSize, CGSize, UIGestureRecognizer.State) -> Void
+        weak var attachmentView: UIView?
+        private weak var attachedWindow: UIWindow?
+        private var recognizer: UIPanGestureRecognizer?
+        private var touchStart: CGPoint?
+        private var isTracking = false
+        private var wasInterrupted = false
+
+        init(
+            layoutDirection: LayoutDirection,
+            canBegin: @escaping () -> Bool,
+            onPan: @escaping (CGSize, CGSize, UIGestureRecognizer.State) -> Void
+        ) {
+            self.layoutDirection = layoutDirection
+            self.canBegin = canBegin
+            self.onPan = onPan
+        }
+
+        static func hitRect(
+            for railFrame: CGRect,
+            layoutDirection: LayoutDirection,
+            seamOverhang: CGFloat = LibrarySidebarPanObserver.seamOverhang
+        ) -> CGRect {
+            guard !railFrame.isEmpty else { return .null }
+            return switch layoutDirection {
+            case .leftToRight:
+                CGRect(
+                    x: railFrame.minX,
+                    y: railFrame.minY,
+                    width: railFrame.width + seamOverhang,
+                    height: railFrame.height
+                )
+            case .rightToLeft:
+                CGRect(
+                    x: railFrame.minX - seamOverhang,
+                    y: railFrame.minY,
+                    width: railFrame.width + seamOverhang,
+                    height: railFrame.height
+                )
+            @unknown default:
+                CGRect(
+                    x: railFrame.minX,
+                    y: railFrame.minY,
+                    width: railFrame.width + seamOverhang,
+                    height: railFrame.height
+                )
+            }
+        }
+
+        static func isHorizontalMovement(_ movement: CGPoint) -> Bool {
+            abs(movement.x) > abs(movement.y)
+        }
+
+        /// Native context menus and toolbar menus present in window-level overlay containers
+        /// outside the root view controller's hierarchy; ignore touches landing on them.
+        static func isTouchInRootHierarchy(_ touchView: UIView?, rootView: UIView?) -> Bool {
+            guard let touchView, let rootView else { return false }
+            return touchView.isDescendant(of: rootView)
+        }
+
+        func attach(to window: UIWindow?) {
+            guard attachedWindow !== window else { return }
+            if let recognizer { attachedWindow?.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+            attachedWindow = window
+            touchStart = nil
+            isTracking = false
+            wasInterrupted = false
+            guard let window else { return }
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            recognizer.cancelsTouchesInView = true
+            recognizer.maximumNumberOfTouches = 1
+            recognizer.delegate = self
+            window.addGestureRecognizer(recognizer)
+            self.recognizer = recognizer
+        }
+
+        @objc private func handle(_ recognizer: UIPanGestureRecognizer) {
+            guard let window = recognizer.view as? UIWindow, isTracking else { return }
+            let translation = recognizer.translation(in: window)
+            let velocity = recognizer.velocity(in: window)
+            let isInterrupted = window.rootViewController?.presentedViewController != nil
+                || (recognizer.state != .began && wasInterrupted)
+            wasInterrupted = isInterrupted
+            let projected = CGSize(
+                width: translation.x + velocity.x * LibrarySidebarPanObserver.velocityProjection,
+                height: translation.y + velocity.y * LibrarySidebarPanObserver.velocityProjection
+            )
+            onPan(
+                CGSize(width: translation.x, height: translation.y),
+                projected,
+                isInterrupted ? .cancelled : recognizer.state
+            )
+            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
+                touchStart = nil
+                isTracking = false
+                wasInterrupted = false
+            }
+        }
+
+        private func currentHitRect(in window: UIWindow) -> CGRect? {
+            guard let attachmentView,
+                  attachmentView.window === window,
+                  window.rootViewController?.presentedViewController == nil,
+                  canBegin() else { return nil }
+            let railFrame = attachmentView.convert(attachmentView.bounds, to: window)
+            let rect = Self.hitRect(for: railFrame, layoutDirection: layoutDirection)
+            return rect.isNull ? nil : rect
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            touchStart = nil
+            guard let window = attachedWindow,
+                  Self.isTouchInRootHierarchy(touch.view, rootView: window.rootViewController?.view),
+                  let hitRect = currentHitRect(in: window) else { return false }
+            let location = touch.location(in: window)
+            guard hitRect.contains(location) else { return false }
+            touchStart = location
+            return true
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            isTracking = false
+            wasInterrupted = false
+            defer { if !isTracking { touchStart = nil } }
+            guard let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
+                  let window = attachedWindow,
+                  let hitRect = currentHitRect(in: window) else { return false }
+            let translation = recognizer.translation(in: window)
+            let velocity = recognizer.velocity(in: window)
+            let location = recognizer.location(in: window)
+            let start = touchStart ?? CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+            guard hitRect.contains(start) else { return false }
+            // A physical device can report zero translation at shouldBegin.
+            let initialMovement = velocity == .zero ? translation : velocity
+            guard Self.isHorizontalMovement(initialMovement) else { return false }
+            isTracking = true
+            return true
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { false }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { isScrollPan(otherGestureRecognizer) }
+
+        private func isScrollPan(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let scrollView = recognizer.view as? UIScrollView else { return false }
+            return recognizer === scrollView.panGestureRecognizer
+        }
     }
 }

@@ -466,8 +466,6 @@ struct IOSAppRootView: View {
             HStack(spacing: 0) {
                 LibraryRailView(model: model, sheet: $sheet, defaults: sidebarDefaults, deleteList: deleteList)
                     .ignoresSafeArea(.keyboard)
-                    // Its resize handle straddles the card's leading edge.
-                    .zIndex(1)
                 regularDetail(libraryActions: libraryActionsMenu(anchorsDevelopmentBadge: false))
                     .librarySearchable(model: model)
                     .sideButtonsWhereVerticalBar()

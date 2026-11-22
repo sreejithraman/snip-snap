@@ -134,7 +134,7 @@ that show the rail's letter marks, colors, and a custom icon.
 Debug builds also read these Try switches at launch, again with the
 `SIMCTL_CHILD_` prefix. Release builds ignore them.
 
-- `SNIP_SNAP_NEW_LIST_BUTTON=roundPlus|roundCompose|inlinePlus|inlineStackBadgePlus`
+- `SNIP_SNAP_NEW_LIST_BUTTON=pinnedAddList|roundPlus|roundCompose|inlinePlus|inlineStackBadgePlus`
   picks the rail's New List button.
 
 `BUNDLE_ID` is the `Bundle:` line the runner prints. Keyboard input does not
