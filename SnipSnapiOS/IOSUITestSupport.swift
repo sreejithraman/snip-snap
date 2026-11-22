@@ -54,7 +54,8 @@ struct PageLayoutUITestProbe: UIViewControllerRepresentable {
             func collection(in view: UIView) -> UICollectionView? {
                 (view as? UICollectionView) ?? view.subviews.lazy.compactMap { collection(in: $0) }.first
             }
-            let pageFrame = navigationController.view.convert(navigationController.view.bounds, to: window)
+            let contentLayer = navigationController.topViewController?.view.layer ?? navigationController.view.layer
+            let pageFrame = contentLayer.convert(contentLayer.bounds, to: window.layer)
             guard pageFrame.intersection(window.bounds).width > 1,
                   let list = collection(in: navigationController.view),
                   let cell = list.visibleCells.min(by: { $0.frame.minY < $1.frame.minY }) else { return }
@@ -71,6 +72,8 @@ struct PageLayoutUITestProbe: UIViewControllerRepresentable {
                 "contentHeight": list.contentSize.height,
                 "snipWidth": cell.contentView.bounds.width,
                 "snipHeight": cell.contentView.bounds.height,
+                "trailingSafeArea": list.safeAreaInsets.right,
+                "cellSafeWidth": cell.safeAreaLayoutGuide.layoutFrame.width,
                 "contentOffsetY": list.contentOffset.y,
                 "navigationBarHeight": navigationController.navigationBar.bounds.height,
                 "toolbarSlotCount": CGFloat(toolbarCount),
@@ -78,7 +81,7 @@ struct PageLayoutUITestProbe: UIViewControllerRepresentable {
             ]
             func titleHeights(in view: UIView, clippedTo clip: CGRect) -> [CGFloat] {
                 guard !view.isHidden, view.alpha > 0.01 else { return [] }
-                let frame = view.convert(view.bounds, to: window)
+                let frame = view.layer.convert(view.layer.bounds, to: window.layer)
                 let visibleClip = view.clipsToBounds ? clip.intersection(frame) : clip
                 let visible = frame.intersection(visibleClip)
                 let own = (view as? UILabel).flatMap {

@@ -349,6 +349,39 @@ final class SnipSnapiOSUITests: XCTestCase {
         try assertStablePageLayout(in: app, source: "Snip Snap", neighbor: "Later", direction: -1, expectsScrollable: true)
     }
 
+    func testPageSwipePreservesExpandedSnipAcrossNeighborVisit() throws {
+        continueAfterFailure = false
+        let app = launchApp(withGatheringFixtures: true)
+        try requireCompactSelector(in: app)
+        let text = "First line of long snip\nSecond line of long snip\nThird line of long snip\nFourth line of long snip\nFifth line of long snip"
+        createSnip(text, in: app)
+        let disclosure = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "snip-text-")
+        ).firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3))
+        XCTAssertEqual(disclosure.value as? String, "Collapsed")
+        let collapsedHeight = disclosure.frame.height
+        try visibleTouchCenter(of: disclosure, in: app).tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "Expanded"), object: disclosure
+        )], timeout: 3), .completed)
+        let expandedHeight = disclosure.frame.height
+        XCTAssertGreaterThan(expandedHeight, collapsedHeight)
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -240, dy: 0)),
+                    withVelocity: 80, thenHoldForDuration: 0.3)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+
+        let back = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
+        back.press(forDuration: 0.05, thenDragTo: back.withOffset(CGVector(dx: 240, dy: 0)),
+                   withVelocity: 80, thenHoldForDuration: 0.3)
+        XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3))
+        XCTAssertEqual(disclosure.value as? String, "Expanded")
+        XCTAssertEqual(disclosure.frame.height, expandedHeight, accuracy: 2)
+    }
+
     private func pageLayoutSamples(from probe: XCUIElement) throws -> [[String: Double]] {
         let value = try XCTUnwrap(probe.value as? String)
         return try JSONDecoder().decode([[String: Double]].self, from: Data(value.utf8))
@@ -412,7 +445,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         let positions = try measured.map { try XCTUnwrap($0["pageX"]) }
         XCTAssertGreaterThan((positions.max() ?? 0) - (positions.min() ?? 0), 150)
         XCTAssertGreaterThan(try XCTUnwrap(baseline["toolbarSlotCount"]), 0, "The native toolbar must be present before paging.")
-        for name in ["collectionWidth", "snipWidth", "snipHeight", "contentOffsetY", "navigationBarHeight", "toolbarSlotCount"] {
+        for name in [
+            "collectionWidth", "snipWidth", "snipHeight", "trailingSafeArea",
+            "cellSafeWidth", "contentOffsetY", "navigationBarHeight", "toolbarSlotCount"
+        ] {
             let values = try measured.map { try XCTUnwrap($0[name]) }
             let expected = try XCTUnwrap(baseline[name])
             let tolerance = name == "toolbarSlotCount" ? 0.0 : 1.0
@@ -2653,6 +2689,71 @@ final class SnipSnapiOSUITests: XCTestCase {
         screenshot.name = "Sidebar toolbar Paste on Clipboard"
         screenshot.lifetime = .keepAlways
         add(screenshot)
+    }
+
+    func testOpenDuoGroupsTopActionsAndAnchorsPasteAndSearchAtBottom() throws {
+        continueAfterFailure = false
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("This check requires the open iPhone Duo regular layout.")
+        }
+        let app = launchApp()
+        if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
+            throw XCTSkip("This check requires the open iPhone Duo regular layout.")
+        }
+        let windowFrame = app.windows.firstMatch.frame
+        guard abs(windowFrame.width - DuoPose.open.windowWidth) <= 1,
+              windowFrame.width > windowFrame.height else {
+            throw XCTSkip("This check requires the open iPhone Duo landscape pose with its vertical trailing bar.")
+        }
+
+        let options = app.buttons["workflow-options"]
+        let actions = app.buttons["library-actions"]
+        let paste = app.buttons["paste-to-clipboard"]
+        let search = app.buttons["Search"]
+        let windowMidY = windowFrame.midY
+
+        func assertVerticalBarLayout() {
+            waitForHittable(options)
+            waitForHittable(actions)
+            waitForHittable(paste)
+            waitForHittable(search)
+            XCTAssertEqual(options.frame.midX, actions.frame.midX, accuracy: 2)
+            XCTAssertLessThan(options.frame.maxY, actions.frame.minY)
+            XCTAssertLessThan(actions.frame.maxY, windowMidY, "Top actions should stay in the upper half.")
+            XCTAssertEqual(paste.frame.midX, options.frame.midX, accuracy: 2)
+            XCTAssertEqual(search.frame.midX, options.frame.midX, accuracy: 2)
+            XCTAssertLessThan(paste.frame.maxY, search.frame.minY)
+            XCTAssertGreaterThan(paste.frame.minY, windowMidY, "Paste and Search should anchor at the bottom right.")
+
+            // Top actions share one vertical pill just like Paste and Search; a fixed spacer
+            // between separate circles widens this vertical gap noticeably.
+            let topActionsGap = actions.frame.minY - options.frame.maxY
+            let bottomActionsGap = search.frame.minY - paste.frame.maxY
+            XCTAssertEqual(topActionsGap, bottomActionsGap, accuracy: 4,
+                           "Filter and Library Actions should share one grouped vertical pill.")
+        }
+
+        assertVerticalBarLayout()
+        let inboxPasteFrame = paste.frame
+        let inboxSearchFrame = search.frame
+
+        search.tap()
+        let searchField = app.searchFields["Search"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 3))
+        XCTAssertTrue(paste.waitForNonExistence(timeout: 3))
+        closeSearch(in: app)
+        assertVerticalBarLayout()
+        XCTAssertEqual(paste.frame.midY, inboxPasteFrame.midY, accuracy: 2)
+        XCTAssertEqual(search.frame.midY, inboxSearchFrame.midY, accuracy: 2)
+
+        let clipboard = app.buttons["clipboard-sidebar"]
+        XCTAssertTrue(clipboard.waitForExistence(timeout: 3))
+        clipboard.tap()
+        XCTAssertTrue(app.navigationBars["Clipboard"].waitForExistence(timeout: 3))
+        assertVerticalBarLayout()
+        XCTAssertEqual(paste.label, "Paste")
+        XCTAssertEqual(paste.frame.midY, inboxPasteFrame.midY, accuracy: 2)
+        XCTAssertEqual(search.frame.midY, inboxSearchFrame.midY, accuracy: 2)
     }
 
     func testClipboardContextMenuKeepsPinAndDeleteAvailable() throws {

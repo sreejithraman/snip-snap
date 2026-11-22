@@ -38,6 +38,17 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
         }
     }
 
+    @ToolbarContentBuilder
+    private var trailingToolbarGroup: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            controls(trailingControls)
+            if let libraryActions {
+                controls(libraryActions)
+            }
+        }
+        .sharedBackgroundVisibility(sharedBackground)
+    }
+
     func body(content: Content) -> some View {
         content
             .navigationTitle(title)
@@ -49,29 +60,9 @@ struct CollectionScreenPresentation<TrailingControls: View, LibraryActions: View
             .toolbar {
                 if showsControls {
                     if prefersSideButtons {
-                        // Fixed spacers keep each control in its own circle in the trailing column.
-                        ToolbarItem(placement: .topBarTrailing) {
-                            controls(trailingControls)
-                        }
-                        .sharedBackgroundVisibility(sharedBackground)
-                        .sideButton()
-                        if let libraryActions {
-                            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                                .sideButton()
-                            ToolbarItem(placement: .topBarTrailing) {
-                                controls(libraryActions)
-                            }
-                            .sharedBackgroundVisibility(sharedBackground)
-                            .sideButton()
-                        }
+                        trailingToolbarGroup.sideButton()
                     } else {
-                        ToolbarItemGroup(placement: .topBarTrailing) {
-                            controls(trailingControls)
-                            if let libraryActions {
-                                controls(libraryActions)
-                            }
-                        }
-                        .sharedBackgroundVisibility(sharedBackground)
+                        trailingToolbarGroup
                     }
                 }
             }

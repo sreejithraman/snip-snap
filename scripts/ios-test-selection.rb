@@ -63,9 +63,10 @@ module IOSTestSelection
       tests: PAGE_LAYOUT_TESTS
     },
     'paging' => {
-      description: 'Layout during swipes, retained scroll and drafts, selector paging, and edge creation/cancellation.',
+      description: 'Layout during swipes, retained scroll, expanded snips, and drafts, selector paging, and edge creation/cancellation.',
       tests: PAGE_LAYOUT_TESTS + %w[
         testPageSwipePreservesListPositionAndTitle
+        testPageSwipePreservesExpandedSnipAcrossNeighborVisit
         testPageSwipeMovesBetweenInboxAndClipboard
         testLeadingClipboardPasteCapturesCopiedText
         testClipboardAndSelectorPreserveNavigationAndDraft

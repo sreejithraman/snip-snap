@@ -155,40 +155,44 @@ struct CompactLibraryControls: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .toolbar {
             if prefersSideButtons {
-                // Declaring Search right after Paste puts the two in one capsule, Paste on top,
-                // apart from the library actions.
-                ToolbarSpacer(.flexible, placement: .topBarTrailing)
+                ToolbarSpacer(.flexible, placement: .bottomBar)
                     .sideButton()
                 if !model.isSearchPresented {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .bottomBar) {
                         Button(pasteLabel, systemImage: "doc.on.clipboard", action: paste)
                             .disabled(isToolbarPasteDisabled)
                             .accessibilityIdentifier("paste-to-clipboard")
                     }
                     .sideButton()
                 }
-                DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+                DefaultToolbarItem(kind: .search, placement: .bottomBar)
                     .sideButton()
-            } else if !showsListTabs && !model.isSearchPresented {
-                // Paste draws its own glass circle because the system folds the Search item into
-                // the shared background of the item before it. Placing Search explicitly instead
-                // turns it into a full search field on iPad.
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                ToolbarItem(placement: .topBarTrailing) {
-                    CompactGlassCircleButton(length: Self.toolbarCircleLength, action: paste) {
-                        Image(systemName: "doc.on.clipboard")
-                            .font(.system(size: 18))
-                            .imageScale(.medium)
+            } else if !showsListTabs {
+                let placesSearchInTopBar = UIDevice.current.userInterfaceIdiom == .phone
+                if !model.isSearchPresented {
+                    // Paste draws its own glass circle because the system folds the Search item into
+                    // the shared background of the item before it. Placing Search explicitly instead
+                    // turns it into a full search field on iPad.
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        CompactGlassCircleButton(length: Self.toolbarCircleLength, action: paste) {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.system(size: 18))
+                                .imageScale(.medium)
+                        }
+                        .disabled(isToolbarPasteDisabled)
+                        .accessibilityLabel(pasteLabel)
+                        .accessibilityShowsLargeContentViewer {
+                            Label(pasteLabel, systemImage: "doc.on.clipboard")
+                        }
+                        .accessibilityIdentifier("paste-to-clipboard")
                     }
-                    .disabled(isToolbarPasteDisabled)
-                    .accessibilityLabel(pasteLabel)
-                    .accessibilityShowsLargeContentViewer {
-                        Label(pasteLabel, systemImage: "doc.on.clipboard")
-                    }
-                    .accessibilityIdentifier("paste-to-clipboard")
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                if placesSearchInTopBar {
+                    DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+                }
             }
         }
         .onAppear {
