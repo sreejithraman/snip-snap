@@ -674,12 +674,21 @@ final class SnipSnapiOSUITests: XCTestCase {
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("This check needs the regular-width rail.")
         }
-        XCTAssertTrue(app.buttons["sidebar-width-toggle"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["clipboard-sidebar"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["sidebar-width-toggle"].exists,
+                       "The sidebar must not show a top toggle icon.")
         if UIDevice.current.userInterfaceIdiom == .pad {
             waitForClipboardRowWidth(in: app, "iPad shows names by default") { $0 > 150 }
-            app.buttons["sidebar-width-toggle"].tap()
+            dragSidebarRow(app.buttons["clipboard-sidebar"], by: CGVector(dx: -200, dy: 0))
+            waitForClipboardRowWidth(in: app, "Dragged iPad sidebar to thin rail") { $0 < 80 }
         }
         return app
+    }
+
+    private func dragSidebarRow(_ row: XCUIElement, by offset: CGVector) {
+        let start = row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
     }
 
     private func waitForClipboardRowWidth(
@@ -699,14 +708,15 @@ final class SnipSnapiOSUITests: XCTestCase {
         var app = try launchAppShowingRail(storeName: storeName)
         waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
 
-        app.buttons["sidebar-width-toggle"].tap()
+        dragSidebarRow(app.buttons["clipboard-sidebar"], by: CGVector(dx: 200, dy: 0))
         waitForClipboardRowWidth(in: app, "Names shown") { $0 > 150 }
 
         app.terminate()
         app = launchApp(storeName: storeName)
+        XCTAssertFalse(app.buttons["sidebar-width-toggle"].exists)
         waitForClipboardRowWidth(in: app, "Names shown after relaunch") { $0 > 150 }
 
-        app.buttons["sidebar-width-toggle"].tap()
+        dragSidebarRow(app.buttons["clipboard-sidebar"], by: CGVector(dx: -200, dy: 0))
         waitForClipboardRowWidth(in: app, "Rail again") { $0 < 80 }
 
         // iPad starts with names, so only a second relaunch shows the rail choice was saved.
@@ -719,31 +729,48 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = try launchAppShowingRail(storeName: "rail-drag-\(UUID().uuidString)")
         let clipboard = app.buttons["clipboard-sidebar"]
+        let inbox = app.buttons["list-Inbox"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 3))
+        XCTAssertTrue(inbox.isSelected)
         waitForClipboardRowWidth(in: app, "Thin rail") { $0 < 80 }
+
+        // Dragging horizontally from anywhere on a sidebar row grows and shrinks it without tapping the row.
+        dragSidebarRow(clipboard, by: CGVector(dx: 200, dy: 0))
+        waitForClipboardRowWidth(in: app, "Dragged wider from row center") { $0 > 150 }
+        XCTAssertTrue(inbox.isSelected, "A horizontal resize drag on Clipboard must not select Clipboard.")
+
+        dragSidebarRow(clipboard, by: CGVector(dx: -200, dy: 0))
+        waitForClipboardRowWidth(in: app, "Dragged back to the rail from row center") { $0 < 80 }
+        XCTAssertTrue(inbox.isSelected, "Collapsing from Clipboard must not select Clipboard.")
+
         // Points come from the row itself: on the open Duo, the app's XCTest origin can be offset
         // from element frames. Rows keep a 12-pt inset, so the column is the row plus 24 pt wide.
         func dragFromColumnEdge(by offset: CGVector) {
-            // 4 pt inside the column, within the resize strip. Re-read after each width change.
+            // 4 pt outside the column, inside the trailing seam overhang. Re-read after each width change.
             let start = clipboard.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                .withOffset(CGVector(dx: 12 - 4, dy: 0))
+                .withOffset(CGVector(dx: 12 + 4, dy: 0))
             start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset),
                         withVelocity: .slow, thenHoldForDuration: 0.3)
         }
 
         dragFromColumnEdge(by: CGVector(dx: 200, dy: 0))
-        waitForClipboardRowWidth(in: app, "Dragged wider") { $0 > 150 }
+        waitForClipboardRowWidth(in: app, "Dragged wider from seam") { $0 > 150 }
 
-        let startInColumn = clipboard.frame.width + 24 - 4
+        let startInColumn = clipboard.frame.width + 24 + 4
         dragFromColumnEdge(by: CGVector(dx: 110 - startInColumn, dy: 0))
-        waitForClipboardRowWidth(in: app, "Dragged back to the rail") { $0 < 80 }
+        waitForClipboardRowWidth(in: app, "Dragged back to the rail from seam") { $0 < 80 }
 
         // Mostly vertical, with enough sideways travel to expand the rail if it were taken as a resize.
-        dragFromColumnEdge(by: CGVector(dx: 80, dy: 240))
-        XCTAssertLessThan(clipboard.frame.width, 80, "A vertical drag on the rail's edge must not resize it.")
+        dragSidebarRow(clipboard, by: CGVector(dx: 80, dy: 240))
+        XCTAssertLessThan(clipboard.frame.width, 80, "A vertical drag on the sidebar must not resize it.")
         let resized = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in clipboard.frame.width >= 80 }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 1), .timedOut,
-                       "A vertical drag on the rail's edge must not resize it.")
+                       "A vertical drag on the sidebar must not resize it.")
+
+        // Tapping a row still selects it cleanly.
+        clipboard.tap()
+        waitForSelection(clipboard, "Tapping Clipboard still selects Clipboard")
     }
 
     /// XCTest key events don't reach the iPhone Duo's inner panel, so this runs on iPad.

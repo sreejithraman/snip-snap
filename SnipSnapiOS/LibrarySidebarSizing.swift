@@ -64,6 +64,13 @@ struct LibrarySidebarSizing: Equatable {
         case expanded(LibrarySidebarExpandedWidth)
     }
 
+    /// The live snap zone a dragged width sits in, used for detent feedback while resizing.
+    enum DragDetent: Equatable {
+        case rail
+        case expanded
+        case hinge
+    }
+
     let containerWidth: CGFloat
     /// The leading edge of a vertical hinge inside the container, as in a book pose.
     let hingeEdge: CGFloat?
@@ -127,6 +134,13 @@ struct LibrarySidebarSizing: Equatable {
         if predictedWidth < Self.railSnapThreshold { return .rail }
         if let hingeEdge, predictedWidth >= hingeEdge - Self.hingeDetentDistance { return .expanded(.hinge) }
         return .expanded(.points(clampedExpanded(predictedWidth)))
+    }
+
+    /// The snap zone `width` currently occupies during an active drag.
+    func dragDetent(at width: CGFloat) -> DragDetent {
+        if width < Self.railSnapThreshold { return .rail }
+        if let hingeEdge, width >= hingeEdge - Self.hingeDetentDistance { return .hinge }
+        return .expanded
     }
 
     /// How visible names are at a width: hidden on the rail, fully shown from the minimum expanded width.
