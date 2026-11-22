@@ -27,6 +27,7 @@ struct CompactLibraryPageStack: View {
     @State private var visitedPages: Set<LibraryPage> = []
     @State private var swipeBlockingPages: Set<LibraryPage> = []
     @State private var interactionState = PageInteractionState()
+    @State private var pageTranslationRegistry = PageLayerTranslationRegistry()
 
     private final class PageInteractionState {
         var selectionDock = CGRect.zero
@@ -64,6 +65,7 @@ struct CompactLibraryPageStack: View {
                     state: motionState, pages: model.pages, selectedPage: model.selectedPage,
                     width: proxy.size.width,
                     safeArea: pageSafeArea,
+                    translationRegistry: pageTranslationRegistry,
                     content: mountedPages.map { page in
                         MountedListPage(
                             id: page,
@@ -104,6 +106,7 @@ struct CompactLibraryPageStack: View {
         .onChange(of: model.pages) { _, pages in
             visitedPages.formIntersection(pages)
             swipeBlockingPages.formIntersection(pages)
+            pageTranslationRegistry.prune(keeping: Set(pages))
         }
     }
 
@@ -144,6 +147,11 @@ struct CompactLibraryPageStack: View {
                 }
                 // NavigationStack resets ancestor bottom insets; preserve its own bar clearance.
                 .safeAreaPadding(.bottom, max(0, bottomSafeArea - geometry.safeAreaInsets.bottom))
+                .background {
+                    PageLayerTranslationAnchor(page: page, registry: pageTranslationRegistry)
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                }
                 #if DEBUG
                 .background {
                     if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_PAGE_LAYOUT"] == "1",
@@ -301,16 +309,143 @@ private struct MountedListPage<Content: View>: Identifiable {
     let content: Content
 }
 
-/// Page motion must not change the native navigation stack's safe-area layout.
-private struct ListPageTranslation: GeometryEffect {
-    var x: CGFloat
-    var animatableData: CGFloat {
-        get { x }
-        set { x = newValue }
+/// Translates each page's navigation sublayers without moving its UIView frame,
+/// keeping UIKit safe-area insets and large-title layout invariant during swipes.
+@MainActor
+private final class PageLayerTranslationRegistry {
+    private var offsets: [LibraryPage: CGFloat] = [:]
+    private var controllers: [LibraryPage: WeakNavigationController] = [:]
+
+    private final class WeakNavigationController {
+        weak var value: UINavigationController?
+        init(_ value: UINavigationController) { self.value = value }
     }
 
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        ProjectionTransform(CGAffineTransform(translationX: x, y: 0))
+    func register(_ navigationController: UINavigationController, for page: LibraryPage) {
+        controllers[page] = WeakNavigationController(navigationController)
+        apply(offset: offsets[page] ?? 0, to: navigationController)
+    }
+
+    func unregister(_ navigationController: UINavigationController?, for page: LibraryPage) {
+        guard let navigationController else { return }
+        if controllers[page]?.value === navigationController {
+            controllers.removeValue(forKey: page)
+        }
+    }
+
+    func setOffset(_ x: CGFloat, for page: LibraryPage) {
+        if offsets[page] == x, let controller = controllers[page]?.value {
+            let current = controller.view.layer.sublayerTransform.m41
+            if abs(current - x) < 0.001 { return }
+        }
+        offsets[page] = x
+        if let controller = controllers[page]?.value {
+            apply(offset: x, to: controller)
+        }
+    }
+
+    func prune(keeping pages: Set<LibraryPage>) {
+        offsets = offsets.filter { pages.contains($0.key) }
+        controllers = controllers.filter { pages.contains($0.key) && $0.value.value != nil }
+    }
+
+    private func apply(offset x: CGFloat, to navigationController: UINavigationController) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        navigationController.view.layer.sublayerTransform = x == 0
+            ? CATransform3DIdentity
+            : CATransform3DMakeTranslation(x, 0, 0)
+        CATransaction.commit()
+    }
+}
+
+private struct PageLayerTranslationAnchor: UIViewControllerRepresentable {
+    let page: LibraryPage
+    let registry: PageLayerTranslationRegistry
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(page: page, registry: registry)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.update(page: page, registry: registry)
+    }
+
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.detach()
+    }
+
+    final class Controller: UIViewController {
+        private var page: LibraryPage
+        private var registry: PageLayerTranslationRegistry
+        private weak var registeredController: UINavigationController?
+
+        init(page: LibraryPage, registry: PageLayerTranslationRegistry) {
+            self.page = page
+            self.registry = registry
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            sync()
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            sync()
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            sync()
+        }
+
+        func update(page: LibraryPage, registry: PageLayerTranslationRegistry) {
+            if self.page != page {
+                detach()
+                self.page = page
+            }
+            self.registry = registry
+            sync()
+        }
+
+        func detach() {
+            if let registeredController {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                registeredController.view.layer.sublayerTransform = CATransform3DIdentity
+                CATransaction.commit()
+            }
+            registry.unregister(registeredController, for: page)
+            registeredController = nil
+        }
+
+        private func sync() {
+            guard let navigationController else { return }
+            registeredController = navigationController
+            registry.register(navigationController, for: page)
+        }
+    }
+}
+
+private struct PageLayerTranslationDriver: UIViewRepresentable {
+    let page: LibraryPage
+    let x: CGFloat
+    let registry: PageLayerTranslationRegistry
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isHidden = true
+        view.isUserInteractionEnabled = false
+        registry.setOffset(x, for: page)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        registry.setOffset(x, for: page)
     }
 }
 
@@ -322,6 +457,7 @@ private struct ListPageMotionStage<PageContent: View>: View {
     let selectedPage: LibraryPage
     let width: CGFloat
     let safeArea: EdgeInsets
+    let translationRegistry: PageLayerTranslationRegistry
     let content: [MountedListPage<PageContent>]
     let retainedPagesChanged: ([LibraryPage]) -> Void
 
@@ -350,11 +486,18 @@ private struct ListPageMotionStage<PageContent: View>: View {
                 }
                 ForEach(content) { page in
                     let isRetained = frame.retainedPages.contains(page.id)
+                    let pageOffset = isRetained ? frame.offset(
+                        for: page.id, width: width,
+                        layoutDirection: layoutDirection, reduceMotion: reduceMotion
+                    ) : width * 2
                     page.content
-                        .modifier(ListPageTranslation(x: isRetained ? frame.offset(
-                            for: page.id, width: width,
-                            layoutDirection: layoutDirection, reduceMotion: reduceMotion
-                        ) : width * 2).ignoredByLayout())
+                        .background {
+                            PageLayerTranslationDriver(
+                                page: page.id, x: pageOffset, registry: translationRegistry
+                            )
+                            .frame(width: 0, height: 0)
+                            .accessibilityHidden(true)
+                        }
                         .opacity(isRetained ? frame.opacity(for: page.id, reduceMotion: reduceMotion) : 0)
                         .accessibilityHidden(frame.isMoving || page.id != selectedPage)
                         // Native bars reach outside the page clip. Keep their slots mounted,
