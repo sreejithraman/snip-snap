@@ -2693,25 +2693,25 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testOpenDuoGroupsTopActionsAndAnchorsPasteAndSearchAtBottom() throws {
         continueAfterFailure = false
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("This check requires the open iPhone Duo regular layout.")
+        }
         let app = launchApp()
         if app.descendants(matching: .any)["list-selector"].waitForExistence(timeout: 3) {
             throw XCTSkip("This check requires the open iPhone Duo regular layout.")
         }
+        let windowFrame = app.windows.firstMatch.frame
+        guard abs(windowFrame.width - DuoPose.open.windowWidth) <= 1,
+              windowFrame.width > windowFrame.height else {
+            throw XCTSkip("This check requires the open iPhone Duo landscape pose with its vertical trailing bar.")
+        }
+
         let options = app.buttons["workflow-options"]
         let actions = app.buttons["library-actions"]
         let paste = app.buttons["paste-to-clipboard"]
         let search = app.buttons["Search"]
-        waitForHittable(options)
-        waitForHittable(actions)
-        waitForHittable(paste)
-        waitForHittable(search)
+        let windowMidY = windowFrame.midY
 
-        // Only devices with a vertical trailing bar stack Filter above Library actions.
-        if abs(options.frame.midX - actions.frame.midX) > 2 {
-            throw XCTSkip("This check requires the vertical trailing bar on iPhone Duo.")
-        }
-
-        let windowMidY = app.windows.firstMatch.frame.midY
         func assertVerticalBarLayout() {
             waitForHittable(options)
             waitForHittable(actions)
@@ -2724,6 +2724,13 @@ final class SnipSnapiOSUITests: XCTestCase {
             XCTAssertEqual(search.frame.midX, options.frame.midX, accuracy: 2)
             XCTAssertLessThan(paste.frame.maxY, search.frame.minY)
             XCTAssertGreaterThan(paste.frame.minY, windowMidY, "Paste and Search should anchor at the bottom right.")
+
+            // Top actions share one vertical pill just like Paste and Search; a fixed spacer
+            // between separate circles widens this vertical gap noticeably.
+            let topActionsGap = actions.frame.minY - options.frame.maxY
+            let bottomActionsGap = search.frame.minY - paste.frame.maxY
+            XCTAssertEqual(topActionsGap, bottomActionsGap, accuracy: 4,
+                           "Filter and Library Actions should share one grouped vertical pill.")
         }
 
         assertVerticalBarLayout()
