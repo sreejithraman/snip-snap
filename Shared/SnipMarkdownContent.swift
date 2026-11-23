@@ -141,6 +141,11 @@ final class SnipMarkdownDocuments {
     private var active: [Int: [WeakDocument]] = [:]
     private let warm = NSCache<SnipMarkdownDocument, SnipMarkdownDocument>()
     private let warmCostLimit = 2 * 1_024 * 1_024
+    private static let minimumPruneThreshold = 64
+    private var pruneThreshold = minimumPruneThreshold
+    /// Tracked entries, live or released, and full sweeps so far; tests bound both.
+    var trackedDocumentCount: Int { active.values.reduce(0) { $0 + $1.count } }
+    private(set) var sweepCount = 0
 
     init() {
         warm.countLimit = 128
@@ -148,13 +153,18 @@ final class SnipMarkdownDocuments {
     }
 
     func acquire(_ source: String) -> SnipMarkdownDocument {
-        prune()
+        pruneIfGrown()
         let hash = source.hashValue
-        if let existing = active[hash]?.compactMap(\.value).first(where: { $0.source == source }) {
+        // Drop this bucket's released entries here: a source that is released and
+        // acquired again never grows the table, so the sweep alone would not reach them.
+        var bucket = active[hash]?.filter { $0.value != nil } ?? []
+        if let existing = bucket.lazy.compactMap(\.value).first(where: { $0.source == source }) {
+            active[hash] = bucket
             return existing
         }
         let document = SnipMarkdownDocument(source: source, documents: self)
-        active[hash, default: []].append(WeakDocument(document))
+        bucket.append(WeakDocument(document))
+        active[hash] = bucket
         return document
     }
 
@@ -168,14 +178,19 @@ final class SnipMarkdownDocuments {
         if document.content.cacheCost <= warmCostLimit {
             warm.setObject(document, forKey: document, cost: document.content.cacheCost)
         }
-        prune()
+        pruneIfGrown()
     }
 
-    private func prune() {
+    // A full sweep on every lookup made building N rows cost N² bucket visits.
+    // Sweeping only after the table doubles bounds untouched dead buckets by the live count.
+    private func pruneIfGrown() {
+        guard active.count >= pruneThreshold else { return }
+        sweepCount += 1
         active = active.compactMapValues { bucket in
             let live = bucket.filter { $0.value != nil }
             return live.isEmpty ? nil : live
         }
+        pruneThreshold = max(Self.minimumPruneThreshold, active.count * 2)
     }
 }
 

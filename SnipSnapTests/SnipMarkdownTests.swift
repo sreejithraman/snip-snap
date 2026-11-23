@@ -189,6 +189,30 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertTrue(documents.snapshot(for: source).isLoading)
     }
 
+    func testLookupsSweepOnlyAsTheTableGrows() {
+        let documents = SnipMarkdownDocuments()
+        let held = (0..<2_000).map { documents.acquire("Snip \($0)") }
+
+        XCTAssertEqual(documents.trackedDocumentCount, held.count)
+        // A sweep visits every entry. One per lookup made building a long list quadratic.
+        XCTAssertLessThanOrEqual(documents.sweepCount, 12)
+    }
+
+    func testReleasedDocumentsAreSweptWithoutWaitingForTheirSourceAgain() {
+        let documents = SnipMarkdownDocuments()
+        for index in 0..<500 { _ = documents.acquire("Transient \(index)") }
+
+        XCTAssertLessThanOrEqual(documents.trackedDocumentCount, 64)
+    }
+
+    func testReacquiringAReleasedSourceReplacesItsEntry() {
+        let documents = SnipMarkdownDocuments()
+        // A row that never appears releases its document after each render.
+        for _ in 0..<500 { _ = documents.acquire("Rendered again") }
+
+        XCTAssertEqual(documents.trackedDocumentCount, 1)
+    }
+
     func testLargeFormattedPreparationKeepsTheMainActorResponsive() async {
         let source = (0..<2_500).map {
             "**Prompt \($0):** write a detailed SwiftUI clipboard manager with `Snip` lists, search, sync, attachments, and recovery. Include code samples and edge cases."
