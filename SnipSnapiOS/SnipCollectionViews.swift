@@ -256,6 +256,9 @@ struct SnipCollectionView: View {
             recovery.recovered.listID == displayedListID
                 && !model.snips.contains { $0.id == recovery.id }
         }
+        // Resolved once per list: asking the model per row re-filters the whole library.
+        let reorderLocked = !isActivePage || isSearching || isSelecting
+            || inlineEditDraft != nil || !model.canReorderVisibleSnips
         return List {
             ForEach(recoveries) { recovery in
                 Button {
@@ -358,10 +361,7 @@ struct SnipCollectionView: View {
                 .contextMenu {
                     if inlineEditDraft == nil { itemContextActions(for: snip) }
                 }
-                .moveDisabled(
-                    !isActivePage || isSearching || isSelecting || snip.isPinned
-                        || !model.canReorderVisibleSnips || inlineEditDraft != nil
-                )
+                .moveDisabled(reorderLocked || snip.isPinned)
             }
             .onMove(perform: move)
         }

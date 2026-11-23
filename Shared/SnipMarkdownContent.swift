@@ -141,6 +141,11 @@ final class SnipMarkdownDocuments {
     private var active: [Int: [WeakDocument]] = [:]
     private let warm = NSCache<SnipMarkdownDocument, SnipMarkdownDocument>()
     private let warmCostLimit = 2 * 1_024 * 1_024
+    private static let minimumPruneThreshold = 64
+    private var pruneThreshold = minimumPruneThreshold
+    /// Tracked entries, live or released, and full sweeps so far; tests bound both.
+    var trackedDocumentCount: Int { active.values.reduce(0) { $0 + $1.count } }
+    private(set) var sweepCount = 0
 
     init() {
         warm.countLimit = 128
@@ -148,7 +153,7 @@ final class SnipMarkdownDocuments {
     }
 
     func acquire(_ source: String) -> SnipMarkdownDocument {
-        prune()
+        pruneIfGrown()
         let hash = source.hashValue
         if let existing = active[hash]?.compactMap(\.value).first(where: { $0.source == source }) {
             return existing
@@ -168,14 +173,19 @@ final class SnipMarkdownDocuments {
         if document.content.cacheCost <= warmCostLimit {
             warm.setObject(document, forKey: document, cost: document.content.cacheCost)
         }
-        prune()
+        pruneIfGrown()
     }
 
-    private func prune() {
+    // A full sweep on every lookup made building N rows cost N² bucket visits.
+    // Sweeping only after the table doubles keeps dead entries bounded by the live count.
+    private func pruneIfGrown() {
+        guard active.count >= pruneThreshold else { return }
+        sweepCount += 1
         active = active.compactMapValues { bucket in
             let live = bucket.filter { $0.value != nil }
             return live.isEmpty ? nil : live
         }
+        pruneThreshold = max(Self.minimumPruneThreshold, active.count * 2)
     }
 }
 
