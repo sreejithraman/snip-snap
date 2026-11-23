@@ -13,9 +13,6 @@ enum AttachmentSource {
     case camera
 }
 
-// The composer rebuilds this menu on every page-swipe frame; ask the system once.
-@MainActor private let deviceHasCamera = UIImagePickerController.isSourceTypeAvailable(.camera)
-
 struct AttachmentSourceMenu<Label: View>: View {
     let choose: (AttachmentSource) -> Void
     @ViewBuilder let label: () -> Label
@@ -24,7 +21,7 @@ struct AttachmentSourceMenu<Label: View>: View {
         Menu {
             Button("Choose Files", systemImage: "doc") { choose(.files) }
             Button("Choose Photos", systemImage: "photo.on.rectangle") { choose(.photos) }
-            if deviceHasCamera {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
                 Button("Take Photo", systemImage: "camera") { choose(.camera) }
             }
         } label: {

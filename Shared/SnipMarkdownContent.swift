@@ -155,11 +155,16 @@ final class SnipMarkdownDocuments {
     func acquire(_ source: String) -> SnipMarkdownDocument {
         pruneIfGrown()
         let hash = source.hashValue
-        if let existing = active[hash]?.compactMap(\.value).first(where: { $0.source == source }) {
+        // Drop this bucket's released entries here: a source that is released and
+        // acquired again never grows the table, so the sweep alone would not reach them.
+        var bucket = active[hash]?.filter { $0.value != nil } ?? []
+        if let existing = bucket.lazy.compactMap(\.value).first(where: { $0.source == source }) {
+            active[hash] = bucket
             return existing
         }
         let document = SnipMarkdownDocument(source: source, documents: self)
-        active[hash, default: []].append(WeakDocument(document))
+        bucket.append(WeakDocument(document))
+        active[hash] = bucket
         return document
     }
 
@@ -177,7 +182,7 @@ final class SnipMarkdownDocuments {
     }
 
     // A full sweep on every lookup made building N rows cost N² bucket visits.
-    // Sweeping only after the table doubles keeps dead entries bounded by the live count.
+    // Sweeping only after the table doubles bounds untouched dead buckets by the live count.
     private func pruneIfGrown() {
         guard active.count >= pruneThreshold else { return }
         sweepCount += 1
