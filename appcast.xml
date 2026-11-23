@@ -4,6 +4,21 @@
         <title>Snip Snap</title>
         <item>
             <title>0.6.1</title>
+            <pubDate>Mon, 23 Nov 2026 01:55:48 +0000</pubDate>
+            <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.300</link>
+            <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.300-mac.txt</sparkle:fullReleaseNotesLink>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>300</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/sreejithraman/snip-snap/releases/download/v0.6.1-beta.300/Snip-Snap-0.6.1.zip" length="17625663" type="application/octet-stream" sparkle:edSignature="ZVbPwrxEV823qbH1XT6O8AL+thZ3TWD0Hq7fi5+77BgViZq4Z2+QbVnvARKkoR//wBEUp7dPQzOPssk3v1cjAA=="/>
+            <description sparkle:format="plain-text">Snip Snap 0.6.1 Beta 300 — Mac
+
+- Stop list swipes from freezing with many long visited lists
+</description>
+        </item>
+        <item>
+            <title>0.6.1</title>
             <pubDate>Sun, 22 Nov 2026 20:20:01 +0000</pubDate>
             <link>https://github.com/sreejithraman/snip-snap/releases/tag/v0.6.1-beta.299</link>
             <sparkle:fullReleaseNotesLink>https://raw.githubusercontent.com/sreejithraman/snip-snap/main/docs/releases/Snip-Snap-0.6.1-beta.299-mac.txt</sparkle:fullReleaseNotesLink>

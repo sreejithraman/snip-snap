@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 300
+
+## Mac
+
+- Stop list swipes from freezing with many long visited lists
+
+## iOS
+
+- Stop list swipes from freezing with many long visited lists
