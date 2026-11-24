@@ -202,8 +202,6 @@ package actor CloudKitRecordTransport: CloudRecordTransport, CloudAutomaticSyncC
         }
         if let durableAdmission {
             outboundQueue.confirmAdmission(batchID, durable: durableAdmission)
-        } else if case .batch(let pending) = event {
-            outboundQueue.confirmLegacyAdmission(pending.batch)
         }
         if case .batch(let pending) = event, case .sent(let sent) = pending.batch {
             outboundQueue.confirm(sent)

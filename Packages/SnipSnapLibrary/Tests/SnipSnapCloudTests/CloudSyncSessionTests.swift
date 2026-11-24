@@ -58,22 +58,22 @@ final class CloudSyncSessionTests: XCTestCase {
     XCTAssertEqual(events, ["sync", "schedule"])
   }
 
-  func testDeleteWaitsForSyncAndCancelledQueuedDeleteDoesNotRun() async throws {
+  func testDisableWaitsForSyncAndCancelledQueuedDisableDoesNotRun() async throws {
     let probe = SessionWorkProbe()
     let session = makeSession(probe)
     let first = Task { try await session.synchronize() }
     await probe.waitUntilPaused()
-    let prematureDelete = expectation(description: "Delete must wait for sync")
-    prematureDelete.isInverted = true
-    let deletion = Task {
-      defer { prematureDelete.fulfill() }
-      return try await session.deleteSyncedContent()
+    let prematureDisable = expectation(description: "Disable must wait for sync")
+    prematureDisable.isInverted = true
+    let disabling = Task {
+      defer { prematureDisable.fulfill() }
+      try await session.disableICloudSync(.useCurrentCache)
     }
-    await fulfillment(of: [prematureDelete], timeout: 0.05)
-    deletion.cancel()
+    await fulfillment(of: [prematureDisable], timeout: 0.05)
+    disabling.cancel()
     do {
-      _ = try await deletion.value
-      XCTFail("Expected cancelled delete to stop")
+      try await disabling.value
+      XCTFail("Expected cancelled disable to stop")
     } catch is CancellationError {}
     await probe.resume()
     _ = try await first.value
@@ -136,7 +136,6 @@ final class CloudSyncSessionTests: XCTestCase {
         throw SessionTestError("schedule")
       },
       enable: { try await probe.run("enable"); return .enabled },
-      delete: { try await probe.run("delete"); return .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore },
       automaticErrorHandler: { error in
         await reports.record(error as? SessionTestError ?? SessionTestError("unexpected \(error)"))
@@ -201,7 +200,6 @@ final class CloudSyncSessionTests: XCTestCase {
       enable: { try await probe.run("enable"); return .enabled },
       cancelEnable: { try await probe.run("cancel setup"); return .cancelled },
       disable: { _ in try await probe.run("disable") },
-      delete: { .completed },
       activeLibrary: { throw SyncModePersistenceError.missingStore }
     )
     let enable = Task { try await session.enableICloudSync() }
@@ -321,7 +319,7 @@ final class CloudSyncSessionTests: XCTestCase {
       retry: { try await probe.run("retry"); return .contentUpdated },
       scheduleAutomaticSync: { try await probe.run("schedule") },
       enable: { try await probe.run("enable"); return .enabled },
-      delete: { try await probe.run("delete"); return .completed },
+      disable: { _ in try await probe.run("disable") },
       activeLibrary: { throw SyncModePersistenceError.missingStore }
     )
   }

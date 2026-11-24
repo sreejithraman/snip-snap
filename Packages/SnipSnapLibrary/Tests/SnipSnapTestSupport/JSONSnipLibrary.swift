@@ -34,10 +34,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             version = try container.decode(Int.self, forKey: .version)
             snips = try container.decode([Snip].self, forKey: .snips)
             lists = try container.decode([SnipList].self, forKey: .lists)
-            let storedRequestIDs = try container.decodeIfPresent(
-                [UUID].self,
-                forKey: .seenRequestIDs
-            ) ?? []
+            let storedRequestIDs = try container.decode([UUID].self, forKey: .seenRequestIDs)
             seenRequestIDs = Set(storedRequestIDs).union(snips.map(\.requestID))
         }
 
@@ -148,7 +145,6 @@ public actor JSONSnipLibrary: SnipLibrary {
         sortedBy sortMode: SnipSortMode
     ) throws -> SnipLibraryUpdate {
         try ensureAvailable()
-        let before = makeSnapshot(sortedBy: sortMode)
         var state = SnipLibraryState(
             snips: snips,
             lists: lists,
@@ -203,11 +199,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             uniquingKeysWith: { _, latest in latest }
         )
         let snapshot = makeSnapshot(sortedBy: sortMode)
-        return SnipLibraryUpdate(
-            snapshot: snapshot,
-            outcome: outcome,
-            devicePatch: .between(before, snapshot)
-        )
+        return SnipLibraryUpdate(snapshot: snapshot, outcome: outcome)
     }
 
     public func transferSnapshot(revision: UInt64) async throws -> SnipLibraryTransferSnapshot {
@@ -244,8 +236,7 @@ public actor JSONSnipLibrary: SnipLibrary {
             lists: current.lists,
             attachmentData: [:],
             attachmentFileURLs: current.attachmentURLs,
-            attachmentFileDigests: digests,
-            legacyManualPositions: [:]
+            attachmentFileDigests: digests
         )
     }
 
@@ -418,17 +409,6 @@ public actor JSONSnipLibrary: SnipLibrary {
 
     public func restore(snips: [Snip]) throws {
         _ = try perform(.restore(snips: snips), sortedBy: .manual)
-    }
-
-    public func restore(
-        snips: [Snip],
-        replacing id: UUID,
-        expectedUpdatedAt: Date
-    ) throws {
-        _ = try perform(
-            .restoreReplacing(snips: snips, id: id, expectedUpdatedAt: expectedUpdatedAt),
-            sortedBy: .manual
-        )
     }
 
     public func merge(ids: Set<UUID>, now: Date = Date()) throws -> Snip {

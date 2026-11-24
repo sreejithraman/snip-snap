@@ -12,7 +12,7 @@
 4. [ ] Confirm the main app has Push Notifications enabled and the signed archive has the production push entitlement.
 5. [ ] Review any required additive CloudKit rollout, retain retired fields, and manually promote only the reviewed changes. Rerun the Production schema preflight; do not automatically deploy unrelated Development changes.
 6. [ ] Record the export-compliance answer without guessing it.
-7. [ ] Review both privacy manifests against the final archive and linked code.
+7. [ ] Review both privacy manifests and the App Store privacy label against the final archive and linked code.
 8. [ ] Run `scripts/testflight.sh archive` from the checked release commit.
 9. [ ] Save the archive, dSYMs, commit, version, build, and upload result.
 10. [ ] Add the processed build to the internal TestFlight group with clear What to Test notes.

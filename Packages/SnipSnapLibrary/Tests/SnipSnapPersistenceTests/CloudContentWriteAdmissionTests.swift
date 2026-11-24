@@ -113,9 +113,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
         for inputs in [[], [try recovery(id: id, kind: .retryableFetch)]] {
           let batch = fullBatch(id: id, inputs: inputs,
             state: Self.activeState, raw: raw)
-          var payload = try json(JSONEncoder().encode(batch))
-          if inputs.isEmpty { payload.removeValue(forKey: "recoveryInputs") }
-          try await verify(.staged(id, try wrapped(JSONSerialization.data(withJSONObject: payload))),
+          try await verify(.staged(id, try wrapped(JSONEncoder().encode(batch))),
             error: .modeTransitionInProgress, label: "raw \(kind) \(reason) disagrees with recovery")
         }
       }
@@ -156,7 +154,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
     try await verify(.staged(id, try wrapped(batch)), error: .invalidStore, label: "unknown namespace state version")
   }
 
-  func testNonresetRawAndOlderRawlessFullCommitsRemainWritable() async throws {
+  func testNonresetRawFullCommitsRemainWritableAndKeylessCommitsAreRefused() async throws {
     let id = UUID()
     for kind in ["fetched", "sent"] {
       let batch = fullBatch(id: id, state: Self.activeState,
@@ -164,11 +162,12 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
       try await verify(.staged(id, try wrapped(JSONEncoder().encode(batch))), error: nil,
         label: "nonreset raw \(kind)")
     }
-    // Lower-level storage commits predate the optional replay and recovery fields.
+    // Every tagged build writes these fields. A commit without them is unreadable, so edits
+    // and imports stay refused and the row stays.
     let minimal: [String: Any] = ["storageVersion": 1, "namespaceKey": namespace,
       "batchID": id.uuidString, "items": []]
     try await verify(.staged(id, try wrapped(JSONSerialization.data(withJSONObject: minimal))),
-      error: nil, label: "older rawless full commit")
+      error: .invalidStore, label: "commit without the fields every tagged build writes")
   }
 
   func testFetchAndSendRecoveryRequiresMatchingReadableRawEvidence() async throws {
@@ -223,7 +222,7 @@ final class CloudContentWriteAdmissionTests: XCTestCase {
     let first = try SwiftDataSnipLibrary(storeURL: url)
     _ = try await first.perform(Self.add("saved content"), sortedBy: .manual)
     let preview = try await first.previewImport(SnipLibraryTransferSnapshot(revision: 0,
-      snips: [], lists: [.inbox], attachmentData: [:], legacyManualPositions: [:]), transitionID: UUID())
+      snips: [], lists: [.inbox], attachmentData: [:]), transitionID: UUID())
     let target = try await first.transferSnapshot(revision: 0)
     let plan = try SnipLibraryTransferPlanner.plan(source: preview.source, target: target, transitionID: UUID())
     try await first.insertAdmissionEvidence(evidence, namespace: namespace)

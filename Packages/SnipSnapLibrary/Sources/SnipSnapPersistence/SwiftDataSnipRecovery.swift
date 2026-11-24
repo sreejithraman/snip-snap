@@ -118,6 +118,16 @@ extension SwiftDataSnipLibrary {
     try context.save()
   }
 
+  /// Conflict keys that the user can settle through a recovery review.
+  package func recoveryReviewConflictKeys(namespaceKey: CloudSyncNamespaceKey) throws -> Set<String> {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let lock = try SnipStoreFileLock(url: lockURL)
+    defer { withExtendedLifetime(lock) {} }
+    let context = Self.makeContext(container: container)
+    return Set(try Self.recoveryReviews(namespaceKey: namespaceKey.rawValue, context: context)
+      .map(\.conflictKey))
+  }
+
   public func recoverySnapshot(in scope: SnipRecoveryScope) async throws -> SnipRecoverySnapshot {
     guard let container, isAvailable else { throw SnipLibraryError.storeUnavailable }
     let lock = try SnipStoreFileLock(url: lockURL)

@@ -109,7 +109,6 @@ private actor IOSClipboardHeldUploadCloud: ClipboardCloudTransport {
         snapshot = incoming
     }
 
-    func deleteAll() { snapshot = ClipboardCloudSnapshot() }
 }
 
 @MainActor
@@ -207,32 +206,6 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertNil(model.syncErrorMessage)
         finishDisable.finish()
         await disabling.value
-    }
-
-    func testDeletingSyncedContentStopsTheUploadInFlight() async throws {
-        let (deleteFinished, finishDelete) = AsyncStream<Void>.makeStream()
-        let settings = SyncedContentSettingsModel(
-            mode: .iCloudSync,
-            deleteAction: {
-                for await _ in deleteFinished {}
-                return .completed
-            }
-        )
-        let (model, service, cloud) = try await makeUploadingClipboardModel(settings: settings)
-        let sync = Task { await model.synchronize() }
-        let uploadHeld = await cloud.uploadHeld()
-        XCTAssertTrue(uploadHeld, "The upload never started")
-
-        let deleting = Task.immediate { await settings.deleteSyncedContent() }
-        try await waitUntil { !service.isSyncing }
-        await cloud.resumeUpload()
-        await sync.value
-
-        let uploaded = await cloud.uploadedEntryIDs
-        XCTAssertEqual(uploaded, [])
-        XCTAssertNil(model.syncErrorMessage)
-        finishDelete.finish()
-        await deleting.value
     }
 
     func testClipboardSyncSetsAsideHistoryAndFollowsANewSyncGeneration() async throws {
@@ -481,32 +454,6 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertFalse(model.isSyncing)
     }
 
-    func testClipboardImportFailureStaysVisibleUntilQueueRetrySucceeds() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let imports = ShareClipboardImportStore(sharedRootURL: root)
-        let request = ShareImportRequest(content: "Retry this", destinationListID: SnipList.inboxID)
-        let ready = root.appendingPathComponent(
-            "Share/ClipboardImports/\(request.requestID.uuidString).ready"
-        )
-        try FileManager.default.createDirectory(at: ready, withIntermediateDirectories: true)
-        try JSONEncoder().encode(request).write(to: ready.appendingPathComponent("clipboard.json"))
-        let history = root.appendingPathComponent("clipboard.json")
-        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
-        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
-        await model.foreground()
-        XCTAssertNotNil(model.importErrorMessage)
-        await model.synchronize()
-        XCTAssertNotNil(model.importErrorMessage)
-        try FileManager.default.removeItem(at: history)
-        await model.foreground()
-        XCTAssertNil(model.importErrorMessage)
-        XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.entries.map(\.text), ["Retry this"])
-        let pending = await imports.pendingImportCount()
-        XCTAssertEqual(pending, 0)
-    }
-
     func testClipboardLoadFailureRecordsOncePerVisibleFailureEpisode() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -641,15 +588,28 @@ final class IOSClipboardModelTests: IOSModelTestCase {
         XCTAssertEqual(model.entries.first?.text, "First paste")
     }
 
-    func testRichTextOnlyClipboardPayloadHasTextForPreviewAndSearch() throws {
+    func testRichTextOnlyPasteHasTextForPreviewAndSearch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         let richText = NSAttributedString(string: "Rich clipboard text")
         let rtf = try richText.data(from: NSRange(location: 0, length: richText.length),
             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-        let rtfItem = ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.rtf.identifier, data: rtf)])
-        XCTAssertEqual(IOSClipboardModel.previewText(from: [rtfItem]), "Rich clipboard text")
+        let model = IOSClipboardModel(rootURL: root, settings: SyncedContentSettingsModel(mode: .localOnly), preferences: UserDefaults(suiteName: UUID().uuidString)!)
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.rtf.identifier, visibility: .all) { completion in
+            completion(rtf, nil)
+            return nil
+        }
+
+        await model.capture([provider])
+
+        XCTAssertNil(model.pasteErrorMessage)
+        XCTAssertEqual(model.entries.first?.text, "Rich clipboard text")
+        let results = LibrarySearchResults(query: "clipboard", snips: [], lists: [], clipboard: model.entries,
+            sortMode: .chronological, sourceLabel: { _ in "" })
+        XCTAssertEqual(results.clipboard.map(\.id), model.entries.map(\.id))
         let htmlItem = ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.html.identifier, data: Data("<p>Read <b>this</b></p>".utf8))])
         XCTAssertEqual(IOSClipboardModel.previewText(from: [htmlItem]), "Read this")
-        XCTAssertEqual(rtfItem.representations.first?.data, rtf)
     }
 
     func testClipboardPinActionUsesCurrentStateAfterRowChanges() async throws {

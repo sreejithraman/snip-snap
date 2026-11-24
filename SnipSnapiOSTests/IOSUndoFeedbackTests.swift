@@ -47,10 +47,13 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         _ = await coordinator.copy(snips: [pinned], model: model)
         XCTAssertEqual(model.toast?.id, undo.id)
 
-        _ = await model.togglePinned(id: unfinished.id)
+        // Change a different snip, so the copied one still matches what its Undo would restore.
+        _ = await model.togglePinned(id: pinned.id)
         XCTAssertNil(model.toast)
         await model.performToastActionNow(undo)
-        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == unfinished.id }).isPinned)
+        XCTAssertTrue(try XCTUnwrap(model.snips.first { $0.id == unfinished.id }).isDone,
+                      "A stale Undo must not reopen the snip")
+        XCTAssertFalse(try XCTUnwrap(model.snips.first { $0.id == pinned.id }).isPinned)
     }
 
     func testPartialCopyFailureReportsTheSuccessfulCopyWithoutDoneUndo() async throws {
@@ -178,11 +181,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
     }
 
     func testExpiringSnackbarClosesThroughTheModelBeforeItsDismissalRuns() async throws {
-        let readyBy = ContinuousClock().now.advanced(by: .seconds(3))
-        while UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).isEmpty,
-              ContinuousClock().now < readyBy {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        _ = await TestReadiness.wait { UIApplication.shared.connectedScenes.contains { $0 is UIWindowScene } }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previousWindow = scene.windows.first(where: \.isKeyWindow)
         let snip = Snip(content: "Holds the library", origin: .quickEntry)
@@ -194,7 +193,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         await library.waitUntilFirstCommandStarts()
         let snackbar = AppToast(systemImage: "doc.on.doc", message: "Short", duration: .milliseconds(300))
         model.presentToast(snackbar)
-        let controller = UIHostingController(rootView: Color.clear.libraryToast(model: model, usesFixedExpiry: true))
+        let controller = UIHostingController(rootView: Color.clear.libraryToast(model: model))
         let window = UIWindow(windowScene: scene)
         window.frame = scene.coordinateSpace.bounds
         window.rootViewController = controller
@@ -419,10 +418,7 @@ final class IOSUndoFeedbackTests: IOSModelTestCase {
         refreshed.listID = destination.id
         refreshed.manualPosition = 42
         refreshed.updatedAt = original.updatedAt.addingTimeInterval(60)
-        _ = try await library.perform(
-            .restoreReplacing(snips: [refreshed], id: original.id, expectedUpdatedAt: original.updatedAt),
-            sortedBy: .manual
-        )
+        await library.replaceSnip(refreshed)
         let pasteboard = RecordingPasteboard()
         let coordinator = IOSCopyShareCoordinator(pasteboard: pasteboard)
 

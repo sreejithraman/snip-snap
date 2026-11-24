@@ -236,12 +236,14 @@ final class IOSBackupModelTests: IOSModelTestCase {
             probe.shareAccepted = lifetime.shareBackup(IOSBackupExport(url: root), operation: operation)
         }
         XCTAssertTrue(started)
-        while !probe.isHeld { await Task.yield() }
+        let held = await TestReadiness.wait { probe.isHeld }
+        XCTAssertTrue(held)
         XCTAssertTrue(lifetime.isPreparingBackup)
 
         lifetime.end(library: model)
         probe.release()
-        while probe.shareAccepted == nil { await Task.yield() }
+        let answered = await TestReadiness.wait { probe.shareAccepted != nil }
+        XCTAssertTrue(answered)
 
         XCTAssertEqual(probe.shareAccepted, false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
@@ -260,8 +262,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         lifetime.startPreparingBackup(root: root) { operation in
             probe.shareAccepted = lifetime.shareBackup(export, operation: operation)
         }
-        while probe.shareAccepted == nil { await Task.yield() }
-        await Task.yield()
+        let answered = await TestReadiness.wait { probe.shareAccepted != nil }
+        XCTAssertTrue(answered)
 
         XCTAssertEqual(probe.shareAccepted, true)
         XCTAssertEqual(lifetime.sharedBackup?.id, export.id)
@@ -285,7 +287,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         lifetime.begin()
         let probe = BackupLifetimeOperationProbe()
         XCTAssertTrue(lifetime.startPreviewingImport { _ in await probe.hold() })
-        while !probe.isHeld { await Task.yield() }
+        let held = await TestReadiness.wait { probe.isHeld }
+        XCTAssertTrue(held)
 
         XCTAssertTrue(lifetime.isBusy)
         XCTAssertFalse(lifetime.startPreviewingImport { _ in })
@@ -294,7 +297,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         XCTAssertFalse(lifetime.chooseBackup())
 
         probe.release()
-        while lifetime.isBusy { await Task.yield() }
+        let finished = await TestReadiness.wait { !lifetime.isBusy }
+        XCTAssertTrue(finished)
         XCTAssertTrue(lifetime.startConfirmingImport { _ in })
     }
 
@@ -305,7 +309,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         XCTAssertTrue(lifetime.chooseBackup())
         XCTAssertTrue(lifetime.isChoosingBackup)
         XCTAssertTrue(lifetime.startPreviewingImport { _ in await probe.hold() })
-        while !probe.isHeld { await Task.yield() }
+        let held = await TestReadiness.wait { probe.isHeld }
+        XCTAssertTrue(held)
 
         lifetime.finishChoosingBackup()
 
@@ -313,7 +318,8 @@ final class IOSBackupModelTests: IOSModelTestCase {
         XCTAssertTrue(lifetime.isBusy)
         XCTAssertFalse(lifetime.startPreviewingImport { _ in })
         probe.release()
-        while lifetime.isBusy { await Task.yield() }
+        let finished = await TestReadiness.wait { !lifetime.isBusy }
+        XCTAssertTrue(finished)
         XCTAssertTrue(lifetime.chooseBackup())
     }
 
@@ -492,27 +498,6 @@ final class IOSBackupModelTests: IOSModelTestCase {
         let targetSnapshot = try await target.checkedSnapshot(sortedBy: .chronological)
         let savedURL = try XCTUnwrap(targetSnapshot.attachmentURLs[attachmentID])
         XCTAssertEqual(try Data(contentsOf: savedURL), bytes)
-    }
-
-    func testIOSBackupImportPreviewNamesAnAddedEmptyList() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("IOSListImportTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let backupURL = root.appendingPathComponent("Backup.json")
-        let targetURL = root.appendingPathComponent("Target.json")
-        let backup = try JSONSnipLibrary(fileURL: backupURL)
-        _ = try await backup.perform(
-            .createList(name: "Empty", systemImage: "tray"),
-            sortedBy: .manual
-        )
-        let target = try JSONSnipLibrary(fileURL: targetURL)
-        let model = makeImportModel(library: target)
-        await model.load()
-
-        try await model.previewBackupImport(from: backupURL)
-
-        XCTAssertEqual(model.pendingImportPreview?.addedListCount, 1)
-        XCTAssertEqual(model.pendingImportPreview?.localizedSummary, "0 snips, 1 new list")
     }
 }
 

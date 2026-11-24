@@ -67,7 +67,6 @@ actor IOSCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         if stateReadFails { throw SnipLibraryError.storeUnavailable }
         return states
     }
-    func clearDownloadedFiles() async throws {}
 
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         prepareCalls += 1
@@ -205,7 +204,6 @@ actor MutableIOSCloudSyncHandler: OptionalCloudSyncHandling {
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] {
         states
     }
-    func clearDownloadedFiles() async throws {}
     func prepareSyncedAttachment(
         _ id: UUID,
         for use: SyncedAttachmentUse
@@ -235,7 +233,6 @@ actor IOSCopyShareActionHandlerProbe: OptionalCloudSyncHandling {
     func syncWhenPossible() async {}
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { states }
-    func clearDownloadedFiles() async throws {}
 
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         calls.append(PrepareCall(id: id, use: use))
@@ -301,5 +298,4 @@ actor HeldAttachmentStatusHandler: OptionalCloudSyncHandling {
         guard let url = urls[id] else { throw SnipLibraryError.attachmentCopyFailed }
         return url
     }
-    func clearDownloadedFiles() async throws {}
 }

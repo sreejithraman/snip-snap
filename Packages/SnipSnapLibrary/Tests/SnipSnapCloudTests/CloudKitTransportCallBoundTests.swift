@@ -116,7 +116,6 @@ final class CloudKitTransportCallBoundTests: XCTestCase {
             ClipboardCloudSnapshot(entries: [UUID(): Data("new entry".utf8)]),
             cancellation: ClipboardCloudCancellation()
         )
-        try await clipboard.deleteAll()
 
         XCTAssertEqual(controlLog.calls, [
             DatabaseCall(name: "record", kind: .small),
@@ -131,7 +130,6 @@ final class CloudKitTransportCallBoundTests: XCTestCase {
             DatabaseCall(name: "saveZone", kind: .small),
             DatabaseCall(name: "modifyRecords", kind: .transfer),
             DatabaseCall(name: "modifyRecords", kind: .transfer),
-            DatabaseCall(name: "deleteZone", kind: .small),
         ])
     }
 
@@ -323,10 +321,6 @@ private func recordingCalls(
         saveZone: { zone, kind in
             log.append("saveZone", kind)
             return zone
-        },
-        deleteZone: { id, kind in
-            log.append("deleteZone", kind)
-            return id
         }
     )
 }

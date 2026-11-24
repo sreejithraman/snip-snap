@@ -135,28 +135,3 @@ package enum CloudKitRecordMapper {
         }
     }
 }
-
-package struct CloudTextRecord: Equatable, Sendable {
-    package let id: CloudRecordID
-    package let snipID: UUID
-    package let text: String
-    package let schemaVersion: Int
-    package let shadow: CloudRecordShadow
-
-    package init(snapshot: CloudRecordSnapshot) throws {
-        guard snapshot.recordType == "Snip" else { throw CloudRecordError.wrongRecordType }
-        guard case .string(let snipIDValue)? = snapshot.routingFields["snipID"],
-              let snipID = UUID(uuidString: snipIDValue)
-        else {
-            throw CloudRecordError.missingField("snipID")
-        }
-        guard case .string(let text)? = snapshot.encryptedFields["text"] else {
-            throw CloudRecordError.missingField("text")
-        }
-        id = snapshot.id
-        self.snipID = snipID
-        self.text = text
-        schemaVersion = snapshot.schemaVersion
-        shadow = snapshot.shadow
-    }
-}

@@ -90,6 +90,7 @@ struct CloudFullBatchPlanner {
       storage: attachmentStorage
     )
     var recoveryInputs = normalized.recoveryInputs
+    var movedByDeletedList: [UUID: [UUID]] = [:]
     var recoveryReviews: [CloudRecoveryReviewInput] = []
     var settledDeleteIdentities: [CloudTextStorageIdentity] = []
     let pendingDeletes = Dictionary(uniqueKeysWithValues:
@@ -134,6 +135,20 @@ struct CloudFullBatchPlanner {
         .filter { !observedIDs.contains($0) }
         .filter { !blockedReplayIDs.contains($0) }
         .map(NormalizedItem.deleted))
+    }
+    var replannedDeleteConflictIDs: Set<CloudRecordID> = []
+    if case .fetched = batch {
+      // Earlier 0.6.1 betas stored a delete conflict that nothing could settle. Replan its
+      // accepted server version so the commit restores it and retires the stored row.
+      // Like the deferred rebase below, this is not a fetch result for resolvedFetchIDs.
+      let plannedIDs = Set(results.compactMap(\.id))
+      for accepted in allAccepted where Self.hasStoredDeleteConflict(accepted.reference, in: stored.conflicts) {
+        let id = CloudFullSyncPersistence.recordID(accepted.identity)
+        guard !plannedIDs.contains(id), !blockedReplayIDs.contains(id) else { continue }
+        let shadow = try CloudRecordShadow(data: accepted.shadowData)
+        results.append(.record(try CloudKitRecordMapper.snapshot(shadow.record())))
+        replannedDeleteConflictIDs.insert(id)
+      }
     }
     var attachmentTransitions: [CloudAttachmentTransition] = []
     var resolvedFetchIDs: Set<CloudRecordID> = []
@@ -181,7 +196,16 @@ struct CloudFullBatchPlanner {
           pendingDeleteReferences: Set(pendingDeletes.keys)
         ) {
           items.append(item)
-          if item.acceptedAction == .upsert { resolvedFetchIDs.insert(snapshot.id) }
+          if item.acceptedAction == .upsert, !replannedDeleteConflictIDs.contains(snapshot.id) {
+            resolvedFetchIDs.insert(snapshot.id)
+          }
+          // A restored record withdraws the unacknowledged deletion queued against its
+          // older version, in the same commit.
+          if Self.restoresMissingLocalRow(item),
+            let pending = pendingDeletes[item.accepted.reference], pending.identity == item.accepted.identity
+          {
+            settledDeleteIdentities.append(pending.identity)
+          }
         }
       case .deleted(let id):
         resolvedFetchIDs.insert(id)
@@ -203,21 +227,17 @@ struct CloudFullBatchPlanner {
         }
         if let review = plan.review { recoveryReviews.append(review) }
         if !plan.movedSnipIDs.isEmpty {
-          let encoder = JSONEncoder()
-          encoder.outputFormatting = [.sortedKeys]
-          recoveryInputs.append(CloudFullRecoveryInput(
-            namespaceKey: namespaceKey.rawValue,
-            batchID: batch.id,
-            kind: .deletedListPlacement,
-            outboundData: try encoder.encode(accepted.reference.domainID),
-            resultData: try encoder.encode(plan.movedSnipIDs.sorted {
-              $0.uuidString < $1.uuidString
-            })
-          ))
+          movedByDeletedList[accepted.reference.domainID, default: []] += plan.movedSnipIDs
         }
       case .failed:
         continue
       }
+    }
+    if !movedByDeletedList.isEmpty {
+      // One event per batch: the commit keys recovery events by batch.
+      recoveryInputs.append(try CloudFullSyncPersistence.deletedListPlacementInput(
+        namespaceKey: namespaceKey, batchID: batch.id, moved: movedByDeletedList
+      ))
     }
     // Reconcile parked intent with the current snip before dependency release.
     // This also keeps an ambiguous old absence on the normal conflict path.
@@ -420,7 +440,15 @@ struct CloudFullBatchPlanner {
       }
       let base = accepted[input.reference]
       let current = local.snips.first { $0.id == server.domainID }
-      if pendingDeleteReferences.contains(input.reference) {
+      let serverFields = try CloudFullSyncPersistence.snipFields(server)
+      // A queued deletion was planned against the accepted base. A newer server version
+      // wins like an unqueued deletion: it is restored below and the deletion withdrawn.
+      let serverChangedSinceDeletion = try current == nil && base.map {
+        try !CloudFullSyncPersistence.sameSnipFields(
+          CloudFullSyncPersistence.snipFields(CloudFullSyncPersistence.snipRecord($0)), serverFields
+        )
+      } == true
+      if pendingDeleteReferences.contains(input.reference), !serverChangedSinceDeletion {
         return CloudFullBatchItem(
           accepted: input,
           expectedLocalRevision: base?.localRevision,
@@ -431,7 +459,6 @@ struct CloudFullBatchPlanner {
           quarantine: nil
         )
       }
-      let serverFields = try CloudFullSyncPersistence.snipFields(server)
       var merged = serverFields
       var conflict: CloudConflictInput?
       if let current, let base {
@@ -486,10 +513,15 @@ struct CloudFullBatchPlanner {
       } else if current == nil, let base,
         !base.isDeferred || base.wasMaterializedBeforeDeferral || base.hasUnresolvedLegacyAbsence
       {
+        // A local deletion stays deleted while the server still holds the version it
+        // deleted. A remote edit that reached iCloud first wins: the server version returns
+        // below, which drops the deletion (ADR 0014). An ambiguous legacy absence and a
+        // delete conflict stored by an earlier build restore too.
         let baseFields = try CloudFullSyncPersistence.snipFields(
           CloudFullSyncPersistence.snipRecord(base)
         )
         if !base.hasUnresolvedLegacyAbsence,
+          !Self.hasStoredDeleteConflict(input.reference, in: conflicts),
           CloudFullSyncPersistence.sameSnipFields(baseFields, serverFields)
         {
           return CloudFullBatchItem(
@@ -502,31 +534,6 @@ struct CloudFullBatchPlanner {
             quarantine: nil
           )
         }
-        let key = CloudConflictKey.make(
-          namespaceKey: namespaceKey,
-          recordID: snapshot.id,
-          ancestorSystemFields: base.systemFields,
-          serverSystemFields: snapshot.shadow.systemFields
-        )
-        let payload = CloudSnipDeleteConflictPayload(server: serverFields)
-        let priorPayload = conflicts.first {
-          $0.key == key && $0.reference == input.reference && $0.format == .snipMergeV1
-            && (try? JSONDecoder().decode(CloudSnipDeleteConflictPayload.self, from: $0.payload)) == payload
-        }?.payload
-        return CloudFullBatchItem(
-          accepted: input,
-          expectedLocalRevision: base.localRevision,
-          expectedSystemFields: base.systemFields,
-          localPrecondition: .requireMissing,
-          localMutation: .none,
-          conflict: CloudConflictInput(
-            key: key,
-            reference: input.reference,
-            format: .snipMergeV1,
-            payload: try priorPayload ?? JSONEncoder().encode(payload)
-          ),
-          quarantine: nil
-        )
       } else if let current {
         let localFields = CloudFullSyncPersistence.snipFields(current, accepted: nil)
         if localFields != serverFields {
@@ -571,7 +578,13 @@ struct CloudFullBatchPlanner {
     if server.binding != .canonical { return quarantineItem(input, snapshot: snapshot) }
     let base = accepted[input.reference]
     let current = local.lists.first { $0.id == server.domainID }
-    if pendingDeleteReferences.contains(input.reference) {
+    let serverFields = try CloudFullSyncPersistence.listFields(server)
+    let serverChangedSinceDeletion = try current == nil && base.map {
+      try !CloudFullSyncPersistence.sameListFields(
+        CloudFullSyncPersistence.listFields(CloudFullSyncPersistence.listRecord($0)), serverFields
+      )
+    } == true
+    if pendingDeleteReferences.contains(input.reference), !serverChangedSinceDeletion {
       return CloudFullBatchItem(
         accepted: input,
         expectedLocalRevision: base?.localRevision,
@@ -582,7 +595,6 @@ struct CloudFullBatchPlanner {
         quarantine: nil
       )
     }
-    let serverFields = try CloudFullSyncPersistence.listFields(server)
     var merged = serverFields
     var conflict: CloudConflictInput?
     if let current, let base {
@@ -610,10 +622,13 @@ struct CloudFullBatchPlanner {
         )
       }
     } else if current == nil, let base {
+      // As for snips: a remote edit that reached iCloud first restores the list below.
       let baseFields = try CloudFullSyncPersistence.listFields(
         CloudFullSyncPersistence.listRecord(base)
       )
-      if CloudFullSyncPersistence.sameListFields(baseFields, serverFields) {
+      if !Self.hasStoredDeleteConflict(input.reference, in: conflicts),
+        CloudFullSyncPersistence.sameListFields(baseFields, serverFields)
+      {
         return CloudFullBatchItem(
           accepted: input,
           expectedLocalRevision: base.localRevision,
@@ -624,25 +639,6 @@ struct CloudFullBatchPlanner {
           quarantine: nil
         )
       }
-      return CloudFullBatchItem(
-        accepted: input,
-        expectedLocalRevision: base.localRevision,
-        expectedSystemFields: base.systemFields,
-        localPrecondition: .requireMissing,
-        localMutation: .none,
-        conflict: CloudConflictInput(
-          key: CloudConflictKey.make(
-            namespaceKey: namespaceKey,
-            recordID: snapshot.id,
-            ancestorSystemFields: base.systemFields,
-            serverSystemFields: snapshot.shadow.systemFields
-          ),
-          reference: input.reference,
-          format: .listMergeV1,
-          payload: try JSONEncoder().encode(CloudListDeleteConflictPayload(server: serverFields))
-        ),
-        quarantine: nil
-      )
     }
     return CloudFullBatchItem(
       accepted: input,
@@ -654,6 +650,35 @@ struct CloudFullBatchPlanner {
       conflict: conflict,
       quarantine: nil
     )
+  }
+
+  /// Whether the item brings back a record whose local row is missing.
+  static func restoresMissingLocalRow(_ item: CloudFullBatchItem) -> Bool {
+    guard item.acceptedAction == .upsert, item.localPrecondition == .requireMissing else { return false }
+    switch item.localMutation {
+    case .upsertSnip, .upsertList: return true
+    default: return false
+    }
+  }
+
+  /// Whether an earlier build stored a delete conflict for this record. Such rows have no
+  /// review; the commit retires them once the record is restored or removed.
+  private static func hasStoredDeleteConflict(
+    _ reference: CloudEntityReference,
+    in conflicts: [CloudStoredConflict]
+  ) -> Bool {
+    conflicts.contains { conflict in
+      guard conflict.reference == reference else { return false }
+      let decoder = JSONDecoder()
+      switch (reference.kind, conflict.format) {
+      case (.snip, .snipMergeV1):
+        return (try? decoder.decode(CloudSnipDeleteConflictPayload.self, from: conflict.payload)) != nil
+      case (.list, .listMergeV1):
+        return (try? decoder.decode(CloudListDeleteConflictPayload.self, from: conflict.payload)) != nil
+      default:
+        return false
+      }
+    }
   }
 
   private struct DeletedRecordPlan {

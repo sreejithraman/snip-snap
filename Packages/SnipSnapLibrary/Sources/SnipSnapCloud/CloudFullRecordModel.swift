@@ -70,11 +70,6 @@ package struct CloudTypedSnipRecord: Codable, Equatable, Sendable {
   package var pinnedAt: Date? = nil
   package let placement: CloudFieldPresence<CloudSnipPlacement>
   package let shadow: CloudRecordShadow
-
-  package var localOriginFallback: SnipOrigin {
-    guard case .value(let rawValue) = origin else { return .quickEntry }
-    return SnipOrigin(rawValue: rawValue) ?? .quickEntry
-  }
 }
 
 package struct CloudTypedListRecord: Codable, Equatable, Sendable {

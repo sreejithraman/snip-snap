@@ -37,26 +37,52 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     )
   }
 
-  func testAppAssemblyDiscoveryIsReadOnlyAndFailsClosed() throws {
+  func testAppAssemblyDiscoveryIsReadOnlyAndFailsClosed() async throws {
     let location = temporaryStore()
     defer { try? FileManager.default.removeItem(at: location.root) }
     let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    _ = try await store.perform(
+      .add(
+        content: "older root copy", origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+        attachmentURLs: [], requestID: UUID(), now: Date(timeIntervalSince1970: 1)
+      ),
+      sortedBy: .manual
+    )
     let missingRoot = location.root.appendingPathComponent("MissingSyncMode", isDirectory: true)
 
     let localOnly = SnipLibraryAssembly(library: store, syncModeRootURL: missingRoot)
 
     XCTAssertNil(localOnly.recoveryScope)
+    XCTAssertFalse(localOnly.libraryUnavailable)
     XCTAssertFalse(FileManager.default.fileExists(atPath: missingRoot.path))
 
     let malformedRoot = location.root.appendingPathComponent("MalformedSyncMode", isDirectory: true)
     try FileManager.default.createDirectory(at: malformedRoot, withIntermediateDirectories: true)
-    try Data("{\"version\":2}".utf8).write(
-      to: malformedRoot.appendingPathComponent("activation.json")
-    )
+    let manifestURL = malformedRoot.appendingPathComponent("activation.json")
+    let manifestBytes = Data("{\"version\":2}".utf8)
+    try manifestBytes.write(to: manifestURL)
 
     let malformed = SnipLibraryAssembly(library: store, syncModeRootURL: malformedRoot)
 
+    // The library lives in sync mode now, so the root store is an older copy: show none of it.
+    XCTAssertTrue(malformed.libraryUnavailable)
     XCTAssertNil(malformed.recoveryScope)
+    XCTAssertNil(malformed.syncModeStore)
+    let shown = await malformed.library.snapshot(sortedBy: .manual)
+    XCTAssertEqual(shown.snips, [])
+    do {
+      _ = try await malformed.library.perform(
+        .add(
+          content: "lost write", origin: .quickEntry, source: nil, listID: SnipList.inbox.id,
+          attachmentURLs: [], requestID: UUID(), now: Date(timeIntervalSince1970: 2)
+        ),
+        sortedBy: .manual
+      )
+      XCTFail("An unavailable library must refuse writes")
+    } catch {}
+    XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBytes)
+    let root = await store.snapshot(sortedBy: .manual)
+    XCTAssertEqual(root.snips.map(\.content), ["older root copy"])
   }
 
   func testAppAssemblyRoutesLibraryCallsToTheActiveSyncModeStore() async throws {
@@ -98,57 +124,6 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let snapshot = await assembly.library.snapshot(sortedBy: .manual)
 
     XCTAssertEqual(snapshot.snips.map(\.content), ["active sync-mode value"])
-  }
-
-  func testAppAssemblyUsesTheActiveCloudNamespaceWithARealRecoveryLibrary() async throws {
-    let location = temporaryStore()
-    defer { try? FileManager.default.removeItem(at: location.root) }
-    let namespace = ICloudSyncNamespaceBinding(
-      scope: "private",
-      accountLineage: "account-a",
-      generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
-      zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
-    )
-    let current = Snip(content: "Current", origin: .quickEntry)
-    let recoveredValue = Snip(id: UUID(), content: "Recovered", origin: .quickEntry)
-    let recovered = RecoveredSnip(
-      id: recoveredValue.id,
-      currentSnipID: current.id,
-      recovered: recoveredValue,
-      conflictingFields: [.text]
-    )
-    let store = try SwiftDataSnipLibrary(storeURL: location.store)
-    let localAssembly = SnipLibraryAssembly(
-      library: store,
-      activeCloudNamespace: nil
-    )
-    XCTAssertNil(localAssembly.recoveryScope)
-
-    let cloudAssembly = SnipLibraryAssembly(
-      library: store,
-      activeCloudNamespace: namespace
-    )
-    let scope = try XCTUnwrap(cloudAssembly.recoveryScope)
-    XCTAssertEqual(scope.rawValue, namespace.namespaceKey.rawValue)
-
-    _ = try await store.perform(.restore(snips: [current]), sortedBy: .manual)
-    try await store.testStoreCloudConflict(
-      namespaceKey: CloudSyncNamespaceKey(rawValue: scope.rawValue),
-      key: "app-assembly",
-      reference: CloudEntityReference(kind: .snip, domainID: current.id),
-      payload: Data("wire".utf8),
-      recovery: .snip(recovered)
-    )
-
-    let pending = try await cloudAssembly.library.recoverySnapshot(in: scope)
-    XCTAssertEqual(pending.pendingSnips, [recovered])
-    _ = try await cloudAssembly.library.resolveRecovery(
-      recovered.id,
-      in: scope,
-      choice: .keepCurrent
-    )
-    let afterResolution = try await cloudAssembly.library.recoverySnapshot(in: scope)
-    XCTAssertEqual(afterResolution, .empty)
   }
 
   func testUseRecoveredRereadsCurrentAndChangesOnlyConflictingSnipFieldsAcrossReopen() async throws {
@@ -535,13 +510,5 @@ final class SnipRecoveryPersistenceTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("SnipRecoveryPersistenceTests-\(UUID().uuidString)", isDirectory: true)
     return (root, root.appendingPathComponent("snips.store"))
-  }
-
-  /// The `transition` object as `activation.json` stores it.
-  private func storedTransition(in syncModeRoot: URL) throws -> [String: Any]? {
-    let manifest = try JSONSerialization.jsonObject(
-      with: Data(contentsOf: syncModeRoot.appendingPathComponent("activation.json"))
-    ) as? [String: Any]
-    return manifest?["transition"] as? [String: Any]
   }
 }

@@ -42,9 +42,6 @@ package enum SnipLibraryTransferPlanner {
       attachmentFileDigests: target.attachmentFileDigests.filter {
         retainedAttachmentIDs.contains($0.key)
       },
-      legacyManualPositions: target.legacyManualPositions.filter { entry in
-        retainedTargetSnips.contains(where: { $0.id == entry.key })
-      },
       opaqueSyncStateDigest: target.opaqueSyncStateDigest,
       opaqueSyncStatePayload: target.opaqueSyncStatePayload,
       additionalSeenRequestIDs: target.additionalSeenRequestIDs
@@ -158,11 +155,9 @@ package enum SnipLibraryTransferPlanner {
   package static func digest(
     snip: Snip?,
     attachmentData: [UUID: Data],
-    attachmentFileDigests: [UUID: Data] = [:],
-    version: Int = 3,
-    legacyManualPosition: Int64? = nil
+    attachmentFileDigests: [UUID: Data] = [:]
   ) -> Data {
-    var bytes = Data("snipsnap-mode-seed-v\(version)".utf8)
+    var bytes = Data("snipsnap-mode-seed-v3".utf8)
     guard let snip else {
       bytes.append(0)
       return Data(SHA256.hash(data: bytes))
@@ -188,17 +183,11 @@ package enum SnipLibraryTransferPlanner {
     }
     append(snip.listID.uuidString.lowercased(), to: &bytes)
     bytes.append(snip.isDone ? 1 : 0)
-    if version >= 3 {
-      if let pinnedAt = snip.pinnedAt {
-        bytes.append(1)
-        append(pinnedAt.timeIntervalSince1970.bitPattern, to: &bytes)
-      } else { bytes.append(0) }
-    }
-    if version == 1 {
-      append(UInt64(bitPattern: legacyManualPosition ?? snip.manualPosition), to: &bytes)
-    } else {
-      append(snip.manualSortKey.data, to: &bytes)
-    }
+    if let pinnedAt = snip.pinnedAt {
+      bytes.append(1)
+      append(pinnedAt.timeIntervalSince1970.bitPattern, to: &bytes)
+    } else { bytes.append(0) }
+    append(snip.manualSortKey.data, to: &bytes)
     append(UInt64(snip.attachments.count), to: &bytes)
     for attachment in snip.attachments {
       append(attachment.id.uuidString.lowercased(), to: &bytes)

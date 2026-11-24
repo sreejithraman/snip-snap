@@ -192,7 +192,7 @@ struct IOSAppRootView: View {
                     RecoveredListReviewView(model: model, recoveryID: id)
                 }
             }
-            .libraryToast(model: model, isHidden: model.errorDetails != nil, usesFixedExpiry: true)
+            .libraryToast(model: model, isHidden: model.errorDetails != nil)
             .modifier(IOSFailurePresentation(model: model))
         }
         .sheet(
@@ -233,7 +233,7 @@ struct IOSAppRootView: View {
                     .disabled(model.isPerformingGatheredAction)
                 }
                 .interactiveDismissDisabled(model.isPerformingGatheredAction)
-                .libraryToast(model: model, isHidden: model.errorDetails != nil, usesFixedExpiry: true)
+                .libraryToast(model: model, isHidden: model.errorDetails != nil)
                 .modifier(IOSFailurePresentation(model: model))
             }
         }
@@ -390,8 +390,7 @@ struct IOSAppRootView: View {
                 )
                 .libraryToast(
                     model: model,
-                    isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
-                    usesFixedExpiry: true
+                    isHidden: model.isSearchPresented || sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil
                 )
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     ListPageFrameReader(
@@ -511,8 +510,7 @@ struct IOSAppRootView: View {
                     )
                 }
             }
-            .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil,
-                          usesFixedExpiry: true)
+            .libraryToast(model: model, isHidden: sheet != nil || model.newListMoveRequest != nil || model.errorDetails != nil)
             // Bar hosting drops field focus updates on iOS 26.5.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 libraryControls(showsListTabs: false)
@@ -804,19 +802,13 @@ extension View {
         .searchToolbarBehavior(.minimize)
     }
 
-    func libraryToast(
-        model: IOSAppModel,
-        isHidden: Bool = false,
-        usesFixedExpiry: Bool = false
-    ) -> some View {
+    func libraryToast(model: IOSAppModel, isHidden: Bool = false) -> some View {
         appToast(
             showing: model.toast,
             close: model.closeSnackbar,
-            alignment: .bottom,
-            edge: .bottom,
             isHidden: isHidden,
             reservesSpace: true,
-            usesFixedExpiry: usesFixedExpiry,
+            usesFixedExpiry: true,
             onAction: model.performToastAction,
             onDismiss: model.dismissToast
         )
@@ -871,8 +863,7 @@ private struct IOSFailurePresentation: ViewModifier {
                     onClose: model.dismissErrorDetails,
                     onRetry: model.canRetryFailure(failure) ? { model.retryFailure(failure) } : nil
                 )
-                .libraryToast(model: model, isHidden: model.toast?.action == .showErrorDetails(failure.id),
-                              usesFixedExpiry: true)
+                .libraryToast(model: model, isHidden: model.toast?.action == .showErrorDetails(failure.id))
             }
             .alert(model.errorTitle, isPresented: Binding(
                 get: { isActive && model.failure?.surface == .dialog && model.errorDetails == nil },

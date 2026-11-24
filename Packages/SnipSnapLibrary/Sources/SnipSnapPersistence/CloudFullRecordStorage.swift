@@ -657,9 +657,7 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
   package init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     storageVersion = try container.decode(Int.self, forKey: .storageVersion)
-    hasPlannedDeferredReleases = try container.decodeIfPresent(
-      Bool.self, forKey: .hasPlannedDeferredReleases
-    ) ?? false
+    hasPlannedDeferredReleases = try container.decode(Bool.self, forKey: .hasPlannedDeferredReleases)
     namespaceKey = try container.decode(String.self, forKey: .namespaceKey)
     batchID = try container.decode(UUID.self, forKey: .batchID)
     expectedEngineState = try container.decodeIfPresent(Data.self, forKey: .expectedEngineState)
@@ -677,33 +675,20 @@ package struct CloudFullBatchCommit: Codable, Equatable, Sendable {
       forKey: .nextNamespaceState
     )
     rawBatchData = try container.decodeIfPresent(Data.self, forKey: .rawBatchData)
-    outboundBindings = try container.decodeIfPresent(
-      [CloudFullOutboundBinding].self,
-      forKey: .outboundBindings
-    ) ?? []
-    recoveryInputs = try container.decodeIfPresent(
-      [CloudFullRecoveryInput].self,
-      forKey: .recoveryInputs
-    ) ?? []
+    outboundBindings = try container.decode([CloudFullOutboundBinding].self, forKey: .outboundBindings)
+    recoveryInputs = try container.decode([CloudFullRecoveryInput].self, forKey: .recoveryInputs)
     recoveryChanges = try container.decodeIfPresent(
       [CloudFullRecoveryChange].self, forKey: .recoveryChanges
     ) ?? []
-    recoveryReviews = try container.decodeIfPresent(
-      [CloudRecoveryReviewInput].self,
-      forKey: .recoveryReviews
-    ) ?? []
+    recoveryReviews = try container.decode([CloudRecoveryReviewInput].self, forKey: .recoveryReviews)
     graphRepairs = try container.decodeIfPresent(
       [CloudFullGraphRepair].self,
       forKey: .graphRepairs
     ) ?? []
-    settledDeleteIdentities = try container.decodeIfPresent(
-      [CloudTextStorageIdentity].self,
-      forKey: .settledDeleteIdentities
-    ) ?? []
-    attachmentTransitions = try container.decodeIfPresent(
-      [CloudAttachmentTransition].self,
-      forKey: .attachmentTransitions
-    ) ?? []
+    settledDeleteIdentities = try container.decode(
+      [CloudTextStorageIdentity].self, forKey: .settledDeleteIdentities)
+    attachmentTransitions = try container.decode(
+      [CloudAttachmentTransition].self, forKey: .attachmentTransitions)
     items = try container.decode([CloudFullBatchItem].self, forKey: .items)
   }
 

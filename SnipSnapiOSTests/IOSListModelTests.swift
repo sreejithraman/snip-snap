@@ -101,8 +101,10 @@ final class IOSListModelTests: IOSModelTestCase {
         XCTAssertEqual(model.lists.count, 3)
     }
 
-    func testCancelNewListRestoresOriginAndKeepsItsSnipsInInbox() async {
-        let model = makeModel(library: ModelTestLibrary())
+    func testCancelNewListRestoresOriginAndKeepsItsSnipsInInbox() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json")))
         await model.load()
         let workCreated = await model.createList(name: "Work")
         XCTAssertTrue(workCreated)
@@ -698,8 +700,9 @@ final class IOSListModelTests: IOSModelTestCase {
     }
 
     func testListFlowKeepsInboxAsFallback() async throws {
-        let library = ModelTestLibrary()
-        let model = makeModel(library: library)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(library: try JSONSnipLibrary(fileURL: root.appendingPathComponent("library.json")))
         await model.load()
 
         let createdList = await model.createList(name: "Notes", color: .blue)

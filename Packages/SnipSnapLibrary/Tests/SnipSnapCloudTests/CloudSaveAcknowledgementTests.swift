@@ -10,10 +10,10 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     for laterText in ["A", "C"] {
       let fixture = try await Fixture()
       defer { fixture.removeStore() }
-      try await fixture.coordinator.sync()
+      try await fixture.coordinator.fetchThenSendOneBatch()
       try await fixture.editSnip("B")
       await fixture.transport.pauseNextSend()
-      let sending = Task { try await fixture.coordinator.sendPending() }
+      let sending = Task { try await fixture.coordinator.sendOneBatch() }
       await fixture.transport.waitUntilSendPauses()
       try await fixture.editSnip(laterText)
       await fixture.transport.resumeSend()
@@ -30,7 +30,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
       XCTAssertEqual(draft.base, acceptedRecord.shadow)
       XCTAssertEqual(try Self.snipFields(draft).text, laterText)
 
-      try await fixture.coordinator.sendPending()
+      try await fixture.coordinator.sendOneBatch()
       let serverValue = await fixture.server.fullSnapshot(for: fixture.snipRecordID)
       let final = try XCTUnwrap(serverValue)
       XCTAssertEqual(try CloudFullSyncPersistence.snipFields(CloudFullRecordCodec.snip(from: final)).text, laterText)
@@ -43,10 +43,10 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     for laterName in ["A", "C"] {
       let fixture = try await Fixture()
       defer { fixture.removeStore() }
-      try await fixture.coordinator.sync()
+      try await fixture.coordinator.fetchThenSendOneBatch()
       try await fixture.editList("B", icon: "star", color: .blue)
       await fixture.transport.pauseNextSend()
-      let sending = Task { try await fixture.coordinator.sendPending() }
+      let sending = Task { try await fixture.coordinator.sendOneBatch() }
       await fixture.transport.waitUntilSendPauses()
       try await fixture.editList(laterName, icon: "folder", color: nil)
       await fixture.transport.resumeSend()
@@ -66,7 +66,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
       XCTAssertEqual(draft.base, acceptedRecord.shadow)
       XCTAssertEqual(try Self.listFields(draft).desiredName, laterName)
 
-      try await fixture.coordinator.sendPending()
+      try await fixture.coordinator.sendOneBatch()
       let settled = try await fixture.persistence.pendingChanges()
       XCTAssertTrue(settled.operations.isEmpty)
     }
@@ -76,7 +76,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     let fixture = try await Fixture()
     defer { fixture.removeStore() }
     await fixture.transport.pauseNextSend()
-    let sending = Task { try await fixture.coordinator.sendPending() }
+    let sending = Task { try await fixture.coordinator.sendOneBatch() }
     await fixture.transport.waitUntilSendPauses()
     try await fixture.editSnip("new Snip")
     try await fixture.editList("new List", icon: "star", color: .violet)
@@ -101,7 +101,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     let fixture = try await Fixture()
     defer { fixture.removeStore() }
     await fixture.transport.pauseNextSend()
-    let sending = Task { try await fixture.coordinator.sendPending() }
+    let sending = Task { try await fixture.coordinator.sendOneBatch() }
     await fixture.transport.waitUntilSendPauses()
     try await fixture.deleteLocalRecords()
     await fixture.transport.resumeSend()
@@ -110,18 +110,18 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     try await fixture.assertLocalRecordsMissing()
     try await fixture.assertNoConflicts()
     try await fixture.assertPendingDeletesUseServerShadows()
-    try await fixture.coordinator.sendPending()
+    try await fixture.coordinator.sendOneBatch()
     try await fixture.assertDeletesSettled()
   }
 
   func testSaveAcknowledgementsKeepExistingPendingDeletes() async throws {
     let fixture = try await Fixture()
     defer { fixture.removeStore() }
-    try await fixture.coordinator.sync()
+    try await fixture.coordinator.fetchThenSendOneBatch()
     try await fixture.editSnip("B")
     try await fixture.editList("B", icon: "star", color: nil)
     await fixture.transport.pauseNextSend()
-    let sending = Task { try await fixture.coordinator.sendPending() }
+    let sending = Task { try await fixture.coordinator.sendOneBatch() }
     await fixture.transport.waitUntilSendPauses()
     try await fixture.deleteLocalRecords()
     _ = try await fixture.persistence.pendingChanges()
@@ -133,20 +133,20 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     try await fixture.assertLocalRecordsMissing()
     try await fixture.assertNoConflicts()
     try await fixture.assertPendingDeletesUseServerShadows()
-    try await fixture.coordinator.sendPending()
+    try await fixture.coordinator.sendOneBatch()
     try await fixture.assertDeletesSettled()
   }
 
   func testSnipSaveKeepsLaterDonePinAndPlacementChanges() async throws {
     let fixture = try await Fixture()
     defer { fixture.removeStore() }
-    try await fixture.coordinator.sync()
+    try await fixture.coordinator.fetchThenSendOneBatch()
     _ = try await fixture.library.perform(.batch([
       .setDone(ids: [fixture.snipID], done: true),
       .place(ids: [fixture.snipID], in: SnipList.inbox.id, before: nil, basedOn: .manual),
     ]), sortedBy: .manual)
     await fixture.transport.pauseNextSend()
-    let sending = Task { try await fixture.coordinator.sendPending() }
+    let sending = Task { try await fixture.coordinator.sendOneBatch() }
     await fixture.transport.waitUntilSendPauses()
     _ = try await fixture.library.perform(.batch([
       .setDone(ids: [fixture.snipID], done: false),
@@ -246,7 +246,7 @@ final class CloudSaveAcknowledgementTests: XCTestCase {
     for useSendConflict in [false, true] {
       let fixture = try await Fixture()
       defer { fixture.removeStore() }
-      try await fixture.coordinator.sync()
+      try await fixture.coordinator.fetchThenSend()
       try await fixture.editSnip("local")
       try await fixture.editList("local", icon: "folder", color: nil)
       let submitted = try await fixture.persistence.pendingChanges()

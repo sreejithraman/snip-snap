@@ -29,7 +29,7 @@ struct SyncedContentSettingsView: View {
                     syncMessage
                 }
 
-                if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
+                if model.canRetryFailedSync, let retryAction {
                     Button("Try Again") {
                         isRetryingSync = true
                         Task {
@@ -171,7 +171,7 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("Couldn’t get the latest iCloud changes. Turning off sync uses this Mac’s copy, which may be out of date. Your iCloud data stays.")
         }
-        .appToast($diagnosticToast, alignment: .bottom, edge: .bottom)
+        .appToast($diagnosticToast)
         .onChange(of: diagnostics.notice) { _, notice in
             guard notice == .saved || notice == .cleared else { return }
             diagnosticToast = AppToast(systemImage: notice == .saved ? "square.and.arrow.down" : "trash", message: diagnosticMessage)
@@ -235,8 +235,8 @@ struct SyncedContentSettingsView: View {
 
     private var showsSyncMessage: Bool {
         switch model.state {
-        case .ready, .deleted: false
-        case .enabling, .syncing, .disabling, .deleting, .removalPending, .failed: true
+        case .ready: false
+        case .enabling, .syncing, .disabling, .failed: true
         }
     }
 
@@ -268,8 +268,8 @@ struct SyncedContentSettingsView: View {
 
     private var isSyncBusy: Bool {
         switch model.state {
-        case .enabling, .syncing, .disabling, .deleting: true
-        case .ready, .removalPending, .deleted, .failed: false
+        case .enabling, .syncing, .disabling: true
+        case .ready, .failed: false
         }
     }
 }

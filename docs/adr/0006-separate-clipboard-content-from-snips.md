@@ -1,5 +1,7 @@
 # 0006: Keep Clipboard content separate from snips
 
+The local-only requirement for clipboard history is replaced by [ADR 0025](0025-opt-in-clipboard-history-sync.md). The separate models and lifetimes below still apply. With iCloud sync on, a saved attachment's bytes may be a download that the device can fetch again ([ADR 0029](0029-store-cloud-attachment-downloads-in-caches.md)).
+
 ## Context
 
 The macOS pasteboard can hold several forms of one copied value, including rich text, images, file URLs, and plain text. Snips need a small, stable shape that coding tools and other apps can accept. Treating clipboard history as a list would make snips rich documents and make Save behave like a move from a system history that cannot move entries.

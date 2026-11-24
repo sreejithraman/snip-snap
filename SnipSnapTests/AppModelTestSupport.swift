@@ -255,8 +255,6 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     private var requests: [MacAttachmentPreparationRequest] = []
     private let urls: [UUID: URL]
     private var failuresRemaining: Int
-    private let clearURLs: [URL]
-    private var clears = 0
     private var syncCalls = 0
     private var scheduleCalls = 0
     private let onSchedule: (@Sendable () -> Void)?
@@ -264,12 +262,10 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
     init(
         urls: [UUID: URL] = [:],
         failuresRemaining: Int = 0,
-        clearURLs: [URL] = [],
         onSchedule: (@Sendable () -> Void)? = nil
     ) {
         self.urls = urls
         self.failuresRemaining = failuresRemaining
-        self.clearURLs = clearURLs
         self.onSchedule = onSchedule
     }
 
@@ -296,15 +292,7 @@ actor MacOptionalCloudSyncHandlerProbe: OptionalCloudSyncHandling {
         return url
     }
 
-    func clearDownloadedFiles() async throws {
-        clears += 1
-        for url in clearURLs where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-    }
-
     func preparationRequests() -> [MacAttachmentPreparationRequest] { requests }
-    func clearCount() -> Int { clears }
 }
 
 actor MacHeldAttachmentStatusHandler: OptionalCloudSyncHandling {
@@ -323,5 +311,4 @@ actor MacHeldAttachmentStatusHandler: OptionalCloudSyncHandling {
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         throw SnipLibraryError.attachmentCopyFailed
     }
-    func clearDownloadedFiles() async throws {}
 }

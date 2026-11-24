@@ -85,25 +85,6 @@ final class CloudOutboundAdmissionTests: XCTestCase {
     XCTAssertTrue(queue.current.operations.isEmpty)
   }
 
-  func testLegacyCommittedDeletionReleasesOnlyItsIDAndKeepsNewerFailures() {
-    let zone = CloudZoneID(name: "zone", ownerName: "owner")
-    let first = CloudRecordID(zone: zone, name: "first")
-    let second = CloudRecordID(zone: zone, name: "second")
-    var queue = CloudRecordOutboundQueue()
-    let failed = CloudSyncBatch.fetched(CloudFetchedBatch(id: UUID(),
-      items: [.failed(first, .invalidRecord), .failed(second, .retryable)], engineState: nil))
-    queue.observe(failed, zones: [zone])
-    queue.confirmLegacyAdmission(failed)
-    let success = CloudSyncBatch.fetched(CloudFetchedBatch(id: UUID(), items: [.deleted(first)], engineState: nil))
-    let laterFailure = CloudSyncBatch.fetched(CloudFetchedBatch(id: UUID(), items: [.failed(first, .invalidRecord)], engineState: nil))
-    queue.observe(laterFailure, zones: [zone])
-    queue.confirmLegacyAdmission(success)
-    XCTAssertEqual(queue.admission.blockedRecordIDs, [first, second])
-    queue.confirmLegacyAdmission(laterFailure)
-    queue.confirmLegacyAdmission(.fetched(CloudFetchedBatch(id: UUID(), items: [.deleted(first)], engineState: nil)))
-    XCTAssertEqual(queue.admission.blockedRecordIDs, [second])
-  }
-
   func testFailedPurgeDeliveryLeavesQueuedFrozenAndRestoredOutboundStopped() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

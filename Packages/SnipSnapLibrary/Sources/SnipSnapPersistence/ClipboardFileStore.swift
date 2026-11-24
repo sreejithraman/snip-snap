@@ -16,6 +16,12 @@ public struct ClipboardFileStore: Sendable {
     }
     public init(rootURL: URL) { self.rootURL = rootURL }
 
+    /// Says why a pin failed when its file couldn't be kept (ADR 0026).
+    public static func pinFailureMessage(for error: any Error) -> String {
+        (error as? Failure)?.errorDescription
+            ?? String(localized: "Couldn’t update the pin. Try again.", bundle: .main)
+    }
+
     public func url(for file: ClipboardOwnedFile) throws -> URL {
         guard !file.relativePath.hasPrefix("/"),
               !file.relativePath.split(separator: "/").contains("..") else { throw Failure.invalidPath }

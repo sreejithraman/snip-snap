@@ -32,7 +32,6 @@ public protocol OptionalCloudSyncHandling: Sendable {
     func isCloudSyncActive() async throws -> Bool
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState]
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL
-    func clearDownloadedFiles() async throws
     func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot
     func clearDownloadedFiles(ifRevision revision: String, in scope: SnipRecoveryScope) async throws -> Bool
 }
@@ -74,7 +73,6 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
     case recoveryChanged
     case invalidRecoveryChoice
     case importChanged
-    case deviceActionChanged
 
     public var errorDescription: String? {
         switch self {
@@ -114,8 +112,6 @@ public enum SnipLibraryError: Error, Equatable, LocalizedError, Sendable {
             String(localized: "That choice doesn’t apply to this recovered version.", bundle: .main)
         case .importChanged:
             String(localized: "The backup or saved snips changed. Review the import again.", bundle: .main)
-        case .deviceActionChanged:
-            String(localized: "Can’t undo this action. The same details changed on another device.", bundle: .main)
         }
     }
 }
@@ -170,26 +166,20 @@ public struct SnipLibraryExpectation: Sendable {
     public let expectedSnips: [Snip]
     /// Guards identity, text, ordered attachments, pin and Done state while allowing metadata refreshes.
     public let expectedCompletionSnips: [Snip]
-    public let absentSnipIDs: Set<UUID>
     public let expectedLists: [SnipList]
-    public let absentListIDs: Set<UUID>
     public let requiredListIDs: Set<UUID>
     public let expectedListMemberships: [UUID: Set<UUID>]
 
     public init(
         expectedSnips: [Snip] = [],
         expectedCompletionSnips: [Snip] = [],
-        absentSnipIDs: Set<UUID> = [],
         expectedLists: [SnipList] = [],
-        absentListIDs: Set<UUID> = [],
         requiredListIDs: Set<UUID> = [],
         expectedListMemberships: [UUID: Set<UUID>] = [:]
     ) {
         self.expectedSnips = expectedSnips
         self.expectedCompletionSnips = expectedCompletionSnips
-        self.absentSnipIDs = absentSnipIDs
         self.expectedLists = expectedLists
-        self.absentListIDs = absentListIDs
         self.requiredListIDs = requiredListIDs
         self.expectedListMemberships = expectedListMemberships
     }
@@ -214,7 +204,6 @@ public indirect enum SnipLibraryCommand: Sendable {
         name: String, systemImage: String, color: SnipListColorPreset? = nil,
         namePolicy: SnipListNamePolicy = .exact
     )
-    case restoreList(SnipList)
     case updateList(id: UUID, name: String, systemImage: String, color: SnipListColorChange = .keep)
     case deleteList(id: UUID)
     case moveList(id: UUID, before: UUID?)
@@ -234,17 +223,12 @@ public indirect enum SnipLibraryCommand: Sendable {
     )
     case delete(ids: Set<UUID>)
     case restore(snips: [Snip])
-    case restoreReplacing(snips: [Snip], id: UUID, expectedUpdatedAt: Date)
     case merge(ids: Set<UUID>, now: Date)
     case setPinned(ids: Set<UUID>, pinned: Bool)
     case togglePinned(id: UUID)
     case setDone(ids: Set<UUID>, done: Bool)
-    case toggleDone(id: UUID)
-    case toggleDoneMany(ids: Set<UUID>)
     case moveChronologically(ids: [UUID], to: UUID)
     case place(ids: [UUID], in: UUID, before: UUID?, basedOn: SnipSortMode)
-    case replaceAll([Snip])
-    case applyDevicePatch(SnipLibraryDevicePatch, now: Date)
     case pruneAttachments(retaining: Set<UUID>)
     case batch([SnipLibraryCommand])
     case guarded(expectation: SnipLibraryExpectation, command: SnipLibraryCommand)
@@ -260,29 +244,14 @@ public enum SnipLibraryOutcome: Equatable, Sendable {
 public struct SnipLibraryUpdate: Equatable, Sendable {
     public let snapshot: SnipLibrarySnapshot
     public let outcome: SnipLibraryOutcome
-    package let devicePatch: SnipLibraryDevicePatch?
 
     public init(snapshot: SnipLibrarySnapshot, outcome: SnipLibraryOutcome) {
         self.snapshot = snapshot
         self.outcome = outcome
-        devicePatch = nil
-    }
-
-    package init(
-        snapshot: SnipLibrarySnapshot,
-        outcome: SnipLibraryOutcome,
-        devicePatch: SnipLibraryDevicePatch
-    ) {
-        self.snapshot = snapshot
-        self.outcome = outcome
-        self.devicePatch = devicePatch
     }
 }
 
 public enum SnipLibraryTransferConflict: Equatable, Sendable {
-    case snipIdentity(UUID)
-    case listIdentity(UUID)
-    case listName(String)
     case attachmentIdentity(UUID)
 }
 
@@ -293,7 +262,6 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
     public let attachmentData: [UUID: Data]
     package let attachmentFileURLs: [UUID: URL]
     package let attachmentFileDigests: [UUID: Data]
-    package let legacyManualPositions: [UUID: Int64]
     package let opaqueSyncStateDigest: Data
     package let opaqueSyncStatePayload: Data
     // Device-local request history merges monotonically into local metadata. Content,
@@ -314,7 +282,6 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         self.attachmentData = attachmentData
         attachmentFileURLs = [:]
         attachmentFileDigests = [:]
-        legacyManualPositions = [:]
         opaqueSyncStateDigest = Data()
         opaqueSyncStatePayload = Data()
         additionalSeenRequestIDs = []
@@ -327,7 +294,6 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         attachmentData: [UUID: Data],
         attachmentFileURLs: [UUID: URL] = [:],
         attachmentFileDigests: [UUID: Data] = [:],
-        legacyManualPositions: [UUID: Int64],
         opaqueSyncStateDigest: Data = Data(),
         opaqueSyncStatePayload: Data = Data(),
         additionalSeenRequestIDs: Set<UUID> = []
@@ -339,7 +305,6 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
         self.attachmentData = attachmentData
         self.attachmentFileURLs = attachmentFileURLs
         self.attachmentFileDigests = attachmentFileDigests
-        self.legacyManualPositions = legacyManualPositions
         self.opaqueSyncStateDigest = opaqueSyncStateDigest
         self.opaqueSyncStatePayload = opaqueSyncStatePayload
         self.additionalSeenRequestIDs = additionalSeenRequestIDs
@@ -353,7 +318,6 @@ public struct SnipLibraryTransferSnapshot: Equatable, Sendable {
             attachmentData: attachmentData,
             attachmentFileURLs: attachmentFileURLs,
             attachmentFileDigests: attachmentFileDigests,
-            legacyManualPositions: legacyManualPositions,
             opaqueSyncStateDigest: opaqueSyncStateDigest,
             opaqueSyncStatePayload: payload,
             additionalSeenRequestIDs: additionalSeenRequestIDs
@@ -407,7 +371,6 @@ public struct SnipImportPreview: Equatable, Sendable {
     package let transitionID: UUID
     package let source: SnipLibraryTransferSnapshot
     package let targetDigest: Data
-    package let devicePatch: SnipLibraryDevicePatch
     package let stagingLease: SnipImportStagingLease?
 
     package var stagedAttachmentURLs: [UUID: URL] { source.attachmentFileURLs }
@@ -422,7 +385,6 @@ public struct SnipImportPreview: Equatable, Sendable {
         transitionID: UUID,
         source: SnipLibraryTransferSnapshot,
         targetDigest: Data,
-        devicePatch: SnipLibraryDevicePatch,
         stagingLease: SnipImportStagingLease? = nil
     ) {
         self.totalSnipCount = totalSnipCount
@@ -433,7 +395,6 @@ public struct SnipImportPreview: Equatable, Sendable {
         self.transitionID = transitionID
         self.source = source
         self.targetDigest = targetDigest
-        self.devicePatch = devicePatch
         self.stagingLease = stagingLease
     }
 
@@ -447,7 +408,6 @@ public struct SnipImportPreview: Equatable, Sendable {
             transitionID: transitionID,
             source: source,
             targetDigest: targetDigest,
-            devicePatch: devicePatch,
             stagingLease: lease
         )
     }
@@ -461,7 +421,6 @@ public struct SnipImportPreview: Equatable, Sendable {
             && lhs.transitionID == rhs.transitionID
             && lhs.source == rhs.source
             && lhs.targetDigest == rhs.targetDigest
-            && lhs.devicePatch == rhs.devicePatch
     }
 }
 
@@ -469,7 +428,6 @@ public struct SnipImportResult: Equatable, Sendable {
     public let snapshot: SnipLibrarySnapshot
     public let addedSnipCount: Int
     public let recoveredSnipCount: Int
-    package let devicePatch: SnipLibraryDevicePatch?
 
     public init(
         snapshot: SnipLibrarySnapshot,
@@ -479,19 +437,6 @@ public struct SnipImportResult: Equatable, Sendable {
         self.snapshot = snapshot
         self.addedSnipCount = addedSnipCount
         self.recoveredSnipCount = recoveredSnipCount
-        devicePatch = nil
-    }
-
-    package init(
-        snapshot: SnipLibrarySnapshot,
-        addedSnipCount: Int,
-        recoveredSnipCount: Int,
-        devicePatch: SnipLibraryDevicePatch
-    ) {
-        self.snapshot = snapshot
-        self.addedSnipCount = addedSnipCount
-        self.recoveredSnipCount = recoveredSnipCount
-        self.devicePatch = devicePatch
     }
 }
 

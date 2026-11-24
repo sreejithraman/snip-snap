@@ -4,291 +4,21 @@ import XCTest
 
 final class SyncedContentSettingsModelTests: XCTestCase {
   @MainActor
-  func testLocalOnlyCopyNamesTheSyncBoundaryWithoutClaimingDeviceOnlyStorage() {
-    let model = SyncedContentSettingsModel(mode: .localOnly)
-
-    XCTAssertEqual(
-      model.detail,
-      "Your snips aren’t syncing with iCloud."
-    )
-    XCTAssertFalse(model.detail.contains("stay on this device"))
-    XCTAssertFalse(model.detail.contains("Nothing is uploaded"))
-  }
-
-  @MainActor
-  func testICloudReadyDetailExplainsWhatSyncs() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-
-    XCTAssertEqual(model.detail, "Your snips and attachments sync through iCloud.")
-  }
-
-  @MainActor
-  func testConfirmedDeleteReportsProgressAndTheRecoveryCopy() async {
-    let calls = DeleteCallCounter()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await calls.record()
-        return .completed
-      }
-    )
-
-    await model.deleteSyncedContent()
-
-    let count = await calls.value()
-    XCTAssertEqual(count, 1)
-    XCTAssertEqual(model.state, .deleted)
-    XCTAssertFalse(model.canDelete)
-    XCTAssertTrue(model.detail.contains("recovery copy"))
-  }
-
-  @MainActor
-  func testDeletedSyncedCollectionCanStillBeCopiedToLocalOnly() async {
-    let calls = DeleteEventRecorder()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      disableAction: { _ in await calls.record("disable") },
-      deleteAction: { .completed }
-    )
-
-    await model.deleteSyncedContent()
-
-    XCTAssertEqual(model.state, .deleted)
-    XCTAssertTrue(model.canDisable)
-
-    await model.disableICloudSync(.useCurrentCache)
-
-    let events = await calls.values()
-    XCTAssertEqual(events, ["disable"])
-    XCTAssertEqual(model.mode, .localOnly)
-    XCTAssertEqual(model.state, .ready)
-  }
-
-  @MainActor
-  func testDeleteCompletesTheAppLibrarySwitchBeforeReportingSuccess() async {
-    let calls = DeleteEventRecorder()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await calls.record("delete")
-        return .completed
-      }
-    )
-    model.setDeleteCompletionAction {
-      await calls.record("replace-library")
-    }
-
-    await model.deleteSyncedContent()
-
-    let events = await calls.values()
-    XCTAssertEqual(events, ["delete", "replace-library"])
-    XCTAssertEqual(model.state, .deleted)
-  }
-
-  @MainActor
-  func testPendingRemovalUsesApprovedCopyAndHidesDelete() async {
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: { .removalPending }
-    )
-
-    await model.deleteSyncedContent()
-
-    XCTAssertEqual(model.state, .removalPending)
-    XCTAssertEqual(model.statusTitle, "Deletion incomplete")
-    XCTAssertEqual(
-      model.detail,
-      "Some synced content is still in iCloud. This device keeps a recovery copy."
-    )
-    XCTAssertFalse(model.canDelete)
-  }
-
-  @MainActor
-  func testTryAgainFinishesDeletingOnlyWhenARemovalIsIncomplete() {
-    XCTAssertTrue(
-      SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending).canFinishDeleting
-    )
-    let otherStates: [SyncedContentSettingsState] = [
-      .ready, .syncing, .disabling, .deleting, .deleted, .failed(.retryingSoon), .enabling(),
+  func testStatusTitleNamesEachModeAndIssue() {
+    let cases: [(SyncedContentMode, SyncedContentSyncIssue?, String)] = [
+      (.localOnly, nil, "Sync off"),
+      (.iCloudSync, nil, "Sync on"),
+      (.iCloudSync, .waitingForConnection, "Waiting for connection"),
+      (.iCloudSync, .iCloudStorageFull, "iCloud storage full"),
+      (.iCloudSync, .updateRequired, "Update Snip Snap"),
+      (.iCloudSync, .appDataIssue, "Couldn’t sync"),
+      (.iCloudSync, .attachmentStorageUnavailable, "Couldn’t save an attachment"),
     ]
-    for state in otherStates {
-      XCTAssertFalse(
-        SyncedContentSettingsModel(mode: .iCloudSync, initialState: state).canFinishDeleting,
-        "iCloud sync in \(state)"
-      )
+    for (mode, issue, title) in cases {
+      let model = SyncedContentSettingsModel(mode: mode)
+      if let issue { model.recordSyncFailure(issue) }
+      XCTAssertEqual(model.statusTitle, title, "\(mode) \(String(describing: issue))")
     }
-    for state in otherStates + [.removalPending] {
-      XCTAssertFalse(
-        SyncedContentSettingsModel(mode: .localOnly, initialState: state).canFinishDeleting,
-        "Local-only in \(state)"
-      )
-    }
-  }
-
-  @MainActor
-  func testTryAgainStaysOfferedWhileItsRetryRuns() async {
-    let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
-
-    await settings.performExplicitSync { XCTAssertTrue(settings.canFinishDeleting) }
-  }
-
-  @MainActor
-  func testSuccessfulSyncFinishesARemovalWhoseCompletionReportWasLost() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-    model.recordRemovalPending()
-
-    _ = model.recordSyncStarted()
-    model.recordSyncFailure(.iCloudUnavailable)
-    XCTAssertEqual(model.state, .removalPending)
-
-    let laterStart = model.recordSyncStarted()
-    model.recordSyncCompleted(laterStart)
-    XCTAssertEqual(model.state, .deleted)
-    XCTAssertEqual(model.statusTitle, "Synced content deleted")
-  }
-
-  @MainActor
-  func testSyncStartedBeforeADeleteCannotFinishItsRemoval() async {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: { .removalPending })
-    model.recordSyncFailure(.iCloudUnavailable)
-    let olderStart = model.recordSyncStarted()
-
-    await model.deleteSyncedContent()
-    XCTAssertEqual(model.state, .removalPending)
-    model.recordSyncCompleted(olderStart)
-    XCTAssertEqual(model.state, .removalPending)
-
-    let laterStart = model.recordSyncStarted()
-    model.recordSyncCompleted(laterStart)
-    XCTAssertEqual(model.state, .deleted)
-  }
-
-  @MainActor
-  func testSyncStartedDuringOneRemovalCannotFinishALaterOne() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-    model.recordRemovalPending()
-    let earlierStart = model.recordSyncStarted()
-
-    model.recordSyncStopped(.iCloudAccountChanged)
-    model.recordEnableCompleted()
-    XCTAssertEqual(model.mode, .iCloudSync)
-    XCTAssertEqual(model.state, .ready)
-    model.recordRemovalPending()
-    model.recordSyncCompleted(earlierStart)
-
-    XCTAssertEqual(model.state, .removalPending)
-  }
-
-  @MainActor
-  func testRemovalReportFromASyncStartedBeforeADeleteCannotFinishIt() async {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync, deleteAction: { .removalPending })
-    model.recordSyncFailure(.iCloudUnavailable)
-    let olderStart = model.recordSyncStarted()
-
-    await model.deleteSyncedContent()
-    XCTAssertEqual(model.state, .removalPending)
-    model.recordRemovalCompleted(olderStart)
-    XCTAssertEqual(model.state, .removalPending)
-
-    let laterStart = model.recordSyncStarted()
-    model.recordRemovalCompleted(laterStart)
-    XCTAssertEqual(model.state, .deleted)
-  }
-
-  @MainActor
-  func testRemovalReportDuringADeleteLeavesTheOutcomeToTheDelete() async {
-    let gate = SyncedContentActionGate()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await gate.wait()
-        return .removalPending
-      }
-    )
-
-    let delete = Task { @MainActor in await model.deleteSyncedContent() }
-    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
-      return XCTFail("The delete never reached its action")
-    }
-    let start = model.recordSyncStarted()
-    model.recordRemovalCompleted(start)
-    XCTAssertEqual(model.state, .deleting)
-
-    gate.open()
-    await delete.value
-    XCTAssertEqual(model.state, .removalPending)
-  }
-
-  @MainActor
-  func testPendingReportDuringADeleteLeavesTheOutcomeToTheDelete() async {
-    let events = Mutex<[AppDiagnosticEvent]>([])
-    let gate = SyncedContentActionGate()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await gate.wait()
-        return .removalPending
-      },
-      diagnostics: AppDiagnosticRecorder { event in events.withLock { $0.append(event) } }
-    )
-
-    let delete = Task { @MainActor in await model.deleteSyncedContent() }
-    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
-      return XCTFail("The delete never reached its action")
-    }
-    model.recordRemovalPending()
-    XCTAssertEqual(model.state, .deleting)
-
-    gate.open()
-    await delete.value
-    XCTAssertEqual(model.state, .removalPending)
-    XCTAssertEqual(events.withLock { $0.map(\.operation) }, ["sync.delete"])
-  }
-
-  @MainActor
-  func testPendingReportDuringACompletedDeleteEndsDeleted() async {
-    let gate = SyncedContentActionGate()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await gate.wait()
-        return .completed
-      }
-    )
-
-    let delete = Task { @MainActor in await model.deleteSyncedContent() }
-    guard await gate.waitUntilSuspended(within: .seconds(5)) else {
-      return XCTFail("The delete never reached its action")
-    }
-    model.recordRemovalPending()
-    gate.open()
-    await delete.value
-
-    XCTAssertEqual(model.state, .deleted)
-  }
-
-  @MainActor
-  func testRemovalReportShowsDeletedWhenSettingsShowedNoRemoval() {
-    let syncing = SyncedContentSettingsModel(mode: .iCloudSync)
-    let syncingStart = syncing.recordSyncStarted()
-    XCTAssertEqual(syncing.state, .syncing)
-    syncing.recordRemovalCompleted(syncingStart)
-    XCTAssertEqual(syncing.state, .deleted)
-
-    let ready = SyncedContentSettingsModel(mode: .iCloudSync)
-    let readyStart = ready.recordSyncStarted()
-    ready.recordOutstandingSyncRecovered()
-    XCTAssertEqual(ready.state, .ready)
-    ready.recordRemovalCompleted(readyStart)
-    XCTAssertEqual(ready.state, .deleted)
-
-    let failed = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      initialState: .failed(.iCloudUnavailable)
-    )
-    let failedStart = failed.recordSyncStarted()
-    failed.recordRemovalCompleted(failedStart)
-    XCTAssertEqual(failed.state, .deleted)
   }
 
   @MainActor
@@ -328,10 +58,13 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertFalse(model.canSyncNow)
     model.recordSyncFailure(.waitingForConnection)
     XCTAssertTrue(model.canSyncNow)
+    var completionRan = false
     model.setDisableCompletionAction {
+      completionRan = true
       XCTAssertFalse(model.canSyncNow)
     }
     await model.disableICloudSync(.useCurrentCache)
+    XCTAssertTrue(completionRan)
     XCTAssertFalse(model.canSyncNow)
   }
 
@@ -373,14 +106,17 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     model.recordEnableCompleted()
     XCTAssertTrue(model.canEnableClipboardSync)
 
-    let start = model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     XCTAssertTrue(model.canEnableClipboardSync)
-    model.recordSyncCompleted(start)
+    model.recordSyncCompleted()
+    var completionRan = false
     model.setDisableCompletionAction {
+      completionRan = true
       XCTAssertEqual(model.mode, .iCloudSync)
       XCTAssertFalse(model.canEnableClipboardSync)
     }
     await model.disableICloudSync(.useCurrentCache)
+    XCTAssertTrue(completionRan)
     XCTAssertEqual(model.mode, .localOnly)
     XCTAssertFalse(model.canEnableClipboardSync)
   }
@@ -477,65 +213,28 @@ final class SyncedContentSettingsModelTests: XCTestCase {
   func testOnlyASettledSyncClearsAnOutstandingIssue() {
     let model = SyncedContentSettingsModel(mode: .iCloudSync)
 
-    let firstStart = model.recordSyncStarted()
-    model.recordSyncCompleted(firstStart)
+    _ = model.recordSyncStarted()
+    model.recordSyncCompleted()
     XCTAssertEqual(model.state, .ready)
 
     model.recordSyncFailure(.iCloudUnavailable)
-    let retryStart = model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
-    model.recordSyncCompleted(retryStart)
+    model.recordSyncCompleted()
     XCTAssertEqual(model.state, .failed(.iCloudUnavailable))
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
 
-    let storageStart = model.recordSyncStarted()
+    _ = model.recordSyncStarted()
     model.recordSyncFailure(.iCloudStorageFull)
-    model.recordSyncCompleted(storageStart)
+    model.recordSyncCompleted()
     XCTAssertEqual(model.state, .failed(.iCloudStorageFull))
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .ready)
 
-    model.recordRemovalPending()
-    XCTAssertEqual(model.state, .removalPending)
-    model.recordOutstandingSyncRecovered()
-    XCTAssertEqual(model.state, .removalPending)
-    let removalStart = model.recordSyncStarted()
-    model.recordSyncCompleted(removalStart)
-    XCTAssertEqual(model.state, .deleted)
-
     model.recordSyncStopped(.iCloudDataReset)
     model.recordOutstandingSyncRecovered()
     XCTAssertEqual(model.state, .failed(.iCloudDataReset))
-  }
-
-  @MainActor
-  func testRetryingAndUserActionFailuresHaveDifferentStatusMessages() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-
-    model.recordSyncFailure(.waitingForConnection)
-    XCTAssertEqual(model.statusTitle, "Waiting for connection")
-    XCTAssertTrue(model.detail.contains("will sync when you’re back online"))
-
-    model.recordSyncFailure(.iCloudStorageFull)
-    XCTAssertEqual(model.statusTitle, "iCloud storage full")
-    XCTAssertTrue(model.detail.contains("Free up iCloud storage"))
-
-    model.recordSyncFailure(.updateRequired)
-    XCTAssertEqual(model.statusTitle, "Update Snip Snap")
-    XCTAssertTrue(model.detail.contains("Update Snip Snap"))
-  }
-
-  @MainActor
-  func testInternalSyncFailureDoesNotShowRawErrorDetails() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-
-    model.recordSyncFailure(.appDataIssue)
-
-    XCTAssertEqual(model.statusTitle, "Couldn’t sync")
-    XCTAssertFalse(model.detail.contains("CloudRecordError"))
-    XCTAssertFalse(model.detail.contains("error 2"))
-    XCTAssertTrue(model.detail.contains("Retry sync"))
   }
 
   @MainActor
@@ -631,17 +330,6 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.statusTitle, "iCloud account changed")
     XCTAssertEqual(model.mode, .localOnly)
     XCTAssertTrue(model.detail.contains("your snips are kept on this device"))
-  }
-
-  @MainActor
-  func testAttachmentStorageFailureExplainsTheLocalProblem() {
-    let model = SyncedContentSettingsModel(mode: .iCloudSync)
-
-    model.recordSyncFailure(.attachmentStorageUnavailable)
-
-    XCTAssertEqual(model.statusTitle, "Couldn’t save an attachment")
-    XCTAssertTrue(model.detail.contains("Retry sync"))
-    XCTAssertFalse(model.detail.contains("error 7"))
   }
 
   @MainActor
@@ -791,66 +479,35 @@ final class SyncedContentSettingsModelTests: XCTestCase {
     XCTAssertEqual(model.mode, .localOnly)
     XCTAssertEqual(model.state, .failed(.iCloudAccountChanged))
   }
-
-  @MainActor
-  func testLateCompletedDeleteCannotReplaceASyncStop() async {
-    let calls = DeleteEventRecorder()
-    let gate = SyncedContentActionGate()
-    let model = SyncedContentSettingsModel(
-      mode: .iCloudSync,
-      deleteAction: {
-        await gate.wait()
-        return .completed
-      }
-    )
-    model.setDeleteCompletionAction { await calls.record("replace-library") }
-
-    let delete = Task { @MainActor in await model.deleteSyncedContent() }
-    await gate.waitUntilSuspended()
-    model.recordSyncStopped(.signInRequired)
-    gate.open()
-    await delete.value
-
-    let events = await calls.values()
-    XCTAssertEqual(events, ["replace-library"])
-    XCTAssertEqual(model.mode, .localOnly)
-    XCTAssertEqual(model.state, .failed(.signInRequired))
-  }
 }
 
 /// Suspends a Synced Content action until the test opens it.
 @MainActor
 final class SyncedContentActionGate {
   private var continuation: CheckedContinuation<Void, Never>?
+  private var isOpen = false
 
   func wait() async {
+    guard !isOpen else { return }
     await withCheckedContinuation { continuation = $0 }
   }
 
-  func waitUntilSuspended() async {
-    while continuation == nil { await Task.yield() }
-  }
-
-  /// Returns false if the action doesn't reach `wait()` within `limit`.
-  func waitUntilSuspended(within limit: Duration) async -> Bool {
-    let deadline = ContinuousClock.now + limit
+  /// Fails the test, instead of hanging it, if the action doesn't reach `wait()` in time.
+  func waitUntilSuspended(file: StaticString = #filePath, line: UInt = #line) async {
+    let deadline = ContinuousClock.now + .seconds(5)
     while continuation == nil {
-      guard ContinuousClock.now < deadline else { return false }
+      guard ContinuousClock.now < deadline else {
+        return XCTFail("The action never reached the gate", file: file, line: line)
+      }
       await Task.yield()
     }
-    return true
   }
 
   func open() {
+    isOpen = true
     continuation?.resume()
     continuation = nil
   }
-}
-
-private actor DeleteCallCounter {
-  private var count = 0
-  func record() { count += 1 }
-  func value() -> Int { count }
 }
 
 private actor DeleteEventRecorder {

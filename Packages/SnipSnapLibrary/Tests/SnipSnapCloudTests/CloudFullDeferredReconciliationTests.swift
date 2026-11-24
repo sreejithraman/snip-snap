@@ -9,32 +9,10 @@ import XCTest
 private enum DeferredLocalChange { case unchanged, edit, done, move, delete }
 private enum DeferredArrival { case fetched, saved, stagedBeforeEdit, laterRecord }
 private enum DeferredFetchFailure { case prior, sameBatch }
-private enum LegacyStagedPlan { case listOnly, listAcknowledgement, staleEngine, staleNamespace, staleAccepted }
 
 extension CloudFullSyncPersistenceTests {
   func testDeferredListArrivalCannotReleaseUnpreparedArchivedIntent() async throws {
     try await assertDeferredArrival(change: .unchanged, unpreparedArchive: true)
-  }
-
-  func testRestartReplansLegacyStagedListOnlyRelease() async throws {
-    try await assertDeferredArrival(change: .edit, arrival: .stagedBeforeEdit, legacyStagedPlan: .listOnly)
-  }
-
-  func testLegacyStagedReleaseCannotBypassEngineStateCAS() async throws {
-    try await assertDeferredArrival(change: .edit, arrival: .stagedBeforeEdit, legacyStagedPlan: .staleEngine)
-  }
-
-  func testLegacyStagedReleaseCannotBypassNamespaceRevisionCAS() async throws {
-    try await assertDeferredArrival(change: .edit, arrival: .stagedBeforeEdit, legacyStagedPlan: .staleNamespace)
-  }
-
-  func testLegacyStagedReleaseCannotBypassAcceptedRecordCAS() async throws {
-    try await assertDeferredArrival(change: .edit, arrival: .stagedBeforeEdit, legacyStagedPlan: .staleAccepted)
-  }
-
-  func testRestartReplansLegacyStagedListAcknowledgement() async throws {
-    try await assertDeferredArrival(change: .edit, arrival: .stagedBeforeEdit,
-      legacyStagedPlan: .listAcknowledgement)
   }
 
   func testDeferredListArrivalKeepsNewerEditBehindUnpreparedArchive() async throws {
@@ -107,8 +85,7 @@ extension CloudFullSyncPersistenceTests {
 
   private func assertDeferredArrival(
     change: DeferredLocalChange, arrival: DeferredArrival = .fetched, futureOrigin: Bool = false,
-    fetchFailure: DeferredFetchFailure? = nil, unpreparedArchive: Bool = false,
-    legacyStagedPlan: LegacyStagedPlan? = nil
+    fetchFailure: DeferredFetchFailure? = nil, unpreparedArchive: Bool = false
   ) async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullDeferredReconciliation-\(UUID().uuidString)")
@@ -119,7 +96,7 @@ extension CloudFullSyncPersistenceTests {
     let persistence = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
     let originalList = SnipList(id: UUID(), name: "Original", systemImage: "folder", position: 1)
     let destination: SnipList
-    if arrival == .saved || legacyStagedPlan == .listAcknowledgement {
+    if arrival == .saved {
       let created = try await library.perform(
         .createList(name: "Awaiting first acknowledgement", systemImage: "folder"), sortedBy: .manual
       )
@@ -180,49 +157,7 @@ extension CloudFullSyncPersistenceTests {
         ? [.failed(.snip(snip.id, in: zone), .networkUnavailable)] : []), engineState: nil
     )
     if arrival == .stagedBeforeEdit {
-      if legacyStagedPlan == .listAcknowledgement {
-        let outbound = CloudOutboundBatch(operations: [.save(try CloudFullRecordCodec.listDraft(
-          destination, updatedAt: .distantPast, in: zone
-        ))])
-        try await persistence.stage(.sent(CloudSentBatch(
-          id: fetched.id, items: [.saved(listSnapshot)], engineState: nil
-        )), outbound: outbound)
-      } else {
-        try await persistence.stage(.fetched(fetched))
-      }
-      if let legacyStagedPlan {
-        // Older planners staged only the arriving list, relying on storage to
-        // release its snips. Retain the original raw batch and all CAS evidence.
-        let plans = try await persistence.stagedBatches()
-        let plan = try XCTUnwrap(plans.first { $0.batchID == fetched.id })
-        let legacy = CloudFullBatchCommit(
-          namespaceKey: plan.namespaceKey, batchID: plan.batchID,
-          expectedEngineState: plan.expectedEngineState, nextEngineState: plan.nextEngineState,
-          nextEnrollment: plan.nextEnrollment, expectedNamespaceRevision: plan.expectedNamespaceRevision,
-          nextNamespaceState: plan.nextNamespaceState, rawBatchData: plan.rawBatchData,
-          outboundBindings: plan.outboundBindings, recoveryInputs: plan.recoveryInputs,
-          recoveryChanges: plan.recoveryChanges, recoveryReviews: plan.recoveryReviews,
-          graphRepairs: plan.graphRepairs, settledDeleteIdentities: plan.settledDeleteIdentities,
-          attachmentTransitions: plan.attachmentTransitions,
-          items: plan.items.filter { $0.accepted.reference.kind == .list }
-        )
-        let encoded = try JSONEncoder().encode(legacy)
-        var oldPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        oldPayload.removeValue(forKey: "hasPlannedDeferredReleases")
-        if legacyStagedPlan == .staleEngine {
-          oldPayload["expectedEngineState"] = Data("different engine".utf8).base64EncodedString()
-        }
-        if legacyStagedPlan == .staleNamespace {
-          oldPayload["expectedNamespaceRevision"] = 999
-        }
-        if legacyStagedPlan == .staleAccepted {
-          var items = try XCTUnwrap(oldPayload["items"] as? [[String: Any]])
-          items[0]["expectedLocalRevision"] = 999
-          oldPayload["items"] = items
-        }
-        try await library.replaceStagedCloudFullBatch(JSONDecoder().decode(CloudFullBatchCommit.self,
-          from: JSONSerialization.data(withJSONObject: oldPayload)))
-      }
+      try await persistence.stage(.fetched(fetched))
     }
     switch change {
     case .unchanged: break
@@ -272,26 +207,6 @@ extension CloudFullSyncPersistenceTests {
         store: completionPersistence,
         transport: FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
       )
-      if legacyStagedPlan == .staleEngine || legacyStagedPlan == .staleNamespace
-        || legacyStagedPlan == .staleAccepted
-      {
-        do {
-          try await coordinator.prepareManualRetry()
-          XCTFail("An old staged plan must not bypass its original CAS")
-        } catch let error as CloudFullStorageError {
-          let expected: CloudFullStorageError = switch legacyStagedPlan {
-          case .staleEngine: .engineStateMismatch
-          case .staleNamespace: .namespaceStateMismatch
-          default: .staleAcceptedEntity
-          }
-          XCTAssertEqual(error, expected)
-        }
-        let unchanged = await completionLibrary.snapshot(sortedBy: .manual)
-        XCTAssertEqual(unchanged.snips.first { $0.id == snip.id }?.listID, originalList.id)
-        let staged = try await completionPersistence.stagedBatches()
-        XCTAssertEqual(staged.map(\.batchID), [fetched.id])
-        return
-      }
       try await coordinator.prepareManualRetry()
     }
 

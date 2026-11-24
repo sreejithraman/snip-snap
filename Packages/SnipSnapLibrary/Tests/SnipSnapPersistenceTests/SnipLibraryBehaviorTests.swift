@@ -8,7 +8,7 @@ import XCTest
 final class SnipLibraryBehaviorTests: XCTestCase {
 
   func testMovingAListPersistsItsOrderAndPreservesItsSnips() async throws {
-    try await forEachAdapter { adapter, directory, library in
+    try await withLibrary { directory, library in
       for name in ["Work", "Travel", "Reading"] {
         _ = try await library.perform(
           .createList(name: name, systemImage: "list.bullet"), sortedBy: .manual)
@@ -23,19 +23,19 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       for unchanged in initial.lists where unchanged.id != reading.id {
         XCTAssertEqual(moved.snapshot.lists.first { $0.id == unchanged.id }, unchanged)
       }
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = try await reopened.checkedSnapshot(sortedBy: .manual)
       XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Reading", "Work", "Travel"])
       XCTAssertEqual(snapshot.snips.first?.listID, reading.id)
       _ = try await reopened.perform(.moveList(id: reading.id, before: nil), sortedBy: .manual)
-      let reopenedAgain = try adapter.open(in: directory)
+      let reopenedAgain = try open(in: directory)
       let movedToEnd = try await reopenedAgain.checkedSnapshot(sortedBy: .manual)
       XCTAssertEqual(movedToEnd.lists.map(\.name), ["Inbox", "Work", "Travel", "Reading"])
     }
   }
 
   func testMovingListsRejectsMissingDestinationsAndKeepsInboxFixed() async throws {
-    try await forEachAdapter { _, _, library in
+    try await withLibrary { _, library in
       _ = try await library.perform(.createList(name: "Work", systemImage: "list.bullet"), sortedBy: .manual)
       let initial = try await library.checkedSnapshot(sortedBy: .manual)
       let work = try XCTUnwrap(initial.lists.first { $0.name == "Work" })
@@ -61,8 +61,8 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
-  func testListColorsSurviveEditsAndReopenInBothAdapters() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testListColorsSurviveEditsAndReopen() async throws {
+    try await withLibrary { directory, library in
       let created = try await library.perform(
         .createList(name: "Work", systemImage: "briefcase", color: .blue), sortedBy: .manual)
       guard case .listCreated(let list) = created.outcome else { return XCTFail("Expected list") }
@@ -74,13 +74,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       _ = try await library.perform(
         .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(.pink)),
         sortedBy: .manual)
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .manual)
       XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, .pink)
       XCTAssertEqual(snapshot.lists.first { $0.id == SnipList.inboxID }?.color, nil)
       _ = try await reopened.perform(
         .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(nil)), sortedBy: .manual)
-      let clearedLibrary = try adapter.open(in: directory)
+      let clearedLibrary = try open(in: directory)
       let cleared = await clearedLibrary.snapshot(sortedBy: .manual)
       XCTAssertNil(cleared.lists.first { $0.id == list.id }?.color)
     }
@@ -126,32 +126,6 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     let reopened = try SwiftDataSnipLibrary(storeURL: url)
     let saved = await reopened.snapshot(sortedBy: .manual)
     XCTAssertEqual(saved.lists.first { $0.id == list.id }?.color, .violet)
-  }
-
-  func testOldJSONDefaultsToNeutral() throws {
-    var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(SnipList.inbox)) as? [String: Any])
-    old.removeValue(forKey: "colorPreset")
-    old["colorID"] = "purple"
-    let decoded = try JSONDecoder().decode(SnipList.self, from: JSONSerialization.data(withJSONObject: old))
-    XCTAssertNil(decoded.color)
-  }
-
-  func testListColorPresetsIncludeAdaptiveExpansion() {
-    XCTAssertEqual(
-      SnipListColorPreset.allCases,
-      [.red, .orange, .yellow, .green, .teal,
-       .blue, .indigo, .violet, .pink, .clay, .slate]
-    )
-    XCTAssertEqual(SnipListColorPreset.red.color.light, "#E00000")
-    XCTAssertEqual(SnipListColorPreset.red.color.dark, "#FF4040")
-    XCTAssertEqual(SnipListColorPreset.teal.color.light, "#1C807A")
-    XCTAssertEqual(SnipListColorPreset.teal.color.dark, "#82FAF3")
-    XCTAssertEqual(SnipListColorPreset.pink.color.light, "#E0007F")
-    XCTAssertEqual(SnipListColorPreset.pink.color.dark, "#FF4FA3")
-    XCTAssertEqual(SnipListColorPreset.clay.color.light, "#9A5A3C")
-    XCTAssertEqual(SnipListColorPreset.clay.color.dark, "#F0A17E")
-    XCTAssertEqual(SnipListColorPreset.slate.color.light, "#526678")
-    XCTAssertEqual(SnipListColorPreset.slate.color.dark, "#BBD1E5")
   }
 
   func testVersion5StoreDropsColorIDToNeutral() async throws {
@@ -253,35 +227,61 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     XCTAssertNil(migrated.color)
   }
 
-  private enum Adapter: String, CaseIterable {
-    case json
-    case swiftData
-
-    func open(in directory: URL) throws -> any SnipLibrary {
-      switch self {
-      case .json:
-        try JSONSnipLibrary(fileURL: directory.appendingPathComponent("snips.json"))
-      case .swiftData:
-        try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
-      }
+  /// No tagged build wrote a schema older than V4. A store in such a shape must be refused, not
+  /// rebuilt: opening it fails and its rows stay readable in their original schema.
+  func testStoreOlderThanVersion4IsRefusedAndLeftUnchanged() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("snips.store")
+    let snip = Snip(content: "Untagged schema", origin: .quickEntry)
+    do {
+      let schema = Schema(versionedSchema: UntaggedVersion1Schema.self)
+      let container = try ModelContainer(for: schema, configurations: [
+        ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
+      ])
+      let context = ModelContext(container)
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
+      context.insert(StoredSnipRecord(snip))
+      try context.save()
     }
 
-    func unavailable(in directory: URL) -> any SnipLibrary {
-      switch self {
-      case .json:
-        JSONSnipLibrary.unavailable(
-          fileURL: directory.appendingPathComponent("unavailable.json")
-        )
-      case .swiftData:
-        SwiftDataSnipLibrary.unavailable(
-          storeURL: directory.appendingPathComponent("unavailable.store")
-        )
-      }
+    XCTAssertThrowsError(try SwiftDataSnipLibrary(storeURL: url)) { error in
+      XCTAssertEqual(error as? SnipLibraryError, .invalidStore)
+    }
+
+    let schema = Schema(versionedSchema: UntaggedVersion1Schema.self)
+    let container = try ModelContainer(for: schema, configurations: [
+      ModelConfiguration("SnipSnapLocal", schema: schema, url: url, cloudKitDatabase: .none)
+    ])
+    let stored = try ModelContext(container).fetch(FetchDescriptor<StoredSnipRecord>())
+    XCTAssertEqual(stored.map(\.id), [snip.id])
+  }
+
+  private enum UntaggedVersion1Schema: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static var models: [any PersistentModel.Type] {
+      [
+        StoredSnipRecord.self,
+        SnipSnapSchemaV4.StoredListRecord.self,
+        StoredAttachmentRecord.self,
+        StoredSnipAttachmentReference.self,
+        StoredRequestRecord.self,
+      ]
     }
   }
 
-  func testDurableAdaptersMatchListAddOrderingAndDuplicateRules() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testVersion9ModelsAreVersion8WithTheCurrentListRecord() {
+    let names = { (models: [any PersistentModel.Type]) in
+      models.map { String(reflecting: $0) }
+    }
+    let derived = SnipSnapSchemaV8.models.filter { $0 != SnipSnapSchemaV8.StoredListRecord.self }
+      + [StoredListRecord.self]
+    XCTAssertEqual(names(SnipSnapSchemaV9.models), names(derived))
+  }
+
+  func testListAddOrderingAndDuplicateRulesSurviveReopen() async throws {
+    try await withLibrary { directory, library in
       let work = try await createList(named: " Work ", in: library)
       await assertThrows(.duplicateList) {
         _ = try await library.perform(
@@ -317,13 +317,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         ),
         sortedBy: .chronological
       )
-      XCTAssertEqual(duplicate.outcome, .add(.duplicate), adapter.rawValue)
-      XCTAssertEqual(duplicate.snapshot.snips.map(\.id), [second.id, first.id], adapter.rawValue)
+      XCTAssertEqual(duplicate.outcome, .add(.duplicate))
+      XCTAssertEqual(duplicate.snapshot.snips.map(\.id), [second.id, first.id])
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let reopenedSnapshot = await reopened.snapshot(sortedBy: .chronological)
-      XCTAssertEqual(reopenedSnapshot.lists.map(\.name), ["Inbox", "Work"], adapter.rawValue)
-      XCTAssertEqual(reopenedSnapshot.snips.map(\.content), ["Second", "First"], adapter.rawValue)
+      XCTAssertEqual(reopenedSnapshot.lists.map(\.name), ["Inbox", "Work"])
+      XCTAssertEqual(reopenedSnapshot.snips.map(\.content), ["Second", "First"])
 
       let reopenedRetry = try await reopened.perform(
         .add(
@@ -337,13 +337,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         ),
         sortedBy: .chronological
       )
-      XCTAssertEqual(reopenedRetry.outcome, .add(.duplicate), adapter.rawValue)
-      XCTAssertEqual(reopenedRetry.snapshot.snips.count, 2, adapter.rawValue)
+      XCTAssertEqual(reopenedRetry.outcome, .add(.duplicate))
+      XCTAssertEqual(reopenedRetry.snapshot.snips.count, 2)
     }
   }
 
-  func testDurableAdaptersPersistSyncOrderKeysAndUseNormalizedDesiredListNames() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testSyncOrderKeysPersistAndDesiredListNamesAreNormalized() async throws {
+    try await withLibrary { directory, library in
       let list = try await createList(named: "Résumé", in: library)
       await assertThrows(.duplicateList) {
         _ = try await library.perform(
@@ -359,19 +359,19 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       let beforeReopen = await library.snapshot(sortedBy: .manual)
       let keys = beforeReopen.snips.map(\.manualSortKey)
-      XCTAssertEqual(Set(keys).count, 2, adapter.rawValue)
-      XCTAssertTrue(keys.contains { $0.data.count != 10 }, adapter.rawValue)
+      XCTAssertEqual(Set(keys).count, 2)
+      XCTAssertTrue(keys.contains { $0.data.count != 10 })
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let afterReopen = await reopened.snapshot(sortedBy: .manual)
-      XCTAssertEqual(afterReopen.snips.map(\.id), beforeReopen.snips.map(\.id), adapter.rawValue)
-      XCTAssertEqual(afterReopen.snips.map(\.manualSortKey), keys, adapter.rawValue)
+      XCTAssertEqual(afterReopen.snips.map(\.id), beforeReopen.snips.map(\.id))
+      XCTAssertEqual(afterReopen.snips.map(\.manualSortKey), keys)
       XCTAssertEqual(afterReopen.lists.first { $0.id == list.id }?.desiredName, "Résumé")
     }
   }
 
-  func testDurableAdaptersMatchEditMergeListDeletionAndManualOrdering() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testEditMergeListDeletionAndManualOrderingSurviveReopen() async throws {
+    try await withLibrary { directory, library in
       let work = try await createList(named: "Work", in: library)
       let first = try await add("First", requestID: UUID(), at: 100, to: work.id, in: library)
       let second = try await add("Second", requestID: UUID(), at: 200, to: work.id, in: library)
@@ -398,22 +398,22 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .manual
       )
       guard case .merged(let mergedSnip) = merged.outcome else {
-        return XCTFail("Expected merged snip for \(adapter.rawValue)")
+        return XCTFail("Expected merged snip")
       }
-      XCTAssertTrue(mergedSnip.content.contains("First"), adapter.rawValue)
-      XCTAssertTrue(mergedSnip.content.contains("Second"), adapter.rawValue)
+      XCTAssertTrue(mergedSnip.content.contains("First"))
+      XCTAssertTrue(mergedSnip.content.contains("Second"))
 
       _ = try await library.perform(.deleteList(id: work.id), sortedBy: .manual)
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .manual)
-      XCTAssertEqual(snapshot.lists, [.inbox], adapter.rawValue)
-      XCTAssertEqual(snapshot.snips.map(\.listID), [SnipList.inboxID], adapter.rawValue)
-      XCTAssertEqual(snapshot.snips.map(\.id), [mergedSnip.id], adapter.rawValue)
+      XCTAssertEqual(snapshot.lists, [.inbox])
+      XCTAssertEqual(snapshot.snips.map(\.listID), [SnipList.inboxID])
+      XCTAssertEqual(snapshot.snips.map(\.id), [mergedSnip.id])
     }
   }
 
-  func testDurableAdaptersKeepDoneStateManualOrderAndListMovesAfterReopen() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testDoneStateManualOrderAndListMovesSurviveReopen() async throws {
+    try await withLibrary { directory, library in
       let work = try await createList(named: "Work", in: library)
       let first = try await add("First", requestID: UUID(), at: 100, to: SnipList.inboxID, in: library)
       let second = try await add("Second", requestID: UUID(), at: 200, to: SnipList.inboxID, in: library)
@@ -428,20 +428,18 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .manual
       )
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .manual)
       XCTAssertEqual(
         snapshot.snips.filter { $0.listID == work.id }.map(\.id),
-        [third.id, first.id],
-        adapter.rawValue
-      )
+        [third.id, first.id])
       XCTAssertEqual(snapshot.snips.first(where: { $0.id == second.id })?.isDone, true)
       XCTAssertEqual(snapshot.snips.first(where: { $0.id == second.id })?.listID, SnipList.inboxID)
     }
   }
 
   func testGuardedInverseRejectsChangedRecordsAndKeepsUnrelatedWrites() async throws {
-    try await forEachAdapter { adapter, _, library in
+    try await withLibrary { _, library in
       let first = try await add("First", requestID: UUID(), at: 100, to: SnipList.inboxID, in: library)
       let unrelated = try await add("Unrelated", requestID: UUID(), at: 200, to: SnipList.inboxID, in: library)
       let doneUpdate = try await library.perform(
@@ -474,12 +472,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       let snapshot = await library.snapshot(sortedBy: .manual)
       XCTAssertEqual(snapshot.snips.first(where: { $0.id == first.id })?.content, "Changed later")
       XCTAssertEqual(snapshot.snips.first(where: { $0.id == unrelated.id })?.content, "Unrelated")
-      XCTAssertEqual(snapshot.snips.count, 2, adapter.rawValue)
+      XCTAssertEqual(snapshot.snips.count, 2)
     }
   }
 
   func testGuardedListDeletionRejectsNewListMembers() async throws {
-    try await forEachAdapter { adapter, _, library in
+    try await withLibrary { _, library in
       let work = try await createList(named: "Work", in: library)
       let added = try await add(
         "Added elsewhere",
@@ -502,13 +500,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       }
 
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertTrue(snapshot.lists.contains(where: { $0.id == work.id }), adapter.rawValue)
+      XCTAssertTrue(snapshot.lists.contains(where: { $0.id == work.id }))
       XCTAssertEqual(snapshot.snips.first(where: { $0.id == added.id })?.listID, work.id)
     }
   }
 
   func testGuardedRestoreRejectsADeletedDestinationList() async throws {
-    try await forEachAdapter { adapter, _, library in
+    try await withLibrary { _, library in
       let work = try await createList(named: "Work", in: library)
       let removed = try await add("Removed", requestID: UUID(), at: 100, to: work.id, in: library)
       _ = try await library.perform(.delete(ids: [removed.id]), sortedBy: .manual)
@@ -525,12 +523,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       }
 
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertFalse(snapshot.snips.contains(where: { $0.id == removed.id }), adapter.rawValue)
+      XCTAssertFalse(snapshot.snips.contains(where: { $0.id == removed.id }))
     }
   }
 
   func testRestoreRejectsSnipsWhoseListDoesNotExist() async throws {
-    try await forEachAdapter { adapter, _, library in
+    try await withLibrary { _, library in
       let orphan = Snip(
         content: "Orphan",
         origin: .quickEntry,
@@ -542,12 +540,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       }
 
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertTrue(snapshot.snips.isEmpty, adapter.rawValue)
+      XCTAssertTrue(snapshot.snips.isEmpty)
     }
   }
 
   func testRestoreRetriesIgnoreListIDsOnRecordsThatAlreadyExist() async throws {
-    try await forEachAdapter { adapter, _, library in
+    try await withLibrary { _, library in
       let existing = try await add(
         "Existing",
         requestID: UUID(),
@@ -567,70 +565,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       _ = try await library.perform(.restore(snips: [ignoredRetry]), sortedBy: .manual)
 
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertEqual(snapshot.snips, [existing], adapter.rawValue)
-    }
-  }
-
-  func testRestoreReplacingIgnoresListIDsOnFilteredExistingRecords() async throws {
-    try await forEachAdapter { adapter, _, library in
-      let replaced = try await add(
-        "Replace me",
-        requestID: UUID(),
-        at: 100,
-        to: SnipList.inboxID,
-        in: library
-      )
-      let existing = try await add(
-        "Keep me",
-        requestID: UUID(),
-        at: 200,
-        to: SnipList.inboxID,
-        in: library
-      )
-      let ignored = Snip(
-        id: existing.id,
-        requestID: UUID(),
-        createdAt: existing.createdAt,
-        content: "Filtered",
-        origin: .quickEntry,
-        listID: UUID()
-      )
-      let replacement = Snip(
-        content: "Replacement",
-        origin: .quickEntry,
-        listID: SnipList.inboxID
-      )
-
-      _ = try await library.perform(
-        .restoreReplacing(
-          snips: [ignored, replacement],
-          id: replaced.id,
-          expectedUpdatedAt: replaced.updatedAt
-        ),
-        sortedBy: .manual
-      )
-
-      let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertTrue(
-        snapshot.snips.contains(where: {
-          $0.id == existing.id && $0.content == existing.content && $0.listID == existing.listID
-        }),
-        adapter.rawValue
-      )
-      XCTAssertTrue(
-        snapshot.snips.contains(where: {
-          $0.id == replacement.id
-            && $0.content == replacement.content
-            && $0.listID == replacement.listID
-        }),
-        adapter.rawValue
-      )
-      XCTAssertFalse(snapshot.snips.contains(where: { $0.id == replaced.id }), adapter.rawValue)
+      XCTAssertEqual(snapshot.snips, [existing])
     }
   }
 
   func testBatchRejectsAttachmentPruningBeforeAnySideEffect() async throws {
-    try await forEachAdapter { adapter, directory, library in
+    try await withLibrary { directory, library in
       let sourceURL = directory.appendingPathComponent("keep-me.txt")
       try Data("Keep".utf8).write(to: sourceURL)
       let added = try await library.perform(
@@ -660,13 +600,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       }
 
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertTrue(snapshot.snips.contains(where: { $0.id == snip.id }), adapter.rawValue)
-      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertTrue(snapshot.snips.contains(where: { $0.id == snip.id }))
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
     }
   }
 
-  func testDurableAdaptersStoreLargeNewTextAsAnAttachment() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testLargeNewTextIsStoredAsAnAttachment() async throws {
+    try await withLibrary { directory, library in
       let text = String(repeating: "p", count: LargePastedText.attachmentCharacterLimit)
       let added = try await library.perform(
         .add(
@@ -681,17 +621,15 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .chronological
       )
       let snip = try XCTUnwrap(added.snapshot.snips.first)
-      XCTAssertEqual(snip.content, "", adapter.rawValue)
-      XCTAssertEqual(snip.attachments.count, 1, adapter.rawValue)
+      XCTAssertEqual(snip.content, "")
+      XCTAssertEqual(snip.attachments.count, 1)
       let attachment = try XCTUnwrap(snip.attachments.first)
-      XCTAssertTrue(attachment.fileName.hasPrefix("Pasted Text "), adapter.rawValue)
-      XCTAssertTrue(attachment.fileName.hasSuffix(".txt"), adapter.rawValue)
+      XCTAssertTrue(attachment.fileName.hasPrefix("Pasted Text "))
+      XCTAssertTrue(attachment.fileName.hasSuffix(".txt"))
       let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs[attachment.id])
       XCTAssertEqual(
         String(data: try Data(contentsOf: storedURL), encoding: .utf8),
-        text,
-        adapter.rawValue
-      )
+        text)
 
       let short = try await add(
         String(repeating: "s", count: LargePastedText.attachmentCharacterLimit - 1),
@@ -702,15 +640,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       XCTAssertEqual(
         short.content.count,
-        LargePastedText.attachmentCharacterLimit - 1,
-        adapter.rawValue
-      )
-      XCTAssertTrue(short.attachments.isEmpty, adapter.rawValue)
+        LargePastedText.attachmentCharacterLimit - 1)
+      XCTAssertTrue(short.attachments.isEmpty)
     }
   }
 
-  func testDurableAdaptersMatchAttachmentRecordsAndReopen() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testAttachmentRecordsAndSharedFilesSurviveReopen() async throws {
+    try await withLibrary { directory, library in
       let sourceURL = directory.appendingPathComponent("note.txt")
       try Data("Attachment body".utf8).write(to: sourceURL)
       let added = try await library.perform(
@@ -726,11 +662,11 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .chronological
       )
       let attachment = try XCTUnwrap(added.snapshot.snips.first?.attachments.first)
-      XCTAssertEqual(attachment.fileName, "note.txt", adapter.rawValue)
-      XCTAssertEqual(attachment.byteCount, 15, adapter.rawValue)
+      XCTAssertEqual(attachment.fileName, "note.txt")
+      XCTAssertEqual(attachment.byteCount, 15)
       let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs[attachment.id])
       XCTAssertEqual(
-        try Data(contentsOf: storedURL), Data("Attachment body".utf8), adapter.rawValue)
+        try Data(contentsOf: storedURL), Data("Attachment body".utf8))
 
       _ = try await library.perform(
         .add(
@@ -745,45 +681,44 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .chronological
       )
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .chronological)
-      XCTAssertEqual(snapshot.snips.map(\.content), ["Shares file", "With file"], adapter.rawValue)
-      XCTAssertEqual(snapshot.snips.last?.source?.windowTitle, "Contract", adapter.rawValue)
+      XCTAssertEqual(snapshot.snips.map(\.content), ["Shares file", "With file"])
+      XCTAssertEqual(snapshot.snips.last?.source?.windowTitle, "Contract")
       XCTAssertEqual(
-        snapshot.snips.flatMap(\.attachments).map(\.id), [attachment.id, attachment.id],
-        adapter.rawValue)
+        snapshot.snips.flatMap(\.attachments).map(\.id), [attachment.id, attachment.id])
       let reopenedURL = try XCTUnwrap(snapshot.attachmentURLs[attachment.id])
       XCTAssertEqual(
-        try Data(contentsOf: reopenedURL), Data("Attachment body".utf8), adapter.rawValue)
+        try Data(contentsOf: reopenedURL), Data("Attachment body".utf8))
     }
   }
 
-  func testDurableAdaptersRollBackFailedWrites() async throws {
-    for adapter in Adapter.allCases {
-      let directory = temporaryDirectory()
-      defer { try? FileManager.default.removeItem(at: directory) }
-      let library = adapter.unavailable(in: directory)
-      await assertThrows(.storeUnavailable) {
-        _ = try await library.perform(
-          .add(
-            content: "Must not appear",
-            origin: .quickEntry,
-            source: nil,
-            listID: SnipList.inboxID,
-            attachmentURLs: [],
-            requestID: UUID(),
-            now: Date(timeIntervalSince1970: 100)
-          ),
-          sortedBy: .chronological
-        )
-      }
-      let snapshot = await library.snapshot(sortedBy: .chronological)
-      XCTAssertTrue(snapshot.snips.isEmpty, adapter.rawValue)
+  func testUnavailableLibraryRejectsWrites() async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let library = SwiftDataSnipLibrary.unavailable(
+      storeURL: directory.appendingPathComponent("unavailable.store")
+    )
+    await assertThrows(.storeUnavailable) {
+      _ = try await library.perform(
+        .add(
+          content: "Must not appear",
+          origin: .quickEntry,
+          source: nil,
+          listID: SnipList.inboxID,
+          attachmentURLs: [],
+          requestID: UUID(),
+          now: Date(timeIntervalSince1970: 100)
+        ),
+        sortedBy: .chronological
+      )
     }
+    let snapshot = await library.snapshot(sortedBy: .chronological)
+    XCTAssertTrue(snapshot.snips.isEmpty)
   }
 
-  func testDurableAdaptersMatchRemainingCommandRules() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testRemainingCommandRulesSurviveReopen() async throws {
+    try await withLibrary { directory, library in
       let work = try await createList(named: "Work", in: library)
       let later = try await createList(named: "Later", in: library)
       let first = try await add("First", requestID: UUID(), at: 100, to: work.id, in: library)
@@ -804,19 +739,14 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         ),
         sortedBy: .manual
       )
-      _ = try await library.perform(.toggleDone(id: first.id), sortedBy: .manual)
       _ = try await library.perform(
-        .toggleDoneMany(ids: [first.id, second.id]),
+        .setDone(ids: [first.id, second.id], done: true),
         sortedBy: .manual
       )
       _ = try await library.perform(.setDone(ids: [second.id], done: false), sortedBy: .manual)
       _ = try await library.perform(
         .moveChronologically(ids: [first.id, second.id], to: later.id),
         sortedBy: .manual
-      )
-      let beforeReplacement = await library.snapshot(sortedBy: .manual)
-      let replacementToken = try XCTUnwrap(
-        beforeReplacement.snips.first(where: { $0.id == first.id })?.updatedAt
       )
       _ = try await library.perform(
         .delete(ids: [second.id]),
@@ -832,21 +762,22 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         origin: .quickEntry,
         listID: later.id
       )
+      let beforeReplacement = await library.snapshot(sortedBy: .manual)
       _ = try await library.perform(
-        .restoreReplacing(snips: [replacement], id: first.id, expectedUpdatedAt: replacementToken),
+        .delete(ids: Set(beforeReplacement.snips.map(\.id))),
         sortedBy: .manual
       )
-      _ = try await library.perform(.replaceAll([replacement]), sortedBy: .manual)
+      _ = try await library.perform(.restore(snips: [replacement]), sortedBy: .manual)
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .manual)
-      XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Focus", "Later"], adapter.rawValue)
-      XCTAssertEqual(snapshot.snips, [replacement], adapter.rawValue)
+      XCTAssertEqual(snapshot.lists.map(\.name), ["Inbox", "Focus", "Later"])
+      XCTAssertEqual(snapshot.snips, [replacement])
     }
   }
 
-  func testDurableAdaptersMatchAttachmentPruning() async throws {
-    try await forEachAdapter { adapter, _, library in
+  func testAttachmentPruningKeepsRetainedFilesAndRemovesTheRest() async throws {
+    try await withLibrary { _, library in
       let sourceDirectory = temporaryDirectory()
       defer { try? FileManager.default.removeItem(at: sourceDirectory) }
       let sourceURL = sourceDirectory.appendingPathComponent("remove-me.txt")
@@ -868,22 +799,22 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       let storedURL = try XCTUnwrap(added.snapshot.attachmentURLs[attachment.id])
 
       _ = try await library.perform(.delete(ids: [snip.id]), sortedBy: .chronological)
-      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
       _ = try await library.perform(
         .pruneAttachments(retaining: [attachment.id]),
         sortedBy: .chronological
       )
-      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
       _ = try await library.perform(
         .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
-      XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
   }
 
-  func testDurableAdaptersEditAttachmentsWithoutReplacingUnchangedFiles() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testEditingAttachmentsKeepsUnchangedFiles() async throws {
+    try await withLibrary { directory, library in
       let sourceDirectory = temporaryDirectory()
       defer { try? FileManager.default.removeItem(at: sourceDirectory) }
       let firstSource = sourceDirectory.appendingPathComponent("first.txt")
@@ -925,29 +856,29 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .chronological
       )
       let revised = try XCTUnwrap(edited.snapshot.snips.first)
-      XCTAssertEqual(revised.content, "Two files, revised", adapter.rawValue)
-      XCTAssertNotEqual(revised.attachments[0].id, first.id, adapter.rawValue)
-      XCTAssertEqual(revised.attachments[1].id, second.id, adapter.rawValue)
-      XCTAssertTrue(FileManager.default.fileExists(atPath: firstStoredURL.path), adapter.rawValue)
+      XCTAssertEqual(revised.content, "Two files, revised")
+      XCTAssertNotEqual(revised.attachments[0].id, first.id)
+      XCTAssertEqual(revised.attachments[1].id, second.id)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: firstStoredURL.path))
       _ = try await library.perform(
         .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
-      XCTAssertFalse(FileManager.default.fileExists(atPath: firstStoredURL.path), adapter.rawValue)
-      XCTAssertTrue(FileManager.default.fileExists(atPath: secondStoredURL.path), adapter.rawValue)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: firstStoredURL.path))
+      XCTAssertTrue(FileManager.default.fileExists(atPath: secondStoredURL.path))
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let snapshot = await reopened.snapshot(sortedBy: .chronological)
       let reopenedSnip = try XCTUnwrap(snapshot.snips.first)
-      XCTAssertEqual(reopenedSnip.attachments.map(\.id), revised.attachments.map(\.id), adapter.rawValue)
+      XCTAssertEqual(reopenedSnip.attachments.map(\.id), revised.attachments.map(\.id))
       let replacementURL = try XCTUnwrap(snapshot.attachmentURLs[reopenedSnip.attachments[0].id])
-      XCTAssertEqual(try Data(contentsOf: replacementURL), Data("Replacement".utf8), adapter.rawValue)
-      XCTAssertEqual(snapshot.attachmentURLs[second.id], secondStoredURL, adapter.rawValue)
+      XCTAssertEqual(try Data(contentsOf: replacementURL), Data("Replacement".utf8))
+      XCTAssertEqual(snapshot.attachmentURLs[second.id], secondStoredURL)
     }
   }
 
-  func testDurableAdaptersKeepSharedFileUntilLastReferenceIsRemoved() async throws {
-    try await forEachAdapter { adapter, _, library in
+  func testSharedFileIsKeptUntilItsLastReferenceIsRemoved() async throws {
+    try await withLibrary { _, library in
       let sourceDirectory = temporaryDirectory()
       defer { try? FileManager.default.removeItem(at: sourceDirectory) }
       let sourceURL = sourceDirectory.appendingPathComponent("shared.txt")
@@ -981,7 +912,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .chronological
       )
       let second = try XCTUnwrap(secondAdd.snapshot.snips.first(where: { $0.id != first.id }))
-      XCTAssertEqual(second.attachments.first?.id, attachment.id, adapter.rawValue)
+      XCTAssertEqual(second.attachments.first?.id, attachment.id)
 
       _ = try await library.perform(
         .guarded(
@@ -998,12 +929,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         ),
         sortedBy: .chronological
       )
-      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
       _ = try await library.perform(
         .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
-      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
 
       _ = try await library.perform(
         .guarded(
@@ -1024,12 +955,12 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         .pruneAttachments(retaining: []),
         sortedBy: .chronological
       )
-      XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path), adapter.rawValue)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: storedURL.path))
     }
   }
 
-  func testDurableAdaptersTreatEmptyMovesAsNoOpsBeforeListValidation() async throws {
-    try await forEachAdapter { adapter, _, library in
+  func testEmptyMovesAreNoOpsBeforeListValidation() async throws {
+    try await withLibrary { _, library in
       let missingList = UUID()
       _ = try await library.perform(
         .moveChronologically(ids: [], to: missingList),
@@ -1040,62 +971,13 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         sortedBy: .manual
       )
       let snapshot = await library.snapshot(sortedBy: .manual)
-      XCTAssertEqual(snapshot.lists, [.inbox], adapter.rawValue)
-      XCTAssertTrue(snapshot.snips.isEmpty, adapter.rawValue)
+      XCTAssertEqual(snapshot.lists, [.inbox])
+      XCTAssertTrue(snapshot.snips.isEmpty)
     }
   }
 
-  func testDurableAdaptersRememberEveryRestoreReplacingRequestID() async throws {
-    try await forEachAdapter { adapter, _, library in
-      let replaced = try await add(
-        "Replace me",
-        requestID: UUID(),
-        at: 100,
-        to: SnipList.inboxID,
-        in: library
-      )
-      let existing = try await add(
-        "Existing",
-        requestID: UUID(),
-        at: 200,
-        to: SnipList.inboxID,
-        in: library
-      )
-      let blockedRequestID = UUID()
-      let filteredRestore = Snip(
-        id: existing.id,
-        requestID: blockedRequestID,
-        createdAt: Date(timeIntervalSince1970: 300),
-        content: "Filtered by stable ID",
-        origin: .quickEntry
-      )
-      _ = try await library.perform(
-        .restoreReplacing(
-          snips: [filteredRestore],
-          id: replaced.id,
-          expectedUpdatedAt: replaced.updatedAt
-        ),
-        sortedBy: .chronological
-      )
-      let retry = try await library.perform(
-        .add(
-          content: "Must stay blocked",
-          origin: .quickEntry,
-          source: nil,
-          listID: SnipList.inboxID,
-          attachmentURLs: [],
-          requestID: blockedRequestID,
-          now: Date(timeIntervalSince1970: 400)
-        ),
-        sortedBy: .chronological
-      )
-      XCTAssertEqual(retry.outcome, .add(.duplicate), adapter.rawValue)
-      XCTAssertEqual(retry.snapshot.snips.map(\.id), [existing.id], adapter.rawValue)
-    }
-  }
-
-  func testDurableAdaptersRejectMalformedImportedSnipsWithoutTrapping() async throws {
-    try await forEachAdapter { adapter, _, library in
+  func testRestoreRejectsMalformedSnipsWithoutTrapping() async throws {
+    try await withLibrary { _, library in
       let original = try await add(
         "Original",
         requestID: UUID(),
@@ -1123,16 +1005,6 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       await assertThrows(.invalidStore) {
         _ = try await library.perform(.restore(snips: duplicateSnips), sortedBy: .chronological)
       }
-      await assertThrows(.invalidStore) {
-        _ = try await library.perform(
-          .restoreReplacing(
-            snips: duplicateSnips,
-            id: original.id,
-            expectedUpdatedAt: original.updatedAt
-          ),
-          sortedBy: .chronological
-        )
-      }
 
       let sharedAttachment = SnipAttachment(
         id: UUID(),
@@ -1150,7 +1022,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       await assertThrows(.invalidStore) {
         _ = try await library.perform(
-          .replaceAll([repeatedAttachment]),
+          .restore(snips: [repeatedAttachment]),
           sortedBy: .chronological
         )
       }
@@ -1175,18 +1047,16 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         .restore(snips: sharedSnips),
         sortedBy: .chronological
       )
-      XCTAssertEqual(restored.snapshot.snips.count, 3, adapter.rawValue)
+      XCTAssertEqual(restored.snapshot.snips.count, 3)
       XCTAssertEqual(
         restored.snapshot.snips.filter { $0.id != original.id }
           .flatMap(\.attachments).map(\.id),
-        [sharedAttachment.id, sharedAttachment.id],
-        adapter.rawValue
-      )
+        [sharedAttachment.id, sharedAttachment.id])
     }
   }
 
-  func testDurableAdaptersRememberDeletedRequestIDsAcrossReopen() async throws {
-    try await forEachAdapter { adapter, directory, library in
+  func testDeletedRequestIDsAreRememberedAcrossReopen() async throws {
+    try await withLibrary { directory, library in
       let requestID = UUID()
       let added = try await add(
         "One durable request",
@@ -1197,7 +1067,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       )
       _ = try await library.perform(.delete(ids: [added.id]), sortedBy: .chronological)
 
-      let reopened = try adapter.open(in: directory)
+      let reopened = try open(in: directory)
       let retry = try await reopened.perform(
         .add(
           content: "Relaunch retry",
@@ -1210,8 +1080,8 @@ final class SnipLibraryBehaviorTests: XCTestCase {
         ),
         sortedBy: .chronological
       )
-      XCTAssertEqual(retry.outcome, .add(.duplicate), adapter.rawValue)
-      XCTAssertTrue(retry.snapshot.snips.isEmpty, adapter.rawValue)
+      XCTAssertEqual(retry.outcome, .add(.duplicate))
+      XCTAssertTrue(retry.snapshot.snips.isEmpty)
     }
   }
 
@@ -1386,7 +1256,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
-  func testSwiftDataV1ToV2MigrationPreservesLibraryAndRequestHistory() async throws {
+  func testSwiftDataV4StoreMigrationPreservesLibraryAndRequestHistory() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let storeURL = directory.appendingPathComponent("snips.store")
@@ -1409,7 +1279,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       id: UUID(uuidString: "35353535-3535-3535-3535-353535353535")!,
       requestID: requestID,
       createdAt: Date(timeIntervalSince1970: 100),
-      content: "V1 text",
+      content: "V4 text",
       origin: .quickEntry,
       listID: work.id,
       manualPosition: 7,
@@ -1421,25 +1291,21 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       at: storedAttachmentURL.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
-    try Data("V1 attachment".utf8).write(to: storedAttachmentURL)
+    try Data("V4 attachment".utf8).write(to: storedAttachmentURL)
 
     do {
-      let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+      let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
       let configuration = ModelConfiguration(
         "SnipSnapLocal",
         schema: schema,
         url: storeURL,
         cloudKitDatabase: .none
       )
-      let container = try ModelContainer(
-        for: schema,
-        migrationPlan: SnipSnapSchemaMigrationPlan.self,
-        configurations: [configuration]
-      )
+      let container = try ModelContainer(for: schema, configurations: [configuration])
       let context = ModelContext(container)
       context.autosaveEnabled = false
-      context.insert(StoredListRecord(.inbox))
-      context.insert(StoredListRecord(work))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(work))
       context.insert(StoredSnipRecord(snip))
       context.insert(StoredAttachmentRecord(attachment))
       context.insert(
@@ -1465,7 +1331,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     XCTAssertEqual(snapshot.lists, expected.lists)
     XCTAssertEqual(snapshot.snips, expected.snips)
     let reopenedAttachmentURL = try XCTUnwrap(snapshot.attachmentURLs[attachment.id])
-    XCTAssertEqual(try Data(contentsOf: reopenedAttachmentURL), Data("V1 attachment".utf8))
+    XCTAssertEqual(try Data(contentsOf: reopenedAttachmentURL), Data("V4 attachment".utf8))
     let duplicate = try await migrated.perform(
       .add(
         content: "must stay blocked",
@@ -1481,7 +1347,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     XCTAssertEqual(duplicate.outcome, .add(.duplicate))
   }
 
-  func testV2OrderBackfillRetriesBeforeAndAfterItsDurableSave() async throws {
+  func testV4OrderBackfillRetriesBeforeAndAfterItsDurableSave() async throws {
     for crashPoint in LibraryMetadataBackfillPoint.allCases {
       let directory = temporaryDirectory()
       defer { try? FileManager.default.removeItem(at: directory) }
@@ -1489,7 +1355,7 @@ final class SnipLibraryBehaviorTests: XCTestCase {
       let list = SnipList(id: UUID(), name: "Work", systemImage: "briefcase", position: 9)
       let first = Snip(content: "First", origin: .quickEntry, listID: list.id, manualPosition: 7)
       let second = Snip(content: "Second", origin: .quickEntry, listID: list.id, manualPosition: 7)
-      try makeV2LibraryStore(at: storeURL, lists: [.inbox, list], snips: [second, first])
+      try makeV4LibraryStore(at: storeURL, lists: [.inbox, list], snips: [second, first])
 
       XCTAssertThrowsError(
         try SwiftDataSnipLibrary(
@@ -1511,8 +1377,8 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
-  func testTransferPreservesListOrderFullSnipFieldsAndAttachmentBytesAcrossAdapters() async throws {
-    try await forEachAdapter { _, _, library in
+  func testTransferPreservesListOrderFullSnipFieldsAndAttachmentBytes() async throws {
+    try await withLibrary { _, library in
       let work = SnipList(id: UUID(), name: "Work", systemImage: "briefcase.fill", position: 3)
       let later = SnipList(id: UUID(), name: "Later", systemImage: "clock.fill", position: 9)
       let attachmentID = UUID()
@@ -1560,8 +1426,8 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
-  func testTransferRejectsAttachmentStableIDConflictAcrossAdapters() async throws {
-    try await forEachAdapter { _, _, library in
+  func testTransferRejectsAttachmentStableIDConflict() async throws {
+    try await withLibrary { _, library in
       let attachmentID = UUID()
       let firstAttachment = SnipAttachment(
         id: attachmentID,
@@ -1608,14 +1474,177 @@ final class SnipLibraryBehaviorTests: XCTestCase {
     }
   }
 
-  private func forEachAdapter(
-    _ body: (Adapter, URL, any SnipLibrary) async throws -> Void
-  ) async throws {
-    for adapter in Adapter.allCases {
-      let directory = temporaryDirectory()
-      defer { try? FileManager.default.removeItem(at: directory) }
-      try await body(adapter, directory, adapter.open(in: directory))
+  func testSelectionKeepsItsWhitespaceWhileQuickEntryIsTrimmed() async throws {
+    try await withLibrary { directory, library in
+      _ = try await add("  selected line\n", at: 100, origin: .selection, in: library)
+      _ = try await add("  quick thought\n", at: 200, in: library)
+      let snapshot = try await open(in: directory).checkedSnapshot(sortedBy: .chronological)
+      XCTAssertEqual(snapshot.snips.map(\.content), ["quick thought", "  selected line\n"])
     }
+  }
+
+  func testBlankEntryIsRejectedAsEmptyContent() async throws {
+    try await withLibrary { _, library in
+      await assertThrows(.emptyContent) {
+        _ = try await self.add("  \n ", at: 100, in: library)
+      }
+      let snapshot = try await library.checkedSnapshot(sortedBy: .chronological)
+      XCTAssertTrue(snapshot.snips.isEmpty)
+    }
+  }
+
+  func testMergeReplacesSnipsWithOldestFirstContentAndSourceContext() async throws {
+    try await withLibrary { directory, library in
+      let first = try await add("First thought", at: 100, in: library)
+      let second = try await add(
+        "Second snippet", at: 200, origin: .selection,
+        source: SnipSource(applicationName: "Safari", windowTitle: "Docs", url: "https://example.com/docs"),
+        in: library)
+      let update = try await library.perform(
+        .merge(ids: [second.id, first.id], now: Date(timeIntervalSince1970: 300)), sortedBy: .manual)
+      guard case .merged(let merged) = update.outcome else { return XCTFail("Expected merged snip") }
+      XCTAssertEqual(
+        merged.content,
+        "First thought\n\n---\n\nSecond snippet\nSource: Safari — Docs\nURL: https://example.com/docs"
+      )
+      let reopened = try await open(in: directory).checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(reopened.snips, [merged])
+    }
+  }
+
+  func testMergeListsAttachmentsNewestSnipFirstAndKeepsTheirFiles() async throws {
+    try await withLibrary { directory, library in
+      let firstSource = directory.appendingPathComponent("first.md")
+      let secondSource = directory.appendingPathComponent("second.md")
+      try Data("First".utf8).write(to: firstSource)
+      try Data("Second".utf8).write(to: secondSource)
+      let first = try await add("First snip", at: 100, attachmentURLs: [firstSource], in: library)
+      let second = try await add("Second snip", at: 200, attachmentURLs: [secondSource], in: library)
+
+      let update = try await library.perform(
+        .merge(ids: [first.id, second.id], now: Date(timeIntervalSince1970: 300)), sortedBy: .manual)
+      guard case .merged(let merged) = update.outcome else { return XCTFail("Expected merged snip") }
+
+      XCTAssertEqual(merged.attachments.map(\.id), second.attachments.map(\.id) + first.attachments.map(\.id))
+      _ = try await library.perform(.pruneAttachments(retaining: []), sortedBy: .manual)
+      let reopened = try await open(in: directory).checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(
+        try merged.attachments.map { try Data(contentsOf: XCTUnwrap(reopened.attachmentURLs[$0.id])) },
+        [Data("Second".utf8), Data("First".utf8)]
+      )
+    }
+  }
+
+  func testMergeKeepsTheHighestSelectedManualPlace() async throws {
+    // Manual order matches creation order: the merge takes the top selected place.
+    try await withLibrary { _, library in
+      let first = try await add("First", at: 100, in: library)
+      let middle = try await add("Middle", at: 200, in: library)
+      let last = try await add("Last", at: 300, in: library)
+      _ = try await library.perform(
+        .place(ids: [first.id, middle.id, last.id], in: SnipList.inboxID, before: nil, basedOn: .manual),
+        sortedBy: .manual)
+      let update = try await library.perform(
+        .merge(ids: [first.id, last.id], now: Date(timeIntervalSince1970: 400)), sortedBy: .manual)
+      guard case .merged(let merged) = update.outcome else { return XCTFail("Expected merged snip") }
+      XCTAssertEqual(update.snapshot.snips.map(\.id), [merged.id, middle.id])
+    }
+    // Manual order differs from creation order: the saved manual place still wins.
+    try await withLibrary { _, library in
+      let old = try await add("Old", at: 100, in: library)
+      let middle = try await add("Middle", at: 200, in: library)
+      let new = try await add("New", at: 300, in: library)
+      _ = try await library.perform(
+        .place(ids: [old.id, new.id, middle.id], in: SnipList.inboxID, before: nil, basedOn: .manual),
+        sortedBy: .manual)
+      let update = try await library.perform(
+        .merge(ids: [new.id, middle.id], now: Date(timeIntervalSince1970: 400)), sortedBy: .manual)
+      guard case .merged(let merged) = update.outcome else { return XCTFail("Expected merged snip") }
+      XCTAssertEqual(update.snapshot.snips.map(\.id), [old.id, merged.id])
+    }
+  }
+
+  func testDeletedSnipRestoresWithIdentityAndStateAcrossReopen() async throws {
+    try await withLibrary { directory, library in
+      let work = try await createList(named: "Work", in: library)
+      let added = try await add(
+        "Recover me", at: 100, to: work.id, origin: .selection,
+        source: SnipSource(applicationName: "Safari", windowTitle: "Docs"), in: library)
+      let done = try await library.perform(.setDone(ids: [added.id], done: true), sortedBy: .manual)
+      let snip = try XCTUnwrap(done.snapshot.snips.first { $0.id == added.id })
+      XCTAssertTrue(snip.isDone)
+
+      let deleted = try await library.perform(.delete(ids: [snip.id]), sortedBy: .manual)
+      XCTAssertTrue(deleted.snapshot.snips.isEmpty)
+      _ = try await library.perform(.restore(snips: [snip]), sortedBy: .manual)
+
+      let reopened = try await open(in: directory).checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(reopened.snips, [snip])
+    }
+  }
+
+  func testSnipMoveToAMissingListFailsAndListRenameKeepsMembership() async throws {
+    try await withLibrary { directory, library in
+      let review = try await createList(named: "Review", in: library)
+      let snip = try await add("Keep linked", at: 100, to: review.id, in: library)
+      _ = try await library.perform(
+        .updateList(id: review.id, name: "Agents", systemImage: "terminal"), sortedBy: .manual)
+
+      let renamed = try await library.checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(renamed.snips.map(\.listID), [review.id])
+      await assertThrows(.invalidList) {
+        _ = try await library.perform(.moveChronologically(ids: [snip.id], to: UUID()), sortedBy: .manual)
+      }
+      let reopened = try await open(in: directory).checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(reopened, renamed)
+      XCTAssertEqual(reopened.lists.map(\.name), ["Inbox", "Agents"])
+    }
+  }
+
+  func testPlacingABatchBeforeASnipInAnotherListPersistsTheExactOrder() async throws {
+    try await withLibrary { directory, library in
+      let first = try await add("First", at: 100, in: library)
+      let second = try await add("Second", at: 200, in: library)
+      let target = try await add("Target", at: 300, in: library)
+      let review = try await createList(named: "Review", in: library)
+      _ = try await library.perform(.moveChronologically(ids: [target.id], to: review.id), sortedBy: .manual)
+
+      _ = try await library.perform(
+        .place(ids: [first.id, second.id], in: review.id, before: target.id, basedOn: .manual),
+        sortedBy: .manual)
+
+      let reopened = try await open(in: directory).checkedSnapshot(sortedBy: .manual)
+      XCTAssertEqual(reopened.snips.filter { $0.listID == review.id }.map(\.id), [first.id, second.id, target.id])
+    }
+  }
+
+  func testChronologicalMoveKeepsTheEditTokenAndPutsTheBatchAtTheManualTopInCallOrder() async throws {
+    try await withLibrary { _, library in
+      let review = try await createList(named: "Review", in: library)
+      let existing = try await add("Existing", at: 100, in: library)
+      _ = try await library.perform(.moveChronologically(ids: [existing.id], to: review.id), sortedBy: .manual)
+      let first = try await add("First", at: 200, in: library)
+      let second = try await add("Second", at: 300, in: library)
+
+      let moved = try await library.perform(
+        .moveChronologically(ids: [first.id, second.id], to: review.id), sortedBy: .manual)
+
+      let manual = moved.snapshot.snips.filter { $0.listID == review.id }
+      XCTAssertEqual(manual.map(\.id), [first.id, second.id, existing.id])
+      XCTAssertEqual(manual.map(\.updatedAt), [first.updatedAt, second.updatedAt, existing.updatedAt])
+    }
+  }
+
+  private func withLibrary(
+    _ body: (URL, SwiftDataSnipLibrary) async throws -> Void
+  ) async throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await body(directory, open(in: directory))
+  }
+
+  private func open(in directory: URL) throws -> SwiftDataSnipLibrary {
+    try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("snips.store"))
   }
 
   private func temporaryDirectory() -> URL {
@@ -1626,44 +1655,36 @@ final class SnipLibraryBehaviorTests: XCTestCase {
   }
 
   private func makeRequestOnlySwiftDataStore(at storeURL: URL) throws {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV1.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
       url: storeURL,
       cloudKitDatabase: .none
     )
-    let container = try ModelContainer(
-      for: schema,
-      migrationPlan: SnipSnapSchemaMigrationPlan.self,
-      configurations: [configuration]
-    )
+    let container = try ModelContainer(for: schema, configurations: [configuration])
     let context = ModelContext(container)
     context.autosaveEnabled = false
     context.insert(StoredRequestRecord(id: UUID()))
     try context.save()
   }
 
-  private func makeV2LibraryStore(
+  private func makeV4LibraryStore(
     at storeURL: URL,
     lists: [SnipList],
     snips: [Snip]
   ) throws {
-    let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+    let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
     let configuration = ModelConfiguration(
       "SnipSnapLocal",
       schema: schema,
       url: storeURL,
       cloudKitDatabase: .none
     )
-    let container = try ModelContainer(
-      for: schema,
-      migrationPlan: SnipSnapSchemaMigrationPlan.self,
-      configurations: [configuration]
-    )
+    let container = try ModelContainer(for: schema, configurations: [configuration])
     let context = ModelContext(container)
     context.autosaveEnabled = false
-    for list in lists { context.insert(StoredListRecord(list)) }
+    for list in lists { context.insert(SnipSnapSchemaV4.StoredListRecord(list)) }
     for snip in snips { context.insert(StoredSnipRecord(snip)) }
     try context.save()
   }
@@ -1682,18 +1703,21 @@ final class SnipLibraryBehaviorTests: XCTestCase {
 
   private func add(
     _ content: String,
-    requestID: UUID,
+    requestID: UUID = UUID(),
     at timestamp: TimeInterval,
-    to listID: UUID,
+    to listID: UUID = SnipList.inboxID,
+    origin: SnipOrigin = .quickEntry,
+    source: SnipSource? = nil,
+    attachmentURLs: [URL] = [],
     in library: any SnipLibrary
   ) async throws -> Snip {
     let update = try await library.perform(
       .add(
         content: content,
-        origin: .quickEntry,
-        source: nil,
+        origin: origin,
+        source: source,
         listID: listID,
-        attachmentURLs: [],
+        attachmentURLs: attachmentURLs,
         requestID: requestID,
         now: Date(timeIntervalSince1970: timestamp)
       ),

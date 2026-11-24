@@ -37,6 +37,14 @@ Never reuse or replace a build number for different files, a published tag, an
 asset, an appcast entry, or a cask version. A bad stable release gets a new
 patch version and build.
 
+Keep every default-channel appcast item and its stable notes files, because the
+changelog is built from them. Keep beta-channel items and beta notes files only
+for the marketing version still in beta. After a version is promoted, remove its
+other beta items and their notes files in one commit. A removed beta item's
+build number stays retired. Never remove the newest item on either channel or an
+item a pending promotion needs, and never change the bytes of an item that
+stays.
+
 Build betas only from a clean commit on public `origin/main` after all tests
 pass. Record the marketing version, build number, commit, workflow run, file
 checksums, and upload results. The release scripts must check those values, the

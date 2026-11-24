@@ -33,7 +33,6 @@ private extension View {
         } else { false }
         return appToast(
             showing: model.toast, close: model.closeSnackbar,
-            alignment: .bottom, edge: .bottom,
             isHidden: isHidden || showsInspectedFailure, reservesSpace: true,
             onAction: model.performToastAction, onDismiss: model.dismissToast
         )

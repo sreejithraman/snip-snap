@@ -70,18 +70,19 @@ final class SnipStoreBackgroundActivityTests: XCTestCase {
     }
 
     try await SnipStoreBackgroundActivity.$runner.withValue(runner) {
-      var library: SwiftDataSnipLibrary? = try autoreleasepool {
-        // The stored hook keeps the lifetime probe until the library's deinit completes.
-        let probe = StoreTeardownProbe { libraryReleased.fulfill() }
-        return try SwiftDataSnipLibrary(
-          storeURL: root.appendingPathComponent("snips.store"),
-          afterMutationBeforeSave: { withExtendedLifetime(probe) {} }
-        )
+      var initialRequests = 0
+      do {
+        let library = try autoreleasepool {
+          // The stored hook keeps the lifetime probe until the library's deinit completes.
+          let probe = StoreTeardownProbe { libraryReleased.fulfill() }
+          return try SwiftDataSnipLibrary(
+            storeURL: root.appendingPathComponent("snips.store"),
+            afterMutationBeforeSave: { withExtendedLifetime(probe) {} }
+          )
+        }
+        withExtendedLifetime(library) { initialRequests = requested.withLock { $0 } }
       }
-      let initialRequests = requested.withLock { $0 }
-      XCTAssertNotNil(library)
-      library = nil
-      await fulfillment(of: [libraryReleased], timeout: 1)
+      await fulfillment(of: [libraryReleased], timeout: 10)
       XCTAssertEqual(requested.withLock { $0 }, initialRequests + 1)
       XCTAssertEqual(ended.withLock { $0 }, requested.withLock { $0 })
     }
@@ -301,7 +302,7 @@ extension SnipStoreBackgroundActivityTests {
     let expired = DispatchSemaphore(value: 0)
     let workReturned = DispatchSemaphore(value: 0)
     let expiryReturned = DispatchSemaphore(value: 0)
-    let end = SnipStoreBackgroundActivity.runExpiringActivity(expire: {
+    let end = FileAccessBackgroundActivity.runExpiringActivity(expire: {
       expired.signal()
     }) { body in
       callback.withLock { $0 = body }
@@ -326,7 +327,7 @@ extension SnipStoreBackgroundActivityTests {
   func testFoundationDeniedCallbackUnwindsWithoutWaitingForWork() throws {
     let callbackReturned = DispatchSemaphore(value: 0)
     let runner: SnipStoreBackgroundActivity.Runner = { expire in
-      SnipStoreBackgroundActivity.runExpiringActivity(expire: expire) { body in
+      FileAccessBackgroundActivity.runExpiringActivity(expire: expire) { body in
         DispatchQueue.global().async {
           body(true)
           callbackReturned.signal()

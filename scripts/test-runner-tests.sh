@@ -118,6 +118,16 @@ assert_groups() {
 
 run_tests
 assert_groups 1 1 1
+# A run claims one DerivedData folder, keeps the Mac and iOS builds apart in it, blanks the
+# CloudKit container for tests, and removes the folder when it exits.
+derived_paths=("${(@f)$(/usr/bin/awk '/^xcodebuild:/ {
+    for (i = 1; i < NF; i += 1) if ($i == "-derivedDataPath") print $(i + 1)
+}' "$SNIP_SNAP_TEST_CALLS")}")
+(( ${#derived_paths} == 2 ))
+[[ "${derived_paths[1]}" == /private/tmp/snip-snap-derived-data.*/mac ]]
+[[ "${derived_paths[2]}" == "${derived_paths[1]:h}/ios" ]]
+[[ ! -e "${derived_paths[1]:h}" ]]
+[[ "$(/usr/bin/grep -c '^xcodebuild:.* SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER= ' "$SNIP_SNAP_TEST_CALLS")" == 2 ]]
 run_tests --mac-only
 assert_groups 1 1 0
 if /usr/bin/grep -q -- '-test-timeouts-enabled' "$SNIP_SNAP_TEST_CALLS"; then
@@ -191,9 +201,15 @@ for failure in cloudkit-schema package SnipSnap SnipSnapiOS; do
     fi
 done
 
+# The failure runs above leave evidence; start each check below from none.
+/bin/rm -rf "$fixture/artifacts"
 for scheme in SnipSnap SnipSnapiOS; do
     test_group=--mac-only
-    [[ "$scheme" != SnipSnapiOS ]] || test_group=--ios-only
+    evidence_group=mac
+    if [[ "$scheme" == SnipSnapiOS ]]; then
+        test_group=--ios-only
+        evidence_group=ios
+    fi
     for summary_failure in YES NO; do
         if SNIP_SNAP_TEST_FAILURE="$scheme" SNIP_SNAP_TEST_SUMMARY_FAILURE="$summary_failure" run_tests "$test_group"; then
             print -u2 "Test runner hid a $scheme test failure while reporting it."
@@ -207,6 +223,8 @@ for scheme in SnipSnap SnipSnapiOS; do
         }
         result_path="$(/usr/bin/find "$fixture/artifacts/test-failures" -name evidence.txt -print | /usr/bin/head -n 1)"
         [[ -n "$result_path" ]]
+        # CI uploads artifacts/test-failures/<group>.*, so the evidence must land there.
+        [[ "$result_path" == "$fixture/artifacts/test-failures/$evidence_group".*/* ]]
         /usr/bin/grep -Fx 'failure attachment evidence' "$result_path" >/dev/null
         /usr/bin/grep -F 'Test failure evidence:' "$test_root/output" >/dev/null
         /bin/rm -rf "$fixture/artifacts"
@@ -280,9 +298,6 @@ jobs = YAML.load_file(ARGV.fetch(0)).fetch('jobs')
     upload.fetch('with').fetch('path') ==
       "${{ runner.temp }}/snip-snap-ci/#{group}-tests.log\nartifacts/test-failures/#{group}.*\n#{crash_reports}"
   abort "#{group} must bound artifact retention" unless upload.fetch('with')['retention-days'] == 7
-  evidence_script = File.read(File.join(File.dirname(ARGV.fetch(0)), '../../scripts/test-failure-evidence.sh'))
-  abort "#{group} upload must match the evidence directory name" unless
-    evidence_script.include?('mktemp -d "$evidence_root/$group.XXXXXX"')
   Dir.mktmpdir('snipsnap-ci-output') do |root|
     Dir.mkdir(File.join(root, 'scripts'))
     File.write(File.join(root, 'scripts/test.sh'), "#!/bin/bash\necho test-output\necho test-error >&2\nexit 37\n")

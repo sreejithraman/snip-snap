@@ -37,9 +37,9 @@ A skip or a prior run against changed code is not proof of the current change.
   current engine, not a request to schedule later work. Test that launch and
   foreground only schedule, while Try Again can finish a two-step attachment,
   stops when a batch reports a retry issue, sends an edit made during an earlier
-  send, and returns its current result. When it
-  adopts a collection, test that the app reloads the new store before it reports
-  any current issue.
+  send, and returns its current result. When the control record no longer
+  describes the active collection, test that it keeps the library and reports
+  the iCloud data reset without fetching or sending.
 - **Event order:** checkpoints can precede a returned batch. Confirm in order,
   stop at the target batch, and reject a different batch. A fresh engine can
   report initial sign-in; the contract validates the current account before
@@ -80,7 +80,8 @@ A skip or a prior run against changed code is not proof of the current change.
   on Try Again, and fetch the full zone. Before that fetch, record the exact
   archive revisions and restore only missing accepted metadata. Never restore
   local content. This keeps a local deletion as a deletion; a changed server
-  record must use the normal delete-conflict path. Mark only the recorded,
+  record takes the normal delete-versus-edit path and returns, even over a
+  queued delete. Mark only the recorded,
   valid `corrupt-shadow-*` revisions as resolved, and only after CloudKit ends
   the first full fetch with no issue. Keep the attempt and resolved markers in
   formats older builds can read, and keep the archive bytes exact. A restart

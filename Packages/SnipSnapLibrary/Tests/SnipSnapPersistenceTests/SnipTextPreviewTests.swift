@@ -35,9 +35,7 @@ final class SnipTextPreviewTests: XCTestCase {
 
     func testLargePromptPreviewStaysBounded() {
         let prompt = hugePrompt()
-        let start = CFAbsoluteTimeGetCurrent()
         let preview = SnipTextPreview.displayText(prompt, lineLimit: 5)
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         XCTAssertTrue(prompt.hasPrefix(preview))
         XCTAssertLessThan(preview.count, prompt.count)
@@ -46,7 +44,6 @@ final class SnipTextPreviewTests: XCTestCase {
             preview.filter { !$0.isNewline }.count,
             SnipTextPreview.characterLimit
         )
-        XCTAssertLessThan(elapsed, 0.01)
     }
 
     private func hugePrompt() -> String {

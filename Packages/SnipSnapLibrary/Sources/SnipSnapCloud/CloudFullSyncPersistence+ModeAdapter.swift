@@ -56,34 +56,14 @@ extension CloudFullSyncPersistence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let retryable = recovery.filter(Self.isRetryableRecovery)
-    let pending = try await pendingChanges()
     return CloudTextEnrollmentEvidence(
       phase: stored.namespaceState.phase,
-      hasPendingChanges: !pending.operations.isEmpty || !pending.zonesToSave.isEmpty,
       hasRetryableRecordFailures: !retryable.isEmpty,
       retryableEventKeys: Set(retryable.map(Self.recoveryKey)),
       needsAttention: stored.namespaceState.phase == .blocked
         || recovery.contains { !Self.isRetryableRecovery($0) }
         || !stored.conflicts.isEmpty
-        || corruptShadowRecovery(in: stored).needsAttention,
-      blocksSending: stored.namespaceState.phase == .blocked
-    )
-  }
-
-  package func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
-    let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
-    let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
-    let retryable = recovery.filter(Self.isRetryableRecovery)
-    return CloudTextEnrollmentEvidence(
-      phase: stored.namespaceState.phase,
-      hasPendingChanges: false,
-      hasRetryableRecordFailures: !retryable.isEmpty,
-      retryableEventKeys: Set(retryable.map(Self.recoveryKey)),
-      needsAttention: stored.namespaceState.phase == .blocked
-        || recovery.contains { !Self.isRetryableRecovery($0) }
-        || !stored.conflicts.isEmpty
-        || corruptShadowRecovery(in: stored).needsAttention,
-      blocksSending: stored.namespaceState.phase == .blocked
+        || corruptShadowRecovery(in: stored).needsAttention
     )
   }
 
@@ -308,7 +288,6 @@ extension CloudFullSyncPersistence {
       snips: adjustedSnips,
       lists: adjustedLists,
       attachmentData: source.attachmentData,
-      legacyManualPositions: source.legacyManualPositions,
       opaqueSyncStateDigest: source.opaqueSyncStateDigest,
       opaqueSyncStatePayload: source.opaqueSyncStatePayload,
       additionalSeenRequestIDs: source.additionalSeenRequestIDs

@@ -126,11 +126,12 @@ final class ListPageGestureTests: XCTestCase {
             reduceMotion: false, at: now
         ), .select(1))
         XCTAssertEqual(motion.transition?.settlement?.destination, 1)
-        XCTAssertEqual(motion.transition?.settlement?.duration, 0.44)
-        let halfway = motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(0.22)).position
+        let returnDuration = ListPageMotion.edgeReturnDuration
+        XCTAssertEqual(motion.transition?.settlement?.duration, returnDuration)
+        let halfway = motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(returnDuration / 2)).position
         XCTAssertGreaterThan(halfway, 1)
         XCTAssertLessThan(halfway, trailingPosition)
-        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(0.44)).position,
+        XCTAssertEqual(motion.frame(pages: pages, selectedPage: pages[1], at: now.addingTimeInterval(returnDuration)).position,
                        1, accuracy: 0.000001)
     }
 

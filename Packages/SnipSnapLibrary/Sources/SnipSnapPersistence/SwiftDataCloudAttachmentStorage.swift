@@ -189,8 +189,18 @@ extension SwiftDataSnipLibrary {
         changed = true
       }
 
+      // A snip restored by a remote edit can wait for its list (ADR 0014). Its attachments stay,
+      // so no metadata delete or payload cleanup goes out in that window.
+      let awaitingRestore = try Self.cloudSnipsAwaitingRestore(namespaceKey: namespaceKey, context: context)
+      for row in existing where local[row.attachmentID] == nil && awaitingRestore.contains(row.snipID)
+        && !row.lifecycle.isLocallyPresent && row.lifecycle.hasPublishedMetadata
+      {
+        if row.lifecycle.restoreLocalPresence() { changed = true }
+      }
       for row in existing
-      where local[row.attachmentID] == nil && row.lifecycle.isLocallyPresent {
+      where local[row.attachmentID] == nil && row.lifecycle.isLocallyPresent
+        && !awaitingRestore.contains(row.snipID)
+      {
         try lock.check()
         changed = true
         let abandonedUpload: CloudAttachmentAbandonedUpload?
@@ -695,6 +705,24 @@ extension SwiftDataSnipLibrary {
       namespaceKey: namespaceKey,
       keeping: recordNames
     )
+  }
+
+  /// Snips with no local row whose accepted record waits for its list to insert them.
+  static func cloudSnipsAwaitingRestore(namespaceKey: String, context: ModelContext) throws -> Set<UUID> {
+    let key = namespaceKey
+    let snip = CloudEntityKind.snip.rawValue
+    return Set(try context.fetch(FetchDescriptor(
+      predicate: #Predicate<StoredCloudEntityRecord> {
+        $0.namespaceKey == key && $0.kind == snip && $0.isDeferred
+      }
+    )).compactMap { record -> UUID? in
+      guard let data = record.deferredMutationData,
+        let deferred = try? JSONDecoder().decode(CloudDeferredLocalMutation.self, from: data),
+        deferred.precondition == .requireMissing,
+        case .upsertSnip = deferred.mutation
+      else { return nil }
+      return record.domainID
+    })
   }
 
   static func cloudAttachmentPublications(

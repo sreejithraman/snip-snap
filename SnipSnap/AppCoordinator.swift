@@ -786,6 +786,12 @@ final class AppCoordinator {
         panelDialogPresenter.dismiss(id: id, restoringParent: restoringParent)
     }
 
+    /// Closes the repair dialog, without bringing the panel forward, before asking for access.
+    func performAccessibilityRepairPrimaryAction() {
+        dismissPanelDialog(id: .accessibility, restoringParent: false)
+        accessibilityPermissions.performPrimaryAction()
+    }
+
     func updatePresentedError() {
         guard let failure = model.dialogFailure else {
             dismissPanelDialog(id: .error)

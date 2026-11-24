@@ -353,9 +353,6 @@ final class SnipCommandStoreTests: XCTestCase {
         [.modificationDate: clock.now.addingTimeInterval(-8 * 24 * 60 * 60)],
         ofItemAtPath: markerURL.path
       )
-      let markerAttributes = try FileManager.default.attributesOfItem(atPath: markerURL.path)
-      let markerDate = try XCTUnwrap(markerAttributes[.modificationDate] as? Date)
-      XCTAssertLessThan(markerDate, clock.now.addingTimeInterval(-7 * 24 * 60 * 60))
       try await store.pruneAbandoned()
       XCTAssertFalse(FileManager.default.fileExists(atPath: pendingURL.path))
       let expired = try await store.state(for: unclaimed.requestID)

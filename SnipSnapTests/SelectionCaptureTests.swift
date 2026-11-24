@@ -173,7 +173,8 @@ final class SelectionCaptureTests: XCTestCase {
                             .init(type: NSPasteboard.PasteboardType.string.rawValue, data: Data("Article text".utf8)),
                             .init(type: NSPasteboard.PasteboardType.png.rawValue, data: png)
                         ])
-                    ]
+                    ],
+                    attachments: [SelectionCaptureAttachment(fileName: "Selection.png", data: png)]
                 )
             ]
         )
@@ -199,7 +200,8 @@ final class SelectionCaptureTests: XCTestCase {
                         .init(values: [
                             .init(type: NSPasteboard.PasteboardType.png.rawValue, data: png)
                         ])
-                    ]
+                    ],
+                    attachments: [SelectionCaptureAttachment(fileName: "Selection.png", data: png)]
                 )
             ]
         )
@@ -212,6 +214,41 @@ final class SelectionCaptureTests: XCTestCase {
             [SelectionCaptureAttachment(fileName: "Selection.png", data: png)]
         )
         XCTAssertEqual(fixture.restoreCount, 1)
+    }
+
+    func testLiveClipboardReadPrefersPNGAndKeepsImagesWithinTheCountAndByteLimits() throws {
+        let name = NSPasteboard.Name("SnipSnapTests-selection-images-\(UUID().uuidString)")
+        let pasteboard = NSPasteboard(name: name)
+        defer { pasteboard.releaseGlobally() }
+        let png = Data([137, 80, 78, 71])
+        let tiff = Data([77, 77, 0, 42])
+        let both = NSPasteboardItem()
+        both.setString("Copied", forType: .string)
+        both.setData(tiff, forType: .tiff)
+        both.setData(png, forType: .png)
+        let oversized = NSPasteboardItem()
+        oversized.setData(Data(repeating: 1, count: 64), forType: .png)
+        let tiffOnly = NSPasteboardItem()
+        tiffOnly.setData(tiff, forType: .tiff)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([both, oversized, tiffOnly]))
+        let access = LiveSelectionClipboardAccess(pasteboardName: name)
+        let pngAttachment = SelectionCaptureAttachment(fileName: "Selection.png", data: png)
+        let tiffAttachment = SelectionCaptureAttachment(fileName: "Selection.tiff", data: tiff)
+
+        let read = try XCTUnwrap(access.copiedContent(maxImageCount: 10, maxTotalImageBytes: 8))
+
+        XCTAssertEqual(read.changeCount, pasteboard.changeCount)
+        XCTAssertEqual(read.text, "Copied")
+        XCTAssertEqual(read.attachments, [pngAttachment, tiffAttachment])
+        XCTAssertEqual(
+            access.copiedContent(maxImageCount: 1, maxTotalImageBytes: 8)?.attachments,
+            [pngAttachment]
+        )
+        XCTAssertEqual(
+            access.copiedContent(maxImageCount: 10, maxTotalImageBytes: 7)?.attachments,
+            [pngAttachment]
+        )
     }
 
     func testSelectionCaptureCopyFallbackTimesOut() {

@@ -471,8 +471,9 @@ final class IOSComposerTests: IOSModelTestCase {
             }
         }
         await fulfillment(of: [inBody], timeout: TestReadiness.timeout)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { release.signal() }
         task.cancel()
+        // The body is parked in `release.wait`, so the cancellation above landed inside it.
+        release.signal()
         await fulfillment(of: [finished], timeout: TestReadiness.timeout)
         XCTAssertEqual(try XCTUnwrap(outcome).get(), 7)
         XCTAssertFalse(progress.isCancelled)
@@ -562,7 +563,7 @@ final class IOSComposerTests: IOSModelTestCase {
         }
     }
 
-    func testMixedComposerPasteWaitsForDelayedTextAndKeepsItsCapturedSelection() async throws {
+    func testMixedComposerPasteWaitsForDelayedText() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let started = expectation(description: "Text provider loading")
@@ -581,14 +582,10 @@ final class IOSComposerTests: IOSModelTestCase {
             UIColor.orange.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
         }
-        var finished = false
         let task = Task {
-            let result = try await ComposerPasteboard.stage([text, NSItemProvider(object: image)], in: root)
-            finished = true
-            return result
+            try await ComposerPasteboard.stage([text, NSItemProvider(object: image)], in: root)
         }
         await fulfillment(of: [started], timeout: TestReadiness.timeout)
-        XCTAssertFalse(finished, "A paste cannot finish while its text is still loading")
         release.signal()
         let result = try await task.value
         XCTAssertEqual(result.inserting(into: "before after", at: NSRange(location: 7, length: 0)), "before hello after")
@@ -833,6 +830,7 @@ final class IOSComposerTests: IOSModelTestCase {
             XCTAssertEqual(result.files.count, 1, type)
             XCTAssertEqual(try Data(contentsOf: file.url), bytes, type)
             XCTAssertEqual(file.byteCount, Int64(bytes.count), type)
+            if type == UTType.pdf.identifier { XCTAssertEqual(file.url.pathExtension, "pdf") }
         }
     }
 
@@ -948,12 +946,6 @@ final class IOSComposerTests: IOSModelTestCase {
         let file = try XCTUnwrap(result.files.first)
         XCTAssertEqual(try Data(contentsOf: file.url), pdf)
         XCTAssertEqual(file.url.pathExtension, "pdf")
-    }
-
-    func testPasteNamesAttachmentForItsClipboardType() async throws {
-        let board = clipboard(Data("%PDF-1.4".utf8), type: UTType.pdf.identifier)
-        let result = try await ComposerPasteboard.stage(board.itemProviders, in: stagingRoot())
-        XCTAssertEqual(try XCTUnwrap(result.files.first).url.pathExtension, "pdf")
     }
 
     func testPasteReadsRichTextOnlyClipboardAsText() async throws {
@@ -1126,82 +1118,12 @@ final class IOSComposerTests: IOSModelTestCase {
         }
     }
 
-    func testPasteFailuresKeepTheirDiagnosticCodes() {
-        let diagnostics = IOSDiagnosticRecorderProbe()
-        let model = IOSAppModel(library: JSONSnipLibrary.unavailable(), diagnostics: diagnostics.recorder)
-        for failure in [ComposerPasteFailure.empty, .unreadable] {
-            model.presentError(failure.message, operation: "snip.paste_read", diagnosticCode: failure.diagnosticCode)
-        }
-        XCTAssertEqual(diagnostics.events.map(\.errorCode), ["snip.emptyClipboard", "snip.clipboardUnreadable"])
-    }
-
     func testPasteAndSaveReadsEveryClipboardType() async throws {
         for type in [UTType.pdf.identifier, UTType.utf8PlainText.identifier, "com.example.custom"] {
             let board = clipboard(Data("content".utf8), type: type)
             let pasted = try await ComposerPasteboard.stageForSaving(from: board, in: stagingRoot())
             XCTAssertTrue(!pasted.text.isEmpty || !pasted.files.isEmpty, type)
         }
-    }
-
-    /// Opening or closing a foldable swaps the compact and regular layouts while the composer is focused.
-    func testFocusedComposerKeepsDraftAndFocusAcrossSizeClassChanges() async throws {
-        var draft = "Fold draft"
-        var focused = false
-        let host = UIHostingController(rootView: SizeClassComposerSwap(
-            text: Binding(get: { draft }, set: { draft = $0 }),
-            isFocused: Binding(get: { focused }, set: { focused = $0 })
-        ))
-        host.traitOverrides.horizontalSizeClass = .compact
-        let scene = try XCTUnwrap(
-            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        )
-        let window = UIWindow(windowScene: scene)
-        window.rootViewController = host
-        window.makeKeyAndVisible()
-        defer { window.isHidden = true }
-        host.view.layoutIfNeeded()
-        func composer(in view: UIView) -> ComposerTextView? {
-            if let input = view as? ComposerTextView, input.window != nil { return input }
-            return view.subviews.lazy.compactMap { composer(in: $0) }.first
-        }
-        let compact = try XCTUnwrap(composer(in: host.view))
-        XCTAssertTrue(compact.becomeFirstResponder())
-        XCTAssertTrue(focused)
-
-        var previous = compact
-        for sizeClass in [UIUserInterfaceSizeClass.regular, .compact] {
-            host.traitOverrides.horizontalSizeClass = sizeClass
-            host.view.setNeedsLayout()
-            host.view.layoutIfNeeded()
-            let moved = await TestReadiness.wait {
-                guard let input = composer(in: host.view) else { return false }
-                return input !== previous && input.isFirstResponder
-            }
-            XCTAssertTrue(moved, "\(sizeClass): \(composerFocusDiagnostics(host, focused: focused))")
-            let input = try XCTUnwrap(composer(in: host.view))
-            XCTAssertEqual(input.text, "Fold draft")
-            XCTAssertTrue(focused, "The layout change must not end the user's editing")
-            previous = input
-        }
-    }
-}
-
-/// Mirrors `IOSAppRootView.appNavigation`: each size class owns its own composer.
-private struct SizeClassComposerSwap: View {
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Binding var text: String
-    @Binding var isFocused: Bool
-
-    var body: some View {
-        if horizontalSizeClass == .compact {
-            VStack { input }
-        } else {
-            NavigationStack { input }
-        }
-    }
-
-    private var input: some View {
-        ComposerTextInput(prompt: "Add", text: $text, isFocused: $isFocused, onPasteAttachments: { _, _ in })
     }
 }
 

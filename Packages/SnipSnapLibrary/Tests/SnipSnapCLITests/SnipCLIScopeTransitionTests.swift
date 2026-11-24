@@ -1,6 +1,7 @@
 import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
+import Synchronization
 import XCTest
 @testable import SnipSnapCLI
 
@@ -145,15 +146,6 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
     }
   }
 
-  func testLegacyReceiptsKeepOriginalScopeAndFingerprint() throws {
-    let request = SnipCLIRequest(action: .extended(.application(.retrySync)), scopeToken: "before")
-    let legacy = SnipCLIReceipt(request: request, status: .success)
-    let decoded = try JSONDecoder().decode(SnipCLIReceipt.self, from: JSONEncoder().encode(legacy))
-    XCTAssertNil(decoded.resultingScopeToken)
-    XCTAssertEqual(decoded.visibleScopeToken, "before")
-    XCTAssertTrue(decoded.matches(request))
-  }
-
   func testOrdinaryCommandStillFailsWhenHandlerSwitchesScope() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -258,18 +250,31 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
     let store = SnipCLIRequestStore(rootURL: root)
     try await store.publishActiveScopeToken("before")
     let request = SnipCLIRequest(action: .extended(.application(.retrySync)), scopeToken: "before")
-    let execution = Task { try await SnipCLIService.execute(request, store: store, timeout: .milliseconds(100)) }
-    try await waitUntilPending(request, store: store)
-    await store.processPending { received in
-      try await store.suspendActiveScope()
-      try await Task.sleep(for: .milliseconds(250))
-      try await store.publishActiveScopeToken("after")
-      return SnipCLIReceipt(request: received, status: .success, resultingScopeToken: "after")
+    let clock = ManualWaitClock()
+    let execution = Task {
+      try await SnipCLIService.execute(request, store: store, timeout: .milliseconds(100), clock: clock)
     }
+    try await waitUntilPending(request, store: store)
+    let claimed = AsyncStream<Void>.makeStream()
+    let finishHandler = AsyncStream<Void>.makeStream()
+    let processing = Task {
+      await store.processPending { received in
+        try await store.suspendActiveScope()
+        claimed.continuation.yield()
+        for await _ in finishHandler.stream { break }
+        try await store.publishActiveScopeToken("after")
+        return SnipCLIReceipt(request: received, status: .success, resultingScopeToken: "after")
+      }
+    }
+    for await _ in claimed.stream { break }
+    try await clock.waitUntilSomeoneSleeps()
+    clock.advance(by: .milliseconds(200))
     do {
       _ = try await execution.value
       XCTFail("A claimed transition must remain processing when the CLI times out")
     } catch SnipSnapCLIError.commandInProgress(let id) { XCTAssertEqual(id, request.requestID) }
+    finishHandler.continuation.yield()
+    await processing.value
     guard case .completed(let receipt) = try await SnipCLIService.status(request.requestID, store: store) else {
       return XCTFail("Status must recover the eventual transition result")
     }
@@ -283,9 +288,14 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
     let store = SnipCLIRequestStore(rootURL: root)
     try await store.publishActiveScopeToken("before")
     let request = SnipCLIRequest(action: .extended(.application(.retrySync)), scopeToken: "before")
-    let execution = Task { try await SnipCLIService.execute(request, store: store, timeout: .milliseconds(100)) }
+    let clock = ManualWaitClock()
+    let execution = Task {
+      try await SnipCLIService.execute(request, store: store, timeout: .milliseconds(100), clock: clock)
+    }
     try await waitUntilPending(request, store: store)
     try await store.publishActiveScopeToken("unrelated")
+    try await clock.waitUntilSomeoneSleeps()
+    clock.advance(by: .milliseconds(200))
     do {
       _ = try await execution.value
       XCTFail("An unclaimed request must time out")
@@ -395,5 +405,57 @@ final class SnipCLIScopeTransitionTests: XCTestCase {
     }
     XCTFail("Service did not enqueue its request")
     throw SnipSnapCLIError.appUnavailable
+  }
+}
+
+/// A wait clock that moves only when a test advances it, so CLI deadlines cannot race the scheduler.
+private final class ManualWaitClock: Clock, Sendable {
+  struct Instant: InstantProtocol {
+    var offset: Duration
+    func advanced(by duration: Duration) -> Instant { Instant(offset: offset + duration) }
+    func duration(to other: Instant) -> Duration { other.offset - offset }
+    static func < (lhs: Instant, rhs: Instant) -> Bool { lhs.offset < rhs.offset }
+  }
+
+  private struct State {
+    var now = Instant(offset: .zero)
+    var sleepers: [(deadline: Instant, continuation: CheckedContinuation<Void, any Error>)] = []
+  }
+
+  private let state = Mutex(State())
+
+  var now: Instant { state.withLock { $0.now } }
+  var minimumResolution: Duration { .zero }
+
+  func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+    try await withCheckedThrowingContinuation { continuation in
+      let due = state.withLock { state in
+        guard deadline > state.now else { return true }
+        state.sleepers.append((deadline, continuation))
+        return false
+      }
+      if due { continuation.resume() }
+    }
+  }
+
+  /// Waits in real time, bounded, until the code under test has computed its deadline and sleeps.
+  func waitUntilSomeoneSleeps() async throws {
+    for _ in 0..<5_000 {
+      if state.withLock({ !$0.sleepers.isEmpty }) { return }
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    XCTFail("The CLI never waited on its clock")
+    throw CancellationError()
+  }
+
+  func advance(by duration: Duration) {
+    let due = state.withLock { state in
+      state.now = state.now.advanced(by: duration)
+      let now = state.now
+      let due = state.sleepers.filter { $0.deadline <= now }
+      state.sleepers.removeAll { $0.deadline <= now }
+      return due.map(\.continuation)
+    }
+    for continuation in due { continuation.resume() }
   }
 }

@@ -62,7 +62,8 @@ final class CommandNumberPickerTests: XCTestCase {
     }
 
     func testOtherCommandKeysSuppressRevealUntilCommandReleases() async {
-        let picker = CommandNumberPicker(revealDelay: .milliseconds(20))
+        // With no delay, a scheduled reveal runs on the main actor ahead of the yields below.
+        let picker = CommandNumberPicker(revealDelay: .zero)
         let target = CommandNumberTarget.snip(uuid(0))
         picker.setOrderedTargets([target])
         picker.handleCommand(isDown: true)
@@ -73,7 +74,7 @@ final class CommandNumberPickerTests: XCTestCase {
         XCTAssertFalse(picker.isRevealed)
 
         picker.handleCommand(isDown: true)
-        try? await Task.sleep(for: .milliseconds(40))
+        for _ in 0..<5 { await Task.yield() }
         XCTAssertFalse(picker.isRevealed)
 
         picker.handleCommand(isDown: false)
@@ -141,58 +142,57 @@ final class CommandNumberPickerTests: XCTestCase {
         picker.stopMonitoring()
     }
 
+    // Two targets with only the second in view: if its frame were lost, the list-order fallback
+    // would number the off-screen first target instead.
     func testDepartingOwnerCannotClearTheActiveOwnerFrame() {
         let picker = CommandNumberPicker()
-        let target = CommandNumberTarget.snip(uuid(0))
         let departingOwner = CommandNumberOwner()
         let activeOwner = CommandNumberOwner()
+        frameOffscreenThenVisibleTargets(in: picker, owner: departingOwner)
+        frameOffscreenThenVisibleTargets(in: picker, owner: activeOwner)
 
-        picker.setOrderedTargets([target], owner: departingOwner)
-        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: departingOwner)
-        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: departingOwner)
+        picker.setRowFrame(visibleTarget, frame: nil, owner: departingOwner)
 
-        picker.setOrderedTargets([target], owner: activeOwner)
-        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: activeOwner)
-        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: activeOwner)
-        picker.setRowFrame(target, frame: nil, owner: departingOwner)
-
-        XCTAssertEqual(picker.target(forNumber: 1), target)
+        XCTAssertEqual(picker.target(forNumber: 1), visibleTarget)
     }
 
     func testReleasingDepartingOwnerPreservesTheActiveOwnerFrame() {
         let picker = CommandNumberPicker()
-        let target = CommandNumberTarget.snip(uuid(0))
         let departingOwner = CommandNumberOwner()
         let activeOwner = CommandNumberOwner()
+        frameOffscreenThenVisibleTargets(in: picker, owner: departingOwner)
+        frameOffscreenThenVisibleTargets(in: picker, owner: activeOwner)
 
-        picker.setOrderedTargets([target], owner: departingOwner)
-        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: departingOwner)
-        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: departingOwner)
-
-        picker.setOrderedTargets([target], owner: activeOwner)
-        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: activeOwner)
-        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: activeOwner)
         picker.releaseOwner(departingOwner)
-        picker.setRowFrame(target, frame: nil, owner: departingOwner)
+        picker.setRowFrame(visibleTarget, frame: nil, owner: departingOwner)
 
-        XCTAssertEqual(picker.target(forNumber: 1), target)
+        XCTAssertEqual(picker.target(forNumber: 1), visibleTarget)
     }
 
     func testReleasedOwnerCanBecomeActiveAgainWithItsCachedFrame() {
         let picker = CommandNumberPicker()
-        let target = CommandNumberTarget.snip(uuid(0))
         let owner = CommandNumberOwner()
-
-        picker.setOrderedTargets([target], owner: owner)
-        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: owner)
-        picker.setRowFrame(target, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: owner)
+        frameOffscreenThenVisibleTargets(in: picker, owner: owner)
         picker.releaseOwner(owner)
 
         XCTAssertNil(picker.target(forNumber: 1))
 
-        picker.setOrderedTargets([target], owner: owner)
+        picker.setOrderedTargets([offscreenTarget, visibleTarget], owner: owner)
 
-        XCTAssertEqual(picker.target(forNumber: 1), target)
+        XCTAssertEqual(picker.target(forNumber: 1), visibleTarget)
+    }
+
+    private var offscreenTarget: CommandNumberTarget { .snip(uuid(1)) }
+    private var visibleTarget: CommandNumberTarget { .snip(uuid(0)) }
+
+    private func frameOffscreenThenVisibleTargets(
+        in picker: CommandNumberPicker,
+        owner: CommandNumberOwner
+    ) {
+        picker.setOrderedTargets([offscreenTarget, visibleTarget], owner: owner)
+        picker.setViewport(CGRect(x: 0, y: 0, width: 100, height: 100), owner: owner)
+        picker.setRowFrame(offscreenTarget, frame: CGRect(x: 0, y: 500, width: 100, height: 40), owner: owner)
+        picker.setRowFrame(visibleTarget, frame: CGRect(x: 0, y: 0, width: 100, height: 40), owner: owner)
     }
 
     private func waitForReveal(_ picker: CommandNumberPicker) async {

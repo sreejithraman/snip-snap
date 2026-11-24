@@ -36,28 +36,22 @@ final class BackupRequestHistoryTests: XCTestCase {
   }
 
   func testMetadataOnlyImportPreventsDeletedRequestReplayAfterReopen() async throws {
-    for useSwiftData in [false, true] {
-      let root = try temporaryDirectory()
-      defer { try? FileManager.default.removeItem(at: root) }
-      let requestID = UUID()
-      let backup = try writeHistory([requestID], in: root)
-      let store = root.appendingPathComponent(useSwiftData ? "snips.store" : "snips.json")
-      func open() throws -> any SnipLibrary {
-        if useSwiftData { return try SwiftDataSnipLibrary(storeURL: store) }
-        return try JSONSnipLibrary(fileURL: store)
-      }
-      let library = try open()
-      let preview = try await SnipLibraryImport.preview(backupURL: backup, target: library)
-      XCTAssertEqual(preview.addedSnipCount, 0)
-      XCTAssertEqual(preview.addedListCount, 0)
-      _ = try await library.applyImport(preview)
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let requestID = UUID()
+    let backup = try writeHistory([requestID], in: root)
+    let store = root.appendingPathComponent("snips.store")
+    let library = try SwiftDataSnipLibrary(storeURL: store)
+    let preview = try await SnipLibraryImport.preview(backupURL: backup, target: library)
+    XCTAssertEqual(preview.addedSnipCount, 0)
+    XCTAssertEqual(preview.addedListCount, 0)
+    _ = try await library.applyImport(preview)
 
-      let reopened = try open()
-      try await assertDuplicate(requestID, in: reopened)
-      let retry = try await SnipLibraryImport.preview(backupURL: backup, target: reopened)
-      _ = try await reopened.applyImport(retry)
-      try await assertDuplicate(requestID, in: try open())
-    }
+    let reopened = try SwiftDataSnipLibrary(storeURL: store)
+    try await assertDuplicate(requestID, in: reopened)
+    let retry = try await SnipLibraryImport.preview(backupURL: backup, target: reopened)
+    _ = try await reopened.applyImport(retry)
+    try await assertDuplicate(requestID, in: try SwiftDataSnipLibrary(storeURL: store))
   }
 
   func testFailedMetadataOnlyImportRollsBackHistoryAndCanBeRetried() async throws {

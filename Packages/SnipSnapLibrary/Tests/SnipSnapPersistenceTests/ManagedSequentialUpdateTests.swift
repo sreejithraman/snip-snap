@@ -15,7 +15,7 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     let persistence = try SwiftDataSyncModePersistence(rootURL: root, diagnostics: diagnostics)
     let namespace = ICloudSyncNamespaceBinding(scope: "private", accountLineage: "test-account",
       generation: UUID(), zones: [.init(name: "test-zone", ownerName: "test-owner")])
-    try await persistence.activateEmptyCollection(namespace: namespace)
+    try await persistence.seedEmptyActiveStore(namespace: namespace)
     let library = try await persistence.activeLibrary()
     var snips: [Snip] = []
     for content in ["First", "Second"] {
@@ -79,6 +79,15 @@ final class ManagedSequentialUpdateTests: XCTestCase {
     let namespace = try XCTUnwrap(source.namespace)
     let stopping = Task { try await persistence.keepCloudCacheLocally(
       storeID: source.id, namespace: namespace, reason: .namespaceChanged) }
+    let deadline = ContinuousClock.now + .seconds(5)
+    var queued = false
+    while !queued, ContinuousClock.now < deadline {
+      queued = await persistence.activeStoreTurns.waitingCount == 1
+      if !queued { try await Task.sleep(for: .milliseconds(1)) }
+    }
+    XCTAssertTrue(queued, "The reset must queue behind the held cloud mutation")
+    let whileHeld = try await persistence.snapshot().activeStore
+    XCTAssertEqual(whileHeld, source, "The reset must not change the store while sync holds it")
     await release.open()
     try await syncing.value
     let stopped = try await stopping.value
@@ -140,7 +149,7 @@ private func makeICloudPersistence(
   let persistence = try SwiftDataSyncModePersistence(rootURL: root)
   let namespace = ICloudSyncNamespaceBinding(scope: "private", accountLineage: "test-account",
     generation: UUID(), zones: [.init(name: "test-zone", ownerName: "test-owner")])
-  try await persistence.activateEmptyCollection(namespace: namespace)
+  try await persistence.seedEmptyActiveStore(namespace: namespace)
   return persistence
 }
 

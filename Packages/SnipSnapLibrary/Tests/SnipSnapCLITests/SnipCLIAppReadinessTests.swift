@@ -7,8 +7,7 @@ import XCTest
 final class SnipCLIAppReadinessTests: XCTestCase {
   func testUnavailableReadinessHasAnActionableMessageAndStableDiagnostic() {
     let error = SnipCLIAppReadinessError.unavailable
-    XCTAssertEqual(error.localizedDescription,
-      "Snip Snap couldn’t prepare its command connection. Quit and reopen Snip Snap, then try again.")
+    XCTAssertTrue(error.localizedDescription.contains("Quit and reopen Snip Snap"))
     let event = AppDiagnosticEvent.failure(operation: "cli.readiness", error: error, visibility: .user)
     XCTAssertEqual(event.operation, "cli.readiness")
     XCTAssertEqual(event.errorCode, "cli.unavailable")

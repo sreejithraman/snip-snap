@@ -147,4 +147,58 @@ final class SnipFilterTests: XCTestCase {
         XCTAssertEqual(results.clipboard.map(\.id), [entry.id])
     }
 
+    func testDoneSnipsSortAfterActiveSnipsInBothModes() {
+        let review = UUID()
+        func card(_ id: Int, createdAt: TimeInterval, manualPosition: Int64, isDone: Bool = false) -> Snip {
+            Snip(
+                id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", id))!,
+                requestID: UUID(),
+                createdAt: Date(timeIntervalSince1970: createdAt),
+                content: "Card \(id)",
+                origin: .quickEntry,
+                listID: review,
+                isDone: isDone,
+                manualPosition: manualPosition
+            )
+        }
+        let olderActive = card(1, createdAt: 100, manualPosition: 1)
+        let newerDone = card(2, createdAt: 200, manualPosition: 0, isDone: true)
+        let newestActive = card(3, createdAt: 300, manualPosition: -1)
+
+        XCTAssertEqual(
+            Snip.sorted([olderActive, newerDone, newestActive], by: .chronological).map(\.id),
+            [newestActive.id, olderActive.id, newerDone.id]
+        )
+        XCTAssertEqual(
+            Snip.sorted([olderActive, newerDone, newestActive], by: .manual).map(\.id),
+            [newestActive.id, olderActive.id, newerDone.id]
+        )
+    }
+
+    func testFilteringSearchesContentAndSourceAndHonorsCompletionFilter() {
+        let done = Snip(content: "Follow up tomorrow", origin: .quickEntry, isDone: true)
+        let safari = Snip(
+            content: "An unrelated excerpt",
+            origin: .selection,
+            source: SnipSource(applicationName: "Safari", windowTitle: "Swift guide", url: nil)
+        )
+
+        XCTAssertEqual(SnipFilter.apply(snips: [done, safari], query: "swift", completionFilter: .all), [safari])
+        XCTAssertEqual(SnipFilter.apply(snips: [done, safari], query: "", completionFilter: .done), [done])
+        XCTAssertEqual(SnipFilter.apply(snips: [done, safari], query: "", completionFilter: .notDone), [safari])
+        XCTAssertTrue(SnipFilter.apply(snips: [done, safari], query: "swift", completionFilter: .done).isEmpty)
+    }
+
+    func testLargeSnipFilteringKeepsExactMatches() {
+        let later = UUID()
+        let snips = (0..<2_500).map { index in
+            Snip(
+                content: index.isMultiple(of: 250) ? "Needle \(index)" : "Item \(index)",
+                origin: .quickEntry,
+                listID: index.isMultiple(of: 2) ? SnipList.inboxID : later
+            )
+        }
+        let matches = SnipFilter.apply(snips: snips, query: "needle", completionFilter: .all)
+        XCTAssertEqual(matches.map(\.content), stride(from: 0, to: 2_500, by: 250).map { "Needle \($0)" })
+    }
 }

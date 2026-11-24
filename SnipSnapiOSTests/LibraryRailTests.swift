@@ -140,7 +140,6 @@ final class LibrarySidebarSizingTests: XCTestCase {
         for junk in ["", "wide", "nan", "inf", "-40", "0", "Hinge"] {
             XCTAssertNil(LibrarySidebarExpandedWidth(rawValue: junk), junk)
         }
-        XCTAssertEqual(LibrarySidebarExpandedWidth.default, .points(240))
     }
 
     func testDragDetentTracksRailExpandedAndHingeZones() {

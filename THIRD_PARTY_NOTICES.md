@@ -1,5 +1,13 @@
 # Third-party notices
 
+## Allo
+
+Snip Snap bundles the Allo typeface by Josh Puckett, based on Inter, under the
+SIL Open Font License, Version 1.1. The copyright notices and full license text
+are in [Shared/Fonts/Allo/OFL.txt](Shared/Fonts/Allo/OFL.txt), which ships
+inside each app and extension. [Shared/Fonts/Allo/README.md](Shared/Fonts/Allo/README.md)
+records the source revision.
+
 ## Sparkle
 
 Snip Snap uses Sparkle 2.9.6 under the terms below.

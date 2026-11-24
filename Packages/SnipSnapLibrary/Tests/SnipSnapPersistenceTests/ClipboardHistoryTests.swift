@@ -166,25 +166,6 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: h.url.path))
     }
 
-    func testRemovedFilesArePrunedAfterLegacyHistoryIsSetAside() async throws {
-        let directory = try root()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let files = ClipboardFileStore(rootURL: directory.appendingPathComponent("ClipboardFiles"))
-        let store = ClipboardHistoryStore(url: directory.appendingPathComponent("clipboard.json"), fileStore: files)
-        // The text names H's path, so only decoding the copy as legacy history lets H go.
-        let legacy = """
-        [{"id":"\(UUID().uuidString)","capturedAt":"2026-01-01T00:00:00Z","sourceApplication":"Editor","items":[{"representations":[{"type":"public.rtf","data":"YWJj"}]}],"plainText":"dir/h.txt"}]
-        """
-        try Data(legacy.utf8).write(to: store.url)
-        try await store.setAside()
-
-        let h = try entry("h", owningImported: "dir/h.txt", in: files)
-        try await store.insert(h.entry)
-        try await store.delete(id: h.entry.id)
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: h.url.path))
-    }
-
     func testUndecodableSetAsideHistoryKeepsTheFilesItNames() async throws {
         let encodings: [(name: String, formatting: JSONEncoder.OutputFormatting)] = [
             ("escaped slashes", .sortedKeys),
@@ -363,20 +344,32 @@ final class ClipboardHistoryTests: XCTestCase {
         let result = ClipboardHistoryState.trimmed([oversized, newest, next, older, pin], maximumEntryBytes: 8, maximumHistoryBytes: 8, maximumCount: 4)
         XCTAssertEqual(result.map(\.id), [newest.id, pin.id])
     }
-    func testLegacyJSONMigrationPreservesIdentityAndRichText() async throws {
+    /// v0.5.0-beta.47 and earlier wrote a bare array with ISO-8601 dates. No tagged build since
+    /// does, so such a file is refused: loading throws, and no write replaces it.
+    func testBareArrayHistoryIsRefusedAndNeverOverwritten() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
-        let id = UUID()
-        let legacy = """
-        [{"id":"\(id.uuidString)","capturedAt":"2026-01-01T00:00:00Z","sourceApplication":"Editor","items":[{"representations":[{"type":"public.rtf","data":"YWJj"}]}],"plainText":"formatted text"}]
-        """
+        let legacy = Data("""
+        [{"id":"\(UUID().uuidString)","capturedAt":"2026-01-01T00:00:00Z","sourceApplication":"Editor","items":[{"representations":[{"type":"public.rtf","data":"YWJj"}]}],"plainText":"formatted text"}]
+        """.utf8)
         let url = directory.appendingPathComponent("clipboard.json")
-        try Data(legacy.utf8).write(to: url)
+        try legacy.write(to: url)
         let store = ClipboardHistoryStore(url: url)
-        let state = try await store.load()
-        XCTAssertEqual(state.entries.first?.id, id); XCTAssertEqual(state.entries.first?.text, "formatted text")
-        XCTAssertFalse(state.entries.first!.isPinned)
-        try await store.save(state)
-        let loaded = try await store.load(); XCTAssertEqual(loaded, state)
+
+        await XCTAssertThrowsErrorAsync { _ = try await store.load() }
+        await XCTAssertThrowsErrorAsync { _ = try await store.insert(self.text("new copy")) }
+        await XCTAssertThrowsErrorAsync { _ = try await store.merge(ClipboardHistoryState(entries: [self.text("remote")])) }
+        await XCTAssertThrowsErrorAsync { _ = try await store.clearUnpinned() }
+
+        XCTAssertEqual(try Data(contentsOf: url), legacy)
+    }
+
+    private func XCTAssertThrowsErrorAsync(
+        _ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        do {
+            try await body()
+            XCTFail("Expected an error", file: file, line: line)
+        } catch {}
     }
     func testPersistencePreservesRapidPinUnpinAndSharedFileEligibility() async throws {
         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }

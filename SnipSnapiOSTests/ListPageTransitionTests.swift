@@ -82,7 +82,7 @@ final class ListPageTransitionTests: XCTestCase {
             predictedEndTranslation: CGSize(width: -80, height: 0),
             reduceMotion: true, at: now
         ), .select(1))
-        XCTAssertEqual(motion.transition?.settlement?.duration, 0.12)
+        XCTAssertEqual(motion.transition?.settlement?.duration, ListPageMotion.duration(reduceMotion: true))
     }
 
     func testTrailingPagePullCreatesOnlyAfterDeliberateDistance() throws {
@@ -101,6 +101,19 @@ final class ListPageTransitionTests: XCTestCase {
             reduceMotion: false, at: now
         ), .select(1))
         XCTAssertEqual(motion.pageCreationProgress, 0)
+
+        // A longer pull that still falls short selects, however hard it's flung.
+        motion.interrupt()
+        motion.updatePageDrag(
+            translation: CGSize(width: -200, height: 0), selectedPage: pages[1], pages: pages,
+            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
+        )
+        XCTAssertLessThan(motion.pageCreationProgress, 1)
+        XCTAssertEqual(motion.releasePageDrag(
+            translation: CGSize(width: -200, height: 0),
+            predictedEndTranslation: CGSize(width: -400, height: 0),
+            reduceMotion: false, at: now
+        ), .select(1))
 
         motion.interrupt()
         motion.updatePageDrag(
@@ -150,34 +163,6 @@ final class ListPageTransitionTests: XCTestCase {
             predictedEndTranslation: CGSize(width: 180, height: 0),
             reduceMotion: false, at: now
         ), .select(0))
-    }
-
-    func testTrailingPagePullRequiresMoreDistance() {
-        let pages: [LibraryPage] = [.clipboard, .list(UUID())]
-        let now = Date(timeIntervalSinceReferenceDate: 100)
-        var motion = ListPageMotion()
-
-        let shortPull = CGSize(width: -200, height: 0)
-        motion.updatePageDrag(
-            translation: shortPull, selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertLessThan(motion.pageCreationProgress, 1)
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: shortPull, predictedEndTranslation: CGSize(width: -400, height: 0),
-            reduceMotion: false, at: now
-        ), .select(1))
-
-        motion.interrupt()
-        let fullPull = CGSize(width: -230, height: 0)
-        motion.updatePageDrag(
-            translation: fullPull, selectedPage: pages[1], pages: pages,
-            pageWidth: 400, layoutDirection: .leftToRight, isStart: true, at: now
-        )
-        XCTAssertEqual(motion.releasePageDrag(
-            translation: fullPull, predictedEndTranslation: fullPull,
-            reduceMotion: false, at: now
-        ), .createList)
     }
 
     func testTrailingPageAddCueFitsAfterNarrowPageAtThreshold() {
@@ -525,7 +510,7 @@ final class ListPageTransitionTests: XCTestCase {
             XCTAssertEqual(frame.opacity(for: page, reduceMotion: true), 0.5)
         }
         motion.cancelDrag(reduceMotion: true, at: now)
-        XCTAssertEqual(motion.transition?.settlement?.duration, 0.12)
+        XCTAssertEqual(motion.transition?.settlement?.duration, ListPageMotion.duration(reduceMotion: true))
         let finished = motion.frame(pages: pages, selectedPage: pages[0], at: now.addingTimeInterval(1))
         XCTAssertEqual(finished.opacity(for: pages[0], reduceMotion: true), 1)
         XCTAssertEqual(finished.opacity(for: pages[1], reduceMotion: true), 0)
@@ -658,20 +643,8 @@ final class ListPageTransitionTests: XCTestCase {
         presentation.end(second)
         XCTAssertFalse(presentation.isPresenting)
         XCTAssertFalse(presentation.isCurrent(second))
-    }
-
-    func testEndingTheCurrentCreationRequestEndsThePresentation() {
-        var presentation = ListCreationPresentation()
-        let request = UUID()
-        presentation.begin(request)
-        XCTAssertTrue(presentation.isCurrent(request))
-
-        presentation.end(request)
-        XCTAssertFalse(presentation.isPresenting)
-        XCTAssertFalse(presentation.isCurrent(request))
         XCTAssertEqual(presentation, ListCreationPresentation())
     }
-
 }
 
 @MainActor

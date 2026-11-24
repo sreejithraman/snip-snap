@@ -7,13 +7,13 @@ enum AppDiagnosticCodePolicy {
   static let operations: Set<String> = [
     "app.startup", "app.user_action", "app.unknown",
     "cli.readiness", "cli.scope_suspend", "cli.session_end",
-    "attachment.asset_copy", "attachment.cache_clear", "attachment.cache_install",
+    "attachment.asset_copy", "attachment.cache_install",
     "attachment.cloudkit_asset_url", "attachment.cloudkit_record", "attachment.cloudkit_request",
     "attachment.import_select", "attachment.import_stage", "attachment.prepare",
     "attachment.receipt_validation", "attachment.remote_fetch",
     "backup.export", "backup.import_select", "backup.import_preview", "backup.import_apply",
     "clipboard.account_reset", "clipboard.clear", "clipboard.copy_file", "clipboard.delete",
-    "clipboard.delete_synced", "clipboard.export", "clipboard.load", "clipboard.paste",
+    "clipboard.export", "clipboard.load", "clipboard.paste",
     "clipboard.persist",
     "clipboard.paste_read", "clipboard.pin", "clipboard.share_import", "clipboard.sync",
     "clipboard.write", "composer.paste_stage",
@@ -29,12 +29,12 @@ enum AppDiagnosticCodePolicy {
     "snip.delete", "snip.restore", "snip.merge", "snip.pin", "snip.completion", "snip.move",
     "snip.completion_after_copy", "snip.undo_done",
     "snip.replace_all", "snip.undo_delete", "list.create", "list.restore", "list.update",
-    "list.delete", "list.move", "library.apply_patch", "library.batch", "attachment.prune",
+    "list.delete", "list.move", "library.batch", "attachment.prune",
     "recovery.resolve", "library.write_admission", "library.relocate",
     "sync.account_refresh", "sync.account_resolve", "sync.account_status",
     "sync.cancel_setup", "sync.delete", "sync.disable", "sync.enable", "sync.run",
     "sync.setup", "sync.stop", "sync.snapshot", "sync.provider", "sync.fetch", "sync.send",
-    "sync.settlement", "sync.schedule", "sync.reset",
+    "sync.settlement", "sync.reset",
   ]
 
   static let errorCodes: Set<String> = [
@@ -57,7 +57,7 @@ enum AppDiagnosticCodePolicy {
     "library.attachmentCopyFailed", "library.modeTransitionInProgress",
     "library.readOnlyRecovery", "library.transferUnsupported", "library.transferConflict",
     "library.recoveryNotFound", "library.recoveryChanged", "library.invalidRecoveryChoice",
-    "library.importChanged", "library.deviceActionChanged",
+    "library.importChanged",
     "library.relocationConflict",
     "storage.invalidPath", "storage.invalidRelativePath", "storage.pathOutsideRoot",
     "storage.symbolicLinkRoot", "storage.symbolicLinkDescendant", "storage.invalidMetadata",
@@ -140,7 +140,6 @@ public enum AppDiagnosticSyncReason: String, Codable, Sendable {
   case pendingWork = "pending_work"
   case settled
   case stopped
-  case ownerReplaced = "owner_replaced"
 }
 
 public enum AppDiagnosticWriteReason: String, Codable, Sendable {
@@ -207,7 +206,6 @@ public struct AppDiagnosticEvent: Codable, Equatable, Sendable {
     self.writeReason = writeReason
   }
 
-  /// A previous run that ended abnormally, as the platform reported it.
   public static func writeAdmission(
     _ outcome: AppDiagnosticOutcome, reason: AppDiagnosticWriteReason
   ) -> Self {
@@ -463,7 +461,6 @@ extension SnipLibraryError: AppDiagnosticErrorCodeProviding {
     case .recoveryChanged: "library.recoveryChanged"
     case .invalidRecoveryChoice: "library.invalidRecoveryChoice"
     case .importChanged: "library.importChanged"
-    case .deviceActionChanged: "library.deviceActionChanged"
     }
   }
 }

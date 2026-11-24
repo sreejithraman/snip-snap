@@ -117,11 +117,6 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
     package let removedEncryptedFields: Set<String>
     package let base: CloudRecordShadow?
 
-    private enum CodingKeys: String, CodingKey {
-        case id, recordType, schemaVersion, routingFields, encryptedFields, assetFields
-        case removedRoutingFields, removedEncryptedFields, base
-    }
-
     package init(
         id: CloudRecordID,
         recordType: String,
@@ -142,36 +137,6 @@ package struct CloudRecordDraft: Codable, Equatable, Sendable {
         self.removedRoutingFields = removedRoutingFields
         self.removedEncryptedFields = removedEncryptedFields
         self.base = base
-    }
-
-    package init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(CloudRecordID.self, forKey: .id)
-        recordType = try container.decode(String.self, forKey: .recordType)
-        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        routingFields = try container.decode([String: CloudFieldValue].self, forKey: .routingFields)
-        encryptedFields = try container.decode(
-            [String: CloudFieldValue].self, forKey: .encryptedFields)
-        assetFields = try container.decodeIfPresent(
-            [String: CloudAssetUpload].self, forKey: .assetFields) ?? [:]
-        removedRoutingFields = try container.decodeIfPresent(
-            Set<String>.self, forKey: .removedRoutingFields) ?? []
-        removedEncryptedFields = try container.decodeIfPresent(
-            Set<String>.self, forKey: .removedEncryptedFields) ?? []
-        base = try container.decodeIfPresent(CloudRecordShadow.self, forKey: .base)
-    }
-
-    package func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(recordType, forKey: .recordType)
-        try container.encode(schemaVersion, forKey: .schemaVersion)
-        try container.encode(routingFields, forKey: .routingFields)
-        try container.encode(encryptedFields, forKey: .encryptedFields)
-        try container.encode(assetFields, forKey: .assetFields)
-        try container.encode(removedRoutingFields, forKey: .removedRoutingFields)
-        try container.encode(removedEncryptedFields, forKey: .removedEncryptedFields)
-        try container.encodeIfPresent(base, forKey: .base)
     }
 
     package static func text(
@@ -198,7 +163,6 @@ package struct CloudRecordSnapshot: Codable, Equatable, Sendable {
     package enum Completeness: String, Codable, Equatable, Sendable {
         case full
         case projected
-        case legacyUnknown
     }
 
     package let id: CloudRecordID
@@ -209,11 +173,6 @@ package struct CloudRecordSnapshot: Codable, Equatable, Sendable {
     package let assetFields: Set<String>
     package let shadow: CloudRecordShadow
     package let completeness: Completeness
-
-    private enum CodingKeys: String, CodingKey {
-        case id, recordType, schemaVersion, routingFields, encryptedFields, assetFields, shadow
-        case completeness
-    }
 
     package init(
         id: CloudRecordID,
@@ -233,20 +192,6 @@ package struct CloudRecordSnapshot: Codable, Equatable, Sendable {
         self.assetFields = assetFields
         self.shadow = shadow
         self.completeness = completeness
-    }
-
-    package init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(CloudRecordID.self, forKey: .id)
-        recordType = try container.decode(String.self, forKey: .recordType)
-        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        routingFields = try container.decode([String: CloudFieldValue].self, forKey: .routingFields)
-        encryptedFields = try container.decode(
-            [String: CloudFieldValue].self, forKey: .encryptedFields)
-        assetFields = try container.decode(Set<String>.self, forKey: .assetFields)
-        shadow = try container.decode(CloudRecordShadow.self, forKey: .shadow)
-        completeness = try container.decodeIfPresent(Completeness.self, forKey: .completeness)
-            ?? .legacyUnknown
     }
 }
 
@@ -338,15 +283,6 @@ package struct CloudEngineStateEnvelope: Codable, Equatable, Sendable {
         self.serialization = serialization
         self.requiresInitialFetch = requiresInitialFetch
     }
-
-    package init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        namespace = try values.decode(CloudSyncNamespace.self, forKey: .namespace)
-        serialization = try values.decode(Data.self, forKey: .serialization)
-        requiresInitialFetch = try values.decodeIfPresent(
-            Bool.self, forKey: .requiresInitialFetch
-        ) ?? true
-    }
 }
 
 package enum CloudFetchScope: Codable, Equatable, Sendable {
@@ -431,10 +367,6 @@ package struct CloudFetchedBatch: Codable, Equatable, Sendable {
     package let engineState: CloudEngineStateEnvelope?
     package let isInitialFetch: Bool
 
-    private enum CodingKeys: String, CodingKey {
-        case id, items, databaseEvents, zoneEvents, engineState, isInitialFetch
-    }
-
     package init(
         id: UUID,
         items: [CloudFetchItemResult],
@@ -449,16 +381,6 @@ package struct CloudFetchedBatch: Codable, Equatable, Sendable {
         self.zoneEvents = zoneEvents
         self.engineState = engineState
         self.isInitialFetch = isInitialFetch
-    }
-
-    package init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(UUID.self, forKey: .id)
-        items = try values.decode([CloudFetchItemResult].self, forKey: .items)
-        databaseEvents = try values.decode([CloudDatabaseEvent].self, forKey: .databaseEvents)
-        zoneEvents = try values.decode([CloudZoneEvent].self, forKey: .zoneEvents)
-        engineState = try values.decodeIfPresent(CloudEngineStateEnvelope.self, forKey: .engineState)
-        isInitialFetch = try values.decodeIfPresent(Bool.self, forKey: .isInitialFetch) ?? false
     }
 }
 

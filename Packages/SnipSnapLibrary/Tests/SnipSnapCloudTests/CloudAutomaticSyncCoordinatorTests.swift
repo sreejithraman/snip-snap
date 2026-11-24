@@ -206,7 +206,7 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     XCTAssertEqual(states, [state, nil])
   }
 
-  func testFetchFailureBecomesAUserIssueAndStopsTheSameRunSend() async throws {
+  func testFetchFailureBecomesAUserIssueAndStopsTheSend() async throws {
     let id = CloudRecordID(
       zone: CloudZoneID(name: "snips-test", ownerName: "owner"),
       name: "record"
@@ -222,7 +222,7 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     let transport = AutomaticSyncTransportProbe(fetched: fetched)
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
 
-    let outcome = try await coordinator.sync()
+    let outcome = try await coordinator.fetchThenSend()
 
     let issue = outcome.issue
     let sendCount = await transport.sendCount()
@@ -246,11 +246,12 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     let transport = AutomaticSyncTransportProbe(fetched: fetched, sendSucceeds: true)
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
 
-    let outcome = try await coordinator.sync()
+    let fetchOutcome = try await coordinator.fetchRemote()
+    try await coordinator.sendPendingUntilSettled()
 
-    let issue = outcome.issue
     let sendCount = await transport.sendCount()
-    XCTAssertEqual(issue, .attachmentUnavailable)
+    XCTAssertEqual(fetchOutcome.issue, .attachmentUnavailable)
+    XCTAssertFalse(fetchOutcome.blocksOutbound)
     XCTAssertEqual(sendCount, 1)
   }
 
@@ -273,7 +274,7 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     )
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
 
-    let outcome = try await coordinator.sync()
+    let outcome = try await coordinator.fetchThenSend()
 
     let clearCount = await store.engineStateClearCount()
     let fetchCount = await transport.fetchCount()
@@ -610,17 +611,34 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     XCTAssertEqual(results.last, .syncIssue(.waitingForConnection))
   }
 
-  func testLegacyEnvelopeDropsItsAdvancedTokenBeforeAnyOutboundWork() async throws {
+  /// Every tagged build since v0.5.1-beta.69 writes `requiresInitialFetch`. An envelope without
+  /// it is unreadable: the engine restarts empty, fetches before it sends, and keeps local edits.
+  func testEnvelopeWithoutInitialFetchFlagRestartsAnEmptyEngineAndKeepsLocalEdits() async throws {
     let zone = CloudZoneID(name: "metadata", ownerName: "owner")
     let namespace = CloudSyncNamespace(cloudScope: "private", accountLineage: "account",
       generation: UUID(), zones: [zone])
-    let old = CloudEngineStateEnvelope(namespace: namespace, serialization: Data("advanced-old-token".utf8))
-    var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("EnvelopeWithoutInitialFetchFlag-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("store"))
+    let store = CloudFullSyncPersistence(library: library, namespace: namespace, dataZone: zone)
+    _ = try await library.perform(
+      .add(content: "local edit", origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+        attachmentURLs: [], requestID: UUID(), now: Date()),
+      sortedBy: .manual)
+    let advanced = CloudEngineStateEnvelope(namespace: namespace,
+      serialization: Data("advanced-old-token".utf8), requiresInitialFetch: false)
+    var json = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(advanced)) as? [String: Any])
     json.removeValue(forKey: "requiresInitialFetch")
-    let legacy = try JSONDecoder().decode(CloudEngineStateEnvelope.self,
-      from: JSONSerialization.data(withJSONObject: json))
-    let outbound = CloudOutboundBatch(operations: [.delete(CloudRecordID(zone: zone, name: "local-delete"), base: nil)])
-    let store = AutomaticSyncStoreProbe(pendingChanges: outbound, engineState: legacy)
+    let keyless = try JSONSerialization.data(withJSONObject: json)
+    XCTAssertThrowsError(try JSONDecoder().decode(CloudEngineStateEnvelope.self, from: keyless))
+    try await library.saveCloudEngineState(namespaceKey: namespace.namespaceKey, envelopeData: keyless)
+    do {
+      _ = try await store.loadEngineState()
+      XCTFail("An envelope without requiresInitialFetch must be unreadable.")
+    } catch CloudTransportError.invalidEngineState {}
+    let pendingBefore = try await store.pendingChanges()
     let transport = AutomaticSyncTransportProbe()
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
 
@@ -629,12 +647,15 @@ final class CloudAutomaticSyncCoordinatorTests: XCTestCase {
     let starts = await transport.startedEngineStates()
     let initial = await transport.initialOutboundBatches()
     let scheduled = await transport.scheduledBatches()
-    let durablePending = await store.pendingChanges()
-    XCTAssertTrue(legacy.requiresInitialFetch)
+    let stored = try await store.loadEngineState()
+    let pendingAfter = try await store.pendingChanges()
+    let snips = try await library.checkedSnapshot(sortedBy: .manual).snips
     XCTAssertEqual(starts, [nil])
     XCTAssertEqual(initial, [nil])
     XCTAssertTrue(scheduled.isEmpty)
-    XCTAssertEqual(durablePending, outbound)
+    XCTAssertNil(stored)
+    XCTAssertEqual(pendingAfter, pendingBefore)
+    XCTAssertEqual(snips.map(\.content), ["local edit"])
   }
 
   private func completedFetchState(namespace: CloudSyncNamespace? = nil) -> CloudEngineStateEnvelope {

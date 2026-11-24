@@ -29,7 +29,7 @@ public enum AppRuntimeTrace {
 
 /// Production traces use only OSLog, independently of diagnostic history.
 package struct RuntimeTrace: Sendable {
-  package enum Component: String, Sendable { case application, diagnostics, database }
+  package enum Component: String, Sendable { case application, database }
   package enum Operation: String, Sendable {
     case access, containerCleanup
   }
@@ -37,7 +37,6 @@ package struct RuntimeTrace: Sendable {
     case applicationState, protectedDataChanged, protectedDataWillBecomeUnavailable
     case protectionRequested, protectionGranted, protectionDenied, protectionExpired, protectionEnded
     case lockWaiting, lockAcquired, lockReleased, accessEnded
-    case cleanupStarted, cleanupEnded
   }
   struct Context: Sendable {
     var state: AppRuntimeTrace.State = .unknown

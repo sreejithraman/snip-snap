@@ -20,7 +20,6 @@ extension SwiftDataSnipLibrary {
       snips: current.snips,
       lists: current.lists,
       attachmentData: attachmentData,
-      legacyManualPositions: transferMetadata.legacyManualPositions,
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
       opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload,
       additionalSeenRequestIDs: Set(requests.map(\.id))
@@ -46,7 +45,6 @@ extension SwiftDataSnipLibrary {
       attachmentData: [:],
       attachmentFileURLs: files.mapValues(\.url),
       attachmentFileDigests: files.mapValues(\.digest),
-      legacyManualPositions: transferMetadata.legacyManualPositions,
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
       opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
     )
@@ -98,7 +96,6 @@ extension SwiftDataSnipLibrary {
       snips: currentSnips,
       lists: loaded.state.allLists(),
       attachmentData: currentAttachmentData,
-      legacyManualPositions: transferMetadata.legacyManualPositions,
       opaqueSyncStateDigest: transferMetadata.opaqueSyncStateDigest,
       opaqueSyncStatePayload: transferMetadata.opaqueSyncStatePayload
     )
@@ -217,20 +214,9 @@ extension SwiftDataSnipLibrary {
   static func transferMetadata(
     context: ModelContext
   ) throws -> (
-    legacyManualPositions: [UUID: Int64],
     opaqueSyncStateDigest: Data,
     opaqueSyncStatePayload: Data
   ) {
-    let legacyManualPositions = Dictionary(uniqueKeysWithValues:
-      try context.fetch(FetchDescriptor<StoredLibraryMetadataRecord>()).compactMap {
-        metadata -> (UUID, Int64)? in
-        guard metadata.kind == StoredLibraryMetadataKind.snip.rawValue,
-          metadata.orderKeyData == metadata.legacyOrderKeyData,
-          let position = metadata.legacyPosition
-        else { return nil }
-        return (metadata.domainID, position)
-      }
-    )
     let bases = try context.fetch(FetchDescriptor<StoredCloudDormantBaseRecord>()).sorted(
       by: { ($0.namespaceKey, $0.id) < ($1.namespaceKey, $1.id) }
     )
@@ -249,11 +235,7 @@ extension SwiftDataSnipLibrary {
         payload: base.payload
       )
     }).encoded()
-    return (
-      legacyManualPositions,
-      Data(SHA256.hash(data: bundle)),
-      bundle
-    )
+    return (Data(SHA256.hash(data: bundle)), bundle)
   }
 
   static func replaceDormantBases(

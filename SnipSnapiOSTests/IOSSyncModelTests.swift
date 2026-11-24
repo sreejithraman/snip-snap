@@ -11,7 +11,7 @@ import XCTest
 
 @MainActor
 final class IOSSyncModelTests: IOSModelTestCase {
-    func testManualSyncUsesTheSameLibraryReplacementAndStatusPathAsLifecycleSync() async {
+    func testManualSyncShowsTheEnabledCloudLibraryAndSettles() async {
         let oldLibrary = ModelTestLibrary(
             snips: [Snip(content: "Old collection", origin: .quickEntry)]
         )
@@ -19,7 +19,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
             snips: [Snip(content: "New collection", origin: .quickEntry)]
         )
         let cloudSession = IOSCloudSyncSessionProbe(
-            result: .libraryReplaced,
+            result: .iCloudSyncEnabled,
             activeLibrary: newLibrary
         )
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
@@ -37,31 +37,6 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .ready)
         let syncCount = await cloudSession.syncCount()
         XCTAssertEqual(syncCount, 1)
-    }
-
-    func testGenerationAdoptionReloadsTheLibraryAndEndsTheSchedulingStatus() async {
-        let oldLibrary = ModelTestLibrary(
-            snips: [Snip(content: "Old collection", origin: .quickEntry)]
-        )
-        let adoptedLibrary = ModelTestLibrary(
-            snips: [Snip(content: "Adopted collection", origin: .quickEntry)]
-        )
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .libraryReplacedAndSyncScheduled,
-            activeLibrary: adoptedLibrary
-        )
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let session = IOSAppSession(
-            library: oldLibrary,
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
-        await session.model.load()
-
-        await session.syncWhenPossible()
-
-        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted collection"])
-        XCTAssertEqual(settings.state, .ready)
     }
 
     func testPurgeKeepsTheLibraryAndExplainsWhySyncStopped() async {
@@ -114,6 +89,43 @@ final class IOSSyncModelTests: IOSModelTestCase {
         }
     }
 
+    func testAutomaticStopResultsReplaceTheLibraryLikeManualSync() async {
+        for (result, issue) in Self.stopResults {
+            let manualSettings = SyncedContentSettingsModel(mode: .iCloudSync)
+            let manual = IOSAppSession(
+                library: ModelTestLibrary(snips: [Snip(content: "Cloud copy", origin: .quickEntry)]),
+                syncedContentSettings: manualSettings,
+                cloudSyncSession: IOSCloudSyncSessionProbe(
+                    result: result,
+                    activeLibrary: ModelTestLibrary(snips: [Snip(content: "Local copy", origin: .quickEntry)])
+                )
+            )
+            await manual.model.load()
+            await manual.syncWhenPossible()
+
+            let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
+            let automaticSettings = SyncedContentSettingsModel(mode: .iCloudSync)
+            let lifecycle = IOSAppSession(
+                library: ModelTestLibrary(snips: [Snip(content: "Cloud copy", origin: .quickEntry)]),
+                syncedContentSettings: automaticSettings,
+                cloudSyncSession: IOSCloudSyncSessionProbe(
+                    result: .noChange,
+                    activeLibrary: ModelTestLibrary(snips: [Snip(content: "Local copy", origin: .quickEntry)]),
+                    automaticSyncResults: automatic.stream
+                )
+            )
+            await lifecycle.model.load()
+            automatic.continuation.yield(result)
+            let stopped = await TestReadiness.wait { automaticSettings.mode == .localOnly }
+            XCTAssertTrue(stopped, "\(result)")
+
+            XCTAssertEqual(manual.model.snips.map(\.content), ["Local copy"], "\(result)")
+            XCTAssertEqual(lifecycle.model.snips.map(\.content), ["Local copy"], "\(result)")
+            XCTAssertEqual(manualSettings.state, .failed(issue), "\(result)")
+            XCTAssertEqual(automaticSettings.state, .failed(issue), "\(result)")
+        }
+    }
+
     func testFailedCleanupAfterAStopStillTurnsSyncOff() async {
         for (result, issue) in Self.stopResults {
             let diagnostics = IOSDiagnosticRecorderProbe()
@@ -140,10 +152,9 @@ final class IOSSyncModelTests: IOSModelTestCase {
         }
     }
 
-    func testFailedCleanupAfterAStopStillReplacesDeletionIncomplete() async {
+    func testFailedCleanupAfterAStopStaysOffOnTheNextSync() async {
         for (result, issue) in Self.stopResults {
             let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-            settings.recordRemovalPending()
             let cloudSession = IOSCloudSyncSessionProbe(
                 result: result,
                 activeLibrary: ModelTestLibrary(),
@@ -204,48 +215,6 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertEqual(settings.state, .ready)
     }
 
-    func testSettledRetryAfterLibraryReplacementReloadsAndClearsFailure() async {
-        let adopted = ModelTestLibrary(
-            snips: [Snip(content: "Adopted collection", origin: .quickEntry)]
-        )
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: IOSCloudSyncSessionProbe(
-                result: .libraryReplacedAndSyncCompleted,
-                activeLibrary: adopted
-            )
-        )
-        settings.recordSyncFailure(.retryingSoon)
-
-        await session.retrySyncWhenPossible()
-
-        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted collection"])
-        XCTAssertEqual(settings.state, .ready)
-    }
-
-    func testRetryAfterLibraryReplacementReloadsBeforeShowingTheCurrentIssue() async {
-        let adopted = ModelTestLibrary(
-            snips: [Snip(content: "Adopted with issue", origin: .quickEntry)]
-        )
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: IOSCloudSyncSessionProbe(
-                result: .libraryReplacedWithSyncIssue(.someChangesPending),
-                activeLibrary: adopted
-            )
-        )
-        settings.recordSyncFailure(.retryingSoon)
-
-        await session.retrySyncWhenPossible()
-
-        XCTAssertEqual(session.model.snips.map(\.content), ["Adopted with issue"])
-        XCTAssertEqual(settings.state, .failed(.someChangesPending))
-    }
-
     func testRetryThatOnlyFetchesKeepsThePriorFailure() async {
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
         let session = IOSAppSession(
@@ -290,251 +259,31 @@ final class IOSSyncModelTests: IOSModelTestCase {
     }
 
     func testAutomaticFetchKeepsWarningUntilTheSyncEngineSettlesIt() async {
-        let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .noChange,
-            activeLibrary: ModelTestLibrary(),
-            automaticSyncResults: automatic.stream
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
+        let fixture = AutomaticSyncFixture(settings: settings)
         settings.recordSyncFailure(.iCloudStorageFull)
 
-        automatic.continuation.yield(.contentUpdated)
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertEqual(session.syncedContentSettings.state, .failed(.iCloudStorageFull))
+        let fetched = await fixture.deliver([.contentUpdated])
+        XCTAssertTrue(fetched)
+        XCTAssertEqual(settings.state, .failed(.iCloudStorageFull))
 
-        automatic.continuation.yield(.syncCompleted)
-        _ = await TestReadiness.wait { session.syncedContentSettings.state == .ready }
-        XCTAssertEqual(session.syncedContentSettings.state, .ready)
+        _ = await fixture.deliver([.syncCompleted])
+        let settled = await TestReadiness.wait { settings.state == .ready }
+        XCTAssertTrue(settled)
     }
 
     func testScheduledSyncEndsItsTransientStatusAndKeepsEarlierFailures() async {
-        let automatic = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
         let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .syncScheduled,
-            activeLibrary: ModelTestLibrary(),
-            automaticSyncResults: automatic.stream
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
+        let fixture = AutomaticSyncFixture(settings: settings, manualResult: .syncScheduled)
 
-        await session.syncWhenPossible()
+        await fixture.session.syncWhenPossible()
 
         XCTAssertEqual(settings.state, .ready)
 
         settings.recordSyncFailure(.retryingSoon)
-        automatic.continuation.yield(.syncScheduled)
-        for _ in 0..<20 { await Task.yield() }
+        let delivered = await fixture.deliver([.syncScheduled])
+        XCTAssertTrue(delivered)
         XCTAssertEqual(settings.state, .failed(.retryingSoon))
-    }
-
-    func testSyncWithoutAPendingRemovalReportShowsTheDeletionFinished() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        settings.recordRemovalPending()
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: IOSCloudSyncSessionProbe(
-                result: .syncScheduled,
-                activeLibrary: ModelTestLibrary()
-            )
-        )
-
-        await session.syncWhenPossible()
-
-        XCTAssertEqual(settings.state, .deleted)
-    }
-
-    func testSyncStartedBeforeADeleteCannotFinishItsRemoval() async {
-        let settings = SyncedContentSettingsModel(
-            mode: .iCloudSync,
-            deleteAction: { .removalPending }
-        )
-        settings.recordSyncFailure(.retryingSoon)
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .syncScheduled,
-            activeLibrary: ModelTestLibrary(),
-            pausesCloudWork: true
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
-        // The probe counts and pauses a call in one actor turn, so a counted call can resume.
-        let olderSync = Task { await session.syncWhenPossible() }
-        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 1 }) else {
-            return XCTFail("The older sync never reached the cloud session")
-        }
-
-        await settings.deleteSyncedContent()
-        XCTAssertEqual(settings.state, .removalPending)
-        await cloudSession.resumeCloudWork()
-        await olderSync.value
-        XCTAssertEqual(settings.state, .removalPending)
-
-        let laterSync = Task { await session.syncWhenPossible() }
-        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 2 }) else {
-            return XCTFail("The later sync never reached the cloud session")
-        }
-        await cloudSession.resumeCloudWork()
-        await laterSync.value
-        XCTAssertEqual(settings.state, .deleted)
-    }
-
-    func testRemovalReportFromASyncStartedBeforeADeleteCannotFinishIt() async {
-        let settings = SyncedContentSettingsModel(
-            mode: .iCloudSync,
-            deleteAction: { .removalPending }
-        )
-        settings.recordSyncFailure(.retryingSoon)
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .oldSyncedContentRemovalCompleted,
-            activeLibrary: ModelTestLibrary(),
-            pausesCloudWork: true
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
-        // The probe counts and pauses a call in one actor turn, so a counted call can resume.
-        let olderSync = Task { await session.syncWhenPossible() }
-        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 1 }) else {
-            return XCTFail("The older sync never reached the cloud session")
-        }
-
-        await settings.deleteSyncedContent()
-        XCTAssertEqual(settings.state, .removalPending)
-        await cloudSession.resumeCloudWork()
-        await olderSync.value
-        XCTAssertEqual(settings.state, .removalPending)
-
-        let laterSync = Task { await session.syncWhenPossible() }
-        guard await TestReadiness.wait(until: { await cloudSession.syncCount() == 2 }) else {
-            return XCTFail("The later sync never reached the cloud session")
-        }
-        await cloudSession.resumeCloudWork()
-        await laterSync.value
-        XCTAssertEqual(settings.state, .deleted)
-    }
-
-    func testManualPendingRemovalResultKeepsDeletionIncomplete() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: IOSCloudSyncSessionProbe(
-                result: .oldSyncedContentRemovalPending,
-                activeLibrary: ModelTestLibrary()
-            )
-        )
-
-        await session.syncWhenPossible()
-        XCTAssertEqual(settings.state, .removalPending)
-
-        await session.syncWhenPossible()
-        XCTAssertEqual(settings.state, .removalPending)
-    }
-
-    func testRetryFromAnIncompleteDeletionFinishesIt() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .oldSyncedContentRemovalCompleted,
-            activeLibrary: ModelTestLibrary()
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
-
-        await session.retrySyncWhenPossible()
-
-        let retryCount = await cloudSession.retryCount()
-        XCTAssertEqual(retryCount, 1)
-        XCTAssertEqual(settings.state, .deleted)
-        XCTAssertEqual(settings.statusTitle, "Synced content deleted")
-    }
-
-    func testFailedRetryFromAnIncompleteDeletionRecordsTheIssue() async {
-        let diagnostics = IOSDiagnosticRecorderProbe()
-        let settings = SyncedContentSettingsModel(
-            mode: .iCloudSync,
-            initialState: .removalPending,
-            diagnostics: diagnostics.recorder
-        )
-        let cloudSession = IOSCloudSyncSessionProbe(
-            result: .noChange,
-            activeLibrary: ModelTestLibrary(),
-            syncError: .offline
-        )
-        let session = IOSAppSession(
-            library: ModelTestLibrary(),
-            syncedContentSettings: settings,
-            cloudSyncSession: cloudSession
-        )
-        let recordedBeforeRetry = diagnostics.events.count
-
-        await session.retrySyncWhenPossible()
-
-        let retryCount = await cloudSession.retryCount()
-        XCTAssertEqual(retryCount, 1)
-        XCTAssertEqual(settings.state, .removalPending)
-        XCTAssertEqual(settings.finishDeletingIssue, .appDataIssue)
-        XCTAssertEqual(Array(diagnostics.events.dropFirst(recordedBeforeRetry)), [
-            .failure(operation: "sync.run", errorCode: "sync.appDataIssue", visibility: .user)
-        ])
-    }
-
-    func testAutomaticPendingRemovalResultKeepsDeletionIncomplete() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
-        let fixture = AutomaticSyncFixture(settings: settings)
-
-        let delivered = await fixture.deliver(
-            [.oldSyncedContentRemovalPending],
-            then: .libraryReplacedWithSyncIssue(.someChangesPending)
-        )
-
-        XCTAssertTrue(delivered)
-        XCTAssertEqual(settings.state, .removalPending)
-    }
-
-    func testAutomaticSyncIssueKeepsDeletionIncomplete() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
-        let fixture = AutomaticSyncFixture(settings: settings)
-
-        let delivered = await fixture.deliver(
-            [.syncIssue(.retryingSoon)],
-            then: .libraryReplacedWithSyncIssue(.someChangesPending)
-        )
-
-        XCTAssertTrue(delivered)
-        XCTAssertEqual(settings.state, .removalPending)
-    }
-
-    /// Sync engine results never carry Delete Synced Content progress, so they can't show
-    /// that a removal finished.
-    func testSyncEngineResultsKeepDeletionIncomplete() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync, initialState: .removalPending)
-        let fixture = AutomaticSyncFixture(settings: settings)
-
-        let delivered = await fixture.deliver(
-            [.syncScheduled, .contentUpdated, .syncCompleted],
-            then: .libraryReplacedWithSyncIssue(.someChangesPending)
-        )
-
-        XCTAssertTrue(delivered)
-        XCTAssertEqual(settings.state, .removalPending)
     }
 
     func testAutomaticResultsDuringSyncNowKeepItRunning() async {
@@ -551,129 +300,13 @@ final class IOSSyncModelTests: IOSModelTestCase {
         }
         XCTAssertEqual(settings.state, .syncing)
 
-        let delivered = await fixture.deliver(
-            [.syncScheduled, .contentUpdated],
-            then: .libraryReplacedAndSyncScheduled
-        )
+        let delivered = await fixture.deliver([.syncScheduled, .contentUpdated])
 
         XCTAssertTrue(delivered)
         XCTAssertEqual(settings.state, .syncing)
         await fixture.cloudSession.resumeCloudWork()
         await syncNow.value
         XCTAssertEqual(settings.state, .ready)
-    }
-
-    func testAutomaticRemovalReportKeepsAnOutstandingIssue() async {
-        let settings = SyncedContentSettingsModel(mode: .iCloudSync)
-        settings.recordSyncFailure(.iCloudStorageFull)
-        let fixture = AutomaticSyncFixture(settings: settings)
-
-        let delivered = await fixture.deliver(
-            [.oldSyncedContentRemovalCompleted],
-            then: .libraryReplacedAndSyncScheduled
-        )
-
-        XCTAssertTrue(delivered)
-        XCTAssertEqual(settings.state, .failed(.iCloudStorageFull))
-    }
-
-    func testIOSDelayedCancelDoesNotClearNewerBackupPreview() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("IOSImportCancelTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let firstURL = root.appendingPathComponent("First.json")
-        let secondURL = root.appendingPathComponent("Second.json")
-        let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("Target.json"))
-        let firstBackup = try JSONSnipLibrary(fileURL: firstURL)
-        let secondBackup = try JSONSnipLibrary(fileURL: secondURL)
-        _ = try await firstBackup.perform(
-            .add(
-                content: "First",
-                origin: .quickEntry,
-                source: nil,
-                listID: SnipList.inboxID,
-                attachmentURLs: [],
-                requestID: UUID(),
-                now: Date()
-            ),
-            sortedBy: .chronological
-        )
-        _ = try await secondBackup.perform(
-            .add(
-                content: "Second",
-                origin: .quickEntry,
-                source: nil,
-                listID: SnipList.inboxID,
-                attachmentURLs: [],
-                requestID: UUID(),
-                now: Date()
-            ),
-            sortedBy: .chronological
-        )
-        let actions = DirectSnipLibraryUserActions(
-            library: target,
-            previewBackupImport: { url, library in
-                try await SnipLibraryImport.preview(backupURL: url, target: library)
-            }
-        )
-        let session = SavedSnipsSession(library: target, userActions: actions)
-
-        let first = try await session.previewImport(from: firstURL)
-        let second = try await session.previewImport(from: secondURL)
-        await session.cancelImport(id: first.id)
-        let applied = try await session.applyPendingImport(
-            id: second.id,
-            sortedBy: .chronological
-        )
-
-        XCTAssertEqual(applied?.0.snapshot.snips.map(\.content), ["Second"])
-    }
-
-    func testSavedSnipsSessionRebindsCommandsAndRecoveryTogether() async throws {
-        let oldLibrary = ModelTestLibrary(
-            snips: [Snip(content: "Old", origin: .quickEntry)]
-        )
-        let recoveredValue = Snip(content: "Recovered", origin: .quickEntry)
-        let recovered = RecoveredSnip(
-            id: recoveredValue.id,
-            currentSnipID: recoveredValue.id,
-            recovered: recoveredValue,
-            conflictingFields: [],
-            state: .promoted
-        )
-        let newLibrary = ModelTestLibrary(
-            recovery: SnipRecoverySnapshot(promotedSnips: [recovered])
-        )
-        let session = SavedSnipsSession(library: oldLibrary)
-
-        let state = await session.withExclusiveAccess { session in
-            await session.replaceLibrary(
-                newLibrary,
-                recoveryScope: SnipRecoveryScope("new-scope"),
-                sortedBy: .chronological
-            )
-        }
-        _ = try await session.withExclusiveAccess { session in
-            try await session.performUserCommand(
-                .add(
-                    content: "New",
-                    origin: .quickEntry,
-                    source: nil,
-                    listID: SnipList.inboxID,
-                    attachmentURLs: [],
-                    requestID: UUID(),
-                    now: Date()
-                ),
-                sortedBy: .chronological
-            )
-        }
-
-        let oldSnapshot = await oldLibrary.snapshot(sortedBy: .chronological)
-        let newSnapshot = await newLibrary.snapshot(sortedBy: .chronological)
-        XCTAssertTrue(state.library.snips.isEmpty)
-        XCTAssertEqual(state.recovery.promotedSnips, [recovered])
-        XCTAssertEqual(oldSnapshot.snips.count, 1)
-        XCTAssertEqual(newSnapshot.snips.map(\.content), ["New"])
     }
 
     func testRoutedComposerSendRejectsSourceDeletedWhileWaitingForMutation() async {
@@ -684,16 +317,14 @@ final class IOSSyncModelTests: IOSModelTestCase {
         let revision = model.libraryRevision
         let delete = Task { await model.deleteList(id: work.id) }
         await library.waitUntilFirstCommandStarts()
-        var didStartSend = false
-        let send = Task {
-            didStartSend = true
-            return await model.createSnip(
+        // Runs until it waits for the held mutation, so the send is queued before the mutation resumes.
+        let send = Task.immediate {
+            await model.createSnip(
                 content: "Deleted source draft", in: SnipList.inboxID,
                 selectCreatedSnip: false, expectedLibraryRevision: revision,
                 expectedSourceListID: work.id
             )
         }
-        while !didStartSend { await Task.yield() }
         await library.resumeFirstCommand()
         let deleted = await delete.value
         XCTAssertTrue(deleted)
@@ -721,15 +352,13 @@ final class IOSSyncModelTests: IOSModelTestCase {
         await replacement.suspendNextSnapshot()
         let replace = Task { await model.replaceLibrary(replacement, recoveryScope: nil) }
         await replacement.waitUntilSnapshotStarts()
-        var didStartSend = false
-        let send = Task {
-            didStartSend = true
-            return await model.createSnip(
+        // Runs until it waits for the held mutation, so the send is queued before the mutation resumes.
+        let send = Task.immediate {
+            await model.createSnip(
                 content: source.draft.text, in: SnipList.inboxID,
                 selectCreatedSnip: false, expectedLibraryRevision: revision
             )
         }
-        while !didStartSend { await Task.yield() }
         await replacement.resumeSnapshot()
         await replace.value
         let saved = await send.value
@@ -742,10 +371,12 @@ final class IOSSyncModelTests: IOSModelTestCase {
     func testRoutedSendRejectsOldPickerRevisionWhenReplacementKeepsListIDs() async {
         let work = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 1)
         let lists: [SnipList] = [.inbox, work]
-        let model = makeModel(library: ModelTestLibrary(lists: lists))
+        let original = ModelTestLibrary(lists: lists)
+        let replacement = ModelTestLibrary(lists: lists)
+        let model = makeModel(library: original)
         await model.load()
         let openingRevision = model.libraryRevision
-        await model.replaceLibrary(ModelTestLibrary(lists: lists), recoveryScope: nil)
+        await model.replaceLibrary(replacement, recoveryScope: nil)
 
         let staleSaved = await model.createSnip(
             content: "Old picker draft", in: work.id,
@@ -759,6 +390,10 @@ final class IOSSyncModelTests: IOSModelTestCase {
         )
         XCTAssertTrue(currentSaved)
         XCTAssertEqual(model.snips.map(\.content), ["Current picker draft"])
+        let originalSnapshot = await original.snapshot(sortedBy: .chronological)
+        let replacementSnapshot = await replacement.snapshot(sortedBy: .chronological)
+        XCTAssertTrue(originalSnapshot.snips.isEmpty, "Commands after a replacement must not reach the old library")
+        XCTAssertEqual(replacementSnapshot.snips.map(\.content), ["Current picker draft"])
     }
 
     func testReplacingLibraryReloadsVisibleContentAndRecoveryScope() async {
@@ -915,7 +550,7 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertNil(attachmentEdit)
     }
 
-    func testResetReplacementWaitsForAnEditAndDropsItsUndoEntry() async {
+    func testResetReplacementWaitsForAnInFlightEdit() async {
         let localLibrary = ModelTestLibrary(suspendsFirstCommand: true)
         let resetLibrary = ModelTestLibrary()
         let model = IOSAppModel(library: localLibrary)
@@ -924,7 +559,8 @@ final class IOSSyncModelTests: IOSModelTestCase {
             await model.createSnip(content: "In flight", in: SnipList.inboxID)
         }
         await localLibrary.waitUntilFirstCommandStarts()
-        let replacement = Task {
+        // Runs until it waits for the in-flight edit, so the replacement is queued before the edit resumes.
+        let replacement = Task.immediate {
             await model.replaceLibrary(resetLibrary, recoveryScope: nil)
         }
         await localLibrary.resumeFirstCommand()
@@ -932,7 +568,11 @@ final class IOSSyncModelTests: IOSModelTestCase {
         XCTAssertTrue(created)
         await replacement.value
 
-        XCTAssertTrue(model.snips.isEmpty)
+        XCTAssertTrue(model.snips.isEmpty, "The edit's result must not show after the reset replaced its library")
+        let local = await localLibrary.snapshot(sortedBy: .chronological)
+        let reset = await resetLibrary.snapshot(sortedBy: .chronological)
+        XCTAssertEqual(local.snips.map(\.content), ["In flight"])
+        XCTAssertTrue(reset.snips.isEmpty)
     }
 
     func testRecoveryResolutionWaitsForAnInFlightEdit() async {
@@ -956,10 +596,10 @@ final class IOSSyncModelTests: IOSModelTestCase {
             await model.createSnip(content: "In flight", in: SnipList.inboxID)
         }
         await library.waitUntilFirstCommandStarts()
-        let resolution = Task {
+        // Runs until it waits for the in-flight edit, so the check below sees any overlap.
+        let resolution = Task.immediate {
             await model.resolveRecovery(recovered.id, choice: .keepCurrent)
         }
-        try? await Task.sleep(for: .milliseconds(20))
         let recoveryStartedWhileEditWasPaused = await library.didRecoveryStart()
         await library.resumeFirstCommand()
         let created = await creation.value
@@ -1078,20 +718,19 @@ private struct AutomaticSyncFixture {
             automaticSyncResults: automatic.stream
         )
         session = IOSAppSession(
-            library: ModelTestLibrary(),
+            library: ModelTestLibrary(
+                snips: [Snip(content: Self.markerContent, origin: .quickEntry)]
+            ),
             syncedContentSettings: settings,
             cloudSyncSession: cloudSession
         )
         self.automatic = automatic.continuation
     }
 
-    /// Yields `results`, then `marker`, a library replacement that must leave the Settings
-    /// state under test alone. Its snips appearing shows the stream handled every result first.
-    func deliver(
-        _ results: [SnipSnapCloudSyncResult],
-        then marker: SnipSnapCloudSyncResult
-    ) async -> Bool {
-        for result in results + [marker] { automatic.yield(result) }
+    /// Yields `results`, then a content update that must leave the Settings state under test
+    /// alone. The reloaded snips appearing shows the stream handled every result first.
+    func deliver(_ results: [SnipSnapCloudSyncResult]) async -> Bool {
+        for result in results + [.contentUpdated] { automatic.yield(result) }
         return await TestReadiness.wait {
             session.model.snips.map(\.content) == [Self.markerContent]
         }

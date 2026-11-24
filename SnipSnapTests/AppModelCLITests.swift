@@ -297,7 +297,7 @@ final class AppModelCLITests: StoreBackedTestCase {
         } catch SnipLibraryError.snipChanged {}
         let changedSnip = try XCTUnwrap(changed.snapshot.snips.first)
         let revision = SnipCLIItemRevision.token(snip: changedSnip)
-        _ = try await library.perform(.toggleDone(id: snip.id), sortedBy: .chronological)
+        _ = try await library.perform(.setDone(ids: [snip.id], done: true), sortedBy: .chronological)
         do {
             _ = try await model.handleCLIRequest(SnipCLIRequest(action: .deleteSnip(
                 id: snip.id, expectedRevision: revision)))

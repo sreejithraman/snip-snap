@@ -120,6 +120,21 @@ extension SwiftDataSnipLibrary {
     _ = try commitCloudFullBatch(batch)
   }
 
+  /// Seeds dormant accepted bases as an earlier build's retry promotion left them.
+  func testInsertDormantBases(_ bases: [CloudDormantBase]) throws {
+    guard let container else { throw SnipLibraryError.storeUnavailable }
+    let context = Self.makeContext(container: container)
+    for base in bases {
+      context.insert(StoredCloudDormantBaseRecord(
+        namespaceKey: base.namespaceKey,
+        reference: base.reference,
+        identity: base.identity,
+        payload: base.payload
+      ))
+    }
+    try context.save()
+  }
+
   func testDormantCloudBase(
     namespaceKey: CloudSyncNamespaceKey,
     reference: CloudEntityReference

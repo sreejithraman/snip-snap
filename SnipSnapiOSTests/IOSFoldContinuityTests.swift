@@ -30,6 +30,26 @@ final class IOSFoldContinuityTests: IOSModelTestCase {
         }
     }
 
+    func testFocusedComposerKeepsDraftAndFocusAcrossSizeClassSwaps() async throws {
+        let storage = makeComposerStorage()
+        storage.draftStore.setText("Fold draft", for: SnipList.inboxID)
+        let root = try RootHarness(test: self, storage: storage)
+        await root.expect("compact composer") { root.composer?.text == "Fold draft" }
+        var previous = try XCTUnwrap(root.composer)
+        XCTAssertTrue(previous.becomeFirstResponder())
+        await root.expect("compact composer focused") { root.composer?.isFirstResponder == true }
+
+        for sizeClass in [UIUserInterfaceSizeClass.regular, .compact] {
+            await root.swap(to: sizeClass)
+            await root.expect("\(sizeClass) composer keeps the user's focus") {
+                root.composer !== previous && root.composer?.isFirstResponder == true
+            }
+            let input = try XCTUnwrap(root.composer)
+            XCTAssertEqual(input.text, "Fold draft", "\(sizeClass)")
+            previous = input
+        }
+    }
+
     func testAttachmentStagingFinishesAcrossSizeClassSwap() async throws {
         let storage = makeComposerStorage()
         storage.draftStore.setText("before ", for: SnipList.inboxID)

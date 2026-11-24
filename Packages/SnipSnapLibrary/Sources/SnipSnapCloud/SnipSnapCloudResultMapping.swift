@@ -57,26 +57,9 @@ func syncResult(for status: CloudCollectionStatus) -> SnipSnapCloudSyncResult {
     .syncCompleted
   case .requiresEnable:
     .noChange
-  case .oldSyncedContentRemovalPending:
-    .oldSyncedContentRemovalPending
-  case .deletedSyncedContent:
-    .oldSyncedContentRemovalCompleted
-  case .enabled, .adoptedRemoteCollection:
-    .libraryReplaced
-  case .adoptedRemoteCollectionWithIssue(_, let issue):
-    .libraryReplacedWithSyncIssue(issue)
-  case .adoptedRemoteCollectionSettled:
-    .libraryReplacedAndSyncCompleted
-  case .adoptedRemoteCollectionScheduled:
-    .libraryReplacedAndSyncScheduled
   case .purged:
     .iCloudDataReset
   }
-}
-
-func deleteOutcome(for status: CloudCollectionStatus) -> SyncedContentDeleteOutcome {
-  if case .oldSyncedContentRemovalPending = status { return .removalPending }
-  return .completed
 }
 
 struct NoopCloudCollectionSyncDriver: CloudCollectionSyncDriver {

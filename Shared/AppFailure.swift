@@ -41,7 +41,7 @@ struct AppFailure: Identifiable, Equatable, Sendable {
         switch operation {
         case "snip.completion", "snip.completion_after_copy", "snip.pin", "snip.move", "snip.merge", "snip.delete",
              "list.delete",
-             "attachment.prepare", "attachment.cache_clear", "selection.capture", "capture.screen":
+             "attachment.prepare", "selection.capture", "capture.screen":
             return .snackbar
         default:
             return operation.hasPrefix("clipboard.") ? .snackbar : .dialog
@@ -81,7 +81,6 @@ struct AppFailure: Identifiable, Equatable, Sendable {
         case "list.delete": String(localized: "Couldn’t delete list")
         case "selection.capture", "capture.screen": String(localized: "Couldn’t snip")
         case "attachment.prepare": String(localized: "Couldn’t prepare attachments")
-        case "attachment.cache_clear": String(localized: "Couldn’t clear downloaded files")
         default: String(localized: "Something Went Wrong")
         }
     }

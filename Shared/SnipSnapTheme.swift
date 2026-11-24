@@ -255,8 +255,6 @@ struct AppPrimaryActionButton<Label: View>: View {
 private struct AppToastPresenter: ViewModifier {
     @Binding var toast: AppToast?
     let close: (AppToast) -> Void
-    let alignment: Alignment
-    let edge: Edge
     let isHidden: Bool
     let reservesSpace: Bool
     let usesFixedExpiry: Bool
@@ -300,7 +298,7 @@ private struct AppToastPresenter: ViewModifier {
                 }
 #endif
             } else {
-                content.overlay(alignment: alignment) {
+                content.overlay(alignment: .bottom) {
                     presentedToast
                 }
             }
@@ -349,7 +347,7 @@ private struct AppToastPresenter: ViewModifier {
                 .transition(
                     reduceMotion
                         ? .opacity
-                        : .move(edge: edge).combined(with: .opacity)
+                        : .move(edge: .bottom).combined(with: .opacity)
                 )
                 .onHover { isHovering = $0 }
         }
@@ -437,8 +435,6 @@ extension View {
     func appToast(
         _ toast: Binding<AppToast?>,
         close: ((AppToast) -> Void)? = nil,
-        alignment: Alignment,
-        edge: Edge,
         isHidden: Bool = false,
         reservesSpace: Bool = false,
         usesFixedExpiry: Bool = false,
@@ -450,8 +446,6 @@ extension View {
             AppToastPresenter(
                 toast: toast,
                 close: close ?? { _ in toast.wrappedValue = nil },
-                alignment: alignment,
-                edge: edge,
                 isHidden: isHidden,
                 reservesSpace: reservesSpace,
                 usesFixedExpiry: usesFixedExpiry,
@@ -466,8 +460,6 @@ extension View {
     func appToast(
         showing toast: @autoclosure @escaping @MainActor () -> AppToast?,
         close: @escaping (AppToast) -> Void,
-        alignment: Alignment,
-        edge: Edge,
         isHidden: Bool = false,
         reservesSpace: Bool = false,
         usesFixedExpiry: Bool = false,
@@ -477,7 +469,7 @@ extension View {
     ) -> some View {
         appToast(
             Binding(get: { toast() }, set: { _ in }), close: close,
-            alignment: alignment, edge: edge, isHidden: isHidden, reservesSpace: reservesSpace,
+            isHidden: isHidden, reservesSpace: reservesSpace,
             usesFixedExpiry: usesFixedExpiry, bottomInset: bottomInset,
             onAction: onAction, onDismiss: onDismiss
         )
@@ -520,8 +512,6 @@ enum SnipSnapTheme {
     })
 #endif
     static let controlTint = actionAccent
-    static let actionGlassTint = actionAccent
-    static let actionGlassLabel = actionLabel
     static let disabledActionGlassTint = Color.primary.opacity(0.08)
     static let disabledActionGlassLabel = Color.primary.opacity(0.40)
     static let selectionFill = Color.primary.opacity(0.10)

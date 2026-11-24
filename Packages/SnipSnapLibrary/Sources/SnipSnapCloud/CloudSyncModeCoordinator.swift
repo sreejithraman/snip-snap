@@ -37,28 +37,11 @@ private actor FullRecordSyncAdapter {
         try retainFetchIssue(outcome)
     }
 
-    func sendPending(
-        beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
-    ) async throws {
-        let outcome = try await syncDriver.sendPending(beforeSend: beforeSend)
-        try reportCompletedSyncIssue(outcome)
-    }
-
     private func retainFetchIssue(_ outcome: CloudFullSyncOutcome) throws {
         if let issue = outcome.issue {
             if outcome.blocksOutbound { throw CloudSyncIssueError(issue) }
             pendingIssue = issue
         }
-    }
-
-    private func reportCompletedSyncIssue(_ outcome: CloudFullSyncOutcome) throws {
-        let issue = outcome.issue ?? pendingIssue
-        if let issue, issue.retriesAutomatically {
-            pendingIssue = issue
-            return
-        }
-        pendingIssue = nil
-        if let issue { throw CloudSyncIssueError(issue) }
     }
 
     func takeSyncIssue() async -> SyncedContentSyncIssue? {
@@ -72,10 +55,6 @@ private actor FullRecordSyncAdapter {
 
     func enrollmentEvidence() async throws -> CloudTextEnrollmentEvidence {
         try await raw.enrollmentEvidence()
-    }
-
-    func statusEvidence() async throws -> CloudTextEnrollmentEvidence {
-        try await raw.statusEvidence()
     }
 
     func dormantAcceptedBaseTransferPayload() async throws -> Data? {
@@ -151,7 +130,7 @@ package actor ICloudSyncModeCoordinator {
     private let accountStateSource: any ICloudAccountStateSource
     private let initialAccountState: ICloudAccountState?
     private let checkSetupCollection: @Sendable () async throws -> Void
-    private enum Operation { case enable, optOut, activeSync }
+    private enum Operation { case enable, optOut }
     private var currentOperation: Operation?
 
     package init(
@@ -180,10 +159,6 @@ package actor ICloudSyncModeCoordinator {
         self.checkSetupCollection = checkSetupCollection
     }
 
-    package func status() async throws -> ICloudSyncModeStatus {
-        try await statusUnchecked()
-    }
-
     private func updateAccountStatus(_ accountState: ICloudAccountState) async throws -> ICloudSyncModeStatus {
         let store = try await persistence.snapshot().activeStore
         if let binding = store.namespace {
@@ -193,45 +168,6 @@ package actor ICloudSyncModeCoordinator {
                 try await persistence.keepCloudCacheLocally(storeID: store.id, namespace: binding, reason: .accountChanged)
             }
         }
-        return try await statusUnchecked(accountState: accountState)
-    }
-
-    @discardableResult
-    package func syncActive() async throws -> ICloudSyncModeStatus {
-        try begin(.activeSync)
-        var operationEnded = false
-        defer { if !operationEnded { end() } }
-        let accountState = await accountStateSource.currentAccountState()
-        if accountAttentionReason(accountState) != nil {
-            return try await updateAccountStatus(accountState)
-        }
-        let storage = try await persistence.snapshot()
-        try await persistence.requireActiveNamespace(namespace.binding)
-        let lease = try await persistence.activeCloudMutation(storeID: storage.activeStore.id)
-        let adapter = try await adapter(storeID: storage.activeStore.id)
-        do {
-            try await lease.run {
-                try await adapter.fetchRemote()
-                var clearedEarlierRetry = false
-                for _ in 0..<8 {
-                    let evidence = try await adapter.enrollmentEvidence()
-                    if evidence.hasRetryableRecordFailures || !evidence.retryableEventKeys.isEmpty {
-                        guard !clearedEarlierRetry else { break }
-                        try await adapter.clearRetryableEvents(evidence.retryableEventKeys)
-                        clearedEarlierRetry = true
-                        continue
-                    }
-                    guard evidence.hasPendingChanges, !evidence.blocksSending,
-                          evidence.phase != .blocked
-                    else { break }
-                    try await adapter.sendPending()
-                }
-            }
-        } catch is ICloudAccountGateError {
-            return try await updateAccountStatus(await accountStateSource.currentAccountState())
-        }
-        end()
-        operationEnded = true
         return try await statusUnchecked(accountState: accountState)
     }
 
@@ -260,7 +196,7 @@ package actor ICloudSyncModeCoordinator {
             if initialAccountState == nil { try await requireMatchingAccount() }
             try await bridge.fetchRemote()
             if let issue = await bridge.takeSyncIssue() { throw CloudSyncIssueError(issue) }
-            let evidence = try await bridge.statusEvidence()
+            let evidence = try await bridge.enrollmentEvidence()
             guard evidence.retryableEventKeys.isEmpty else {
                 throw CloudSyncIssueError(.someChangesPending)
             }
@@ -575,10 +511,10 @@ package actor ICloudSyncModeCoordinator {
             )
         }
         try await persistence.requireActiveNamespace(namespace.binding)
-        if currentOperation == .optOut || currentOperation == .activeSync {
+        if currentOperation == .optOut {
             return ICloudSyncModeStatus(state: .syncing, activeStoreID: storage.activeStore.id)
         }
-        let evidence = try await adapter(storeID: storage.activeStore.id).statusEvidence()
+        let evidence = try await adapter(storeID: storage.activeStore.id).enrollmentEvidence()
         let state: ICloudSyncModeState = !evidence.needsAttention && [.active, .seeding].contains(evidence.phase)
             ? .on
             : .needsAttention

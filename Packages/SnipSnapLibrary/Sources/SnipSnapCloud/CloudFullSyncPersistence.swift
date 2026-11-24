@@ -122,26 +122,11 @@ package actor CloudFullSyncCoordinator {
   }
 
   @discardableResult
-  package func sync() async throws -> CloudFullSyncOutcome {
-    try await run(fetch: true, send: true, drainOutbound: false, inspectSettlement: false,
-      beforeApply: {}, beforeSend: { _ in })
-  }
-
-  @discardableResult
   package func fetchRemote(
     beforeApply: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> CloudFullSyncOutcome {
     try await run(fetch: true, send: false, drainOutbound: false, inspectSettlement: false,
       beforeApply: beforeApply, beforeSend: { _ in })
-  }
-
-  @discardableResult
-  package func sendPending(
-    beforeApply: @escaping @Sendable () async throws -> Void = {},
-    beforeSend: @escaping @Sendable (CloudOutboundBatch) async throws -> Void = { _ in }
-  ) async throws -> CloudFullSyncOutcome {
-    try await run(fetch: false, send: true, drainOutbound: false, inspectSettlement: true,
-      beforeApply: beforeApply, beforeSend: beforeSend)
   }
 
   @discardableResult
@@ -809,9 +794,11 @@ extension CloudFullSyncPersistence {
     return try encoder.encode(RawStagedBatch(batch: batch, outbound: outbound))
   }
 
+  /// The sync issue a stored recovery event reports, or nil when it records a finished
+  /// resolution, such as a snip moved to Inbox because its list was deleted elsewhere.
   static func storedSyncIssue(
     for recovery: CloudFullRecoveryInput
-  ) -> SyncedContentSyncIssue {
+  ) -> SyncedContentSyncIssue? {
     switch recovery.kind {
     case .retryableFetch, .terminalFetch, .retryableSend, .terminalSend:
       guard let raw = try? JSONDecoder().decode(RawStagedBatch.self, from: recovery.resultData),
@@ -822,10 +809,42 @@ extension CloudFullSyncPersistence {
           ? .someChangesPending : .appDataIssue)
     case .destructiveReset:
       return .iCloudDataReset
-    case .malformedSentBatch, .modeRecoveredSnip, .modeRecoveredList,
-         .modeDeletedListPlacement, .deletedListPlacement:
+    case .malformedSentBatch:
       return .appDataIssue
+    case .modeRecoveredSnip, .modeRecoveredList, .modeDeletedListPlacement, .deletedListPlacement:
+      return nil
     }
+  }
+
+  /// Encodes the snips each deleted list moved to Inbox in one fetched batch.
+  static func deletedListPlacementInput(
+    namespaceKey: CloudSyncNamespaceKey, batchID: UUID, moved: [UUID: [UUID]]
+  ) throws -> CloudFullRecoveryInput {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let listIDs = moved.keys.sorted { $0.uuidString < $1.uuidString }
+    return CloudFullRecoveryInput(
+      namespaceKey: namespaceKey.rawValue,
+      batchID: batchID,
+      kind: .deletedListPlacement,
+      outboundData: try encoder.encode(listIDs),
+      resultData: try encoder.encode(listIDs.map { id in
+        (moved[id] ?? []).sorted { $0.uuidString < $1.uuidString }
+      })
+    )
+  }
+
+  /// Reads both shapes: one list with its snips, written by 0.6.1 betas, or parallel arrays of
+  /// lists and their snips, which lets one batch delete several lists.
+  static func deletedListPlacements(in recovery: CloudFullRecoveryInput) throws -> [UUID: [UUID]] {
+    let decoder = JSONDecoder()
+    if let listID = try? decoder.decode(UUID.self, from: recovery.outboundData) {
+      return [listID: try decoder.decode([UUID].self, from: recovery.resultData)]
+    }
+    let listIDs = try decoder.decode([UUID].self, from: recovery.outboundData)
+    let snipIDs = try decoder.decode([[UUID]].self, from: recovery.resultData)
+    guard listIDs.count == snipIDs.count else { throw CloudTransportError.invalidRecord }
+    return Dictionary(zip(listIDs, snipIDs), uniquingKeysWith: { $0 + $1 })
   }
 
   static func storedSyncIssues(

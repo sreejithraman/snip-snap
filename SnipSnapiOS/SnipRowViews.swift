@@ -10,8 +10,6 @@ struct SnipRow: View {
     let snip: Snip
     let model: IOSAppModel
     let isRecovered: Bool
-    var showsStatusIcon = true
-    var allowsTextExpansion = true
     var isGathering = false
     var sourceFrameChanged: ((CGRect) -> Void)? = nil
     @State private var isChangingCompletion = false
@@ -25,12 +23,12 @@ struct SnipRow: View {
 
     var body: some View {
         SnipMarkdownContent(source: snip.content) { text in
-            IOSItemRow(hasLeading: showsStatusIcon || isGathering) {
+            IOSItemRow {
                 if isGathering {
                     SnipCompletionIcon(isDone: snip.isDone, appearance: appearance)
                         .opacity(0.35)
                         .accessibilityHidden(true)
-                } else if showsStatusIcon {
+                } else {
                     if snip.isPinned, let onCopy {
                         SnipCopyControl(appearance: appearance, isPinned: true, action: onCopy)
                         .accessibilityLabel("Copy Pinned Snip")
@@ -63,9 +61,9 @@ struct SnipRow: View {
                     text: text,
                     model: model,
                     isRecovered: isRecovered,
-                    allowsTextExpansion: allowsTextExpansion && !isGathering,
+                    allowsTextExpansion: !isGathering,
                     onPreviewAttachment: onPreviewAttachment,
-                    showsPin: isGathering || !showsStatusIcon || onCopy == nil
+                    showsPin: isGathering || onCopy == nil
                 )
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { sourceFrameChanged?($0) }
@@ -293,7 +291,6 @@ struct SnipCircularControlLabel: View {
 }
 
 struct IOSItemRow<Leading: View, Content: View>: View {
-    var hasLeading = true
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let content: () -> Content
 
@@ -301,7 +298,7 @@ struct IOSItemRow<Leading: View, Content: View>: View {
         HStack(alignment: .top, spacing: 12) {
             leading()
             content()
-                .padding(.top, hasLeading ? SnipSnapSpacing.relatedContent : 0)
+                .padding(.top, SnipSnapSpacing.relatedContent)
         }
         .padding(.vertical, 4)
     }

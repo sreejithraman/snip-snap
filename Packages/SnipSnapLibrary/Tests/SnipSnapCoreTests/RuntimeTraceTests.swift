@@ -17,7 +17,7 @@ final class RuntimeTraceTests: XCTestCase {
         XCTAssertEqual(delivered.wait(timeout: .now() + 1), .success,
           "Trace observers must not run under the expiry state lock")
       }
-    }).span(.diagnostics)
+    }).span(.database)
     do {
       let activity = try FileAccessBackgroundActivity.begin(runner: { expire in
         callback.withLock { $0 = expire }

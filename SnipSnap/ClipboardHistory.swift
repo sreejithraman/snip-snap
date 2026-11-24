@@ -336,6 +336,10 @@ final class ClipboardHistory: ObservableObject {
     private var syncGeneration: (() async throws -> String?)?
     @Published private var syncPhase: ClipboardSyncPhase
     private var syncRequest = ClipboardSyncRequest.idle(lastRequestedAt: .distantPast)
+    /// A sync is scheduled or running for the latest request.
+    var hasPendingSyncRequest: Bool {
+        if case .scheduled = syncRequest { true } else { false }
+    }
 
     private let pasteboard: NSPasteboard
     private let generalPasteboardName: NSPasteboard.Name
@@ -935,7 +939,7 @@ final class ClipboardHistory: ObservableObject {
                 error: error,
                 visibility: .user
             ))
-            persistenceError = String(localized: "Couldn’t update the pin. Try again.")
+            persistenceError = ClipboardFileStore.pinFailureMessage(for: error)
         }
     }
 

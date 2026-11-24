@@ -1,3 +1,0 @@
-Snip Snap 0.5.1 Beta 78 — Mac
-
-- Link snip copy and completion

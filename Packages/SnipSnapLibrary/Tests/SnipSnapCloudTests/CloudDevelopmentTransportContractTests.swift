@@ -113,6 +113,21 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
 
         let remaining = await server.fullSnapshot(for: draft.id)
         XCTAssertNil(remaining)
+
+        let flippedZone = CloudZoneID(name: "asset-contract-zone-2", ownerName: "owner")
+        let flippedDraft = CloudRecordDraft(id: .random(in: flippedZone), recordType: "AttachmentPayload",
+            schemaVersion: 1, routingFields: ["schemaVersion": .int64(1)], encryptedFields: [:],
+            assetFields: ["payload": CloudAssetUpload(fileURL: source)])
+        do {
+            try await CloudDevelopmentTransportContract.exercise(
+                transport: FakeCloudRecordTransport(server: server),
+                reader: ByteFlippingReader(base: FakeCloudRecordTransport(server: server)),
+                name: "flipped", zone: flippedZone, drafts: [flippedDraft]
+            )
+            XCTFail("Changed attachment bytes must fail the contract.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("attachmentBytesDiffer"))
+        }
     }
 
     func testClipboardStageStopsWhereAFetchCreatesTheZone() async throws {
@@ -122,6 +137,7 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
         do {
             try await CloudDevelopmentTransportContract.exerciseClipboard(
                 transport: transport, name: "fake", zoneExists: { await transport.zoneExists },
+                deleteZone: { await transport.deleteZone() },
                 requireMissingZone: { missingZoneProbes += 1 }
             )
             XCTFail("A fetch that creates the zone must fail the clipboard stage.")
@@ -140,6 +156,7 @@ final class CloudDevelopmentTransportContractTests: XCTestCase {
 
         try await CloudDevelopmentTransportContract.exerciseClipboard(
             transport: transport, name: "fake", zoneExists: { await transport.zoneExists },
+            deleteZone: { await transport.deleteZone() },
             requireMissingZone: {
                 let exists = await transport.zoneExists
                 zoneExistedAtProbe.append(exists)
@@ -297,6 +314,28 @@ private struct TextDroppingTransport: CloudRecordTransport {
     }
 }
 
+/// Reads records through `base` but returns attachment bytes that differ from the upload.
+private struct ByteFlippingReader: CloudRecordTransport {
+    let base: FakeCloudRecordTransport
+
+    func start(state: CloudEngineStateEnvelope?) async throws { try await base.start(state: state) }
+    func fetch(scope: CloudFetchScope) async throws -> CloudFetchedBatch { try await base.fetch(scope: scope) }
+    func confirmApplied(_ id: UUID) async throws { try await base.confirmApplied(id) }
+    func send(_ batch: CloudOutboundBatch) async throws -> CloudSentBatch { try await base.send(batch) }
+    func fetchRecord(_ id: CloudRecordID, fields: Set<String>) async throws -> CloudRecordSnapshot? {
+        try await base.fetchRecord(id, fields: fields)
+    }
+    func fetchAsset(
+        _ id: CloudRecordID, field: String, destination: CloudAssetDestination
+    ) async throws -> CloudAssetReceipt? {
+        guard let receipt = try await base.fetchAsset(id, field: field, destination: destination) else {
+            return nil
+        }
+        try Data([9, 9, 9]).write(to: receipt.fileURL)
+        return receipt
+    }
+}
+
 /// A clipboard transport whose zone exists after a save, and after a fetch when `fetchCreatesZone`.
 private actor ZoneTrackingClipboardTransport: ClipboardCloudTransport {
     private let fetchCreatesZone: Bool
@@ -320,7 +359,7 @@ private actor ZoneTrackingClipboardTransport: ClipboardCloudTransport {
         entries = snapshot.entries
     }
 
-    func deleteAll() {
+    func deleteZone() {
         zoneExists = false
         entries = [:]
     }

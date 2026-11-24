@@ -7,7 +7,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testEnableSwapsTheMergedStoreBeforeNormalOutboundUpload() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         let local = try await persistence.activeLibrary()
         try await add("local", to: local)
         let originalID = try await persistence.snapshot().activeStore.id
@@ -89,7 +89,6 @@ extension ICloudSyncModeCoordinatorTests {
                 scheduled.fulfill()
             },
             enable: { try await lifecycle.enableICloudSync() },
-            delete: { try await lifecycle.deleteSyncedContent() },
             activeLibrary: { try await lifecycle.activeLibrary() }
         )
 
@@ -115,7 +114,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testEnableKeepsRemoteIdentityAndAddsARecoveredCopyForSameIDLocalText() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         let sharedID = UUID(uuidString: "12121212-1212-1212-1212-121212121212")!
         let local = try await persistence.activeLibrary()
         _ = try await local.perform(
@@ -164,7 +163,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testOfflineEnableDiscardsCandidateAndReopenCanRetry() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         let local = try await persistence.activeLibrary()
         try await add("kept local", to: local)
         let originalID = try await persistence.snapshot().activeStore.id
@@ -190,7 +189,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertEqual(try storeRootCount(in: root), 1)
         try await add("edited after failed fetch", to: local)
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let online = FakeCloudRecordTransport(server: server, namespace: namespace)
         let retry = ICloudSyncModeCoordinator(
             persistence: reopened,

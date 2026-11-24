@@ -15,7 +15,7 @@ final class CloudRecordCycleCompletionTests: XCTestCase {
     let cancelled = expectation(description: "Explicit transfer stops without waiting for CloudKit")
     let first = Task {
       do {
-        try await coordinator.sync()
+        try await coordinator.fetchRemote()
         XCTFail("Expected cancellation")
       } catch is CancellationError {
         cancelled.fulfill()
@@ -29,7 +29,7 @@ final class CloudRecordCycleCompletionTests: XCTestCase {
 
     // The same coordinator admits a new request; cancelling one caller did not
     // complete the engine cycle or let a fetch pass it.
-    let second = Task { try await coordinator.sync() }
+    let second = Task { try await coordinator.fetchRemote() }
     await fulfillment(of: [secondEntered], timeout: 2)
     let beforeCompletion = await transport.fetchCount
     XCTAssertEqual(beforeCompletion, 0)
@@ -42,10 +42,17 @@ final class CloudRecordCycleCompletionTests: XCTestCase {
 
   func testCompletionBeforeWaitDoesNotLoseTheWakeup() async throws {
     let cycle = CloudRecordCycleCompletion()
-    cycle.finish()
-    try await cycle.wait()
-    cycle.finish()
-    try await cycle.wait()
+    let done = TaskEndMark()
+    let waits = Task {
+      cycle.finish()
+      try await cycle.wait()
+      cycle.finish()
+      try await cycle.wait()
+      done.set()
+    }
+    let ended = await done.wait(within: .seconds(2))
+    waits.cancel()
+    XCTAssertTrue(ended, "A completion before the wait must wake it")
   }
 
   func testAlreadyCancelledCallerCannotPassACompletedCycle() async {

@@ -171,12 +171,12 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     // SnipLibraryUserActions prunes after that brief recovery window ends.
   }
 
-  private init(unavailableAt storeURL: URL, attachmentCacheRootURL: URL?) {
+  private init(unavailableAt storeURL: URL) {
     diagnostics = .live
     let attachmentRootURL = Self.attachmentRootURL(forStoreURL: storeURL)
     lockURL = storeURL.appendingPathExtension("lock")
     self.attachmentRootURL = attachmentRootURL
-    self.attachmentCacheRootURL = attachmentCacheRootURL ?? attachmentRootURL
+    attachmentCacheRootURL = attachmentRootURL
     retirementMarkers = StoreRetirementMarkers(storeURL: storeURL)
     container = nil
     isAvailable = false
@@ -189,13 +189,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
   }
 
   public static func unavailable(
-    storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL(),
-    attachmentCacheRootURL: URL? = nil
+    storeURL: URL = SwiftDataSnipLibrary.defaultStoreURL()
   ) -> SwiftDataSnipLibrary {
-    SwiftDataSnipLibrary(
-      unavailableAt: storeURL,
-      attachmentCacheRootURL: attachmentCacheRootURL
-    )
+    SwiftDataSnipLibrary(unavailableAt: storeURL)
   }
 
   public static func defaultStoreURL(fileManager: FileManager = .default) -> URL {
@@ -235,8 +231,9 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       .appendingPathComponent("Attachments", isDirectory: true)
   }
 
-  /// The marker files that retire a mode store, beside its SwiftData files. The read-only
-  /// marker stops content writes; the quarantine record says the store's synced state is cleared.
+  /// The marker files that earlier builds wrote to retire a mode store, beside its SwiftData
+  /// files. The read-only marker stops content writes; the quarantine record says the store's
+  /// synced state is cleared. Current builds only read and remove them.
   struct StoreRetirementMarkers: Sendable {
     enum Phase { case writable, readOnly, quarantined }
 
@@ -272,24 +269,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       guard FileManager.default.fileExists(atPath: url.path) else { return }
       try FileManager.default.removeItem(at: url)
     }
-  }
-
-  package func markReadOnlyRecovery() throws {
-    try DurableFile.write(Data("1".utf8), to: retirementMarkers.readOnlyURL)
-  }
-
-  /// Makes the store writable again, dropping any quarantine record first.
-  package func removeReadOnlyRecoveryMarker() throws {
-    try retirementMarkers.restore()
-  }
-
-  package func isRecoveryQuarantineComplete() -> Bool {
-    retirementMarkers.phase == .quarantined
-  }
-
-  package func markRecoveryQuarantineComplete() throws {
-    if retirementMarkers.phase == .writable { try markReadOnlyRecovery() }
-    try DurableFile.write(Data("1".utf8), to: retirementMarkers.quarantineURL)
   }
 
   public func snapshot(sortedBy sortMode: SnipSortMode) -> SnipLibrarySnapshot {
@@ -344,7 +323,6 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
     try requireContentWritesAllowed(context: context)
     let loaded = try Self.load(context: context, seenRequestIDs: seenRequestIDs)
     try Self.validate(loaded.state)
-    let before = makeSnapshot(state: loaded.state, sortedBy: sortMode)
     knownAttachmentPaths.merge(
       loaded.attachments.map { ($0.id, $0.relativePath) },
       uniquingKeysWith: { _, latest in latest }
@@ -387,11 +365,7 @@ public actor SwiftDataSnipLibrary: SnipLibrary {
       lastKnownState = state
       rememberAttachments(in: state)
       let snapshot = makeSnapshot(state: state, sortedBy: sortMode)
-      return SnipLibraryUpdate(
-        snapshot: snapshot,
-        outcome: outcome,
-        devicePatch: .between(before, snapshot)
-      )
+      return SnipLibraryUpdate(snapshot: snapshot, outcome: outcome)
     } catch {
       context.rollback()
       removeAttachmentDirectories(createdDirectories)

@@ -195,24 +195,21 @@ final class CloudFullRecordTests: XCTestCase {
     XCTAssertEqual(typed.requestID, .missing)
   }
 
-  func testOldStagedDraftDecodesWithEmptyRemovalSets() throws {
+  /// Every tagged build writes all draft fields. A staged draft without them is unreadable.
+  func testStagedDraftWithoutRemovalSetsIsUnreadable() throws {
     let draft = CloudRecordDraft.text(
       id: .random(in: CloudZoneID(name: "metadata", ownerName: "owner")),
       snipID: UUID(),
       text: "legacy"
     )
-    var object = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
-    object.removeValue(forKey: "removedRoutingFields")
-    object.removeValue(forKey: "removedEncryptedFields")
-
-    let decoded = try JSONDecoder().decode(
-      CloudRecordDraft.self,
-      from: JSONSerialization.data(withJSONObject: object)
-    )
-
-    XCTAssertEqual(decoded.removedRoutingFields, [])
-    XCTAssertEqual(decoded.removedEncryptedFields, [])
+    let encoded = try JSONEncoder().encode(draft)
+    XCTAssertEqual(try JSONDecoder().decode(CloudRecordDraft.self, from: encoded), draft)
+    for key in ["assetFields", "removedRoutingFields", "removedEncryptedFields"] {
+      var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+      object.removeValue(forKey: key)
+      XCTAssertThrowsError(try JSONDecoder().decode(
+        CloudRecordDraft.self, from: JSONSerialization.data(withJSONObject: object)), key)
+    }
   }
 
   func testTypedListRoundTripCarriesDesiredNameAndOrderKey() throws {
@@ -376,7 +373,6 @@ final class CloudFullRecordTests: XCTestCase {
     guard case .value = accepted.origin else {
       return XCTFail("Expected an accepted raw origin.")
     }
-    XCTAssertEqual(accepted.localOriginFallback, .quickEntry)
 
     var editedSnip = baseSnip
     editedSnip.content = "after"

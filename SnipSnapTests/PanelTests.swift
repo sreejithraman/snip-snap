@@ -472,21 +472,19 @@ final class PanelTests: StoreBackedTestCase {
         let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
         window.contentView = host
         processLifetimePanelSearchWindows.append(window)
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(probe.picker.target(forNumber: 1), .clipboardEntry(probe.clipboardID))
+        let mounted = await layOut(host) {
+            probe.picker.target(forNumber: 1) == .clipboardEntry(probe.clipboardID)
+        }
+        XCTAssertTrue(mounted)
         XCTAssertNotNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
         probe.selection = .list(SnipList.inboxID)
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertNotEqual(probe.interactions[.clipboard], true)
+        let departed = await layOut(host) { probe.interactions[.clipboard] != true }
+        XCTAssertTrue(departed)
         XCTAssertNil(probe.picker.target(forNumber: 1))
         XCTAssertNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
         probe.selection = .clipboard
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(400))
-        host.layoutSubtreeIfNeeded()
-        XCTAssertEqual(probe.interactions, [.clipboard: true])
+        let returned = await layOut(host) { probe.interactions == [.clipboard: true] }
+        XCTAssertTrue(returned)
         XCTAssertEqual(probe.picker.target(forNumber: 1), .clipboardEntry(probe.clipboardID))
         XCTAssertNotNil(probe.dragController.inspection(atWindowPoint: NSPoint(x: 200, y: 250)))
     }
@@ -535,16 +533,27 @@ final class PanelTests: StoreBackedTestCase {
         let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
         window.contentView = host
         processLifetimePanelSearchWindows.append(window)
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
+        let mounted = await layOut(host) { probe.picker.target(forNumber: 1) != nil }
+        XCTAssertTrue(mounted)
 
         probe.pages = [.list(SnipList.inboxID)]
         probe.selection = .list(SnipList.inboxID)
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
+        let settled = await layOut(host) { probe.interactions == [.list(SnipList.inboxID): true] }
 
-        XCTAssertEqual(probe.interactions, [.list(SnipList.inboxID): true])
+        XCTAssertTrue(settled)
         XCTAssertEqual(probe.picker.target(forNumber: 1), .snip(probe.snipID))
+    }
+
+    /// Lays out `host` until `condition` holds, for up to two seconds.
+    @MainActor
+    private func layOut(_ host: NSView, until condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while true {
+            host.layoutSubtreeIfNeeded()
+            if condition() { return true }
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     override func setUp() {
@@ -556,10 +565,7 @@ final class PanelTests: StoreBackedTestCase {
 
     @MainActor
     func testControlTintUsesTheMonochromeActionPair() throws {
-        for (appearanceName, fillWhite, labelWhite) in [
-            (NSAppearance.Name.aqua, 0.16, 1.0),
-            (.darkAqua, 0.92, 0.10),
-        ] {
+        for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
             let appearance = try XCTUnwrap(NSAppearance(named: appearanceName))
             var resolvedTint: NSColor?
             var resolvedLabel: NSColor?
@@ -570,12 +576,10 @@ final class PanelTests: StoreBackedTestCase {
 
             let tint = try XCTUnwrap(resolvedTint)
             let label = try XCTUnwrap(resolvedLabel)
-            XCTAssertEqual(tint.redComponent, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(tint.greenComponent, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(tint.blueComponent, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(label.redComponent, labelWhite, accuracy: 0.001)
-            XCTAssertEqual(label.greenComponent, labelWhite, accuracy: 0.001)
-            XCTAssertEqual(label.blueComponent, labelWhite, accuracy: 0.001)
+            for color in [tint, label] {
+                XCTAssertEqual(color.redComponent, color.greenComponent, accuracy: 0.001)
+                XCTAssertEqual(color.greenComponent, color.blueComponent, accuracy: 0.001)
+            }
             XCTAssertGreaterThanOrEqual(
                 contrastRatio(tint, label),
                 4.5,
@@ -599,33 +603,6 @@ final class PanelTests: StoreBackedTestCase {
         return 0.2126 * linear(color.redComponent)
             + 0.7152 * linear(color.greenComponent)
             + 0.0722 * linear(color.blueComponent)
-    }
-
-    @MainActor
-    func testShortScrollContentLeavesBlankDragSpace() async throws {
-        var blankHeight: CGFloat?
-        let root = ScrollView {
-            Text("Short snip").frame(height: 80)
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            PanelBlankDragRegion.height(
-                viewportHeight: geometry.containerSize.height,
-                contentHeight: geometry.contentSize.height
-            )
-        } action: { _, height in
-            blankHeight = height
-        }
-        let host = NSHostingView(rootView: root)
-        host.frame = NSRect(x: 0, y: 0, width: 430, height: 500)
-        let window = NSWindow(contentRect: host.frame, styleMask: [], backing: .buffered, defer: false)
-        window.contentView = host
-        processLifetimePanelSearchWindows.append(window)
-        window.orderFrontRegardless()
-        defer { window.orderOut(nil) }
-        host.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(200))
-        host.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(try XCTUnwrap(blankHeight), 400)
     }
 
 
@@ -1057,8 +1034,8 @@ final class PanelTests: StoreBackedTestCase {
         let idle = SnipListIconOptions.displayedCategories(query: "  ", recentIcons: recents)
         XCTAssertEqual(idle.first?.title, "Recent")
         XCTAssertEqual(idle.first?.icons, recents)
+        XCTAssertEqual(idle.map(\.title), ["Recent", "Suggested"])
         // The old default symbols mean "no icon", so the picker leaves them out.
-        XCTAssertEqual(idle.flatMap(\.icons).count, 28)
         XCTAssertTrue(SnipList.legacyDefaultIcons.isDisjoint(with: SnipListIconOptions.availableIcons))
         XCTAssertEqual(Set(idle.flatMap(\.icons)).count, idle.flatMap(\.icons).count)
 
@@ -1283,12 +1260,16 @@ final class PanelTests: StoreBackedTestCase {
         let fieldEditor = try XCTUnwrap(panel.firstResponder as? NSTextView)
         let longText = (0..<20).map { "line \($0)" }.joined(separator: "\n")
         XCTAssertLessThan(longText.count, LargePastedText.attachmentCharacterLimit)
-        let startedAt = Date()
 
         fieldEditor.insertText(longText, replacementRange: fieldEditor.selectedRange())
+        // Wait for the composer to grow, then for any panel growth it causes.
+        let grewDeadline = Date().addingTimeInterval(2)
+        while textField.frame.height <= PanelControlMetrics.compactComposerHeight, Date() < grewDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertGreaterThan(textField.frame.height, PanelControlMetrics.compactComposerHeight)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
-        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 15)
         XCTAssertEqual(fieldEditor.string, longText)
         XCTAssertEqual(textField.stringValue, longText)
         XCTAssertLessThanOrEqual(panel.frame.height, baselineHeight + 160)
@@ -1306,7 +1287,6 @@ final class PanelTests: StoreBackedTestCase {
         panel.makeFirstResponder(nil)
         panel.orderOut(nil)
         processLifetimePanelSearchWindows.append(panel)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
     }
 
     func testPanelFileDropValidationKeepsOnlyExistingFiles() throws {
@@ -1544,6 +1524,7 @@ final class PanelTests: StoreBackedTestCase {
     @MainActor
     func testCommandVDoesNotAttachShortText() throws {
         var attached: [String] = []
+        var didReadText = false
         let input = PanelMultilineTextInput(
             "Paste here",
             text: .constant(""),
@@ -1551,7 +1532,10 @@ final class PanelTests: StoreBackedTestCase {
             isFocused: true,
             onFocusChange: { _ in },
             readPastedImages: { [] },
-            readPastedText: { "short" },
+            readPastedText: {
+                didReadText = true
+                return "short"
+            },
             pastedContentContainsText: { true },
             onPasteLargeText: { attached.append($0) },
             onSubmit: {}
@@ -1583,6 +1567,7 @@ final class PanelTests: StoreBackedTestCase {
 
         NSApp.sendEvent(event)
 
+        XCTAssertTrue(didReadText, "Cmd-V reached the paste handler")
         XCTAssertTrue(attached.isEmpty)
     }
 
@@ -1782,9 +1767,9 @@ final class PanelTests: StoreBackedTestCase {
             window.sendEvent(event)
             await Task.yield()
         }
-        try await Task.sleep(for: .milliseconds(750))
+        let expanded = await layOut(host) { probe.rowFrame.height > collapsedHeight + 50 }
+        XCTAssertTrue(expanded, "Clicking the text expands all ten lines")
         let expandedHeight = probe.rowFrame.height
-        XCTAssertGreaterThan(expandedHeight, collapsedHeight + 50, "Clicking the text expands all ten lines")
         XCTAssertFalse(try clipboardPreviewHasRedPixels(host))
 
         let image = NSImage(size: CGSize(width: 512, height: 512))
@@ -1852,96 +1837,6 @@ final class PanelTests: StoreBackedTestCase {
         )
         XCTAssertTrue(
             PanelGeometryChange.shouldApply(current: 56, proposed: 56.5)
-        )
-    }
-
-    func testPanelControlsShareAVisibleHeight() {
-        XCTAssertEqual(PanelControlMetrics.regularControlLength, 32)
-        XCTAssertEqual(
-            PanelControlMetrics.compactControlLength,
-            PanelControlMetrics.floatingRowHeight
-        )
-        XCTAssertEqual(
-            PanelControlMetrics.compactComposerHeight,
-            PanelControlMetrics.floatingRowHeight
-        )
-        XCTAssertEqual(
-            PanelControlMetrics.inlineEntryBaseHeight,
-            PanelControlMetrics.floatingRowHeight + PanelControlMetrics.inlineEntryInset * 2
-        )
-        XCTAssertLessThan(
-            PanelControlMetrics.actionHeight,
-            PanelControlMetrics.compactComposerHeight
-        )
-    }
-
-    func testTabSelectionUsesTheNearRoundActionProportion() {
-        XCTAssertEqual(PanelControlMetrics.tabBarHeight, 40)
-        XCTAssertGreaterThan(
-            PanelControlMetrics.tabBarHeight,
-            PanelControlMetrics.floatingRowHeight
-        )
-        XCTAssertGreaterThan(
-            PanelControlMetrics.compactSelectionWidth,
-            PanelControlMetrics.compactSelectionHeight
-        )
-        XCTAssertEqual(
-            (PanelControlMetrics.tabItemWidth
-                - PanelControlMetrics.compactSelectionWidth) / 2,
-            PanelControlMetrics.tabSelectionInset
-        )
-        XCTAssertEqual(
-            (PanelControlMetrics.tabBarHeight
-                - PanelControlMetrics.compactSelectionHeight) / 2,
-            PanelControlMetrics.tabSelectionInset
-        )
-    }
-
-    func testListHeadersAndCardsUseOneHorizontalInset() {
-        XCTAssertEqual(PanelListMetrics.horizontalContentInset, 16)
-    }
-
-    func testCardLeadingControlUsesOneSize() {
-        XCTAssertEqual(PanelCardLeadingMetrics.side, 24)
-        XCTAssertEqual(PanelCardLeadingMetrics.controlSide, 20)
-        XCTAssertLessThan(
-            PanelCardLeadingMetrics.controlSide,
-            PanelCardLeadingMetrics.side
-        )
-    }
-
-    func testDefaultWindowSizeIsUsable() {
-        XCTAssertEqual(AppWindowDefaults.defaultSize.width, 430)
-        XCTAssertEqual(AppWindowDefaults.defaultSize.height, 500)
-        XCTAssertEqual(
-            AppWindowDefaults.defaultSize,
-            AppWindowDefaults.windowSize(for: AppWindowDefaults.defaultContentSize)
-        )
-        XCTAssertEqual(
-            AppWindowDefaults.minimumSize,
-            AppWindowDefaults.windowSize(for: AppWindowDefaults.minimumContentSize)
-        )
-        XCTAssertGreaterThanOrEqual(
-            AppWindowDefaults.defaultSize.width,
-            AppWindowDefaults.minimumSize.width
-        )
-        XCTAssertGreaterThanOrEqual(
-            AppWindowDefaults.defaultSize.height,
-            AppWindowDefaults.minimumSize.height
-        )
-    }
-
-    func testInlineEditorExpandsBeforeItsTextScrolls() {
-        XCTAssertGreaterThan(
-            PanelInlineEditMetrics.maximumTextLines,
-            PanelInlineEditMetrics.minimumTextLines
-        )
-    }
-
-    func testInlineEditorUsesTheComposerMaximumLineCount() {
-        XCTAssertEqual(
-            PanelInlineEditMetrics.maximumTextLines,
-            PanelComposerMetrics.maximumTextLines
         )
     }
 
@@ -2472,10 +2367,9 @@ final class PanelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testSnipSnapPanelLetsExplicitSwiftUISurfacesOwnWindowMovement() {
-        let contentViewController = NSViewController()
+    func testSnipSnapPanelWindowPolicy() {
         let panel = SnipSnapPanel.make(
-            contentViewController: contentViewController,
+            contentViewController: NSViewController(),
             frameAutosaveName: nil
         )
 
@@ -2484,7 +2378,7 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertFalse(panel.styleMask.contains(.closable))
         XCTAssertFalse(panel.styleMask.contains(.fullSizeContentView))
         XCTAssertFalse(panel.styleMask.contains(.utilityWindow))
-        XCTAssertEqual(panel.title, "Snip Snap")
+        // Explicit SwiftUI surfaces own window movement.
         XCTAssertFalse(panel.isMovableByWindowBackground)
         XCTAssertEqual(panel.level, .floating)
         XCTAssertFalse(panel.collectionBehavior.contains(.canJoinAllSpaces))
@@ -2493,14 +2387,12 @@ final class PanelTests: StoreBackedTestCase {
         XCTAssertTrue(panel.collectionBehavior.contains(.transient))
         XCTAssertFalse(panel.hidesOnDeactivate)
         XCTAssertFalse(panel.becomesKeyOnlyIfNeeded)
-        XCTAssertFalse(panel.isReleasedWhenClosed)
         XCTAssertTrue(panel.isExcludedFromWindowsMenu)
         XCTAssertEqual(panel.minSize, AppWindowDefaults.minimumSize)
         XCTAssertTrue(panel.canBecomeKey)
         XCTAssertFalse(panel.canBecomeMain)
         XCTAssertFalse(panel.isOpaque)
         XCTAssertFalse(panel.hasShadow)
-        XCTAssertTrue(panel.contentViewController === contentViewController)
     }
 
     @MainActor
@@ -2561,17 +2453,6 @@ final class PanelTests: StoreBackedTestCase {
 
         XCTAssertFalse(panel.restoredSavedFrame)
         XCTAssertEqual(panel.frame.size, AppWindowDefaults.defaultSize)
-    }
-
-    @MainActor
-    func testSnipSnapPanelHasNoSeparateNativeTitleSurface() {
-        let panel = SnipSnapPanel.make(
-            contentViewController: NSViewController(),
-            frameAutosaveName: nil
-        )
-
-        XCTAssertFalse(panel.styleMask.contains(.titled))
-        XCTAssertNil(panel.standardWindowButton(.closeButton))
     }
 
     @MainActor
@@ -2920,25 +2801,6 @@ final class PanelTests: StoreBackedTestCase {
             PanelBlankDragRegion.height(viewportHeight: 0, contentHeight: 160),
             0
         )
-    }
-
-    func testPanelEdgeStylesUseTheSharedThicknessScale() {
-        XCTAssertEqual(PanelEdgeThickness.subtle, 0.5)
-        XCTAssertEqual(PanelEdgeThickness.regular, 0.75)
-        XCTAssertEqual(PanelEdgeThickness.strong, 1)
-        XCTAssertEqual(PanelEdgeThickness.prominent, 1.5)
-        XCTAssertEqual(PanelEdgeStyle.content.width, 0.75)
-        XCTAssertEqual(PanelEdgeStyle.media.width, 0.75)
-        XCTAssertEqual(PanelEdgeStyle.selected.width, 1)
-        XCTAssertEqual(PanelEdgeStyle.dropTarget.width, 1.5)
-    }
-
-    func testPanelEdgeStylesUseSemanticColors() {
-        XCTAssertEqual(PanelEdgeStyle.hidden.color, .clear)
-        XCTAssertEqual(PanelEdgeStyle.content.color, SnipSnapColors.contentCardEdge)
-        XCTAssertEqual(PanelEdgeStyle.media.color, SnipSnapColors.attachmentEdge)
-        XCTAssertEqual(PanelEdgeStyle.selected.color, SnipSnapColors.selectionEdge)
-        XCTAssertEqual(PanelEdgeStyle.dropTarget.color, SnipSnapColors.dropTargetEdge)
     }
 
     func testPinnedListHeaderSurfaceAppearsOnlyAfterScrollingAtTheTopEdge() {

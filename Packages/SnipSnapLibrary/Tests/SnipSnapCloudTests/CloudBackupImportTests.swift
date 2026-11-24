@@ -154,7 +154,7 @@ final class CloudBackupImportTests: XCTestCase {
                     )
                 }
             )
-            let enabled = try await coordinator.enableAndPublish()
+            let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]))
             XCTAssertEqual(enabled.state, .on)
         }
         // Enabling sync promotes the initial download. Exercise a later download

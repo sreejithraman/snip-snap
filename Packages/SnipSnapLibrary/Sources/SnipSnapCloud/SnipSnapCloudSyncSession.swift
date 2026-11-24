@@ -4,7 +4,6 @@ import SnipSnapPersistence
 
 /// Orders app requests and coalesces normal sync work before it reaches CloudKit.
 public actor SnipSnapCloudSyncSession {
-  package typealias DeleteAction = @Sendable () async throws -> SyncedContentDeleteOutcome
   package typealias SynchronizeAction = @Sendable () async throws -> SnipSnapCloudSyncResult
   package typealias ScheduleAction = @Sendable () async throws -> Void
   package typealias LibraryAction = @Sendable () async throws -> SnipSnapCloudActiveLibrary
@@ -16,7 +15,6 @@ public actor SnipSnapCloudSyncSession {
   private let enableAction: SyncedContentSettingsModel.EnableAction
   private let cancelEnableAction: SyncedContentSettingsModel.CancelEnableAction
   private let disableAction: SyncedContentSettingsModel.DisableAction
-  private let deleteAction: DeleteAction
   private let libraryAction: LibraryAction
   private let automaticErrorHandler: @Sendable (any Error) async -> Void
   private enum RequestKind: Int {
@@ -130,7 +128,6 @@ public actor SnipSnapCloudSyncSession {
     disable: @escaping SyncedContentSettingsModel.DisableAction = { _ in
       throw CloudCollectionError.noActiveCollection
     },
-    delete: @escaping DeleteAction,
     activeLibrary: @escaping LibraryAction,
     operationGate: AsyncOperationGate = AsyncOperationGate(),
     automaticSyncResults: AsyncStream<SnipSnapCloudSyncResult> = AsyncStream { $0.finish() },
@@ -145,7 +142,6 @@ public actor SnipSnapCloudSyncSession {
     enableAction = enable
     cancelEnableAction = cancelEnable
     disableAction = disable
-    deleteAction = delete
     libraryAction = activeLibrary
     self.automaticErrorHandler = automaticErrorHandler
   }
@@ -179,10 +175,6 @@ public actor SnipSnapCloudSyncSession {
 
   public func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
     try await operationGate.withLease { [disableAction] in try await disableAction(choice) }
-  }
-
-  public func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
-    try await operationGate.withLease(deleteAction)
   }
 
   public func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {

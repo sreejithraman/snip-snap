@@ -66,11 +66,6 @@ package enum AttachmentFileIO {
     }
   }
 
-  package struct StagedSnapshot: Sendable {
-    let snapshot: SnipLibraryTransferSnapshot
-    let lease: SnipImportStagingLease?
-  }
-
   package struct CopiedFile {
     package let digest: Data
     package let byteCount: Int64
@@ -236,85 +231,6 @@ package enum AttachmentFileIO {
 
   package static func contentsEqual(_ fileURL: URL, data: Data) throws -> Bool {
     try digest(at: fileURL) == Data(SHA256.hash(data: data))
-  }
-
-  package static func contentsEqual(_ first: URL, _ second: URL) throws -> Bool {
-    try digest(at: first) == digest(at: second)
-  }
-
-  package static func stagePreviewSnapshot(
-    _ snapshot: SnipLibraryTransferSnapshot,
-    transitionID: UUID
-  ) throws -> StagedSnapshot {
-    guard !snapshot.attachmentFileURLs.isEmpty else {
-      return StagedSnapshot(snapshot: snapshot, lease: nil)
-    }
-    let stagingRoot = FileManager.default.temporaryDirectory
-      .appendingPathComponent("SnipSnapImportPreviews", isDirectory: true)
-      .appendingPathComponent(transitionID.uuidString, isDirectory: true)
-    let attachmentRoot = stagingRoot.appendingPathComponent("Attachments", isDirectory: true)
-    do {
-      try FileManager.default.createDirectory(
-        at: attachmentRoot,
-        withIntermediateDirectories: true
-      )
-      let attachments = Dictionary(
-        snapshot.snips.flatMap(\.attachments).map { ($0.id, $0) },
-        uniquingKeysWith: { first, _ in first }
-      )
-      var stagedURLs: [UUID: URL] = [:]
-      var stagedDigests: [UUID: Data] = [:]
-      for (id, sourceURL) in snapshot.attachmentFileURLs {
-        guard snapshot.attachmentData[id] == nil,
-          let attachment = attachments[id],
-          let expectedDigest = snapshot.attachmentFileDigests[id]
-        else { throw SnipLibraryError.invalidStore }
-        let safeName = URL(fileURLWithPath: attachment.fileName).lastPathComponent
-        guard !safeName.isEmpty else { throw SnipLibraryError.invalidStore }
-        let destination = attachmentRoot
-          .appendingPathComponent(id.uuidString, isDirectory: true)
-          .appendingPathComponent(safeName)
-        try FileManager.default.createDirectory(
-          at: destination.deletingLastPathComponent(),
-          withIntermediateDirectories: true
-        )
-        let copied = try copyRegularFile(
-          from: sourceURL,
-          to: destination,
-          expectedByteCount: attachment.byteCount
-        )
-        guard copied.digest == expectedDigest else {
-          throw SnipLibraryError.importChanged
-        }
-        try FileManager.default.setAttributes(
-          [.posixPermissions: NSNumber(value: 0o400)],
-          ofItemAtPath: destination.path
-        )
-        stagedURLs[id] = destination
-        stagedDigests[id] = copied.digest
-      }
-      let lease = SnipImportStagingLease(rootURL: stagingRoot) {
-        try FileManager.default.removeItem(at: stagingRoot)
-      }
-      return StagedSnapshot(
-        snapshot: SnipLibraryTransferSnapshot(
-          revision: snapshot.revision,
-          snips: snapshot.snips,
-          lists: snapshot.lists,
-          attachmentData: snapshot.attachmentData,
-          attachmentFileURLs: stagedURLs,
-          attachmentFileDigests: stagedDigests,
-          legacyManualPositions: snapshot.legacyManualPositions,
-          opaqueSyncStateDigest: snapshot.opaqueSyncStateDigest,
-          opaqueSyncStatePayload: snapshot.opaqueSyncStatePayload,
-          additionalSeenRequestIDs: snapshot.additionalSeenRequestIDs
-        ),
-        lease: lease
-      )
-    } catch {
-      try? FileManager.default.removeItem(at: stagingRoot)
-      throw error
-    }
   }
 
   private struct OpenedFile {

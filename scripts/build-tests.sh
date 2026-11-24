@@ -18,17 +18,20 @@ output="$(
         "$script_dir/build.sh"
 )"
 
-grep -F -- "CODE_SIGNING_ALLOWED=NO" "$test_dir/build-args" >/dev/null
-grep -F -- "SnipSnapiOS" "$test_dir/build-args" >/dev/null
-grep -F -- "Release" "$test_dir/build-args" >/dev/null
-grep -F -- "generic/platform=iOS Simulator" "$test_dir/build-args" >/dev/null
+ios_build="$(/usr/bin/grep -F -- "-scheme SnipSnapiOS " "$test_dir/build-args")"
+[[ "$ios_build" == *" -configuration Release "* && \
+   "$ios_build" == *" -destination generic/platform=iOS Simulator "* && \
+   "$ios_build" == *" CODE_SIGNING_ALLOWED=NO "* ]] || {
+    print -u2 "The iOS compile check was not an unsigned Release Simulator build."
+    exit 1
+}
 mac_build="$({
     /usr/bin/awk '
         /-scheme SnipSnap / && /-destination platform=macOS/ { print; exit }
     ' "$test_dir/build-args"
 })"
-[[ "$mac_build" == *"-configuration Release"* ]] || {
-    print -u2 "The Mac compile check did not use Release."
+[[ "$mac_build" == *"-configuration Release"* && "$mac_build" == *" CODE_SIGNING_ALLOWED=NO "* ]] || {
+    print -u2 "The Mac compile check was not an unsigned Release build."
     exit 1
 }
 grep -F -- 'PRODUCT_BUNDLE_IDENTIFIER=$(SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER).compilecheck' \
@@ -78,6 +81,6 @@ if failure_output="$(
     print -u2 "A failed compile check reported success."
     exit 1
 fi
-[[ "$failure_output" != *"Compile check passed."* ]]
+[[ "$failure_output" != *"Compile checks passed."* ]]
 
 print "Build script checks passed."

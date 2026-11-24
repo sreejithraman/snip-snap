@@ -1293,15 +1293,13 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         }
 
         XCTAssertEqual(loadedData, expected)
-        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        XCTAssertEqual(leaseDirectories(in: stagingRoot).count, 1)
         pasteboard.string = "External replacement"
-        await Task.yield()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
-        XCTAssertNil(writer.activeLeaseDirectory)
+        let released = await TestReadiness.wait { leaseDirectories(in: stagingRoot).isEmpty }
+        XCTAssertTrue(released, "Replacing the pasteboard must remove the staged files")
     }
 
-    func testPasteboardLeaseSurvivesRelaunchOnlyWhileItsChangeCountMatches() async throws {
+    func testPasteboardLeaseSurvivesRelaunchOnlyWhileItsChangeCountMatches() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnipSnapPasteboardReload-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1317,25 +1315,21 @@ final class IOSSnipCopyTests: IOSModelTestCase {
             stagingRoot: stagingRoot
         )
         XCTAssertTrue(firstWriter?.write([.file(sourceURL)]) == true)
-        let leaseDirectory = try XCTUnwrap(firstWriter?.activeLeaseDirectory)
+        let leaseDirectory = try XCTUnwrap(leaseDirectories(in: stagingRoot).first)
         firstWriter = nil
 
-        var reloadedWriter: IOSSystemPasteboard? = IOSSystemPasteboard(
+        _ = IOSSystemPasteboard(
             pasteboard: pasteboard,
             stagingRoot: stagingRoot
         )
-        XCTAssertEqual(reloadedWriter?.activeLeaseDirectory, leaseDirectory)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
-        reloadedWriter = nil
+        XCTAssertEqual(leaseDirectories(in: stagingRoot), [leaseDirectory])
 
         pasteboard.string = "Changed while Snip Snap was not running"
-        let finalWriter = IOSSystemPasteboard(
+        _ = IOSSystemPasteboard(
             pasteboard: pasteboard,
             stagingRoot: stagingRoot
         )
-        await Task.yield()
-        XCTAssertNil(finalWriter.activeLeaseDirectory)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        XCTAssertEqual(leaseDirectories(in: stagingRoot), [])
     }
 
     func testRemovingNamedPasteboardReleasesItsFileLease() async throws {
@@ -1347,41 +1341,15 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         try Data("Remove".utf8).write(to: sourceURL)
         let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
         let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
-        let writer = IOSSystemPasteboard(
-            pasteboard: pasteboard,
-            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
-        )
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        let writer = IOSSystemPasteboard(pasteboard: pasteboard, stagingRoot: stagingRoot)
         XCTAssertTrue(writer.write([.file(sourceURL)]))
-        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+        XCTAssertEqual(leaseDirectories(in: stagingRoot).count, 1)
 
         UIPasteboard.remove(withName: pasteboardName)
-        await Task.yield()
 
-        XCTAssertNil(writer.activeLeaseDirectory)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
-    }
-
-    func testTextOnlyWriteReleasesEarlierFileLease() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SnipSnapPasteboardTextOnly-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let sourceURL = directory.appendingPathComponent("source.txt")
-        try Data("Lease".utf8).write(to: sourceURL)
-        let pasteboardName = UIPasteboard.Name("SnipSnapTests.\(UUID().uuidString)")
-        let pasteboard = try XCTUnwrap(UIPasteboard(name: pasteboardName, create: true))
-        defer { UIPasteboard.remove(withName: pasteboardName) }
-        let writer = IOSSystemPasteboard(
-            pasteboard: pasteboard,
-            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
-        )
-        XCTAssertTrue(writer.write([.file(sourceURL)]))
-        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
-
-        XCTAssertTrue(writer.write([.text("Text only")]))
-
-        XCTAssertNil(writer.activeLeaseDirectory)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        let released = await TestReadiness.wait { leaseDirectories(in: stagingRoot).isEmpty }
+        XCTAssertTrue(released, "Removing the pasteboard must remove the staged files")
     }
 
     func testTextOnlyWriteReleasesEarlierFileLeaseWithoutPasteboardNotifications() throws {
@@ -1391,17 +1359,14 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let sourceURL = directory.appendingPathComponent("source.txt")
         try Data("Lease".utf8).write(to: sourceURL)
-        let writer = IOSSystemPasteboard(
-            pasteboard: SilentItemProviderPasteboard(),
-            stagingRoot: directory.appendingPathComponent("staging", isDirectory: true)
-        )
+        let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
+        let writer = IOSSystemPasteboard(pasteboard: SilentItemProviderPasteboard(), stagingRoot: stagingRoot)
         XCTAssertTrue(writer.write([.file(sourceURL)]))
-        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+        XCTAssertEqual(leaseDirectories(in: stagingRoot).count, 1)
 
         XCTAssertTrue(writer.write([.text("Text only")]))
 
-        XCTAssertNil(writer.activeLeaseDirectory)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leaseDirectory.path))
+        XCTAssertEqual(leaseDirectories(in: stagingRoot), [])
     }
 
     func testFailedFileWriteKeepsEarlierFileLease() throws {
@@ -1417,17 +1382,17 @@ final class IOSSnipCopyTests: IOSModelTestCase {
         let stagingRoot = directory.appendingPathComponent("staging", isDirectory: true)
         let writer = IOSSystemPasteboard(pasteboard: pasteboard, stagingRoot: stagingRoot)
         XCTAssertTrue(writer.write([.file(sourceURL)]))
-        let leaseDirectory = try XCTUnwrap(writer.activeLeaseDirectory)
+        let leaseDirectory = try XCTUnwrap(leaseDirectories(in: stagingRoot).first)
 
         XCTAssertFalse(writer.write([.file(directory.appendingPathComponent("missing.txt"))]))
 
-        XCTAssertEqual(writer.activeLeaseDirectory, leaseDirectory)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: leaseDirectory.path))
-        let stagedDirectories = try FileManager.default.contentsOfDirectory(
-            at: stagingRoot, includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(stagedDirectories.map(\.lastPathComponent), [leaseDirectory.lastPathComponent])
+        XCTAssertEqual(leaseDirectories(in: stagingRoot), [leaseDirectory])
     }
+}
+
+/// The pasteboard's staged lease directories, as the next launch would find them.
+private func leaseDirectories(in stagingRoot: URL) -> [URL] {
+    (try? FileManager.default.contentsOfDirectory(at: stagingRoot, includingPropertiesForKeys: nil)) ?? []
 }
 
 /// Never posts pasteboard notifications, so only `write` can release a lease.

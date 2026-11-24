@@ -2,7 +2,9 @@
 
 Read the [changelog](../CHANGELOG.md) for stable release history.
 
-This directory keeps the published notes for stable and beta releases.
+This directory keeps the published notes for stable releases and for the betas
+of the version still in testing. Notes for earlier betas stay on their GitHub
+prereleases and in git history.
 Each release uses `Snip-Snap-VERSION.md` for GitHub, `-mac.txt` for Sparkle,
 and `-ios.txt` for TestFlight or the App Store. Beta filenames include
 `-beta.BUILD` after the version. Older releases may only have Markdown notes.

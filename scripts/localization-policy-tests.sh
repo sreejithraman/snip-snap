@@ -77,7 +77,7 @@ if missing_icons="$(/usr/bin/comm -23 \
 fi
 
 if /usr/bin/grep -REn \
-    '(presentedError|errorMessage|clearDownloadsError|panel\.title|panel\.prompt|window\?*\.title|toolTip)[[:space:]]*=[[:space:]]*"|hud\.show\(message:[[:space:]]*"|AppToast\([^\n]*message:[[:space:]]*"' \
+    '(presentedError|errorMessage|panel\.title|panel\.prompt|window\?*\.title|toolTip)[[:space:]]*=[[:space:]]*"|hud\.show\(message:[[:space:]]*"|AppToast\([^\n]*message:[[:space:]]*"' \
     "$repo_dir/Shared" \
     "$repo_dir/SnipSnap" \
     "$repo_dir/SnipSnapiOS" \

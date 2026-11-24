@@ -17,10 +17,17 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
     let url: URL
 
     private let fileManager: FileManager
+    private let waitForNextPoll: @Sendable () async throws -> Void
     private let lock = NSLock()
     private var lifetime = Lifetime.staged
 
-    init(markdown: String, fileManager: FileManager = .default) throws {
+    init(
+        markdown: String,
+        fileManager: FileManager = .default,
+        waitForNextPoll: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    ) throws {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("SnipSnapPasteboard", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -28,6 +35,7 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
         self.directory = directory
         self.url = url
         self.fileManager = fileManager
+        self.waitForNextPoll = waitForNextPoll
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try Data(markdown.utf8).write(to: url, options: .atomic)
@@ -56,7 +64,7 @@ final class SnipPasteboardMarkdownFile: @unchecked Sendable {
                 let observedPasteboard = NSPasteboard(name: pasteboardName)
                 while !Task.isCancelled, observedPasteboard.changeCount == changeCount {
                     do {
-                        try await Task.sleep(for: .milliseconds(250))
+                        try await waitForNextPoll()
                     } catch {
                         return
                     }

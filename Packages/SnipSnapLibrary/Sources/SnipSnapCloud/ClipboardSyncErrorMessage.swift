@@ -16,13 +16,6 @@ public enum ClipboardSyncErrorMessage {
     )
   }
 
-  public static func deleteSyncedHistory(for error: any Error) -> String {
-    String(
-      localized: "Couldn’t delete synced clipboard history. \(reason(for: error))",
-      bundle: .main
-    )
-  }
-
   private static func reason(for error: any Error) -> String {
     if let clipboardError = error as? ClipboardCloudError {
       return switch clipboardError {

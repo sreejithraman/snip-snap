@@ -14,13 +14,6 @@ final class SnipStoreBackgroundActivity: Sendable {
     self.activity = activity
   }
 
-  static func runExpiringActivity(
-    expire: @escaping @Sendable () -> Void,
-    schedule: (@escaping @Sendable (Bool) -> Void) -> Void
-  ) -> End {
-    FileAccessBackgroundActivity.runExpiringActivity(expire: expire, schedule: schedule)
-  }
-
   static func begin(
     trace: RuntimeTrace.Span = RuntimeTrace.live.span(.database, operation: .containerCleanup)
   ) throws -> SnipStoreBackgroundActivity? {

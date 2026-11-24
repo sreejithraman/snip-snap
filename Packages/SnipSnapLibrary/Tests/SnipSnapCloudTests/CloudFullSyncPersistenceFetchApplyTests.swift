@@ -546,7 +546,7 @@ extension CloudFullSyncPersistenceTests {
     try await known.applyStaged(empty.id)
     let repeatedEvidence = try await known.enrollmentEvidence()
     XCTAssertTrue(repeatedEvidence.needsAttention)
-    XCTAssertTrue(repeatedEvidence.blocksSending)
+    XCTAssertEqual(repeatedEvidence.phase, .blocked)
   }
 
   func testCommittedRawBatchCanReplayAfterCrashBeforeReturn() async throws {
@@ -1007,7 +1007,7 @@ extension CloudFullSyncPersistenceTests {
       ),
       sortedBy: .manual
     )
-    try await coordinator.sendPending()
+    try await coordinator.sendPendingUntilSettled()
 
     let finalSnapshot = await server.fullSnapshot(for: base.id)
     let final = try XCTUnwrap(finalSnapshot)
@@ -1055,7 +1055,7 @@ extension CloudFullSyncPersistenceTests {
       store: firstStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sync()
+    try await first.fetchThenSend()
     let secondStore = CloudFullSyncPersistence(
       library: secondLibrary,
       namespace: namespace,
@@ -1079,9 +1079,9 @@ extension CloudFullSyncPersistenceTests {
       sortedBy: .manual
     )
     _ = try await secondLibrary.perform(.setDone(ids: [seed.id], done: true), sortedBy: .manual)
-    try await first.sendPending()
-    try await second.sendPending()
-    try await second.sendPending()
+    try await first.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
     try await first.fetchRemote()
 
     let firstSnapshot = await firstLibrary.snapshot(sortedBy: .manual)
@@ -1097,7 +1097,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(acceptedCount, 3)
   }
 
-  func testLocalDeleteSurvivesReopenLostEngineStateAndChangedServerRecord() async throws {
+  func testQueuedLocalDeleteAfterLostEngineStateYieldsToAChangedServerRecord() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullDeleteConflictTests-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -1134,7 +1134,7 @@ extension CloudFullSyncPersistenceTests {
       store: firstStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sync()
+    try await first.fetchThenSend()
     let secondStore = CloudFullSyncPersistence(
       library: secondLibrary,
       namespace: namespace,
@@ -1177,7 +1177,7 @@ extension CloudFullSyncPersistenceTests {
       ),
       sortedBy: .manual
     )
-    try await first.sendPending()
+    try await first.sendPendingUntilSettled()
     let reopenedLibrary = try SwiftDataSnipLibrary(
       storeURL: root.appendingPathComponent("second.store")
     )
@@ -1190,15 +1190,19 @@ extension CloudFullSyncPersistenceTests {
       store: reopenedStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await reopened.sendPending()
+    try await reopened.sendPendingUntilSettled()
 
+    // The server changed after the delete was queued, so the edit wins (ADR 0014): the
+    // recovery fetch restores it and withdraws the queued delete. With an unchanged server
+    // record the queued delete is still sent; see CloudDeleteEditConflictTests.
     let secondLocal = await reopenedLibrary.snapshot(sortedBy: .manual)
-    XCTAssertFalse(secondLocal.snips.contains(where: { $0.id == snip.id }))
+    XCTAssertEqual(secondLocal.snips.first(where: { $0.id == snip.id })?.content, "server changed")
     let stored = try await reopenedLibrary.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )
     XCTAssertTrue(stored.conflicts.isEmpty)
-    XCTAssertFalse(stored.readyEntities.contains { $0.reference.domainID == snip.id })
+    XCTAssertTrue(stored.pendingDeletes.isEmpty)
+    XCTAssertTrue(stored.readyEntities.contains { $0.reference.domainID == snip.id })
     let pending = try await reopenedStore.pendingChanges()
     let evidence = try await reopenedStore.enrollmentEvidence()
     XCTAssertTrue(pending.operations.isEmpty)
@@ -1207,9 +1211,9 @@ extension CloudFullSyncPersistenceTests {
     let count = await server.acceptedOperationCount(for: recordID)
     let deletionCount = await server.acceptedDeletionCount()
     let serverValue = await server.fullSnapshot(for: recordID)
-    XCTAssertEqual(count, 3)
-    XCTAssertEqual(deletionCount, 1)
-    XCTAssertNil(serverValue)
+    XCTAssertEqual(count, 2)
+    XCTAssertEqual(deletionCount, 0)
+    XCTAssertNotNil(serverValue)
   }
 
 }

@@ -78,17 +78,15 @@ public struct SnipList: Identifiable, Codable, Equatable, Sendable, Hashable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
-        let legacyName = try container.decodeIfPresent(String.self, forKey: .name)
+        // `name` and `position` are written for readers of CLI receipts and the Share catalog.
+        // Every tagged build since v0.5.0-beta.21 also writes the keys read here.
         desiredName = SnipListNameAllocator.cleaned(
-            try container.decodeIfPresent(String.self, forKey: .desiredName) ?? legacyName ?? ""
-        )
-        resolvedName = try container.decodeIfPresent(String.self, forKey: .resolvedName)
-            ?? legacyName ?? desiredName
+            try container.decode(String.self, forKey: .desiredName))
+        resolvedName = try container.decode(String.self, forKey: .resolvedName)
         systemImage = try container.decode(String.self, forKey: .systemImage)
         color = try container.decodeIfPresent(String.self, forKey: .colorPreset)
             .flatMap(SnipListColorPreset.init(rawValue:))
-        sortKey = try container.decodeIfPresent(SnipOrderKey.self, forKey: .sortKey)
-            ?? .legacy(Int64(container.decode(Int.self, forKey: .position)))
+        sortKey = try container.decode(SnipOrderKey.self, forKey: .sortKey)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -284,8 +282,7 @@ public struct Snip: Identifiable, Codable, Equatable, Sendable {
             .map { Date(timeIntervalSinceReferenceDate: $0) }
         let decodedDone = try container.decode(Bool.self, forKey: .isDone)
         isDone = pinnedAt == nil && decodedDone
-        manualSortKey = try container.decodeIfPresent(SnipOrderKey.self, forKey: .manualSortKey)
-            ?? .legacy(container.decode(Int64.self, forKey: .manualPosition))
+        manualSortKey = try container.decode(SnipOrderKey.self, forKey: .manualSortKey)
         attachments = try container.decode([SnipAttachment].self, forKey: .attachments)
     }
 

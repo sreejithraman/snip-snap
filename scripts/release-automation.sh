@@ -412,7 +412,7 @@ release_automation_require_appcast_channel() {
 
     /usr/bin/ruby -e '
       path, version, build, expected = ARGV
-      xml = File.read(path)
+      xml = File.read(path, encoding: "UTF-8")
       item = xml.scan(/<item\b.*?<\/item>/m).find do |candidate|
         candidate.match?(/sparkle:version(?:="|>)#{Regexp.escape(build)}(?:"|<)/) &&
           candidate.match?(/sparkle:shortVersionString(?:="|>)#{Regexp.escape(version)}(?:"|<)/)
@@ -472,7 +472,7 @@ release_automation_promote_appcast() {
 
     /usr/bin/ruby -e '
       input, output, version, build, beta_tag, stable_tag = ARGV
-      xml = File.read(input)
+      xml = File.read(input, encoding: "UTF-8")
       matches = 0
       beta_notes = "Snip-Snap-#{version}-beta.#{build}"
       stable_notes = "Snip-Snap-#{version}"

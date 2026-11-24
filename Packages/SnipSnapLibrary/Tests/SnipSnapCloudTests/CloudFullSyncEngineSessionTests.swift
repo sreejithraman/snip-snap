@@ -120,7 +120,7 @@ extension CloudFullSyncPersistenceTests {
     await transport.enqueue(.checkpoint(UUID(), samples.state(requiresInitialFetch: true)))
     try await coordinator.processAutomaticChanges()
 
-    let outcome = try await coordinator.sendPending()
+    let outcome = try await coordinator.sendPendingUntilSettled()
 
     let fetches = await transport.fetchCount()
     let sends = await transport.sendCount()
@@ -221,7 +221,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(stopped.blocksOutbound)
     XCTAssertEqual(beforeRestart, [.started, .fetched])
 
-    let sent = try await fixture.coordinator.sendPending()
+    let sent = try await fixture.coordinator.sendPendingUntilSettled()
 
     let events = await fixture.startsAndFetches()
     let scopes = await fixture.transport.fetchScopes()
@@ -247,7 +247,7 @@ extension CloudFullSyncPersistenceTests {
       defer { fixture.remove() }
       try await fixture.library.saveCloudEngineState(namespaceKey: namespace.namespaceKey, envelopeData: data)
 
-      let outcome = try await fixture.coordinator.sendPending()
+      let outcome = try await fixture.coordinator.sendPendingUntilSettled()
 
       let events = await fixture.startsAndFetches()
       let stored = try await fixture.store.loadEngineState()

@@ -95,8 +95,6 @@ struct ContentView: View {
         .appToast(
             showing: model.toast,
             close: model.closeSnackbar,
-            alignment: .bottom,
-            edge: .bottom,
             isHidden: panelDialogs.isPresented,
             bottomInset: AppWindowDefaults.effectGutter
                 + (model.isSearchExpanded ? 0 : PanelControlMetrics.tabBarHeight + SnipSnapSpacing.relatedContent)
@@ -368,10 +366,7 @@ struct ContentView: View {
             AccessibilityRepairView(
                 controller: accessibilityPermissions,
                 dismiss: { accessibilityPermissions.isRepairPresented = false },
-                performPrimaryAction: {
-                    coordinator.dismissPanelDialog(id: .accessibility, restoringParent: false)
-                    accessibilityPermissions.performPrimaryAction()
-                }
+                performPrimaryAction: { coordinator.performAccessibilityRepairPrimaryAction() }
             )
         }
     }

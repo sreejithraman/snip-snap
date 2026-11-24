@@ -7,7 +7,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testOfflineOptOutCopiesCurrentCacheOnlyAfterExplicitStaleChoiceAndNeverDeletesCloud() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         try await add("cached", to: persistence.activeLibrary())
         let server = FakeCloudServer()
         let namespace = makeNamespace()
@@ -20,7 +20,10 @@ extension ICloudSyncModeCoordinatorTests {
         )
         let enabled = try await coordinator.enableOrRetry()
         XCTAssertEqual(enabled.state, .on)
-        _ = try await coordinator.syncActive()
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            transport: transport
+        )
         let cloudStoreID = try await persistence.snapshot().activeStore.id
         let callsBefore = await transport.events()
 
@@ -45,7 +48,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let injector = CrashInjector(point: .beforePointerSwap)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: injector.hit)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: injector.hit)
         try await add("durable", to: persistence.activeLibrary())
         let originalID = try await persistence.snapshot().activeStore.id
         let server = FakeCloudServer()
@@ -70,7 +73,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertTrue(sentBeforeSwap.isEmpty)
         try await add("still writable", to: persistence.activeLibrary())
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let resumed = ICloudSyncModeCoordinator(
             persistence: reopened,
             namespace: namespace,
@@ -86,7 +89,7 @@ extension ICloudSyncModeCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: secondRoot) }
         let afterSwap = CrashInjector(point: .afterPointerSwap)
         let secondPersistence = try SwiftDataSyncModePersistence(
-            rootURL: secondRoot, defaultSyncProtocol: .fullRecordV1,
+            rootURL: secondRoot,
             crashHook: afterSwap.hit
         )
         try await add("after", to: secondPersistence.activeLibrary())
@@ -103,11 +106,6 @@ extension ICloudSyncModeCoordinatorTests {
         let final = try await secondPersistence.snapshot()
         XCTAssertEqual(final.activeStore.kind, .iCloudSync)
         XCTAssertEqual(final.transition?.phase, .swapped)
-        try mutateManifest(at: secondRoot.appendingPathComponent("activation.json")) { manifest in
-            var transition = try XCTUnwrap(manifest["transition"] as? [String: Any])
-            transition["phase"] = "pointerSwapped"
-            manifest["transition"] = transition
-        }
         let recovered = try SwiftDataSyncModePersistence(rootURL: secondRoot)
         let recoveredState = try await recovered.snapshot()
         XCTAssertEqual(recoveredState.activeStore.id, final.activeStore.id)
@@ -121,7 +119,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let injector = CrashInjector(point: .afterCandidateMergeDurability)
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: injector.hit)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: injector.hit)
         try await add("survives merge crash", to: persistence.activeLibrary())
         let originalID = try await persistence.snapshot().activeStore.id
         let server = FakeCloudServer()
@@ -142,7 +140,7 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(crashed.transition)
         XCTAssertEqual(try storeRootCount(in: root), 1)
 
-        let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let reopened = try SwiftDataSyncModePersistence(rootURL: root)
         let retry = ICloudSyncModeCoordinator(
             persistence: reopened,
             namespace: namespace,
@@ -150,7 +148,10 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
         let result = try await retry.enableOrRetry()
-        _ = try await retry.syncActive()
+        try await publishActiveStore(
+            persistence: reopened, namespace: namespace, textZone: textZone(namespace),
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+        )
         let serverTexts = await server.storedTextValues()
         XCTAssertEqual(result.state, .on)
         XCTAssertEqual(serverTexts, ["survives merge crash"])
@@ -159,7 +160,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testFreshOptOutFetchesRemoteChangesIntoANewLocalCopyWithoutCloudDelete() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         try await add("first", to: persistence.activeLibrary())
         let server = FakeCloudServer()
         let namespace = makeNamespace()
@@ -202,13 +203,13 @@ extension ICloudSyncModeCoordinatorTests {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
             let injector = CrashInjector(point: point)
-            let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, crashHook: injector.hit)
+            let persistence = try SwiftDataSyncModePersistence(rootURL: root, crashHook: injector.hit)
             let activeID = try await persistence.snapshot().activeStore.id
             do {
                 _ = try await persistence.beginTransition(to: .iCloudSync, namespace: testBinding())
                 XCTFail("Expected the injected crash.")
             } catch CrashInjector.Failure.injected {}
-            let reopened = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+            let reopened = try SwiftDataSyncModePersistence(rootURL: root)
             let snapshot = try await reopened.snapshot()
             XCTAssertEqual(snapshot.activeStore.id, activeID)
             XCTAssertNil(snapshot.transition)
@@ -220,7 +221,7 @@ extension ICloudSyncModeCoordinatorTests {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let writer = FailingManifestWriter()
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1, manifestWriter: writer.write)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root, manifestWriter: writer.write)
         writer.failWrites = true
         do {
             try await persistence.recordAttention(.storageFailure)
@@ -235,7 +236,7 @@ extension ICloudSyncModeCoordinatorTests {
     func testNamespaceAccountAndGenerationMismatchCannotReadOrCopyPriorCache() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root, defaultSyncProtocol: .fullRecordV1)
+        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
         let server = FakeCloudServer()
         let namespace = makeNamespace()
         let enabled = ICloudSyncModeCoordinator(
@@ -266,12 +267,6 @@ extension ICloudSyncModeCoordinatorTests {
                 textZone: textZone(mismatch),
                 makeTransport: { FakeCloudRecordTransport(server: server, namespace: mismatch) }
             )
-            do {
-                _ = try await coordinator.status()
-                XCTFail("A mismatched namespace must not reopen the prior cache.")
-            } catch {
-                XCTAssertEqual(error as? SyncModePersistenceError, .namespaceMismatch)
-            }
             do {
                 _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
                 XCTFail("A mismatched namespace must not copy the prior cache.")

@@ -91,17 +91,6 @@ package struct SnipLibraryState {
       resolveListNames()
       return .listCreated(list)
 
-    case .restoreList(let list):
-      guard list.id != SnipList.inboxID,
-        !lists.contains(where: { $0.id == list.id }),
-        !lists.contains(where: { $0.name.caseInsensitiveCompare(list.name) == .orderedSame })
-      else { throw SnipLibraryError.invalidList }
-      for index in lists.indices where lists[index].position >= list.position {
-        lists[index].position += 1
-      }
-      lists.append(list)
-      return .none
-
     case .updateList(let id, let name, let systemImage, let color):
       guard id != SnipList.inboxID,
         let index = lists.firstIndex(where: { $0.id == id })
@@ -250,21 +239,6 @@ package struct SnipLibraryState {
       seenRequestIDs.formUnion(additions.map(\.requestID))
       return .none
 
-    case .restoreReplacing(let restored, let id, let expectedUpdatedAt):
-      guard !restored.isEmpty else { return .none }
-      try validateImportedSnips(restored)
-      guard let replaced = snips.first(where: { $0.id == id }) else {
-        throw SnipLibraryError.snipNotFound
-      }
-      guard replaced.updatedAt == expectedUpdatedAt else { throw SnipLibraryError.snipChanged }
-      let existingIDs = Set(snips.lazy.filter { $0.id != id }.map(\.id))
-      let additions = restored.filter { !existingIDs.contains($0.id) }
-      for listID in Set(additions.map(\.listID)) { try validateList(id: listID) }
-      snips.removeAll { $0.id == id }
-      snips.append(contentsOf: additions)
-      seenRequestIDs.formUnion(restored.map(\.requestID))
-      return .none
-
     case .merge(let ids, let now):
       let selected = Snip.sorted(snips.filter { ids.contains($0.id) }, by: .chronological)
       guard selected.count >= 2 else { throw SnipLibraryError.requiresMultipleSnips }
@@ -308,21 +282,6 @@ package struct SnipLibraryState {
     case .setDone(let ids, let done):
       let editableIDs = Set(snips.filter { ids.contains($0.id) && !$0.isPinned }.map(\.id))
       update(ids: editableIDs) { $0.isDone = done }
-      return .none
-
-    case .toggleDone(let id):
-      guard let snip = snips.first(where: { $0.id == id }) else {
-        throw SnipLibraryError.snipNotFound
-      }
-      guard !snip.isPinned else { return .none }
-      update(ids: [id]) { $0.isDone = !snip.isDone }
-      return .none
-
-    case .toggleDoneMany(let ids):
-      let selected = snips.filter { ids.contains($0.id) && !$0.isPinned }
-      guard !selected.isEmpty else { return .none }
-      let done = selected.contains { !$0.isDone }
-      update(ids: Set(selected.map(\.id))) { $0.isDone = done }
       return .none
 
     case .moveChronologically(let ids, let listID):
@@ -381,16 +340,6 @@ package struct SnipLibraryState {
       }
       return .none
 
-    case .replaceAll(let replacement):
-      try validateImportedSnips(replacement)
-      snips = replacement
-      seenRequestIDs.formUnion(replacement.map(\.requestID))
-      return .none
-
-    case .applyDevicePatch(let patch, let now):
-      try applyDevicePatch(patch, now: now)
-      return .none
-
     case .pruneAttachments(let retainedIDs):
       pruneAttachments(retainedIDs, snips)
       return .none
@@ -432,141 +381,13 @@ package struct SnipLibraryState {
           && current.pinnedAt == expected.pinnedAt
           && current.isDone == expected.isDone
       }),
-      expectation.absentSnipIDs.allSatisfy({ snipsByID[$0] == nil }),
       expectation.expectedLists.allSatisfy({ listsByID[$0.id] == $0 }),
-      expectation.absentListIDs.allSatisfy({ listsByID[$0] == nil }),
       expectation.requiredListIDs.allSatisfy({ listsByID[$0] != nil }),
       expectation.expectedListMemberships.allSatisfy({ listID, expectedIDs in
         listsByID[listID] != nil
           && Set(snips.lazy.filter { $0.listID == listID }.map(\.id)) == expectedIDs
       })
     else { throw SnipLibraryError.snipChanged }
-  }
-
-  private mutating func applyDevicePatch(
-    _ patch: SnipLibraryDevicePatch,
-    now: Date
-  ) throws {
-    let currentSnips = Dictionary(uniqueKeysWithValues: snips.map { ($0.id, $0) })
-    let currentLists = Dictionary(uniqueKeysWithValues: lists.map { ($0.id, $0) })
-    for change in patch.snips {
-      try validate(change, current: currentSnips)
-    }
-    for change in patch.lists {
-      try validate(change, current: currentLists)
-    }
-
-    for change in patch.lists where change.before == nil {
-      if let after = change.after { lists.append(after) }
-    }
-    for change in patch.lists where change.before != nil && change.after != nil {
-      guard let before = change.before, let after = change.after,
-        let index = lists.firstIndex(where: { $0.id == before.id })
-      else { throw SnipLibraryError.deviceActionChanged }
-      if before.desiredName != after.desiredName { lists[index].desiredName = after.desiredName }
-      if before.systemImage != after.systemImage { lists[index].systemImage = after.systemImage }
-      if before.color != after.color { lists[index].color = after.color }
-      if before.sortKey != after.sortKey { lists[index].sortKey = after.sortKey }
-    }
-
-    for change in patch.snips {
-      switch (change.before, change.after) {
-      case (nil, let after?):
-        snips.append(after)
-        seenRequestIDs.insert(after.requestID)
-      case (let before?, nil):
-        snips.removeAll { $0.id == before.id }
-      case (let before?, let after?):
-        guard let index = snips.firstIndex(where: { $0.id == before.id }) else {
-          throw SnipLibraryError.deviceActionChanged
-        }
-        if before.content != after.content { snips[index].content = after.content }
-        if before.origin != after.origin { snips[index].origin = after.origin }
-        if before.source != after.source { snips[index].source = after.source }
-        if before.listID != after.listID { snips[index].listID = after.listID }
-        if before.pinnedAt != after.pinnedAt { snips[index].pinnedAt = after.pinnedAt }
-        if before.isDone != after.isDone { snips[index].isDone = after.isDone }
-        if before.manualSortKey != after.manualSortKey {
-          snips[index].manualSortKey = after.manualSortKey
-        }
-        if before.attachments != after.attachments { snips[index].attachments = after.attachments }
-        snips[index].updatedAt = now
-      case (nil, nil):
-        throw SnipLibraryError.deviceActionChanged
-      }
-    }
-
-    for change in patch.lists where change.after == nil {
-      guard let before = change.before else { throw SnipLibraryError.deviceActionChanged }
-      lists.removeAll { $0.id == before.id }
-    }
-    lists = SnipListNameAllocator.resolving(lists)
-    let listIDs = Set(lists.map(\.id))
-    guard lists.contains(where: { $0.id == SnipList.inboxID }),
-      Set(lists.map(\.id)).count == lists.count,
-      Set(snips.map(\.id)).count == snips.count,
-      Set(snips.map(\.listID)).isSubset(of: listIDs)
-    else { throw SnipLibraryError.deviceActionChanged }
-  }
-
-  private func validate(
-    _ change: SnipDeviceChange,
-    current: [UUID: Snip]
-  ) throws {
-    let id = change.before?.id ?? change.after?.id
-    guard let id else { throw SnipLibraryError.deviceActionChanged }
-    switch (change.before, change.after, current[id]) {
-    case (nil, .some, nil):
-      return
-    case (let before?, nil, let value?):
-      guard value.deviceFieldsEqual(before) else { throw SnipLibraryError.deviceActionChanged }
-    case (let before?, let after?, let value?):
-      guard before.id == after.id,
-        before.requestID == after.requestID,
-        before.createdAt == after.createdAt,
-        unchangedOrExpected(before.content, after.content, value.content),
-        unchangedOrExpected(before.origin, after.origin, value.origin),
-        unchangedOrExpected(before.source, after.source, value.source),
-        unchangedOrExpected(before.listID, after.listID, value.listID),
-        unchangedOrExpected(before.pinnedAt, after.pinnedAt, value.pinnedAt),
-        unchangedOrExpected(before.isDone, after.isDone, value.isDone),
-        unchangedOrExpected(before.manualSortKey, after.manualSortKey, value.manualSortKey),
-        unchangedOrExpected(before.attachments, after.attachments, value.attachments)
-      else { throw SnipLibraryError.deviceActionChanged }
-    default:
-      throw SnipLibraryError.deviceActionChanged
-    }
-  }
-
-  private func validate(
-    _ change: SnipListDeviceChange,
-    current: [UUID: SnipList]
-  ) throws {
-    let id = change.before?.id ?? change.after?.id
-    guard let id else { throw SnipLibraryError.deviceActionChanged }
-    switch (change.before, change.after, current[id]) {
-    case (nil, .some, nil):
-      return
-    case (let before?, nil, let value?):
-      guard value.deviceFieldsEqual(before) else { throw SnipLibraryError.deviceActionChanged }
-    case (let before?, let after?, let value?):
-      guard before.id == after.id,
-        unchangedOrExpected(before.desiredName, after.desiredName, value.desiredName),
-        unchangedOrExpected(before.systemImage, after.systemImage, value.systemImage),
-        unchangedOrExpected(before.color, after.color, value.color),
-        unchangedOrExpected(before.sortKey, after.sortKey, value.sortKey)
-      else { throw SnipLibraryError.deviceActionChanged }
-    default:
-      throw SnipLibraryError.deviceActionChanged
-    }
-  }
-
-  private func unchangedOrExpected<Value: Equatable>(
-    _ before: Value,
-    _ after: Value,
-    _ current: Value
-  ) -> Bool {
-    before == after || current == before
   }
 
   private func validateList(id: UUID) throws {

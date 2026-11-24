@@ -6,7 +6,7 @@ Showing a transparent floating panel on every macOS Space can leave stale backgr
 
 ## Decision
 
-Keep the Snip Snap panel on one Space at a time and use AppKit's move-to-active-Space behavior. When the shortcut runs on another Space, bring the existing panel to that Space. Hide it only when it is already visible on the active Space.
+Keep the Snip Snap panel on one Space at a time and use AppKit's move-to-active-Space behavior. When the shortcut runs on another Space, bring the existing panel to that Space. Hide it when it is already visible on the active Space, or when one of its dialogs or file pickers is open.
 
 ## Consequences
 

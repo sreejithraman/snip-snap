@@ -3,16 +3,16 @@ import CloudKit
 import XCTest
 
 final class CloudRecordShadowTests: XCTestCase {
-    func testOldFetchedBatchesDoNotClaimInitialFetchEvidence() throws {
+    /// Every tagged build since v0.5.1-beta.70 writes `isInitialFetch`. A batch without it is
+    /// unreadable, so it can never claim or lose initial-fetch evidence.
+    func testFetchedBatchWithoutInitialFetchFlagIsUnreadable() throws {
         let batch = CloudFetchedBatch(id: UUID(), items: [], engineState: nil, isInitialFetch: true)
         let encoded = try JSONEncoder().encode(batch)
         XCTAssertTrue(try JSONDecoder().decode(CloudFetchedBatch.self, from: encoded).isInitialFetch)
         var old = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         old.removeValue(forKey: "isInitialFetch")
-        let decoded = try JSONDecoder().decode(CloudFetchedBatch.self,
-            from: JSONSerialization.data(withJSONObject: old))
-        XCTAssertFalse(decoded.isInitialFetch)
-        XCTAssertEqual(decoded.id, batch.id)
+        XCTAssertThrowsError(try JSONDecoder().decode(CloudFetchedBatch.self,
+            from: JSONSerialization.data(withJSONObject: old)))
     }
 
     func testStoredSystemFieldsSurviveCodableRoundTripWithoutRearchivingComparison() throws {

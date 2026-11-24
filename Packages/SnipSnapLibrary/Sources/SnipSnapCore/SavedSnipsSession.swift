@@ -376,6 +376,12 @@ public actor SavedSnipsSession {
         await withCheckedContinuation { exclusiveAccess = .held(waiters: waiters + [$0]) }
     }
 
+    /// Diagnostic seam: how many callers are queued behind the current exclusive holder.
+    package var exclusiveAccessWaiterCount: Int {
+        guard case .held(let waiters) = exclusiveAccess else { return 0 }
+        return waiters.count
+    }
+
     private func release() {
         guard case .held(var waiters) = exclusiveAccess, !waiters.isEmpty else {
             exclusiveAccess = .available

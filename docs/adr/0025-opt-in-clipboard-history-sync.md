@@ -6,11 +6,11 @@ With clipboard sync on, Clear History will remove unpinned history across device
 
 Sync text, rich text, and images. File references will stay on their source Mac until pinned; pinning will preserve and transfer the actual files. This avoids uploading every file a user copies. Mark those local file entries “Only on this Mac” and explain “Pin to sync this file” when clipboard sync is on. Show upload progress and a retry action after failure.
 
-iOS will support explicit capture through a Paste button in Clipboard and a Clipboard destination in the existing Share extension. Continuous background capture and a custom keyboard are outside this change.
+iOS captures explicitly through a Paste button in Clipboard. Continuous background capture and a custom keyboard are outside this decision. Builds from 0.5.0 beta 50 through 0.6.0 beta 113 also offered a Clipboard destination in the Share extension. That destination is removed, and the app still imports whatever those builds left queued.
 
 On first enable, explain that existing history will upload, then merge local and iCloud history, remove duplicates, and preserve pins. Keep the latest 100 unpinned entries across devices, subject to the existing size limits. Pins stay outside automatic trimming.
 
-Files shared directly from iOS will get an app-owned copy on receipt. They remain local until pinned, with “Only on this iPhone” or “Only on this iPad” as appropriate.
+iOS Paste captures text, links, rich text, and images, not files. A file that an earlier build's Share destination queued gets an app-owned copy on receipt. It remains local until pinned, with “Only on this iPhone” or “Only on this iPad” as appropriate.
 
 After a file has synced, unpinning it keeps its shared identity and syncs that change. It becomes subject to normal history trimming. Pinning grants the file upload; unpinning does not withdraw it or delete other devices’ copies.
 

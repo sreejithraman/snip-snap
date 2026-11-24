@@ -188,8 +188,13 @@ private final class LiveSelectionSourceAccess: SelectionSourceAccess {
     }
 }
 
-private final class LiveSelectionClipboardAccess: SelectionClipboardAccess {
-    private var pasteboard: NSPasteboard { .general }
+final class LiveSelectionClipboardAccess: SelectionClipboardAccess {
+    private let pasteboardName: NSPasteboard.Name
+    private var pasteboard: NSPasteboard { NSPasteboard(name: pasteboardName) }
+
+    init(pasteboardName: NSPasteboard.Name = .general) {
+        self.pasteboardName = pasteboardName
+    }
 
     var changeCount: Int {
         pasteboard.changeCount

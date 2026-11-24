@@ -212,11 +212,12 @@ enum SnipCLIParser {
 }
 
 enum SnipCLIService {
-  static func execute(
+  static func execute<WaitClock: Clock<Duration>>(
     _ request: SnipCLIRequest,
     store: SnipCLIRequestStore,
     readiness: SnipCLIAppReadiness? = nil,
-    timeout: Duration = .seconds(5)
+    timeout: Duration = .seconds(5),
+    clock: WaitClock = ContinuousClock()
   ) async throws -> SnipCLIReceipt {
     let activeScope: String?
     if let readiness { activeScope = readiness.scopeToken }
@@ -230,7 +231,6 @@ enum SnipCLIService {
       return try await matchingCompletion(receipt, request: request, store: store)
     }
     if case .uncertain = initial { throw SnipSnapCLIError.outcomeUnknown(request.requestID) }
-    let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     var nextNotification = clock.now
     while clock.now < deadline {
@@ -246,7 +246,7 @@ enum SnipCLIService {
         )
         nextNotification = clock.now.advanced(by: .milliseconds(250))
       }
-      try await Task.sleep(for: .milliseconds(50))
+      try await clock.sleep(for: .milliseconds(50))
       switch try await store.state(for: request.requestID, waitingFor: request) {
       case .completed(let receipt):
         return try await matchingCompletion(receipt, request: request, store: store)

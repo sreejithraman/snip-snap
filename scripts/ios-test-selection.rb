@@ -4,6 +4,9 @@
 require 'json'
 require 'open3'
 
+# Tracked sources and release notes are UTF-8; do not depend on the caller's locale.
+Encoding.default_external = Encoding::UTF_8
+
 module IOSTestSelection
   PAGE_LAYOUT_TESTS = %w[
     testPageLayoutStaysStableDuringSlowSwipes
@@ -52,7 +55,7 @@ module IOSTestSelection
         testListEditorKeepsDraftAcrossRotation
         testListEditorIconSearchKeepsControlsReachable
         testSelectorDeleteListKeepsItsSnips
-        testCreatesListMovesSnipAndDeletesIt
+        testContextMoveSendsSnipToAnExistingList
         testRegularSidebarNewListMeetsTouchTargetMinimum
         testRailShowsListNamesAcrossRelaunchUntilToggledBack
         testRailEdgeDragsResizeAndIgnoresVerticalDrags
@@ -86,7 +89,6 @@ module IOSTestSelection
         testDeleteToastPresentationInDarkMode
         testDeleteToastStaysAboveSearchToolbar
         testSearchDoesNotExtendDeleteUndoWindow
-        testCreatesListMovesSnipAndDeletesIt
       ]
     },
     'gathering' => {
@@ -106,7 +108,6 @@ module IOSTestSelection
     'attachments' => {
       description: 'Attachment menus, preview, copy, editing, persistence, and seeded pickers.',
       tests: %w[
-        testAttachmentAddMenuOffersFilesAndPhotos
         testInlineEditorFilesPickerOpensAndCancels
         testAttachmentListImagePreviewAndSwipeDismiss
         testCopiesFileOnlySnipAttachments

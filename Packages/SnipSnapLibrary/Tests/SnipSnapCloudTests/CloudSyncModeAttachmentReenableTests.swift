@@ -48,7 +48,7 @@ extension ICloudSyncModeCoordinatorTests {
                 )
             }
         )
-        let firstEnabled = try await firstCoordinator.enableAndPublish()
+        let firstEnabled = try await firstCoordinator.enableAndPublish(persistence: first, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]))
         XCTAssertEqual(firstEnabled.state, .on)
 
         let second = try SwiftDataSyncModePersistence(
@@ -127,7 +127,7 @@ extension ICloudSyncModeCoordinatorTests {
                 )
             }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: metadataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace, automaticallyFetchedZones: [metadataZone]))
         XCTAssertEqual(enabled.state, .on)
         let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         XCTAssertEqual(optedOut.state, .off)

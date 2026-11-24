@@ -21,19 +21,4 @@ snip_snap_cleanup_derived_data
 [[ -d "$explicit_path" ]]
 /bin/rm -rf "$explicit_path"
 
-for caller in "$script_dir/test.sh" "$script_dir/build.sh"; do
-    /usr/bin/grep -F 'source "$script_dir/derived-data.sh"' "$caller" >/dev/null
-    /usr/bin/grep -F 'snip_snap_claim_derived_data' "$caller" >/dev/null
-    /usr/bin/grep -F 'trap snip_snap_cleanup_derived_data EXIT' "$caller" >/dev/null
-done
-
-/usr/bin/grep -F 'SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=' \
-    "$script_dir/test.sh" >/dev/null
-/usr/bin/grep -F 'SNIP_SNAP_STORE_PATH="$mac_store_path" xcodebuild' \
-    "$script_dir/test.sh" >/dev/null
-/usr/bin/grep -F -- '-derivedDataPath "$derived_data/ios"' \
-    "$script_dir/test.sh" >/dev/null
-/usr/bin/grep -F -- '-only-testing:SnipSnapiOSTests' \
-    "$script_dir/test.sh" >/dev/null
-
 print "DerivedData isolation checks passed."

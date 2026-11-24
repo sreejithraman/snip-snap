@@ -1,3 +1,0 @@
-Snip Snap 0.6.0 Beta 115 — iOS
-
-- Own the share list catalog in the running app
