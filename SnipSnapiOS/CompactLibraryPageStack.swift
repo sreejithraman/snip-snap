@@ -321,6 +321,9 @@ private final class PageLayerTranslationRegistry {
     }
 
     func register(_ navigationController: UINavigationController, for page: LibraryPage) {
+        if controllers[page]?.value !== navigationController {
+            geometryAnnouncedOffsets.removeValue(forKey: page)
+        }
         controllers[page] = WeakNavigationController(navigationController)
         apply(offset: offsets[page] ?? 0, to: navigationController)
     }
@@ -332,20 +335,40 @@ private final class PageLayerTranslationRegistry {
         }
     }
 
-    func setOffset(_ x: CGFloat, for page: LibraryPage) {
-        if offsets[page] == x, let controller = controllers[page]?.value {
-            let current = controller.view.layer.sublayerTransform.m41
-            if abs(current - x) < 0.001 { return }
+    func setOffset(_ x: CGFloat, for page: LibraryPage, isSettled: Bool) {
+        guard let controller = controllers[page]?.value else {
+            offsets[page] = x
+            return
         }
-        offsets[page] = x
-        if let controller = controllers[page]?.value {
+        if offsets[page] != x || abs(controller.view.layer.sublayerTransform.m41 - x) >= 0.001 {
+            offsets[page] = x
             apply(offset: x, to: controller)
+        }
+        if isSettled, geometryAnnouncedOffsets[page] != x {
+            geometryAnnouncedOffsets[page] = x
+            announceGeometryChange(of: controller)
         }
     }
 
     func prune(keeping pages: Set<LibraryPage>) {
         offsets = offsets.filter { pages.contains($0.key) }
+        geometryAnnouncedOffsets = geometryAnnouncedOffsets.filter { pages.contains($0.key) }
         controllers = controllers.filter { pages.contains($0.key) && $0.value.value != nil }
+    }
+
+    /// Offsets whose layer translation UIKit has reported as a geometry change.
+    private var geometryAnnouncedOffsets: [LibraryPage: CGFloat] = [:]
+
+    /// A sublayer transform moves the page without a UIKit geometry change, so hosted
+    /// SwiftUI rows keep the accessibility frames of their last reported position.
+    /// Restoring the view's own transform reports the change without moving the view.
+    private func announceGeometryChange(of navigationController: UINavigationController) {
+        let view: UIView = navigationController.view
+        let transform = view.transform
+        UIView.performWithoutAnimation {
+            view.transform = transform.translatedBy(x: 1, y: 0)
+            view.transform = transform
+        }
     }
 
     private func apply(offset x: CGFloat, to navigationController: UINavigationController) {
@@ -433,18 +456,19 @@ private struct PageLayerTranslationAnchor: UIViewControllerRepresentable {
 private struct PageLayerTranslationDriver: UIViewRepresentable {
     let page: LibraryPage
     let x: CGFloat
+    let isSettled: Bool
     let registry: PageLayerTranslationRegistry
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.isHidden = true
         view.isUserInteractionEnabled = false
-        registry.setOffset(x, for: page)
+        registry.setOffset(x, for: page, isSettled: isSettled)
         return view
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        registry.setOffset(x, for: page)
+        registry.setOffset(x, for: page, isSettled: isSettled)
     }
 }
 
@@ -492,7 +516,8 @@ private struct ListPageMotionStage<PageContent: View>: View {
                     page.content
                         .background {
                             PageLayerTranslationDriver(
-                                page: page.id, x: pageOffset, registry: translationRegistry
+                                page: page.id, x: pageOffset, isSettled: !frame.isMoving,
+                                registry: translationRegistry
                             )
                             .frame(width: 0, height: 0)
                             .accessibilityHidden(true)
