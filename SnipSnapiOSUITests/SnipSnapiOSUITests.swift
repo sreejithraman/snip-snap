@@ -2890,6 +2890,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         // Their rows must stop accepting input when another list becomes active.
         XCTAssertFalse(collectionRow(named: "Work page note", in: app).isHittable)
         XCTAssertFalse(collectionRow(named: "Work page note", in: app).isEnabled)
+        // Pages move by layer translation; accessibility frames must follow it.
+        XCTAssertTrue(collectionRow(named: "Work page note", in: app).frame.intersection(app.frame).isEmpty)
         _ = try visibleTouchCenter(of: composer, in: app)
         XCTAssertEqual(composer.value as? String, "Inbox unsent draft")
 
@@ -2898,6 +2900,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         _ = try visibleTouchCenter(of: row(named: "Work page note", in: app), in: app)
         XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isHittable)
         XCTAssertFalse(collectionRow(named: "Inbox page note", in: app).isEnabled)
+        XCTAssertTrue(collectionRow(named: "Inbox page note", in: app).frame.intersection(app.frame).isEmpty)
         _ = try visibleTouchCenter(of: composer, in: app)
         XCTAssertEqual(composer.value as? String, "Work unsent draft")
 
@@ -2953,7 +2956,12 @@ final class SnipSnapiOSUITests: XCTestCase {
                 bitmapInfo: CGImageAlphaInfo.none.rawValue
             ) else { return false }
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return pointer.filter { $0 > 150 }.count > 100
+            // Compare with the background rather than a brightness cutoff: a tinted title
+            // on a dark bar is darker than any fixed cutoff, and a light bar is brighter.
+            var histogram = [Int](repeating: 0, count: 256)
+            for value in pointer { histogram[Int(value)] += 1 }
+            let background = histogram.indices.max { histogram[$0] < histogram[$1] } ?? 0
+            return pointer.filter { abs(Int($0) - background) > 40 }.count > 100
         }
     }
 
