@@ -1,0 +1,9 @@
+# Snip Snap 0.6.1 Beta 302
+
+## Mac
+
+- No Mac changes in this build.
+
+## iOS
+
+- Keep list rows' accessibility frames in step with page swipes
