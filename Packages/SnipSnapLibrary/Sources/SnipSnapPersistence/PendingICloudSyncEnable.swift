@@ -12,8 +12,6 @@ package enum PendingICloudSyncEnable {
 
   private static let fileName = "icloud-sync-enable-pending"
   private static let pendingValue = "pending"
-  private static let legacyFailedValue = Data("needs-attention".utf8)
-  private static let legacyRetryPrefix = "retry:"
   private static let retryPrefix = "retry-v2:"
   private static let failurePrefix = "failure-v2:"
 
@@ -62,15 +60,14 @@ package enum PendingICloudSyncEnable {
 
   private static func phase(at rootURL: URL) -> Phase? {
     guard let data = try? Data(contentsOf: url(at: rootURL)) else { return nil }
-    if data == legacyFailedValue { return .needsAttention(.appDataIssue) }
-    guard let value = String(data: data, encoding: .utf8) else { return .pending }
-    if value.hasPrefix(failurePrefix) {
-      return .needsAttention(issue(in: value, after: failurePrefix) ?? .appDataIssue)
-    }
-    if let issue = issue(in: value, after: retryPrefix) ?? legacyRetryIssue(in: value) {
+    let value = String(data: data, encoding: .utf8)
+    if value == pendingValue { return .pending }
+    if let value, let issue = issue(in: value, after: retryPrefix) {
       return .retrying(issue)
     }
-    return .pending
+    // Any other content, including markers older builds wrote, waits for the user
+    // instead of silently running setup again.
+    return .needsAttention(value.flatMap { issue(in: $0, after: failurePrefix) } ?? .appDataIssue)
   }
 
   private static func write(_ phase: Phase, at rootURL: URL) throws {
@@ -92,19 +89,5 @@ package enum PendingICloudSyncEnable {
       let payload = Data(base64Encoded: String(value.dropFirst(prefix.count)))
     else { return nil }
     return try? JSONDecoder().decode(SyncedContentSyncIssue.self, from: payload)
-  }
-
-  private static func legacyRetryIssue(in value: String) -> SyncedContentSyncIssue? {
-    guard value.hasPrefix(legacyRetryPrefix) else { return nil }
-    return switch String(value.dropFirst(legacyRetryPrefix.count)) {
-    case "waiting-for-connection": .waitingForConnection
-    case "icloud-unavailable": .iCloudUnavailable
-    case "retrying-soon": .retryingSoon
-    case "checking-account": .checkingAccount
-    case "account-temporarily-unavailable": .accountTemporarilyUnavailable
-    case "some-changes-pending": .someChangesPending
-    case "attachment-unavailable": .attachmentUnavailable
-    default: nil
-    }
   }
 }

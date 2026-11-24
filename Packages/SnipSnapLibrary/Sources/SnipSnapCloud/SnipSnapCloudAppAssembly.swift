@@ -97,7 +97,6 @@ public enum SnipSnapCloudAppAssembly {
       enable: { try await lifecycle.enableICloudSync() },
       cancelEnable: { try await lifecycle.cancelPendingEnable() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
-      delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
       operationGate: appOperationGate,
       automaticSyncResults: automaticResults.stream,
@@ -118,8 +117,7 @@ public enum SnipSnapCloudAppAssembly {
         enableAction: { try await session.enableICloudSync() },
         cancelEnableAction: { try await session.cancelICloudSyncSetup() },
         hasFailedPendingEnable: { hasPendingSetup(rootURL: rootURL) },
-        disableAction: { choice in try await session.disableICloudSync(choice) },
-        deleteAction: { try await session.deleteSyncedContent() }
+        disableAction: { choice in try await session.disableICloudSync(choice) }
       ),
       syncSession: session,
       syncHandlerFactory: syncHandlerFactory
@@ -175,12 +173,10 @@ public enum SnipSnapCloudAppAssembly {
         syncSession: nil
       )
     }
-    let simulateRemovalPending = environment["SNIP_SNAP_UI_TEST_REMOVAL_PENDING"] == "1"
     let reset = SimulatedCloudCollectionReset(
       rootURL: rootURL,
       persistence: syncModeStore.persistence,
-      simulateEncryptedDataReset: environment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] == "1",
-      simulateRemovalPending: simulateRemovalPending
+      simulateEncryptedDataReset: environment["SNIP_SNAP_UI_TEST_ENCRYPTED_RESET"] == "1"
     )
     let automaticResults = AsyncStream.makeStream(of: SnipSnapCloudSyncResult.self)
     let session = SnipSnapCloudSyncSession(
@@ -194,7 +190,6 @@ public enum SnipSnapCloudAppAssembly {
         return .enabled
       },
       disable: { choice in try await reset.disableICloudSync(choice) },
-      delete: { try await reset.deleteSyncedContent() },
       activeLibrary: { try await reset.activeLibrary() },
       automaticSyncResults: automaticResults.stream,
       automaticErrorHandler: { error in
@@ -204,12 +199,9 @@ public enum SnipSnapCloudAppAssembly {
     return SnipSnapCloudAppServices(
       syncedContentSettings: SyncedContentSettingsModel(
         mode: .iCloudSync,
-        // Automatic launch syncs don't report removal progress, so start where a request would.
-        initialState: simulateRemovalPending ? .removalPending : .ready,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
-        disableAction: { choice in try await session.disableICloudSync(choice) },
-        deleteAction: { try await session.deleteSyncedContent() }
+        disableAction: { choice in try await session.disableICloudSync(choice) }
       ),
       syncSession: session
     )
@@ -246,7 +238,6 @@ public enum SnipSnapCloudAppAssembly {
       scheduleAutomaticSync: { try await lifecycle.scheduleAutomaticSync() },
       enable: { try await lifecycle.enableICloudSync() },
       disable: { choice in try await lifecycle.disableICloudSync(choice) },
-      delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() },
       operationGate: appOperationGate
     )
@@ -255,8 +246,7 @@ public enum SnipSnapCloudAppAssembly {
         mode: .localOnly,
         issueMapper: SnipSnapCloudSyncIssueMapper.issue(for:),
         enableAction: { try await session.enableICloudSync() },
-        disableAction: { choice in try await session.disableICloudSync(choice) },
-        deleteAction: { try await session.deleteSyncedContent() }
+        disableAction: { choice in try await session.disableICloudSync(choice) }
       ),
       syncSession: session,
       syncHandlerFactory: { sync, retry, schedule in

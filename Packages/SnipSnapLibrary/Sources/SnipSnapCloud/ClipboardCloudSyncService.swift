@@ -18,7 +18,7 @@ private enum ClipboardCloudLifecycle {
     case stopping(runID: UUID, syncWaiters: [CheckedContinuation<UUID, any Error>])
     /// The admitted sync starts only if it claims this admission before `stop()` revokes it.
     case admitting(UUID)
-    case unbinding(ClipboardCloudOperation, unwindingRun: ClipboardCloudUnwindingRun?)
+    case unbinding(UUID, unwindingRun: ClipboardCloudUnwindingRun?)
 }
 
 private struct ClipboardCloudOperation {
@@ -141,7 +141,7 @@ package enum ClipboardBindingResetStep: Sendable {
     public func stop() {
         pendingEntryIDs = []
         switch lifecycle {
-        case .idle:
+        case .idle, .unbinding:
             break
         case .syncing(let run):
             run.cancel()
@@ -151,8 +151,6 @@ package enum ClipboardBindingResetStep: Sendable {
             for waiter in waiters { waiter.resume(throwing: CancellationError()) }
         case .admitting:
             lifecycle = .idle
-        case .unbinding(let unbinding, _):
-            unbinding.cancel()
         }
     }
 
@@ -282,27 +280,6 @@ package enum ClipboardBindingResetStep: Sendable {
         }
     }
 
-    /// Invoke before the saved-snips generation is deleted, using its current scope.
-    /// While an account reset is pending, it leaves the reset marker in place of the binding.
-    /// It deletes and binds nothing unless the device's iCloud account is the generation's account,
-    /// which it checks before binding and before each delete attempt.
-    public func deleteSyncedHistory(generation: String) async throws {
-        let unbinding = try await beginUnbinding()
-        defer { endUnbinding(unbinding) }
-        try await requireAccount(for: generation)
-        try requireCurrentUnbinding(unbinding)
-        let hadBinding = FileManager.default.fileExists(atPath: bindingURL.path)
-        let transport = try bind(to: generation)
-        try await performWithRetry(operationName: "clipboard delete", owner: unbinding) { @MainActor in
-            try await self.requireAccount(for: generation)
-            try self.requireCurrentUnbinding(unbinding)
-            try await transport.deleteAll()
-        }
-        if hadBinding { try await store.setAside() }
-        try releaseBinding()
-        await worker.reset()
-    }
-
     /// Keep the previous account's history on disk but never upload it to another account.
     /// Sets history aside when a binding exists, or when the caller includes unbound history
     /// because clipboard sync is on. Runs `settingAside` once, just before setting it aside. If
@@ -392,7 +369,7 @@ package enum ClipboardBindingResetStep: Sendable {
     private func beginUnbinding() async throws -> UUID {
         if case .unbinding = lifecycle { throw ClipboardCloudError.busy }
         stop()
-        let unbinding = ClipboardCloudOperation()
+        let unbinding = UUID()
         if case .stopping(let runID, _) = lifecycle {
             await withCheckedContinuation { waiter in
                 lifecycle = .unbinding(
@@ -403,18 +380,11 @@ package enum ClipboardBindingResetStep: Sendable {
         } else {
             lifecycle = .unbinding(unbinding, unwindingRun: nil)
         }
-        return unbinding.id
-    }
-
-    /// Throws `CancellationError` once `stop()` cancelled this unbinding or the lifecycle no longer
-    /// holds it.
-    private func requireCurrentUnbinding(_ id: UUID) throws {
-        guard case .unbinding(let unbinding, _) = lifecycle, unbinding.id == id else { throw CancellationError() }
-        try unbinding.cancellation.check()
+        return unbinding
     }
 
     private func endUnbinding(_ id: UUID) {
-        guard case .unbinding(let unbinding, _) = lifecycle, unbinding.id == id else { return }
+        guard case .unbinding(id, _) = lifecycle else { return }
         lifecycle = .idle
     }
     private func bind(to generation: String) throws -> any ClipboardCloudTransport {
@@ -460,9 +430,6 @@ package enum ClipboardBindingResetStep: Sendable {
         case .syncing(var run) where run.id == owner:
             run.cancelRetry = cancel
             lifecycle = .syncing(run)
-        case .unbinding(var unbinding, let unwinding) where unbinding.id == owner:
-            unbinding.cancelRetry = cancel
-            lifecycle = .unbinding(unbinding, unwindingRun: unwinding)
         default:
             cancel?()
         }

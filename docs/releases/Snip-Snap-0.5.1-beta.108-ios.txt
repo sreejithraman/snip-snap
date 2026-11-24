@@ -1,3 +1,0 @@
-Snip Snap 0.5.1 Beta 108 — iOS
-
-- Keep page edge cues clear and animate list cancellation

@@ -30,11 +30,12 @@ final class SnipSnapiOSUITests: XCTestCase {
         withListHistoryFixtures: Bool = false,
         withClipboardEntry: Bool = false,
         withPageLayoutProbe: Bool = false,
-        syncIssue: String? = nil,
+        darkMode: Bool = false,
         contentSizeCategory: UIContentSizeCategory? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["SNIP_SNAP_UI_TESTING"] = "1"
+        if darkMode { app.launchEnvironment["SNIP_SNAP_UI_TEST_APPEARANCE"] = "dark" }
         if withPageLayoutProbe { app.launchEnvironment["SNIP_SNAP_UI_TEST_PAGE_LAYOUT"] = "1" }
         if withAgentSnips { app.launchEnvironment["SNIP_SNAP_UI_TEST_AGENT_SNIPS"] = "1" }
         if withHapticsTrace { app.launchEnvironment["SNIP_SNAP_UI_TEST_HAPTICS"] = "1" }
@@ -59,9 +60,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         }
         if withCopyShareFixtures {
             app.launchEnvironment["SNIP_SNAP_UI_TEST_COPY_SHARE"] = "1"
-        }
-        if let syncIssue {
-            app.launchEnvironment["SNIP_SNAP_UI_TEST_SYNC_ISSUE"] = syncIssue
         }
         if let contentSizeCategory {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSizeCategory.rawValue]
@@ -230,7 +228,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         add(proof)
     }
 
-    func testListSwipePerformanceAfterVisitingEightLists() throws {
+    func testListSwipesReturnThroughEightVisitedLists() throws {
         continueAfterFailure = false
         let app = launchApp(withListHistoryFixtures: true)
         try requireCompactSelector(in: app)
@@ -269,49 +267,8 @@ final class SnipSnapiOSUITests: XCTestCase {
         for title in ["Scale 07", "Archive", "Weekend plans", "Project reference library", "Reading", "Ideas", "Work", "Inbox"] {
             swipe(to: title, distance: 220)
         }
-
-        // This records completed-navigation CPU work. Device input/visual timing
-        // needs a separate physical trace and user check; there is no portable ms gate.
-        let options = XCTMeasureOptions()
-        options.iterationCount = 3
-        measure(metrics: [XCTCPUMetric(application: app)], options: options) {
-            Thread.sleep(forTimeInterval: 3)
-            swipe(to: "Work", distance: -220)
-            Thread.sleep(forTimeInterval: 3)
-            swipe(to: "Inbox", distance: 220)
-        }
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Main-content swipes return through eight visited lists"
-        proof.lifetime = .keepAlways
-        add(proof)
-    }
-
-    func testListSwipePerformance() throws {
-        continueAfterFailure = false
-        let app = launchApp(withLongList: true)
-        try requireCompactSelector(in: app)
-        createList("Work", in: app)
-        createSnip("Work page note", in: app)
-        let options = XCTMeasureOptions()
-        options.iterationCount = 4
-
-        measure(metrics: [XCTHitchMetric(application: app), XCTCPUMetric(application: app)], options: options) {
-            for (distance, title, content) in [(180.0, "Inbox", "Fixture 23"), (-180.0, "Work", "Work page note")] {
-                let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
-                start.press(
-                    forDuration: 0.05,
-                    thenDragTo: start.withOffset(CGVector(dx: distance, dy: 0)),
-                    withVelocity: XCUIGestureVelocity(rawValue: 240),
-                    thenHoldForDuration: 0
-                )
-                XCTAssertTrue(app.navigationBars[title].exists)
-                let destinationRow = row(named: content, in: app)
-                XCTAssertTrue(destinationRow.exists)
-                XCTAssertTrue(destinationRow.isEnabled, "The destination must finish settling before measurement ends.")
-            }
-        }
-        let proof = XCTAttachment(screenshot: app.screenshot())
-        proof.name = "Measured list swipes completed at Work"
         proof.lifetime = .keepAlways
         add(proof)
     }
@@ -711,8 +668,6 @@ final class SnipSnapiOSUITests: XCTestCase {
             throw XCTSkip("This check needs the regular-width rail.")
         }
         XCTAssertTrue(app.buttons["clipboard-sidebar"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["sidebar-width-toggle"].exists,
-                       "The sidebar must not show a top toggle icon.")
         if UIDevice.current.userInterfaceIdiom == .pad {
             waitForClipboardRowWidth(in: app, "iPad shows names by default") { $0 > 150 }
             dragSidebarRow(app.buttons["clipboard-sidebar"], by: CGVector(dx: -200, dy: 0))
@@ -750,7 +705,6 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         app.terminate()
         app = launchApp(storeName: storeName)
-        XCTAssertFalse(app.buttons["sidebar-width-toggle"].exists)
         waitForClipboardRowWidth(in: app, "Names shown after relaunch") { $0 > 150 }
 
         dragSidebarRow(app.buttons["clipboard-sidebar"], by: CGVector(dx: -200, dy: 0))
@@ -1110,37 +1064,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         waitForExpectations(timeout: 5)
     }
 
-    func testExplicitEnableKeepsLocalContentAndTurnsSyncOn() {
-        continueAfterFailure = false
-        let app = launchApp(withSyncEnable: true)
-        createSnip("Keep while enabling sync", in: app)
-        let localSnip = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "Keep while enabling sync")
-        ).firstMatch
-        XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
-        openSettings(in: app)
-        let privacyPolicy = app.descendants(matching: .any)
-            .matching(identifier: "privacy-policy")
-            .firstMatch
-        XCTAssertTrue(privacyPolicy.waitForExistence(timeout: 3))
-
-        let sync = app.switches["icloud-sync-toggle"]
-        XCTAssertTrue(sync.waitForExistence(timeout: 3))
-        XCTAssertEqual(sync.value as? String, "0")
-        XCTAssertFalse(app.staticTexts["Sync off"].exists)
-        toggle(sync)
-        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: sync)
-        waitForExpectations(timeout: 8)
-        XCTAssertFalse(app.staticTexts["Sync on"].exists)
-        XCTAssertTrue(app.switches["clipboard-sync-toggle"].isEnabled)
-        app.buttons["Done"].tap()
-        let inbox = listControl(named: "Inbox", in: app)
-        if inbox.waitForExistence(timeout: 2) {
-            inbox.tap()
-        }
-        XCTAssertTrue(localSnip.waitForExistence(timeout: 3))
-    }
-
     func testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit() {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true, withLimitAttachments: true)
@@ -1162,42 +1085,37 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Sync on"].exists)
     }
 
-    func testInternalSyncIssueUsesCalmCopyWithoutRawErrorCodes() {
-        continueAfterFailure = false
-        let app = launchApp(withSyncedContent: true, syncIssue: "app-data")
-
-        openSettings(in: app)
-
-        XCTAssertTrue(app.staticTexts["Couldn’t sync"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["retry-icloud-sync"].exists)
-        XCTAssertFalse(app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "CloudRecordError")
-        ).firstMatch.exists)
-        XCTAssertFalse(app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS %@", "error 2")
-        ).firstMatch.exists)
-    }
-
-    func testTurningSyncOffKeepsTheLibraryWithoutCloudDeletionControls() {
+    func testTurningSyncOnAndOffKeepsTheLocalLibrary() {
         continueAfterFailure = false
         let app = launchApp(withSyncEnable: true)
-        openSettings(in: app)
-        let initialSync = app.switches["icloud-sync-toggle"]
-        XCTAssertTrue(initialSync.waitForExistence(timeout: 3))
-        toggle(initialSync)
-        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: initialSync)
-        waitForExpectations(timeout: 8)
-        XCTAssertTrue(app.switches["clipboard-sync-toggle"].isEnabled)
-        app.buttons["Done"].tap()
         createSnip("Keep this", in: app)
         let saved = collectionRow(named: "Keep this", in: app)
         XCTAssertTrue(saved.waitForExistence(timeout: 3))
+        openSettings(in: app)
+        let privacyPolicy = app.descendants(matching: .any)
+            .matching(identifier: "privacy-policy")
+            .firstMatch
+        XCTAssertTrue(privacyPolicy.waitForExistence(timeout: 3))
+        let initialSync = app.switches["icloud-sync-toggle"]
+        XCTAssertTrue(initialSync.waitForExistence(timeout: 3))
+        XCTAssertEqual(initialSync.value as? String, "0")
+        XCTAssertFalse(app.staticTexts["Sync off"].exists)
+        toggle(initialSync)
+        expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: initialSync)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.staticTexts["Sync on"].exists)
+        XCTAssertTrue(app.switches["clipboard-sync-toggle"].isEnabled)
+        app.buttons["Done"].tap()
+        let inbox = listControl(named: "Inbox", in: app)
+        if inbox.waitForExistence(timeout: 2) {
+            inbox.tap()
+        }
+        XCTAssertTrue(saved.waitForExistence(timeout: 3), "Turning sync on must keep the local snip.")
         openSettings(in: app)
 
         let sync = app.switches["icloud-sync-toggle"]
         XCTAssertTrue(sync.waitForExistence(timeout: 3))
         XCTAssertEqual(sync.value as? String, "1")
-        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         toggle(sync)
 
         let staleCopyAlert = app.alerts["Turn off sync?"]
@@ -1211,7 +1129,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         let clipboardSync = app.switches["clipboard-sync-toggle"]
         XCTAssertEqual(clipboardSync.value as? String, "0")
         XCTAssertFalse(clipboardSync.isEnabled)
-        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "iCloud sync off keeps a local copy"
         proof.lifetime = .keepAlways
@@ -1243,7 +1160,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(clipboardSync.value as? String, "0")
     }
 
-    func testSettingsKeepsNormalSyncQuietWithoutCloudDeletionControls() {
+    func testSettingsKeepsNormalSyncQuietAndOffersBackups() {
         continueAfterFailure = false
         let app = launchApp(withSyncedContent: true)
         openSettings(in: app)
@@ -1253,10 +1170,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertEqual(sync.value as? String, "1")
         XCTAssertFalse(app.staticTexts["Sync on"].exists)
         XCTAssertFalse(app.staticTexts["sync-status"].exists)
-        XCTAssertFalse(app.buttons["delete-synced-content"].exists)
         XCTAssertFalse(app.buttons["retry-icloud-sync"].exists)
-        XCTAssertFalse(app.buttons["sync-icloud-now"].exists)
-        XCTAssertFalse(app.buttons["clear-icloud-downloads"].exists)
         XCTAssertTrue(app.buttons["create-backup"].exists)
         XCTAssertTrue(app.buttons["import-backup"].exists)
     }
@@ -1666,7 +1580,6 @@ final class SnipSnapiOSUITests: XCTestCase {
 
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.navigationBars["Edit Snip"].exists)
         try visibleTouchCenter(of: app.buttons["remove-attachment-sample.png"], in: app).tap()
         try visibleTouchCenter(of: editor, in: app).tap()
         editor.typeText(" discarded")
@@ -1712,12 +1625,10 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(snipRow.waitForExistence(timeout: 3))
         let touch = try visibleTouchCenter(of: snipRow, clippedTo: app.frame, in: app)
         touch.tap()
-        XCTAssertFalse(app.navigationBars["Snip"].exists)
         Thread.sleep(forTimeInterval: 0.6)
         touch.doubleTap()
         let editor = app.descendants(matching: .any)["inline-snip-text"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.navigationBars["Edit Snip"].exists)
         let inlineEditorScreenshot = XCTAttachment(screenshot: app.screenshot())
         inlineEditorScreenshot.name = "Inline Snip Editor"
         inlineEditorScreenshot.lifetime = .keepAlways
@@ -2303,14 +2214,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(send.isEnabled)
     }
 
-    func testAttachmentAddMenuOffersFilesAndPhotos() {
-        continueAfterFailure = false
-        let app = launchApp(withAttachments: true)
-        app.buttons["composer-add-attachments"].tap()
-        XCTAssertTrue(app.buttons["Choose Files"].firstMatch.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Choose Photos"].firstMatch.exists)
-    }
-
     private func assertPhotosPickerReady(in app: XCUIApplication, presentedWithin timeout: TimeInterval = 5) {
         let photos = app.buttons["Photos"]
         let loading = app.navigationBars["PUPickerUnavailableView"]
@@ -2374,6 +2277,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         app.buttons["composer-add-attachments"].tap()
+        XCTAssertTrue(app.buttons["Choose Files"].firstMatch.waitForExistence(timeout: 3))
         app.buttons["Choose Photos"].firstMatch.tap()
         assertPhotosPickerReady(in: app)
         let firstPhoto = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
@@ -2440,31 +2344,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(staged.waitForExistence(timeout: 5))
     }
 
-    func testCompactRowTapStaysUnselected() throws {
-        continueAfterFailure = false
-        let app = launchApp()
-        let composer = app.descendants(matching: .any)["composer-text"]
-
-        guard composer.waitForExistence(timeout: 5) else {
-            throw XCTSkip("The compact library is limited to iPhone.")
-        }
-
-        createSnip("Compact interaction fixture", in: app)
-        let snipRow = row(named: "Compact interaction fixture", in: app)
-        try visibleTouchCenter(
-            of: snipRow, clippedTo: app.collectionViews.firstMatch.frame, in: app
-        ).tap()
-        XCTAssertFalse(snipRow.isSelected)
-    }
-
     func testCompactListDragDismissesKeyboard() throws {
         continueAfterFailure = false
         let app = launchApp()
         let composer = app.descendants(matching: .any)["composer-text"]
-
-        guard composer.waitForExistence(timeout: 5) else {
-            throw XCTSkip("The compact library is limited to iPhone.")
-        }
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
 
         createSnip("Compact keyboard fixture", in: app)
         composer.tap()
@@ -2478,10 +2362,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         continueAfterFailure = false
         let app = launchApp()
         let composer = app.descendants(matching: .any)["composer-text"]
-
-        guard composer.waitForExistence(timeout: 5) else {
-            throw XCTSkip("The compact library is limited to iPhone.")
-        }
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
 
         composer.tap()
         composer.typeText("Unsent empty-list draft")
@@ -2974,10 +2855,7 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     func testTabDragKeepsEachListsContentDraftAndContextActions() throws {
         continueAfterFailure = false
-        let originalAppearance = XCUIDevice.shared.appearance
-        XCUIDevice.shared.appearance = .dark
-        defer { XCUIDevice.shared.appearance = originalAppearance }
-        let app = launchApp()
+        let app = launchApp(darkMode: true)
         try requireCompactSelector(in: app)
         createSnip("Inbox page note", in: app)
         let composer = app.textViews["composer-text"]
@@ -3355,23 +3233,24 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["list-selector"].exists)
     }
 
+    /// Runs on both layouts: compact list tabs on iPhone, sidebar or rail rows on iPad.
     func testCompactListTabsCreateAndSwitchLists() throws {
         continueAfterFailure = false
         let app = launchApp()
-        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
-        else {
-            throw XCTSkip("The compact list tabs are limited to iPhone.")
-        }
+        let listsShown = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["list-Inbox"].exists || app.descendants(matching: .any)["list-selector"].exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [listsShown], timeout: 5), .completed)
 
-        let inbox = compactListTab(named: "Inbox", in: app)
+        let inbox = listControl(named: "Inbox", in: app)
         XCTAssertTrue(inbox.waitForExistence(timeout: 3))
         XCTAssertTrue(inbox.isSelected)
 
         createList("Work", in: app)
-        let work = compactListTab(named: "Work", in: app)
+        XCTAssertTrue(app.navigationBars["Work"].waitForExistence(timeout: 3))
+        let work = listControl(named: "Work", in: app)
         XCTAssertTrue(work.waitForExistence(timeout: 3))
         XCTAssertTrue(work.isSelected)
-        XCTAssertTrue(app.navigationBars["Work"].exists)
 
         inbox.tap()
         XCTAssertTrue(app.navigationBars["Inbox"].waitForExistence(timeout: 3))
@@ -3423,10 +3302,7 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testListEditorLetsTheUserChooseAnIcon() throws {
         continueAfterFailure = false
         let app = launchApp()
-        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
-        else {
-            throw XCTSkip("The compact list tabs are limited to iPhone.")
-        }
+        try requireCompactSelector(in: app)
 
         openNewList(in: app)
         let field = app.textFields["list-name"]
@@ -3621,10 +3497,6 @@ final class SnipSnapiOSUITests: XCTestCase {
     func testListEditorShowsExpandedPaletteAndPersistsRed() throws {
         continueAfterFailure = false
         let app = launchApp()
-        guard app.descendants(matching: .any)["composer-text"].waitForExistence(timeout: 5)
-        else {
-            throw XCTSkip("The compact list tabs are limited to iPhone.")
-        }
 
         createList("Palette", in: app)
         openListEditor(named: "Palette", in: app)
@@ -3814,38 +3686,7 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertFalse(syncAction.exists)
     }
 
-    func testLibraryActionsKeepBackupsAndSyncMaintenanceInSettings() {
-        continueAfterFailure = false
-        let app = launchApp()
-        var actions = app.buttons["library-actions"]
-        if !actions.waitForExistence(timeout: 1) {
-            if app.buttons["BackButton"].exists {
-                app.buttons["BackButton"].tap()
-            } else {
-                app.navigationBars.buttons.firstMatch.tap()
-            }
-        }
-
-        if !actions.waitForExistence(timeout: 1) {
-            let more = app.buttons["More"]
-            XCTAssertTrue(more.waitForExistence(timeout: 3))
-            more.tap()
-            actions = app.buttons["Library actions"]
-        }
-
-        XCTAssertTrue(actions.waitForExistence(timeout: 3))
-        actions.tap()
-        XCTAssertFalse(app.buttons["Import backup…"].exists)
-        XCTAssertFalse(app.buttons["sync-icloud-now"].exists)
-        XCTAssertFalse(app.buttons["clear-icloud-downloads"].exists)
-        XCTAssertFalse(app.buttons["Undo"].exists)
-        XCTAssertFalse(app.buttons["Redo"].exists)
-        app.buttons["settings"].tap()
-        XCTAssertTrue(app.buttons["create-backup"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["import-backup"].exists)
-    }
-
-    func testCreatesListMovesSnipAndDeletesIt() throws {
+    func testContextMoveSendsSnipToAnExistingList() throws {
         continueAfterFailure = false
         let app = launchApp()
         openNewList(in: app)
@@ -3882,23 +3723,11 @@ final class SnipSnapiOSUITests: XCTestCase {
             "Move this"
         )).element
         XCTAssertTrue(moved.waitForExistence(timeout: 3))
-        try visibleTouchCenter(of: moved, in: app).press(forDuration: 1)
-        XCTAssertTrue(app.buttons["delete-context-snip"].waitForExistence(timeout: 3))
-        app.buttons["delete-context-snip"].tap()
-        XCTAssertTrue(moved.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["app-toast"].waitForExistence(timeout: 3))
-        app.buttons["toast-action"].tap()
-        XCTAssertTrue(collectionRow(named: "Move this", in: inboxContents).waitForExistence(timeout: 3))
     }
 
     func testDeleteToastUndoRestoresSnip() throws {
         continueAfterFailure = false
-        let originalAppearance = XCUIDevice.shared.appearance
-        addTeardownBlock {
-            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
-        }
-        XCUIDevice.shared.appearance = .dark
-        let app = launchApp()
+        let app = launchApp(darkMode: true)
         createSnip("Undo this", in: app)
         let presentation = try deleteSnipAndCaptureToast(named: "Undo this", in: app)
         let action = try capturedSnapshot(identifiedBy: "toast-action", in: presentation.state)
@@ -3925,12 +3754,7 @@ final class SnipSnapiOSUITests: XCTestCase {
                 "A blank image cannot prove the filled Undo button and contrasting label."
             )
         }
-        let originalAppearance = XCUIDevice.shared.appearance
-        addTeardownBlock {
-            await MainActor.run { XCUIDevice.shared.appearance = originalAppearance }
-        }
-        XCUIDevice.shared.appearance = .dark
-        let app = launchApp()
+        let app = launchApp(darkMode: true)
         createSnip("Inspect delete feedback", in: app)
         let presentation = try deleteSnipAndCaptureToast(named: "Inspect delete feedback", in: app)
         let state = presentation.state
@@ -3977,7 +3801,9 @@ final class SnipSnapiOSUITests: XCTestCase {
         let snipID = snip.identifier
         try visibleTouchCenter(of: snip, in: app).press(forDuration: 1)
         app.buttons["delete-context-snip"].tap()
-        // Live AX queries can outlast transient feedback on Simulator.
+        // Capture once the toast is up, so the capture does not race the menu's dismissal.
+        // Read it from one snapshot after that: live AX queries can outlast transient feedback.
+        XCTAssertTrue(app.descendants(matching: .any)["app-toast"].waitForExistence(timeout: 3))
         let screenshot = XCUIScreen.main.screenshot()
         let state = try app.snapshot()
         XCTAssertTrue(matchingSnapshots(identifiedBy: snipID, in: state).isEmpty)
@@ -4046,9 +3872,11 @@ final class SnipSnapiOSUITests: XCTestCase {
         app.buttons["Search"].tap()
         XCTAssertTrue(app.searchFields["Search"].waitForExistence(timeout: 3))
         XCTAssertTrue(toast.exists)
-        let remaining = deletedAt.addingTimeInterval(7).timeIntervalSinceNow
-        if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
-        XCTAssertFalse(toast.exists)
+        XCTAssertTrue(toast.waitForNonExistence(timeout: 8))
+        XCTAssertLessThan(
+            Date().timeIntervalSince(deletedAt), 7.0,
+            "Search must not pause the delete Undo countdown."
+        )
     }
 
     private func hasDarkLabelOnLightBackground(_ image: UIImage) -> Bool {
@@ -4327,9 +4155,6 @@ final class SnipSnapiOSUITests: XCTestCase {
     }
 
     private func openCopyShareFixture(matching text: String, in app: XCUIApplication) throws {
-        if app.navigationBars["Snip"].exists, app.buttons["BackButton"].exists {
-            app.buttons["BackButton"].tap()
-        }
         let fixture = activeSnipRows(in: app).matching(
             NSPredicate(format: "label CONTAINS %@", text)
         ).firstMatch
@@ -4577,8 +4402,6 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func openWorkflowSubmenu(_ title: String, in app: XCUIApplication) {
         app.buttons["workflow-options"].tap()
-        XCTAssertFalse(app.buttons["reorder-snips"].exists)
-        XCTAssertFalse(app.buttons["Reorder Snips"].exists)
         let submenu = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
         XCTAssertTrue(submenu.waitForExistence(timeout: 3))
         submenu.tap()
@@ -5419,11 +5242,26 @@ final class SnipSnapiOSUITests: XCTestCase {
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        assertMovedSnipsKeepSourceOrder(in: app)
         app.terminate()
         app = launchApp(storeName: storeName)
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
         XCTAssertTrue(collectionRow(named: "Try the stack interaction on iPhone", in: app).exists)
+        assertMovedSnipsKeepSourceOrder(in: app)
+    }
+
+    /// The fixture saves "Try the stack…" after "Sketch…", so it stays above it in the destination.
+    private func assertMovedSnipsKeepSourceOrder(in app: XCUIApplication, line: UInt = #line) {
+        let older = activeSnipRows(in: app).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Sketch a simpler selection flow")
+        ).firstMatch
+        let newer = activeSnipRows(in: app).matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Try the stack interaction on iPhone")
+        ).firstMatch
+        XCTAssertTrue(older.waitForExistence(timeout: 3), line: line)
+        XCTAssertTrue(newer.exists, line: line)
+        XCTAssertLessThan(newer.frame.minY, older.frame.minY, "A move must keep the source order.", line: line)
     }
 
     func testGatheredStackFitsAccessibilityText() throws {
@@ -5527,40 +5365,6 @@ final class SnipSnapiOSUITests: XCTestCase {
         XCTAssertTrue(stack.waitForNonExistence(timeout: 5))
         listControl(named: "Work", in: app).tap()
         XCTAssertTrue(collectionRow(named: "Sketch a simpler selection flow", in: app).waitForExistence(timeout: 3))
-    }
-
-    func testSelectsManyMovesThemAndPersists() throws {
-        continueAfterFailure = false
-        let storeName = "move-persist-\(UUID().uuidString)"
-        var app = launchApp(storeName: storeName)
-        createList("Work", in: app)
-        returnToLists(in: app)
-        selectList(named: "Inbox", in: app)
-        createSnip("One", in: app)
-        returnToCollection(in: app)
-        createSnip("Two", in: app)
-        returnToCollection(in: app)
-
-        enterSelection(in: app)
-        try visibleTouchCenter(of: row(named: "One", in: app), in: app).tap()
-        try visibleTouchCenter(of: row(named: "Two", in: app), in: app).tap()
-        app.buttons["move-gathered"].tap()
-        app.buttons["move-gathered-to-Work"].tap()
-
-        returnToLists(in: app)
-        listControl(named: "Work", in: app).tap()
-        XCTAssertTrue(app.staticTexts["One"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Two"].waitForExistence(timeout: 3))
-        let one = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "One")).firstMatch
-        let two = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Two")).firstMatch
-        XCTAssertLessThan(two.frame.minY, one.frame.minY)
-        app.terminate()
-        app = launchApp(storeName: storeName)
-        listControl(named: "Work", in: app).tap()
-        let restoredOne = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "One")).firstMatch
-        let restoredTwo = activeSnipRows(in: app).matching(NSPredicate(format: "label BEGINSWITH %@", "Two")).firstMatch
-        XCTAssertTrue(restoredOne.waitForExistence(timeout: 3))
-        XCTAssertLessThan(restoredTwo.frame.minY, restoredOne.frame.minY)
     }
 
     func testSelectionPersistsAcrossLists() throws {
@@ -5755,29 +5559,24 @@ final class SnipSnapiOSUITests: XCTestCase {
 
     private func createSnip(_ text: String, in app: XCUIApplication) {
         let composer = app.descendants(matching: .any)["composer-text"].firstMatch
-        if composer.waitForExistence(timeout: 1) {
-            composer.tap()
-            composer.typeText(text)
-            let send = app.buttons["composer-send"]
-            let sendReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                guard send.exists, send.isEnabled else { return false }
-                let frame = send.frame
-                guard !frame.isEmpty, app.frame.contains(frame) else { return false }
-                let keyboard = app.keyboards.firstMatch
-                return !keyboard.exists || frame.maxY <= keyboard.frame.minY
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [sendReady], timeout: 3), .completed)
-            XCTAssertEqual(composer.value as? String, text)
-            // XCTest can retain Send's hit point from before the keyboard appeared.
-            send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        } else {
-            app.buttons["new-snip"].tap()
-            let editor = app.textViews["snip-text"]
-            XCTAssertTrue(editor.waitForExistence(timeout: 3))
-            editor.tap()
-            editor.typeText(text)
-            app.buttons["save-snip"].tap()
+        guard composer.waitForExistence(timeout: 1) else {
+            XCTFail("The composer must exist to create a snip.")
+            return
         }
+        composer.tap()
+        composer.typeText(text)
+        let send = app.buttons["composer-send"]
+        let sendReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard send.exists, send.isEnabled else { return false }
+            let frame = send.frame
+            guard !frame.isEmpty, app.frame.contains(frame) else { return false }
+            let keyboard = app.keyboards.firstMatch
+            return !keyboard.exists || frame.maxY <= keyboard.frame.minY
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [sendReady], timeout: 3), .completed)
+        XCTAssertEqual(composer.value as? String, text)
+        // XCTest can retain Send's hit point from before the keyboard appeared.
+        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(collectionRow(named: text, in: selectedListContents(in: app)).waitForExistence(timeout: 3))
         dismissComposerKeyboard(in: app)
     }

@@ -158,7 +158,6 @@ fi
     -allowProvisioningDeviceRegistration \
     "DEVELOPMENT_TEAM=$development_team" \
     REGISTER_APP_GROUPS=YES \
-    "SNIP_SNAP_BUILD_LANE=cloud-dev" \
     "${platform_arguments[@]}" \
     "SNIP_SNAP_APP_GROUP_IDENTIFIER=$dev_app_group_identifier" \
     "SNIP_SNAP_CLOUDKIT_CONTAINER_IDENTIFIER=$cloudkit_container_identifier" \

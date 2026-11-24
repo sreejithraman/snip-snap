@@ -172,8 +172,6 @@ final class SnipMarkdownDocuments {
         active[source.hashValue]?.compactMap(\.value).first(where: { $0.source == source })?.content ?? .loading(source)
     }
 
-    func clearWarmCache() { warm.removeAllObjects() }
-
     fileprivate func didPrepare(_ document: SnipMarkdownDocument) {
         if document.content.cacheCost <= warmCostLimit {
             warm.setObject(document, forKey: document, cost: document.content.cacheCost)

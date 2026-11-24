@@ -27,22 +27,15 @@ token. A newer action or flow change invalidates unfinished work. Published
 results remain distinct from pending work: successful sheet dismissal or ending
 selection must not erase a result that just completed.
 
-`IOSHapticPlaying` has one operation: play an outcome. The UIKit adapter calls
+`IOSHapticPlaying` has one operation: play a meaning. The UIKit adapter calls
 Apple's feedback generators directly on the main actor. It owns no engine,
 custom patterns, intensity curves, timers, playback queue, or trace file.
+[iOS haptic policy](haptics.md) owns the mapping from outcomes to meanings and
+system responses.
 
-| Outcome | System feedback |
-| --- | --- |
-| Add / Save / Undo delete / Move | Light impact |
-| Copy | Rigid impact |
-| Done / Merge | Success notification |
-| Delete | Medium impact |
-| Select / Not Done | Selection |
-| Warning / Error | Matching notification |
-
-All impacts use Apple's default strength. UIKit playback happens when the action
-emits, without waiting for a SwiftUI update. The root modifier only tracks scene
-lifetime. Preference, cancellation, and stale-interaction checks still apply.
+UIKit playback happens when the action emits, without waiting for a SwiftUI
+update. The root modifier only tracks scene lifetime. Preference, cancellation,
+and stale-interaction checks still apply.
 
 A compound result retains both meanings, such as `[.copied, .markedDone]`, but
 plays one system response: error or warning first, otherwise the last outcome.

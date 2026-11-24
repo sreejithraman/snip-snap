@@ -1,3 +1,0 @@
-Snip Snap 0.6.0 Beta 135 — iOS
-
-- Send composer drafts to any list on Mac and iOS

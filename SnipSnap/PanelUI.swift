@@ -376,8 +376,8 @@ struct PanelBlankDragRegion: View {
 struct PanelGlassActionButton: View {
     let systemImage: String
     let isEnabled: Bool
-    var tint: Color = SnipSnapTheme.actionGlassTint
-    var labelColor: Color = SnipSnapTheme.actionGlassLabel
+    let tint: Color
+    let labelColor: Color
     let action: () -> Void
 
     var body: some View {

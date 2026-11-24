@@ -38,19 +38,6 @@ final class ComposerDraftStore {
         self.scope = scope
         self.textDefaultsKey = Self.scopedTextKey(textDefaultsKey, scope: scope)
         self.temporaryRootDirectory = temporaryRootDirectory
-        let migrationKey = textDefaultsKey + ".scopesInitialized"
-        if !defaults.bool(forKey: migrationKey) {
-            let legacy = defaults.dictionary(forKey: textDefaultsKey) as? [String: String] ?? [:]
-            if !legacy.isEmpty {
-                defaults.set(
-                    legacy,
-                    forKey: Self.scopedTextKey(
-                        textDefaultsKey, scope: Self.unattributedLegacyScope
-                    )
-                )
-            }
-            defaults.set(true, forKey: migrationKey)
-        }
         textByList = defaults.dictionary(forKey: self.textDefaultsKey) as? [String: String] ?? [:]
     }
 

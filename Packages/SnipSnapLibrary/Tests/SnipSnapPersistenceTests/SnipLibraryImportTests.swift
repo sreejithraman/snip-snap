@@ -231,6 +231,43 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertTrue(snapshot.snips.isEmpty)
   }
 
+  /// A v0.4.x store file is version 6 too, but lacks the keys every export since v0.5.0-beta.21
+  /// writes. Preview refuses it and leaves the file as it was.
+  func testBackupPreviewRefusesAVersion041StoreFileAndLeavesItUnchanged() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let documentURL = root.appendingPathComponent("snips.json")
+    let document = Data(
+      """
+      {
+        "lists" : [
+          { "id" : "00000000-0000-0000-0000-000000000001", "name" : "Inbox",
+            "position" : 0, "systemImage" : "tray.fill" }
+        ],
+        "snips" : [
+          { "attachments" : [], "content" : "From v0.4.1", "createdAt" : "2026-08-24T21:12:02Z",
+            "id" : "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAA1", "isDone" : false,
+            "listID" : "00000000-0000-0000-0000-000000000001", "manualPosition" : 0,
+            "origin" : "quickEntry", "requestID" : "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBB1",
+            "updatedAt" : "2026-08-24T21:12:02Z" }
+        ],
+        "version" : 6
+      }
+      """.utf8
+    )
+    try document.write(to: documentURL)
+    let target = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("target.store"))
+
+    do {
+      _ = try await SnipLibraryImport.preview(backupURL: documentURL, target: target)
+      XCTFail("A v0.4.1 store file must not preview as a backup.")
+    } catch {}
+
+    XCTAssertEqual(try Data(contentsOf: documentURL), document)
+    let snapshot = await target.snapshot(sortedBy: .chronological)
+    XCTAssertTrue(snapshot.snips.isEmpty)
+  }
+
   func testBackupPreviewAcceptsAValidNestedAttachment() async throws {
     let bytes = Data("nested attachment".utf8)
     let fixture = try makeBackupFixture(
@@ -253,56 +290,11 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: targetURL), bytes)
   }
 
-  func testJSONApplyRejectsStagedBytesThatNoLongerMatchPreviewDigest() async throws {
-    let root = temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target.json"))
-    try await assertChangedStageIsRejected(target: target, root: root)
-  }
-
   func testSwiftDataApplyRejectsStagedBytesThatNoLongerMatchPreviewDigest() async throws {
     let root = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let target = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("target.store"))
     try await assertChangedStageIsRejected(target: target, root: root)
-  }
-
-  func testLibraryPreviewStagesSourceBeforeLaterMutation() async throws {
-    let root = temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let inputURL = root.appendingPathComponent("input.txt")
-    let original = Data("original".utf8)
-    let changed = Data("modified".utf8)
-    XCTAssertEqual(original.count, changed.count)
-    try original.write(to: inputURL)
-    let source = try JSONSnipLibrary(
-      fileURL: root.appendingPathComponent("Source/source.json")
-    )
-    _ = try await source.perform(
-      .add(
-        content: "With attachment",
-        origin: .quickEntry,
-        source: nil,
-        listID: SnipList.inboxID,
-        attachmentURLs: [inputURL],
-        requestID: UUID(),
-        now: Date(timeIntervalSince1970: 100)
-      ),
-      sortedBy: .chronological
-    )
-    let target = try JSONSnipLibrary(
-      fileURL: root.appendingPathComponent("Target/target.json")
-    )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let sourceSnapshot = try await source.checkedSnapshot(sortedBy: .chronological)
-    let sourceAttachmentURL = try XCTUnwrap(sourceSnapshot.attachmentURLs.values.first)
-    try changed.write(to: sourceAttachmentURL, options: .atomic)
-
-    let result = try await target.applyImport(preview)
-
-    let attachmentID = try XCTUnwrap(result.snapshot.snips.first?.attachments.first?.id)
-    let targetSnapshot = try await target.transferSnapshot(revision: 0)
-    XCTAssertEqual(targetSnapshot.attachmentData[attachmentID], original)
   }
 
   func testBackupPreviewStagesSparseAttachmentWithoutMaterializingDataAndCancelCleansIt() async throws {
@@ -368,12 +360,11 @@ final class SnipLibraryImportTests: XCTestCase {
       ),
       sortedBy: .chronological
     )
-    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("empty.json"))
 
     let targetPreview = try await target.previewTransferSnapshot(revision: 0)
     XCTAssertTrue(targetPreview.attachmentData.isEmpty)
     XCTAssertEqual(targetPreview.attachmentFileURLs.count, 1)
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let preview = try await target.previewImport(transferSnapshot(lists: [.inbox]), transitionID: UUID())
 
     XCTAssertEqual(preview.addedSnipCount, 0)
     XCTAssertEqual(preview.addedAttachmentCount, 0)
@@ -456,12 +447,10 @@ final class SnipLibraryImportTests: XCTestCase {
         _ = try await remoteLibrary.perform(.restore(snips: [remote]), sortedBy: .manual)
       }
     )
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
-    _ = try await source.perform(
-      .restore(snips: [snip(id: sharedID, content: "Backup")]),
-      sortedBy: .manual
+    let preview = try await target.previewImport(
+      transferSnapshot(snips: [snip(id: sharedID, content: "Backup")], lists: [.inbox]),
+      transitionID: UUID()
     )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
     let actions = DirectSnipLibraryUserActions(library: target)
 
     do {
@@ -500,23 +489,16 @@ final class SnipLibraryImportTests: XCTestCase {
         )
       }
     )
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
     let backupList = SnipList(
       id: sharedID,
       name: "Backup",
       systemImage: "archivebox",
       position: 1
     )
-    _ = try await source.mergeTransferSnapshot(
-      SnipLibraryTransferSnapshot(
-        revision: 0,
-        snips: [snip(content: "Filed", listID: sharedID)],
-        lists: [.inbox, backupList],
-        attachmentData: [:]
-      ),
+    let preview = try await target.previewImport(
+      transferSnapshot(snips: [snip(content: "Filed", listID: sharedID)], lists: [.inbox, backupList]),
       transitionID: UUID()
     )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
     let actions = DirectSnipLibraryUserActions(library: target)
 
     do {
@@ -571,7 +553,6 @@ final class SnipLibraryImportTests: XCTestCase {
   func testPreviewDoesNotWriteAndConfirmedApplyMergesStableIdentities() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
     let target = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("target.store"))
     let sharedID = UUID()
 
@@ -579,15 +560,12 @@ final class SnipLibraryImportTests: XCTestCase {
       .restore(snips: [snip(id: sharedID, content: "Current")]),
       sortedBy: .chronological
     )
-    _ = try await source.perform(
-      .restore(snips: [
-        snip(id: sharedID, content: "Backup edit"),
-        snip(content: "Backup only"),
-      ]),
-      sortedBy: .chronological
+    let source = transferSnapshot(
+      snips: [snip(id: sharedID, content: "Backup edit"), snip(content: "Backup only")],
+      lists: [.inbox]
     )
 
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let preview = try await target.previewImport(source, transitionID: UUID())
 
     XCTAssertEqual(preview.addedSnipCount, 1)
     XCTAssertEqual(preview.recoveredSnipCount, 1)
@@ -607,13 +585,11 @@ final class SnipLibraryImportTests: XCTestCase {
   func testApplyRejectsAChangedTargetAndLeavesBothChangesIntact() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
     let target = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("target.store"))
-    _ = try await source.perform(
-      .restore(snips: [snip(content: "From backup")]),
-      sortedBy: .chronological
+    let preview = try await target.previewImport(
+      transferSnapshot(snips: [snip(content: "From backup")], lists: [.inbox]),
+      transitionID: UUID()
     )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
     _ = try await target.perform(
       .restore(snips: [snip(content: "Arrived later")]),
       sortedBy: .chronological
@@ -629,28 +605,10 @@ final class SnipLibraryImportTests: XCTestCase {
     XCTAssertEqual(current.snips.map(\.content), ["Arrived later"])
   }
 
-  func testConfirmedImportReturnsTheImportedSnapshot() async throws {
-    let directory = temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let storeURL = directory.appendingPathComponent("target.store")
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
-    let target = try SwiftDataSnipLibrary(storeURL: storeURL)
-    _ = try await source.perform(
-      .restore(snips: [snip(content: "From backup")]),
-      sortedBy: .chronological
-    )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
-    let actions = DirectSnipLibraryUserActions(library: target)
-
-    let imported = try await actions.applyImport(preview, sortedBy: .chronological)
-    XCTAssertEqual(imported.snapshot.snips.map(\.content), ["From backup"])
-  }
-
   func testConfirmedImportReturnsTheRequestedManualOrder() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let target = try SwiftDataSnipLibrary(storeURL: directory.appendingPathComponent("target.store"))
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
     let first = Snip(
       createdAt: Date(timeIntervalSince1970: 100),
       content: "First",
@@ -664,16 +622,16 @@ final class SnipLibraryImportTests: XCTestCase {
       manualPosition: 1
     )
     _ = try await target.perform(.restore(snips: [first, second]), sortedBy: .manual)
-    _ = try await source.perform(
-      .restore(snips: [Snip(
-        createdAt: Date(timeIntervalSince1970: 200),
-        content: "Imported",
-        origin: .quickEntry,
-        manualPosition: 0
-      )]),
-      sortedBy: .manual
+    let imported = Snip(
+      createdAt: Date(timeIntervalSince1970: 200),
+      content: "Imported",
+      origin: .quickEntry,
+      manualPosition: 0
     )
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let preview = try await target.previewImport(
+      transferSnapshot(snips: [imported], lists: [.inbox]),
+      transitionID: UUID()
+    )
     let actions = DirectSnipLibraryUserActions(library: target)
 
     let result = try await actions.applyImport(preview, sortedBy: .manual)
@@ -687,17 +645,15 @@ final class SnipLibraryImportTests: XCTestCase {
   func testModeManagedLibraryImportsThroughItsReservedWritePath() async throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
-    let source = try JSONSnipLibrary(fileURL: directory.appendingPathComponent("source.json"))
-    _ = try await source.perform(
-      .restore(snips: [snip(content: "Managed import")]),
-      sortedBy: .chronological
-    )
     let persistence = try SwiftDataSyncModePersistence(
       rootURL: directory.appendingPathComponent("SyncMode", isDirectory: true)
     )
     let target = try await persistence.activeLibrary()
 
-    let preview = try await SnipLibraryImport.preview(source: source, target: target)
+    let preview = try await target.previewImport(
+      transferSnapshot(snips: [snip(content: "Managed import")], lists: [.inbox]),
+      transitionID: UUID()
+    )
     let result = try await target.applyImport(preview)
 
     XCTAssertEqual(result.snapshot.snips.map(\.content), ["Managed import"])
@@ -752,7 +708,7 @@ final class SnipLibraryImportTests: XCTestCase {
   }
 
   private func makeBackupFixture(
-    version: Int = JSONSnipLibrary.currentVersion,
+    version: Int = JSONSnipArchive.currentVersion,
     relativePath: String?,
     attachmentBytes: Data? = nil,
     attachmentByteCount: Int64? = nil

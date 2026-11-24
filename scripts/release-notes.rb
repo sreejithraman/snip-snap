@@ -3,6 +3,9 @@ require 'fileutils'
 require 'rexml/document'
 require 'time'
 
+# Tracked sources and release notes are UTF-8; do not depend on the caller's locale.
+Encoding.default_external = Encoding::UTF_8
+
 # Keep release notes tied to the tested commit, even when main moves during delivery.
 module ReleaseNotes
   def self.git(repo, *args)

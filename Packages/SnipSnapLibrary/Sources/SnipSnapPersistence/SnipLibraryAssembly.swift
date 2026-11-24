@@ -23,20 +23,9 @@ public struct SnipLibraryAssembly: Sendable {
   public let userActionsFactory: SnipLibraryUserActionsFactory
   public let recoveryScope: SnipRecoveryScope?
   public let syncModeStore: SnipSyncModeStore?
-
-  public init(
-    library: any SnipLibrary,
-    activeCloudNamespace: ICloudSyncNamespaceBinding?
-  ) {
-    self.library = library
-    let factory = Self.makeUserActionsFactory()
-    userActionsFactory = factory
-    userActions = factory(library)
-    recoveryScope = SnipRecoveryScopeFactory.scope(
-      forActiveCloudNamespace: activeCloudNamespace
-    )
-    syncModeStore = nil
-  }
+  /// Sync mode holds this device's library but couldn't open it. `library` is unavailable,
+  /// so the app shows an error instead of an older copy.
+  public let libraryUnavailable: Bool
 
   public init(
     library: any SnipLibrary,
@@ -46,19 +35,32 @@ public struct SnipLibraryAssembly: Sendable {
   ) {
     let resolvedLibrary: any SnipLibrary
     let initialLocalLibrary = initializeSyncModeStore ? nil : library as? SwiftDataSnipLibrary
-    if (initializeSyncModeStore || initialLocalLibrary != nil
-      || SyncModeActivationManifestReader.hasActivationManifest(atSyncModeRootURL: syncModeRootURL)),
+    let hasManifest = SyncModeActivationManifestReader.hasActivationManifest(
+      atSyncModeRootURL: syncModeRootURL
+    )
+    if (initializeSyncModeStore || initialLocalLibrary != nil || hasManifest),
       let persistence = try? SwiftDataSyncModePersistence(
         rootURL: syncModeRootURL,
         attachmentCacheRootURL: attachmentCacheRootURL,
         initialLocalLibrary: initialLocalLibrary
       )
     {
-      resolvedLibrary = persistence.activeLibrary(fallback: library)
+      resolvedLibrary = persistence.lazyActiveLibrary()
       syncModeStore = SnipSyncModeStore(persistence)
+      libraryUnavailable = false
+    } else if hasManifest {
+      // This device moved its library into sync mode, so the root store is out of date.
+      // Open nothing rather than show or edit it; the manifest stays as it was.
+      resolvedLibrary = SwiftDataSnipLibrary.unavailable(
+        storeURL: (library as? SwiftDataSnipLibrary)?.lockURL.deletingPathExtension()
+          ?? SwiftDataSnipLibrary.defaultStoreURL()
+      )
+      syncModeStore = nil
+      libraryUnavailable = true
     } else {
       resolvedLibrary = library
       syncModeStore = nil
+      libraryUnavailable = false
     }
     let namespace = SyncModeActivationManifestReader.recoveryNamespace(at: syncModeRootURL)
     recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)

@@ -49,15 +49,12 @@ extension CloudFullSyncPersistenceTests {
       ),
       payload: Data("prior".utf8)
     )
-    try await library.storeDormantCloudBases(
-      namespaceKey: CloudSyncNamespaceKey(rawValue: prior.namespaceKey),
-      bases: [CloudDormantBase(
-        namespaceKey: prior.namespaceKey,
-        reference: prior.reference,
-        identity: prior.identity,
-        payload: prior.payload
-      )]
-    )
+    try await library.testInsertDormantBases([CloudDormantBase(
+      namespaceKey: prior.namespaceKey,
+      reference: prior.reference,
+      identity: prior.identity,
+      payload: prior.payload
+    )])
     let before = try await library.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )
@@ -268,7 +265,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(save.base, try CloudRecordShadow(data: freshSnip.shadowData))
   }
 
-  func testReenableIgnoresMismatchedNamespaceAndZoneButKeepsPayload() async throws {
+  func testReenableIgnoresMismatchedNamespaceAndZone() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullReenableMismatchTests-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -324,7 +321,8 @@ extension CloudFullSyncPersistenceTests {
         transitionID: UUID()
       )
       XCTAssertNil(plan)
-      XCTAssertEqual(try CloudDormantAcceptedBaseBundle.decode(payload).entries, [entry])
+      let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
+      XCTAssertTrue(stored.readyEntities.isEmpty)
     }
   }
 

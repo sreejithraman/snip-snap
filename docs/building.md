@@ -479,9 +479,8 @@ This updates `Config/release.json` and the public Xcode setting. It does not
 change a build counter. Protected CI generates that number when it makes a beta.
 
 Official releases use the team from `Local.xcconfig` or
-`SNIP_SNAP_DEVELOPMENT_TEAM`. They need these environment variables:
-
-Copy the separate production entitlement template once:
+`SNIP_SNAP_DEVELOPMENT_TEAM`. Copy the separate production entitlement template
+once:
 
 ```sh
 cp Config/MacRelease.example.entitlements Config/MacRelease.entitlements
@@ -558,11 +557,7 @@ An upload rejects an archive that does not match the exact clean public commit.
 You can create an archive on a feature branch to test the lane, but do not send
 that archive through Organizer.
 
-For the first beta, open the archive in Xcode Organizer and use **Distribute
-App**, **TestFlight & App Store**, automatic signing, and symbol upload. Do not
-let Xcode change the version or build number.
-
-After that flow has worked once, a maintainer can upload the checked archive:
+A maintainer can upload the checked archive:
 
 ```sh
 SNIP_SNAP_CONFIRM_TESTFLIGHT_UPLOAD=YES \

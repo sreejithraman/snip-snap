@@ -3,39 +3,32 @@ import SnipSnapCore
 import SnipSnapPersistence
 
 #if DEBUG
+/// Runs Settings against a fake control server for UI tests. The library starts on an empty
+/// iCloud store for the fixture collection.
 actor SimulatedCloudCollectionReset {
   private let persistence: SwiftDataSyncModePersistence
   private let old: CloudCollectionDescriptor
   private let server: FakeCloudServer
   private let transport: FakeCloudControlTransport
-  private let local: SwiftDataCloudCollectionLocalStore?
   private let coordinator: CloudCollectionCoordinator?
   private let simulateEncryptedDataReset: Bool
-  private let simulateRemovalPending: Bool
-  /// Fails each sync's cleanup of the old zones until a retry.
-  private var keepsRemovalPending: Bool
   private var prepared = false
 
   init(
     rootURL: URL,
     persistence: SwiftDataSyncModePersistence,
-    simulateEncryptedDataReset: Bool = false,
-    simulateRemovalPending: Bool = false
+    simulateEncryptedDataReset: Bool = false
   ) {
     self.persistence = persistence
     self.simulateEncryptedDataReset = simulateEncryptedDataReset
-    self.simulateRemovalPending = simulateRemovalPending
-    keepsRemovalPending = simulateRemovalPending
     old = CloudCollectionDescriptor.fresh(ownerName: "ui-test-owner")
     server = FakeCloudServer()
     let transport = FakeCloudControlTransport(server: server)
     self.transport = transport
-    let local = try? SwiftDataCloudCollectionLocalStore(
+    coordinator = (try? SwiftDataCloudCollectionLocalStore(
       rootURL: rootURL,
       persistence: persistence
-    )
-    self.local = local
-    coordinator = local.map {
+    )).map {
       CloudCollectionCoordinator(
         cloudScope: "private",
         accountLineage: "ui-test-account",
@@ -50,21 +43,20 @@ actor SimulatedCloudCollectionReset {
 
   func synchronize() async throws -> SnipSnapCloudSyncResult {
     let coordinator = try await prepare()
-    if keepsRemovalPending {
-      await transport.failNextZoneDelete()
-    }
-    let status = try await coordinator.synchronize()
-    return syncResult(for: status)
+    return syncResult(for: try await coordinator.synchronize())
   }
 
   func retrySynchronization() async throws -> SnipSnapCloudSyncResult {
-    keepsRemovalPending = false
-    return try await synchronize()
+    try await synchronize()
   }
 
+  /// Turns sync back on for the fixture collection, publishing it again if a reset removed it.
   func enableSync() async throws {
-    let coordinator = try await prepare()
-    _ = try await coordinator.enableSync()
+    _ = try await prepare()
+    if await transport.fetchControl() == nil { await transport.seedControl(old) }
+    try await persistence.seedEmptyActiveStore(
+      namespace: old.namespace(cloudScope: "private", accountLineage: "ui-test-account").binding
+    )
   }
 
   func disableICloudSync(_ choice: SyncedContentDisableChoice) async throws {
@@ -88,11 +80,6 @@ actor SimulatedCloudCollectionReset {
     guard status.state == .off else { throw CloudSyncRetryableError.itemFailure }
   }
 
-  func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
-    let coordinator = try await prepare()
-    return deleteOutcome(for: try await coordinator.deleteSyncedContent())
-  }
-
   func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     let snapshot = try await persistence.snapshot()
     return SnipSnapCloudActiveLibrary(
@@ -104,20 +91,14 @@ actor SimulatedCloudCollectionReset {
   }
 
   private func prepare() async throws -> CloudCollectionCoordinator {
-    guard let local, let coordinator else { throw SyncModePersistenceError.missingStore }
+    guard let coordinator else { throw SyncModePersistenceError.missingStore }
     guard !prepared else { return coordinator }
-    try await local.adopt(
-      old.namespace(cloudScope: "private", accountLineage: "ui-test-account")
+    try await persistence.seedEmptyActiveStore(
+      namespace: old.namespace(cloudScope: "private", accountLineage: "ui-test-account").binding
     )
     await transport.seedControl(old)
     if simulateEncryptedDataReset {
       await transport.removeControl()
-    }
-    if simulateRemovalPending {
-      // The real delete publishes a fresh collection and stages the old zones, whose
-      // deletion then fails.
-      await transport.failNextZoneDelete()
-      _ = try await coordinator.deleteSyncedContent()
     }
     prepared = true
     return coordinator

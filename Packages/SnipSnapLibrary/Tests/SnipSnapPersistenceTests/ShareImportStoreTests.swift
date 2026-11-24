@@ -102,7 +102,7 @@ final class ShareImportStoreTests: XCTestCase {
       withIntermediateDirectories: true
     )
     do {
-      let schema = Schema(versionedSchema: SnipSnapSchemaV2.self)
+      let schema = Schema(versionedSchema: SnipSnapSchemaV4.self)
       let configuration = ModelConfiguration(
         "BeforeShareSync",
         schema: schema,
@@ -111,7 +111,7 @@ final class ShareImportStoreTests: XCTestCase {
       )
       let container = try ModelContainer(for: schema, configurations: [configuration])
       let context = ModelContext(container)
-      context.insert(StoredListRecord(.inbox))
+      context.insert(SnipSnapSchemaV4.StoredListRecord(.inbox))
       try context.save()
     }
     let requestID = UUID()
@@ -164,22 +164,6 @@ final class ShareImportStoreTests: XCTestCase {
       expected.appendingPathComponent(
         "Library/Caches/SnipSnap/CloudAttachments",
         isDirectory: true
-      )
-    )
-  }
-
-  func testOrdinaryStoreDoesNotPublishShareCatalogOutsideItsLayout() throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let storeURL = root.appendingPathComponent("Outside", isDirectory: true)
-      .appendingPathComponent("Local", isDirectory: true)
-      .appendingPathComponent("snips.store", isDirectory: false)
-
-    _ = try SwiftDataSnipLibrary(storeURL: storeURL)
-
-    XCTAssertFalse(
-      FileManager.default.fileExists(
-        atPath: root.appendingPathComponent("Share/destinations.json").path
       )
     )
   }
@@ -297,65 +281,6 @@ final class ShareImportStoreTests: XCTestCase {
     }
   }
 
-  @MainActor
-  func testPublishedActiveListsReplaceTheStoreDerivedCatalog() async throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
-    let library = try SwiftDataSnipLibrary(storeURL: ShareImportStore.storeURL(in: root))
-    _ = try await library.perform(
-      .createList(name: "Store Only", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-    let imports = ShareImportStore(sharedRootURL: root)
-    XCTAssertFalse(FileManager.default.fileExists(atPath: importsCatalog(in: root).path))
-
-    let publisher = ShareListCatalogPublisher(imports: imports)
-    publisher.enqueue([.inbox, reading])
-    await publisher.flush()
-    let published = await imports.availableLists()
-    XCTAssertEqual(published, [.inbox, reading])
-
-    _ = try await library.perform(
-      .createList(name: "Later", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-    _ = try SwiftDataSyncModePersistence(
-      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true)
-    )
-    let afterStoreWrites = await imports.availableLists()
-    XCTAssertEqual(afterStoreWrites, [.inbox, reading])
-  }
-
-  @MainActor
-  func testSyncModeSnapshotInFlightDuringAWriteDoesNotPublish() async throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
-    let gate = ShareCatalogReadGate()
-    let persistence = try SwiftDataSyncModePersistence(
-      rootURL: root.appendingPathComponent("SyncMode", isDirectory: true),
-      readHook: { try await gate.pauseSecondRead() }
-    )
-    let library = try await persistence.activeLibrary()
-    let imports = ShareImportStore(sharedRootURL: root)
-    let publisher = ShareListCatalogPublisher(imports: imports)
-    publisher.enqueue([.inbox, reading])
-    await publisher.flush()
-
-    let snapshot = Task { await library.snapshot(sortedBy: .chronological) }
-    await gate.waitUntilSecondReadPauses()
-    _ = try await library.perform(
-      .createList(name: "Work", systemImage: "list.bullet"),
-      sortedBy: .chronological
-    )
-    await gate.resume()
-    _ = await snapshot.value
-
-    let lists = await imports.availableLists()
-    XCTAssertEqual(lists, [.inbox, reading])
-  }
-
   func testShareDestinationStartsInInboxThenUsesAStillPresentRememberedList() {
     let reading = SnipList(id: UUID(), name: "Reading", systemImage: "list.bullet", position: 1)
     let lists: [SnipList] = [.inbox, reading]
@@ -372,23 +297,6 @@ final class ShareImportStoreTests: XCTestCase {
       SnipShareDestination.resolve(rememberedListID: UUID(), in: lists),
       SnipList.inboxID
     )
-  }
-
-  func testProviderFileCopySurvivesTheProviderTemporaryFile() throws {
-    let root = try makeRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sourceURL = root.appendingPathComponent("provider-file.txt")
-    try Data("provider bytes".utf8).write(to: sourceURL)
-    let staging = try ShareImportStagingArea(sharedRootURL: root)
-
-    let attachment = try staging.copyProviderFile(
-      at: sourceURL,
-      contentType: "public.plain-text"
-    )
-    try FileManager.default.removeItem(at: sourceURL)
-
-    XCTAssertFalse(attachment.relativePath.hasPrefix("/"))
-    XCTAssertEqual(attachment.fileName, "provider-file.txt")
   }
 
   func testProviderCallbackCopiesTheFileBeforeTheCallbackReturns() async throws {
@@ -711,29 +619,3 @@ final class ShareImportStoreTests: XCTestCase {
 }
 
 private struct SimulatedCrash: Error {}
-
-private actor ShareCatalogReadGate {
-  private var reads = 0
-  private var paused = false
-  private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
-  private var release: CheckedContinuation<Void, Never>?
-
-  func pauseSecondRead() async throws {
-    reads += 1
-    guard reads == 2 else { return }
-    paused = true
-    pauseWaiters.forEach { $0.resume() }
-    pauseWaiters.removeAll()
-    await withCheckedContinuation { release = $0 }
-  }
-
-  func waitUntilSecondReadPauses() async {
-    guard !paused else { return }
-    await withCheckedContinuation { pauseWaiters.append($0) }
-  }
-
-  func resume() {
-    release?.resume()
-    release = nil
-  }
-}

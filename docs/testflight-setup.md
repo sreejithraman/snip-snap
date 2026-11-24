@@ -5,10 +5,9 @@ Checked against Apple documentation on August 30, 2026.
 ## Recommended path
 
 Use one iOS-only App Store Connect record for the production iPhone and iPad
-app. Keep the current macOS app on its direct-download release path. Upload the
-first iOS build by hand through Xcode Organizer so the team can inspect every
-signing choice and Apple warning. Automate the same archive and upload steps only
-after that build reaches an internal TestFlight group.
+app. Keep the current macOS app on its direct-download release path. Protected
+CI archives, checks, and uploads each beta; see
+[Protected beta delivery](#protected-beta-delivery).
 
 Choose **TestFlight & App Store**, not **TestFlight Internal Only**, if a build
 may later go to external testers or the App Store. Apple limits an internal-only
@@ -181,98 +180,7 @@ default, explain how to enable it, explain that the Share extension appears in
 the system Share sheet, and give a short sync test between two devices. The app
 has no separate Snip Snap login, so it needs no demo account.
 
-## Repo state
-
-### Already present
-
-- The `SnipSnapiOS` target supports iPhone and iPad and embeds
-  `SnipSnapShareExtension.appex`.
-- The main app bundle ID and Share extension bundle ID derive from
-  `SNIP_SNAP_PRODUCT_BUNDLE_IDENTIFIER`.
-- Both targets carry the shared App Group entitlement. The Share extension has
-  no CloudKit entitlement.
-- Ignored `Config/Local.xcconfig`, `Config/LocalMac.entitlements`, and
-  `Config/LocalIOS.entitlements` inputs exist on
-  the current maintainer machine and contain a team, production-name overrides,
-  App Group, CloudKit container, and CloudKit capability values. The values stay
-  out of Git.
-- `scripts/signed-lane-preflight.sh` checks signed development and device lanes,
-  including the app/extension App Group match and the rule that only the main
-  app gets CloudKit.
-- `scripts/build-matrix.sh` checks iPhone and iPad Simulator builds and confirms
-  that the Share extension is embedded.
-- `Config/release.json`, `Config/Shared.xcconfig`, and ADR 0011 establish one planned
-  marketing version. Protected CI generates a rising build number and passes
-  the same number to the iOS app, Share extension, and Mac app.
-- `Config/TestFlight.example.entitlements` provides a public production template.
-  Its ignored copy and all production names remain local or protected CI input.
-- `Config/MacRelease.example.entitlements` keeps the direct-download Mac app on
-  the same production CloudKit data as TestFlight without reusing Cloud Dev's
-  Development entitlement file.
-- `scripts/testflight.sh` archives and uploads the iOS app separately from the
-  Mac release. Its policy checks the signed app and embedded extension before
-  upload.
-- The iOS app and Share extension each contain their own privacy manifest.
-- `Config/iOSShared.xcconfig` inherits the one version and build from
-  `Config/Shared.xcconfig` instead of overriding it.
-- `scripts/cloud-dev.sh` gives signed development builds separate bundle IDs,
-  a separate App Group, the Development CloudKit environment, a clear name,
-  and an orange-scissors icon. Cloud Dev and TestFlight can stay installed at the
-  same time without sharing local data.
-- `docs/testflight-beta-metadata.md` keeps public beta copy repeatable without
-  storing private contact details.
-
-### Gaps before the first upload
-
-1. **Apple-side production registration has not been proved in the repo.** Check
-   the two explicit App IDs, shared production App Group, assigned iCloud
-   container, main-app Push Notifications capability, current agreements, and
-   App Store Connect record. Refresh the main app's provisioning profiles after
-   changing a capability.
-2. **App Store Connect setup still needs a portal check.** Confirm that
-   `https://sree.world/snip-snap/privacy` is set as the privacy-policy URL and
-   that the export-compliance answer matches the recorded code audit.
-3. **The global Apple publishing profile has not been proved ready.** Keep its
-   distribution certificate and App Store Connect API key outside this repo.
-
-## First internal build
-
-1. Finish the gaps above on a clean commit from `origin/main`.
-2. Keep the planned marketing version unless this beta starts a new public
-   version. The protected beta workflow generates a new build number. Apple
-   identifies a build by bundle ID, version, and build string. [Upload
-   builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds)
-3. Run the iOS UI tests, signed Cloud Dev contract, and physical-iPhone release
-   check. `scripts/testflight.sh archive` runs `scripts/test.sh` and the unsigned
-   build matrix itself.
-4. Run `scripts/testflight.sh archive`. It archives `SnipSnapiOS` in Release for
-   `generic/platform=iOS` and checks the result. An archive cannot come from a
-   Simulator build. [Testing a CloudKit
-   app](https://developer.apple.com/library/archive/documentation/DataManagement/Conceptual/CloudKitQuickStart/TestingYourApp/TestingYourApp.html)
-5. Inspect the archive before upload:
-   - The bundle IDs match the App Store Connect app and registered extension.
-   - The app embeds the Share extension.
-   - Both signatures use the expected team. An automatically signed archive
-     may still use development profiles; the App Store Connect export replaces
-     them with distribution signing.
-   - Both signed executables contain the same production App Group.
-   - Only the main app contains CloudKit, and its environment is production.
-   - The main app has the production push entitlement; the Share extension does
-     not.
-   - The version matches `Config/release.json` and the build matches the workflow's
-     generated value.
-   - Privacy manifests and dSYMs are present.
-6. In Organizer, choose **Distribute App**, **TestFlight & App Store**, automatic
-   signing, and symbol upload. Turn off Xcode's automatic version/build-number
-   management because the archive already contains the workflow's value.
-7. Wait for App Store Connect processing, resolve export compliance, review all
-   warnings, add **What to Test**, and assign the build to the internal group.
-
-Apple accepts uploads from Xcode, Transporter, `altool`, the App Store Connect
-API, or Xcode Cloud. The first upload is simplest in Organizer. [Upload
-builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds)
-
-### App diagnostics
+## App diagnostics
 
 Local diagnostic recording is enabled by default in Dev, TestFlight, and Release
 builds. The app keeps the newest complete events within a 256 KiB log in its
@@ -302,7 +210,7 @@ traces. Use Console with the connected iPhone or a system-log archive and filter
 by subsystem and category. The unified log has its own retention and is outside
 the app’s export and clear controls.
 
-#### Investigate an iOS TestFlight issue
+### Investigate an iOS TestFlight issue
 
 For a sync failure or error dialog, ask the tester for the approximate time,
 time zone, build number, and steps. In Snip Snap, choose **Settings → Support →
@@ -343,31 +251,15 @@ contributor builds or local diagnostic exports. The feedback list covers
 submitted feedback; do not treat an empty result as proof that no crash occurred.
 [Apple crash-feedback interface](https://developer.apple.com/documentation/appstoreconnectapi/betafeedbackcrashsubmission).
 
-## Repeat for each beta build
-
-1. Use a clean reviewed commit on `main`. The workflow run number plus its fixed
-   offset produces the build number. A retry of the same run keeps the same
-   number and verifies the same files; a later run gets a larger number. Never
-   reuse a build number for different files. [Build upload
-   status](https://developer.apple.com/help/app-store-connect/manage-builds/view-builds-and-metadata)
-2. Run the release tests and production-signing preflight.
-3. Archive, inspect, and upload the same way.
-4. Add clear **What to Test** notes and assign the processed build to the right
-   group.
-5. Submit external builds for TestFlight review when needed. Apple allows up to
-   six TestFlight review submissions in 24 hours. [Invite external
-   testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers)
-6. Keep the archive, dSYMs, commit, version, build, and App Store Connect delivery
-   result together as release evidence.
-
 ## Protected beta delivery
 
 `.github/workflows/beta-candidate.yml` tests each release-sized push to `main`.
 A newer push cancels an older candidate that is still testing. After a candidate
-passes, `.github/workflows/beta.yml` checks that its commit is still the tip of
-`main`, then uses the protected `apple-release` environment for signed work. The
-delivery workflow runs one release at a time and never cancels a release that
-has started. Each workflow keeps only its newest waiting run.
+passes, `.github/workflows/beta.yml` checks that its commit is on `main` and
+that no later commit changed the watched release inputs, then uses the protected
+`apple-release` environment for signed work. The delivery workflow runs one
+release at a time, never cancels a release that has started, and keeps waiting
+runs queued.
 
 The delivery uploads the iOS build to TestFlight and publishes the same-number
 Mac beta to GitHub, Sparkle's `beta` channel, and the `snip-snap@beta` cask. Set

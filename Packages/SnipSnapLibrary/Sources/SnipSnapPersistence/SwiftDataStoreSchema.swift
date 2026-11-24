@@ -2,52 +2,8 @@ import Foundation
 import SnipSnapCore
 import SwiftData
 
-package enum SnipSnapSchemaV1: VersionedSchema {
-  package static let versionIdentifier = Schema.Version(1, 0, 0)
-  package static var models: [any PersistentModel.Type] {
-    [
-      StoredSnipRecord.self,
-      SnipSnapSchemaV4.StoredListRecord.self,
-      StoredAttachmentRecord.self,
-      StoredSnipAttachmentReference.self,
-      StoredRequestRecord.self,
-    ]
-  }
-}
-
-package enum SnipSnapSchemaV2: VersionedSchema {
-  package static let versionIdentifier = Schema.Version(2, 0, 0)
-  package static var models: [any PersistentModel.Type] {
-    [
-      StoredSnipRecord.self,
-      SnipSnapSchemaV4.StoredListRecord.self,
-      StoredAttachmentRecord.self,
-      StoredSnipAttachmentReference.self,
-      StoredRequestRecord.self,
-      StoredCloudTextRecord.self,
-      StoredCloudEngineState.self,
-      StoredCloudStagedBatch.self,
-      StoredCloudRecoveryEvent.self,
-      StoredCloudNamespaceState.self,
-    ]
-  }
-}
-
-package enum SnipSnapSchemaV3: VersionedSchema {
-  package static let versionIdentifier = Schema.Version(3, 0, 0)
-  package static var models: [any PersistentModel.Type] {
-    SnipSnapSchemaV2.models + [
-      StoredLibraryMetadataRecord.self,
-      StoredCloudEntityRecord.self,
-      StoredCloudFullConflict.self,
-      StoredCloudFullEnrollment.self,
-      StoredCloudDormantBaseRecord.self,
-      StoredCloudMappingQuarantine.self,
-      StoredCloudFullBatchReceipt.self,
-    ]
-  }
-}
-
+// V4 is the oldest schema any tagged build wrote (v0.5.0-beta.21). An undecided account
+// isolation can keep a V4..V8 store on disk, so V4..V8 and their stages stay.
 package enum SnipSnapSchemaV4: VersionedSchema {
   // Keep the shipped list model unchanged so existing stores can migrate.
   @Model
@@ -67,7 +23,24 @@ package enum SnipSnapSchemaV4: VersionedSchema {
 
   package static let versionIdentifier = Schema.Version(4, 0, 0)
   package static var models: [any PersistentModel.Type] {
-    SnipSnapSchemaV3.models + [
+    [
+      StoredSnipRecord.self,
+      SnipSnapSchemaV4.StoredListRecord.self,
+      StoredAttachmentRecord.self,
+      StoredSnipAttachmentReference.self,
+      StoredRequestRecord.self,
+      StoredCloudTextRecord.self,
+      StoredCloudEngineState.self,
+      StoredCloudStagedBatch.self,
+      StoredCloudRecoveryEvent.self,
+      StoredCloudNamespaceState.self,
+      StoredLibraryMetadataRecord.self,
+      StoredCloudEntityRecord.self,
+      StoredCloudFullConflict.self,
+      StoredCloudFullEnrollment.self,
+      StoredCloudDormantBaseRecord.self,
+      StoredCloudMappingQuarantine.self,
+      StoredCloudFullBatchReceipt.self,
       StoredCloudPendingDelete.self,
       StoredCloudAttachmentPublication.self,
       StoredCloudAttachmentCleanup.self,
@@ -173,20 +146,39 @@ package enum SnipSnapSchemaV8: VersionedSchema {
 package enum SnipSnapSchemaV9: VersionedSchema {
   package static let versionIdentifier = Schema.Version(9, 0, 0)
   package static var models: [any PersistentModel.Type] {
-    SnipSnapSchemaV8.models.filter { $0 != SnipSnapSchemaV8.StoredListRecord.self }
-      + [StoredListRecord.self]
+    [
+      StoredSnipRecord.self,
+      StoredAttachmentRecord.self,
+      StoredSnipAttachmentReference.self,
+      StoredRequestRecord.self,
+      StoredCloudTextRecord.self,
+      StoredCloudEngineState.self,
+      StoredCloudStagedBatch.self,
+      StoredCloudRecoveryEvent.self,
+      StoredCloudNamespaceState.self,
+      StoredLibraryMetadataRecord.self,
+      StoredCloudEntityRecord.self,
+      StoredCloudFullConflict.self,
+      StoredCloudFullEnrollment.self,
+      StoredCloudDormantBaseRecord.self,
+      StoredCloudMappingQuarantine.self,
+      StoredCloudFullBatchReceipt.self,
+      StoredCloudPendingDelete.self,
+      StoredCloudAttachmentPublication.self,
+      StoredCloudAttachmentCleanup.self,
+      StoredCloudAttachmentCacheEntry.self,
+      StoredSnipPinRecord.self,
+      StoredListRecord.self,
+    ]
   }
 }
 
 package enum SnipSnapSchemaMigrationPlan: SchemaMigrationPlan {
   package static var schemas: [any VersionedSchema.Type] {
-    [SnipSnapSchemaV1.self, SnipSnapSchemaV2.self, SnipSnapSchemaV3.self, SnipSnapSchemaV4.self, SnipSnapSchemaV5.self, SnipSnapSchemaV6.self, SnipSnapSchemaV7.self, SnipSnapSchemaV8.self, SnipSnapSchemaV9.self]
+    [SnipSnapSchemaV4.self, SnipSnapSchemaV5.self, SnipSnapSchemaV6.self, SnipSnapSchemaV7.self, SnipSnapSchemaV8.self, SnipSnapSchemaV9.self]
   }
   package static var stages: [MigrationStage] {
     [
-      .lightweight(fromVersion: SnipSnapSchemaV1.self, toVersion: SnipSnapSchemaV2.self),
-      .lightweight(fromVersion: SnipSnapSchemaV2.self, toVersion: SnipSnapSchemaV3.self),
-      .lightweight(fromVersion: SnipSnapSchemaV3.self, toVersion: SnipSnapSchemaV4.self),
       .lightweight(fromVersion: SnipSnapSchemaV4.self, toVersion: SnipSnapSchemaV5.self),
       .lightweight(fromVersion: SnipSnapSchemaV5.self, toVersion: SnipSnapSchemaV6.self),
       .lightweight(fromVersion: SnipSnapSchemaV6.self, toVersion: SnipSnapSchemaV7.self),

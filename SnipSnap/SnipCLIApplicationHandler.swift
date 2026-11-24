@@ -115,19 +115,16 @@ final class SnipCLIApplicationHandler {
         case .retrySync:
             try model.beginCLIScopeChange()
             defer { model.endCLIScopeChange() }
-            var finishingDeletionFailed = false
             if syncedContentSettings.mode == .localOnly {
                 guard syncedContentSettings.canEnable else { throw cliApplicationError(syncedContentSettings.detail) }
                 await syncedContentSettings.enableICloudSync()
             } else {
-                guard syncedContentSettings.canSyncNow || syncedContentSettings.canFinishDeleting, let cloudSyncHandler else {
+                guard syncedContentSettings.canSyncNow, let cloudSyncHandler else {
                     throw cliApplicationError("iCloud sync is busy or unavailable. Check sync status.")
                 }
                 await cloudSyncHandler.retrySyncWhenPossible()
-                finishingDeletionFailed = syncedContentSettings.finishDeletingIssue != nil
             }
-            let retryFailed = cliSyncHasFailure || finishingDeletionFailed
-            return SnipCLIReceipt(request: request, status: retryFailed ? .failed : .success,
+            return SnipCLIReceipt(request: request, status: cliSyncHasFailure ? .failed : .success,
                 message: syncedContentSettings.detail, extendedResult: .application(cliSyncResult()),
                 resultingScopeToken: model.cliScopeToken)
         case .clipboardSyncStatus: return receipt(cliClipboardSyncResult())
@@ -349,9 +346,6 @@ final class SnipCLIApplicationHandler {
         case .enabling(let issue): state = "enabling" + (issue.map { ":" + $0.diagnosticCode } ?? "")
         case .syncing: state = "syncing"
         case .disabling: state = "disabling"
-        case .deleting: state = "deleting"
-        case .removalPending: state = "removal-pending"
-        case .deleted: state = "deleted"
         case .failed(let issue): state = "failed:" + issue.diagnosticCode
         }
         return SnipCLIApplicationResult(values: [

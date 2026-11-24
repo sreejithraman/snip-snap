@@ -107,12 +107,6 @@ struct IOSClipboardView: View {
                 }
                 .accessibilityIdentifier("clipboard-paste-error")
             }
-            if let error = model.importErrorMessage {
-                Section {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                    Button("Retry import") { Task { await model.foreground() } }
-                }
-            }
             if let error = model.persistentErrorMessage {
                 Section {
                     Label(error, systemImage: "exclamationmark.icloud")
@@ -150,7 +144,7 @@ struct IOSClipboardView: View {
         .listStyle(.plain)
         .scrollDismissesKeyboard(.interactively)
         .overlay {
-            if entries.isEmpty && model.persistentErrorMessage == nil && model.importErrorMessage == nil && model.pasteErrorMessage == nil {
+            if entries.isEmpty && model.persistentErrorMessage == nil && model.pasteErrorMessage == nil {
                 CollectionEmptyState(
                     title: emptyTitle,
                     systemImage: viewState.onlyPinned ? "pin" : "clipboard",

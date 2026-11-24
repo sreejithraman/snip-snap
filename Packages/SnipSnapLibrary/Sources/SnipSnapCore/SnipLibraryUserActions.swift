@@ -11,22 +11,10 @@ public struct SnipLibraryCommandResult: Sendable {
 }
 
 public protocol SnipLibraryUserActions: Sendable {
-  func perform(
-    command: SnipLibraryCommand,
-    sortedBy sortMode: SnipSortMode
-  ) async throws -> SnipLibraryUpdate
-
   func performWithResult(
     command: SnipLibraryCommand,
     sortedBy sortMode: SnipSortMode
   ) async throws -> SnipLibraryCommandResult
-
-  func delete(
-    ids: Set<UUID>,
-    token: UUID,
-    expectation: SnipLibraryExpectation?,
-    sortedBy sortMode: SnipSortMode
-  ) async throws -> SnipLibraryUpdate
 
   func deleteWithResult(
     ids: Set<UUID>,
@@ -55,32 +43,6 @@ public typealias SnipBackupImportPreviewer = @Sendable (
   _ backupURL: URL,
   _ target: any SnipLibrary
 ) async throws -> SnipImportPreview
-
-public extension SnipLibraryUserActions {
-  func perform(
-    command: SnipLibraryCommand,
-    sortedBy sortMode: SnipSortMode
-  ) async throws -> SnipLibraryUpdate {
-    try await performWithResult(command: command, sortedBy: sortMode).update
-  }
-
-  func delete(
-    ids: Set<UUID>,
-    token: UUID,
-    expectation: SnipLibraryExpectation?,
-    sortedBy sortMode: SnipSortMode
-  ) async throws -> SnipLibraryUpdate {
-    try await deleteWithResult(
-      ids: ids, token: token, expectation: expectation, sortedBy: sortMode
-    ).update
-  }
-
-  func delete(
-    ids: Set<UUID>, token: UUID, sortedBy sortMode: SnipSortMode
-  ) async throws -> SnipLibraryUpdate {
-    try await delete(ids: ids, token: token, expectation: nil, sortedBy: sortMode)
-  }
-}
 
 public typealias SnipLibraryUserActionsFactory = @Sendable (
   _ library: any SnipLibrary

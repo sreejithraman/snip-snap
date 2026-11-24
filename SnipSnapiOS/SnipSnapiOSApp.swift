@@ -103,6 +103,7 @@ struct SnipSnapiOSApp: App {
                 shareProcessToken: shareProcessToken
             )
             .appFont(.body)
+            .preferredColorScheme(Self.uiTestColorScheme)
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             let state: AppRuntimeTrace.State = switch phase {
@@ -116,6 +117,19 @@ struct SnipSnapiOSApp: App {
             )
         }
     }
+
+    /// UI tests force dark mode in the app rather than changing the whole simulator's setting.
+    private static var uiTestColorScheme: ColorScheme? {
+#if DEBUG
+        ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_APPEARANCE"] == "dark" ? .dark : nil
+#else
+        nil
+#endif
+    }
+
+    private static let libraryUnavailableMessage = String(
+        localized: "Snip Snap couldn’t open the local library. It left your saved data unchanged."
+    )
 
     private static func makeLibrary() -> IOSLibraryStartup {
 #if DEBUG
@@ -229,7 +243,7 @@ struct SnipSnapiOSApp: App {
                 userActions: assembly.userActions,
                 userActionsFactory: assembly.userActionsFactory,
                 shareImports: shareImports,
-                error: nil,
+                error: assembly.libraryUnavailable ? Self.libraryUnavailableMessage : nil,
                 uiTestAttachmentURLs: fixtureURLs,
                 seedsCopyShareFixtures: seedsCopyShareFixtures,
                 recoveryScope: assembly.recoveryScope,
@@ -251,7 +265,7 @@ struct SnipSnapiOSApp: App {
                 userActions: assembly.userActions,
                 userActionsFactory: assembly.userActionsFactory,
                 shareImports: shareImports,
-                error: String(localized: "Snip Snap couldn’t open the local library. It left your saved data unchanged."),
+                error: Self.libraryUnavailableMessage,
                 uiTestAttachmentURLs: [],
                 seedsCopyShareFixtures: false,
                 recoveryScope: assembly.recoveryScope,
@@ -288,15 +302,6 @@ struct SnipSnapiOSApp: App {
 
 #if DEBUG
     private static func makeUITestAttachmentFiles(nextTo storeURL: URL) -> [URL] {
-        if let path = ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_ATTACHMENTS_DIRECTORY"] {
-            guard let urls = try? FileManager.default.contentsOfDirectory(
-                at: URL(fileURLWithPath: path, isDirectory: true),
-                includingPropertiesForKeys: [.isRegularFileKey]
-            ) else { return [] }
-            return urls.filter {
-                (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        }
         let directory = storeURL.deletingLastPathComponent()
             .appendingPathComponent("UITestFixtures", isDirectory: true)
         let imageURL = directory.appendingPathComponent("sample.png", isDirectory: false)

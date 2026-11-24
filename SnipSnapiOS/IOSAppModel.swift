@@ -1224,21 +1224,6 @@ final class IOSAppModel {
         return values.isRegularFile == true && values.isSymbolicLink != true
     }
 
-    func clearDownloadedFiles() async {
-        haptics.invalidatePendingFeedback()
-        guard let cloudSyncHandler else { return }
-        do {
-            try await cloudSyncHandler.clearDownloadedFiles()
-            apply(await session.state(sortedBy: .chronological))
-            await refreshAttachmentTransferStates()
-            // A prepare can store a file during either await. Clearing must end without one.
-            preparedAttachments.removeAll()
-        } catch {
-            presentError(String(localized: "Couldn’t clear downloaded files. Try again."),
-                         operation: "attachment.cache_clear", diagnosticCode: diagnosticErrorCode(error))
-        }
-    }
-
     private func editSnipUnlocked(
         _ snip: Snip,
         content: String,

@@ -126,6 +126,39 @@ final class CloudEnrollmentStorageFormatTests: XCTestCase {
     XCTAssertTrue(missing.references.isEmpty)
   }
 
+  /// Every tagged build since v0.6.0-beta.118 writes `hasPlannedDeferredReleases`. A staged plan
+  /// without it is refused: it cannot be read or applied, library writes fail, and the row stays.
+  func testStagedPlanWithoutDeferredReleaseFlagIsRefusedAndKept() async throws {
+    let location = temporaryStore()
+    defer { try? FileManager.default.removeItem(at: location.root) }
+    let store = try SwiftDataSnipLibrary(storeURL: location.store)
+    let batchID = UUID()
+    let fields = #""attachmentTransitions":[],"batchID":"\#(batchID.uuidString)","items":[],"#
+      + #""namespaceKey":"\#(namespace.rawValue)","outboundBindings":[],"recoveryInputs":[],"#
+      + #""recoveryReviews":[],"settledDeleteIdentities":[],"storageVersion":1"#
+    XCTAssertNoThrow(try JSONDecoder().decode(CloudFullBatchCommit.self,
+      from: Data(#"{"hasPlannedDeferredReleases":true,\#(fields)}"#.utf8)))
+    let legacy = Data("{\(fields)}".utf8)
+    XCTAssertThrowsError(try JSONDecoder().decode(CloudFullBatchCommit.self, from: legacy))
+    let payload = try CloudWirePayloadEnvelope(format: .fullRecordV1, payload: legacy).encoded()
+    try await store.insertStagedRow(namespaceKey: namespace.rawValue, batchID: batchID, payload: payload)
+
+    do {
+      _ = try await store.stagedCloudFullBatches(namespaceKey: namespace)
+      XCTFail("A staged plan without hasPlannedDeferredReleases must be unreadable.")
+    } catch {}
+    do {
+      _ = try await store.perform(
+        .add(content: "blocked", origin: .quickEntry, source: nil, listID: SnipList.inboxID,
+          attachmentURLs: [], requestID: UUID(), now: Date()),
+        sortedBy: .manual)
+      XCTFail("Writes must stay refused while an unreadable staged plan remains.")
+    } catch {}
+
+    let kept = try await store.stagedRowPayloads()
+    XCTAssertEqual(kept, [payload])
+  }
+
   func testUnknownEnrollmentStorageVersionsAreInvalid() throws {
     let fixture = NamespaceFixture(phase: .seeding, revision: 2, zoneCreationPending: true, inventory: nil)
     let unknownEnvelope = Self.envelope(fixture.json()).replacingOccurrences(
@@ -258,6 +291,17 @@ private extension SwiftDataSnipLibrary {
     let context = Self.makeContext(container: try XCTUnwrap(container))
     context.insert(StoredCloudFullEnrollment(namespaceKey: namespaceKey, referencesData: data))
     try context.save()
+  }
+
+  func insertStagedRow(namespaceKey: String, batchID: UUID, payload: Data) throws {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    context.insert(StoredCloudStagedBatch(namespaceKey: namespaceKey, batchID: batchID, payload: payload))
+    try context.save()
+  }
+
+  func stagedRowPayloads() throws -> [Data] {
+    let context = Self.makeContext(container: try XCTUnwrap(container))
+    return try context.fetch(FetchDescriptor<StoredCloudStagedBatch>()).map(\.payload)
   }
 
   func enrollmentRowData(namespaceKey: String) throws -> Data? {

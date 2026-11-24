@@ -71,6 +71,71 @@ static func entity(from record: StoredCloudEntityRecord) throws -> CloudAccepted
     }
   }
 
+  /// Earlier 0.6.1 betas stored a delete conflict, with no review, when a remote edit met an
+  /// unsent local deletion. Once a commit restores or removes that record, nothing is left to
+  /// settle, so the row goes in the same save.
+  static func retireDeleteConflicts(
+    for reference: CloudEntityReference,
+    namespaceKey: String,
+    context: ModelContext
+  ) throws {
+    for row in try deleteConflicts(namespaceKey: namespaceKey, context: context)
+    where row.kind == reference.kind.rawValue && row.domainID == reference.domainID {
+      context.delete(row)
+    }
+  }
+
+  /// A delete conflict whose record has neither an accepted shadow nor a local row records
+  /// nothing left to restore or send: an older build already applied the server deletion.
+  static func retireOrphanedDeleteConflicts(
+    namespaceKey: String,
+    acceptedDomainKeys: Set<String>,
+    context: ModelContext
+  ) throws {
+    let orphans = try deleteConflicts(namespaceKey: namespaceKey, context: context).filter { row in
+      guard let kind = CloudEntityKind(rawValue: row.kind) else { return false }
+      return !acceptedDomainKeys.contains(StoredCloudEntityRecord.domainKey(
+        namespaceKey: namespaceKey, reference: CloudEntityReference(kind: kind, domainID: row.domainID)
+      ))
+    }
+    guard !orphans.isEmpty else { return }
+    let snipIDs = Set(try context.fetch(FetchDescriptor<StoredSnipRecord>()).map(\.id))
+    let listIDs = Set(try context.fetch(FetchDescriptor<StoredListRecord>()).map(\.id))
+    for row in orphans where !(row.kind == CloudEntityKind.snip.rawValue ? snipIDs : listIDs)
+      .contains(row.domainID)
+    {
+      context.delete(row)
+    }
+  }
+
+  private static func deleteConflicts(
+    namespaceKey: String,
+    context: ModelContext
+  ) throws -> [StoredCloudFullConflict] {
+    struct DeleteConflictMarker: Decodable { let localWasDeleted: Bool }
+    return try context.fetch(FetchDescriptor<StoredCloudFullConflict>()).filter { row in
+      let format = row.kind == CloudEntityKind.snip.rawValue
+        ? CloudConflictFormat.snipMergeV1 : .listMergeV1
+      return row.namespaceKey == namespaceKey && row.format == format.rawValue
+        && (try? JSONDecoder().decode(DeleteConflictMarker.self, from: row.payload))?.localWasDeleted == true
+    }
+  }
+
+  /// A remote edit can restore a snip this device deleted before CloudKit saw the delete
+  /// (ADR 0014). Attachments whose metadata CloudKit still holds come back with it, which
+  /// withdraws their queued metadata deletes before any payload cleanup is owed.
+  static func restoreRemovedCloudAttachments(
+    ofSnip snipID: UUID,
+    namespaceKey: String,
+    context: ModelContext
+  ) throws {
+    for row in try cloudAttachmentPublications(namespaceKey: namespaceKey, context: context)
+    where row.snipID == snipID && !row.lifecycle.isLocallyPresent && row.lifecycle.hasPublishedMetadata
+    {
+      _ = row.lifecycle.restoreLocalPresence()
+    }
+  }
+
   static func quarantines(
     namespaceKey: String,
     context: ModelContext

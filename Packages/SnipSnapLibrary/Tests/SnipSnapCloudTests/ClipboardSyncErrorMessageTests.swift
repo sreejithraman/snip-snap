@@ -44,11 +44,4 @@ final class ClipboardSyncErrorMessageTests: XCTestCase {
       "Couldn’t sync clipboard history. Clipboard entries over 32 MB can’t sync. Contact support for help."
     )
   }
-
-  func testDeleteMessageKeepsTheOperationAndMappedReason() {
-    XCTAssertEqual(
-      ClipboardSyncErrorMessage.deleteSyncedHistory(for: CKError(.quotaExceeded)),
-      "Couldn’t delete synced clipboard history. iCloud storage is full. Free up space, then try again."
-    )
-  }
 }

@@ -99,6 +99,7 @@ package enum SyncModeStoreKind: String, Codable, Equatable, Sendable {
   case iCloudSync
 }
 
+/// Only earlier builds wrote `recovery`. Those read-only copies stay on disk, unused.
 package enum SyncModeStoreLifecycle: String, Codable, Equatable, Sendable {
   case creating, ready, recovery, isolated, retired, deleting
 }
@@ -150,10 +151,7 @@ package struct SyncModeStore: Codable, Equatable, Sendable {
     kind = try values.decode(SyncModeStoreKind.self, forKey: .kind)
     namespace = try values.decodeIfPresent(ICloudSyncNamespaceBinding.self, forKey: .namespace)
     relativeRoot = try values.decode(String.self, forKey: .relativeRoot)
-    syncProtocol = try values.decodeIfPresent(
-      SyncModeSyncProtocol.self,
-      forKey: .syncProtocol
-    ) ?? .retiredText
+    syncProtocol = try values.decode(SyncModeSyncProtocol.self, forKey: .syncProtocol)
     quarantinedNamespace = try values.decodeIfPresent(
       ICloudSyncNamespaceBinding.self,
       forKey: .quarantinedNamespace

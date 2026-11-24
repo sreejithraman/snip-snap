@@ -203,11 +203,6 @@ release_policy_preflight() {
             release_policy_require_new_version "$repo_dir" || return 1
             release_policy_require_new_build "$repo_dir/appcast.xml" || return 1
             ;;
-        beta)
-            release_policy_require_source "$repo_dir" "$release_repo" || return 1
-            release_policy_require_new_version "$repo_dir" || return 1
-            release_policy_require_build_not_older "$repo_dir/appcast.xml" || return 1
-            ;;
         beta-publish)
             release_policy_require_source "$repo_dir" "$release_repo" on-main || return 1
             ;;
@@ -326,19 +321,6 @@ release_policy_notary_submission_entry() {
         exit 1 unless id.is_a?(String) && status.is_a?(String)
         puts [id, status].join("\t")
     ' "$submission_name"
-}
-
-release_policy_notary_history_contains_build() {
-    local history_json="$1"
-    local build_number="$2"
-    local submission_name
-    local names
-
-    names="$(release_policy_notary_submission_names "$history_json")" || return 1
-    for submission_name in ${(f)names}; do
-        [[ "$submission_name" == "Snip-Snap-build-$build_number-"* ]] && return 0
-    done
-    return 1
 }
 
 release_policy_latest_notary_build() {

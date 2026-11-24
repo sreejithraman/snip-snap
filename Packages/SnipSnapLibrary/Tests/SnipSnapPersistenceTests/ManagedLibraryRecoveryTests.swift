@@ -10,7 +10,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     let modeRoot = root.appendingPathComponent("SyncMode")
     let persistence = try SwiftDataSyncModePersistence(rootURL: modeRoot)
     let namespace = namespace()
-    try await persistence.activateEmptyCollection(namespace: namespace)
+    try await persistence.seedEmptyActiveStore(namespace: namespace)
     let scope = SnipRecoveryScope(namespace.namespaceKey.rawValue)
     let fixture = try await seedRecoveries(in: persistence, scope: scope)
     let fallback = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("fallback.store"))
@@ -31,7 +31,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
       defer { try? FileManager.default.removeItem(at: root) }
       let persistence = try SwiftDataSyncModePersistence(rootURL: root)
       let namespace = namespace()
-      if useCloud { try await persistence.activateEmptyCollection(namespace: namespace) }
+      if useCloud { try await persistence.seedEmptyActiveStore(namespace: namespace) }
       let scope = SnipRecoveryScope(namespace.namespaceKey.rawValue)
       let fixture = try await seedRecoveries(in: persistence, scope: scope)
       let library = try await persistence.activeLibrary()
@@ -152,7 +152,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     XCTAssertEqual(local.recovery, .empty)
 
     let firstNamespace = namespace()
-    try await persistence.activateEmptyCollection(namespace: firstNamespace)
+    try await persistence.seedEmptyActiveStore(namespace: firstNamespace)
     let firstScope = SnipRecoveryScope(firstNamespace.namespaceKey.rawValue)
     let first = try await seedRecoveries(in: persistence, scope: firstScope)
     let firstState = await session.replaceLibrary(
@@ -160,7 +160,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     XCTAssertEqual(firstState.recovery.pendingSnips, [first.snipRecovery])
 
     let secondNamespace = namespace()
-    try await persistence.activateEmptyCollection(namespace: secondNamespace)
+    try await persistence.seedEmptyActiveStore(namespace: secondNamespace)
     let secondScope = SnipRecoveryScope(secondNamespace.namespaceKey.rawValue)
     let second = try await seedRecoveries(in: persistence, scope: secondScope)
     let secondLibrary = try await persistence.activeLibrary()
@@ -177,7 +177,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
     let stillPending = try await session.checkedRecovery()
     XCTAssertEqual(stillPending.pendingSnips, [second.snipRecovery])
 
-    try await persistence.activateEmptyCollection(namespace: nil)
+    try await persistence.seedEmptyActiveStore(namespace: nil)
     let backToLocal = await session.replaceLibrary(
       library, recoveryScope: nil, sortedBy: .chronological)
     XCTAssertEqual(backToLocal.recovery, .empty)
@@ -193,7 +193,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
       let persistence = try SwiftDataSyncModePersistence(rootURL: root, readHook: { try await overlap.check() })
       let scope = SnipRecoveryScope("managed-overlapping-reads")
       let fixture = try await seedRecoveries(in: persistence, scope: scope)
-      let older = persistence.activeLibrary(fallback: fixture.store)
+      let older = persistence.lazyActiveLibrary()
       let olderRead = Task { try await older.recoverySnapshot(in: scope) }
       await fulfillment(of: [started], timeout: 5)
       guard await overlap.hasStarted else {
@@ -202,7 +202,7 @@ final class ManagedLibraryRecoveryTests: XCTestCase {
         return XCTFail("The managed recovery read must reach the store")
       }
 
-      let newer = persistence.activeLibrary(fallback: fixture.store)
+      let newer = persistence.lazyActiveLibrary()
       do {
         let snapshot = try await newer.checkedSnapshot(sortedBy: .chronological)
         XCTAssertTrue(failOlder, "The newer read should fail in this scenario")

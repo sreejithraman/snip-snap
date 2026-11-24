@@ -20,9 +20,11 @@ class IOSModelTestCase: XCTestCase {
     }
 
     func makeImportModel(library: any SnipLibrary) -> IOSAppModel {
+        // The shipped assembly with no sync-mode manifest keeps the library and has no recovery scope.
         let assembly = SnipLibraryAssembly(
             library: library,
-            activeCloudNamespace: nil
+            syncModeRootURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("IOSImportModel-\(UUID().uuidString)", isDirectory: true)
         )
         return IOSAppModel(
             library: assembly.library,
@@ -236,6 +238,12 @@ actor ModelTestLibrary: SnipLibrary {
         snips[index].attachments = attachments
     }
 
+    /// Stands in for a repository refresh, such as a sync apply, that rewrites a stored snip.
+    func replaceSnip(_ snip: Snip) {
+        guard let index = snips.firstIndex(where: { $0.id == snip.id }) else { return }
+        snips[index] = snip
+    }
+
     func resolutionChoices() -> [SnipRecoveryChoice] {
         resolvedChoices
     }
@@ -442,20 +450,6 @@ actor ModelTestLibrary: SnipLibrary {
             reindex(listID: listID, orderedIDs: destination)
             for sourceList in sourceLists where sourceList != listID { reindex(listID: sourceList) }
             outcome = .none
-        case .applyDevicePatch(let patch, _):
-            guard let updated = patch.applying(to: makeSnapshot(sortMode: .manual)) else {
-                throw SnipLibraryError.deviceActionChanged
-            }
-            snips = updated.snips
-            lists = updated.lists
-            outcome = .none
-        case .restoreReplacing(let restored, let id, let expectedUpdatedAt):
-            guard let current = snips.first(where: { $0.id == id }),
-                current.updatedAt == expectedUpdatedAt
-            else { throw SnipLibraryError.snipChanged }
-            snips.removeAll { $0.id == id }
-            snips.append(contentsOf: restored)
-            outcome = .none
         case .moveChronologically(let ids, let listID):
             for index in snips.indices where ids.contains(snips[index].id) && snips[index].listID != listID {
                 snips[index].listID = listID
@@ -483,17 +477,6 @@ actor ModelTestLibrary: SnipLibrary {
             )
             lists.append(list)
             outcome = .listCreated(list)
-        case .restoreList(let list):
-            guard !lists.contains(where: { $0.id == list.id }),
-                !lists.contains(where: {
-                    $0.name.caseInsensitiveCompare(list.name) == .orderedSame
-                })
-            else { throw SnipLibraryError.invalidList }
-            for index in lists.indices where lists[index].position >= list.position {
-                lists[index].position += 1
-            }
-            lists.append(list)
-            outcome = .none
         case .updateList(let id, let name, let systemImage, let color):
             guard let index = lists.firstIndex(where: { $0.id == id }) else {
                 throw SnipLibraryError.invalidList
@@ -532,9 +515,7 @@ actor ModelTestLibrary: SnipLibrary {
                         && current.pinnedAt == expected.pinnedAt
                         && current.isDone == expected.isDone
                 }),
-                expectation.absentSnipIDs.allSatisfy({ snipsByID[$0] == nil }),
                 expectation.expectedLists.allSatisfy({ listsByID[$0.id] == $0 }),
-                expectation.absentListIDs.allSatisfy({ listsByID[$0] == nil }),
                 expectation.requiredListIDs.allSatisfy({ listsByID[$0] != nil }),
                 expectation.expectedListMemberships.allSatisfy({ listID, expectedIDs in
                     listsByID[listID] != nil

@@ -83,8 +83,9 @@ extension SwiftDataSyncModePersistence {
     }
   }
 
-  /// Reads the reset marker written by pre-#122 builds. A newer interrupted
-  /// purge can instead leave the source marked read-only and deleting.
+  /// Reads the reset marker written by pre-#122 builds (through v0.5.0-beta.31). v0.6.0 never
+  /// wrote it but cleared it only once sync ran, so a device can still hold one. A newer
+  /// interrupted purge can instead leave the source marked read-only and deleting.
   private struct LegacyCollectionState: Decodable {
     struct Reset: Decodable {
       struct Namespace: Decodable {

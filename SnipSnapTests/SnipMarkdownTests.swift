@@ -1,5 +1,6 @@
 import CoreText
 import SwiftUI
+import Synchronization
 import XCTest
 @testable import SnipSnap
 
@@ -172,12 +173,12 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertEqual(documents.snapshot(for: oldSource).source, oldSource)
     }
 
-    func testActiveOversizedDocumentSurvivesWarmCacheEvictionAndThenReleases() async {
+    func testActiveOversizedDocumentStaysFoundUntilReleased() async {
         let documents = SnipMarkdownDocuments()
+        // Too large for the warm cache, so only the live document keeps it found.
         let source = String(repeating: "**large** and `code`\n", count: 25_000)
         var document: SnipMarkdownDocument? = documents.acquire(source)
         await document?.prepare()
-        documents.clearWarmCache()
 
         XCTAssertFalse(documents.snapshot(for: source).isLoading)
         XCTAssertEqual(documents.snapshot(for: source).accessibilityText, document?.content.accessibilityText)
@@ -213,35 +214,13 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertEqual(documents.trackedDocumentCount, 1)
     }
 
-    func testLargeFormattedPreparationKeepsTheMainActorResponsive() async {
-        let source = (0..<2_500).map {
-            "**Prompt \($0):** write a detailed SwiftUI clipboard manager with `Snip` lists, search, sync, attachments, and recovery. Include code samples and edge cases."
-        }.joined(separator: "\n")
-        XCTAssertEqual(source.utf8.count, 391_389)
+    func testLargeFormattedDocumentPreparesEveryLineWithItsFormatting() async {
+        let source = largeFormattedSource()
         let documents = SnipMarkdownDocuments()
         let document = documents.acquire(source)
-        var previousHeartbeat = ContinuousClock.now
-        var largestGap: Duration = .zero
-        var heartbeats = 0
-        // Measure the main queue directly; Task.sleep also waits for the cooperative executor.
-        let heartbeat = DispatchSource.makeTimerSource(queue: .main)
-        heartbeat.schedule(deadline: .now(), repeating: .milliseconds(1))
-        heartbeat.setEventHandler {
-            MainActor.assumeIsolated {
-                let now = ContinuousClock.now
-                largestGap = max(largestGap, previousHeartbeat.duration(to: now))
-                previousHeartbeat = now
-                heartbeats += 1
-            }
-        }
-        heartbeat.resume()
-        defer { heartbeat.cancel() }
 
         await document.prepare()
-        largestGap = max(largestGap, previousHeartbeat.duration(to: .now))
 
-        XCTAssertGreaterThan(heartbeats, 1)
-        XCTAssertLessThan(largestGap, .milliseconds(250), "Main-actor heartbeat stalled while preparing formatted text")
         XCTAssertFalse(document.content.isLoading)
         let expected = (0..<2_500).map {
             "Prompt \($0): write a detailed SwiftUI clipboard manager with Snip lists, search, sync, attachments, and recovery. Include code samples and edge cases."
@@ -252,10 +231,36 @@ final class SnipMarkdownTests: XCTestCase {
         XCTAssertTrue(document.content.fullText.runs.contains { $0.font == .body.monospaced() })
     }
 
+    /// The main thread stays blocked for the whole parse, so a parse that needs the main actor
+    /// cannot finish and the wait times out.
+    func testFormattedParsingNeverWaitsForTheMainActor() {
+        let source = largeFormattedSource()
+        let parsed = ParsedContent()
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached {
+            let content = await SnipMarkdownParser.prepare(source)
+            parsed.value.withLock { $0 = content }
+            finished.signal()
+        }
+
+        XCTAssertEqual(finished.wait(timeout: .now() + 30), .success)
+        XCTAssertEqual(parsed.value.withLock { $0?.isLoading }, false)
+    }
+
+    private func largeFormattedSource() -> String {
+        (0..<2_500).map {
+            "**Prompt \($0):** write a detailed SwiftUI clipboard manager with `Snip` lists, search, sync, attachments, and recovery. Include code samples and edge cases."
+        }.joined(separator: "\n")
+    }
+
     private func assertRendered(_ source: String, equals expected: String, file: StaticString = #filePath, line: UInt = #line) async {
         let content = await SnipMarkdown.prepare(source)
         XCTAssertFalse(content.isLoading, file: file, line: line)
         XCTAssertEqual(String(content.fullText.characters), expected, file: file, line: line)
         XCTAssertEqual(content.accessibilityText, expected, file: file, line: line)
     }
+}
+
+private final class ParsedContent: Sendable {
+    let value = Mutex<SnipTextContent?>(nil)
 }

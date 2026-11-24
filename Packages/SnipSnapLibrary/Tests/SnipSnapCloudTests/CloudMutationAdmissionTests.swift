@@ -24,26 +24,6 @@ final class CloudMutationAdmissionTests: XCTestCase {
     XCTAssertEqual(diagnostics.events, [.writeAdmission(.started, reason: .syncBusy)])
   }
 
-  func testStoreReplacementRecordsModeChangeInsteadOfWriteBusy() async throws {
-    let diagnostics = AdmissionDiagnosticProbe()
-    let pause = AutomaticSyncPause()
-    let point = AdmissionRetirementPause(pause: pause)
-    let fixture = try await AdmissionFixture.make(writeHook: { await point.hit($0) },
-      diagnostics: diagnostics.recorder)
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let managed = try await fixture.persistence.activeLibrary()
-    let replacement = CloudCollectionDescriptor.fresh(ownerName: "owner")
-    await point.arm()
-    let changing = Task { try await fixture.persistence.activateEmptyCollection(namespace: replacement.binding) }
-    await pause.waitUntilSuspended()
-    do { _ = try await managed.perform(admissionAddCommand("blocked"), sortedBy: .manual); XCTFail("Store replacement must block writes") }
-    catch SnipLibraryError.modeTransitionInProgress {}
-    await pause.resume()
-    try await changing.value
-
-    XCTAssertEqual(diagnostics.events, [.writeAdmission(.failed, reason: .modeChange)])
-  }
-
   func testAddToSelectedListWaitsForCloudMutationAndSavesOnce() async throws {
     let fixture = try await AdmissionFixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -245,7 +225,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
       let completion = try await prepareAutomaticConsumer(fixture)
       let managed = try await fixture.persistence.activeLibrary()
       let preview = try await managed.previewImport(SnipLibraryTransferSnapshot(revision: 0,
-        snips: [], lists: [.inbox], attachmentData: [:], legacyManualPositions: [:]), transitionID: UUID())
+        snips: [], lists: [.inbox], attachmentData: [:]), transitionID: UUID())
       let writing = Task {
         if importing { _ = try await managed.applyImport(preview) }
         else {
@@ -280,7 +260,7 @@ final class CloudMutationAdmissionTests: XCTestCase {
     let completion = try await prepareAutomaticConsumer(fixture)
     let managed = try await fixture.persistence.activeLibrary()
     let preview = try await managed.previewImport(SnipLibraryTransferSnapshot(revision: 0,
-      snips: [], lists: [.inbox], attachmentData: [:], legacyManualPositions: [:]), transitionID: UUID())
+      snips: [], lists: [.inbox], attachmentData: [:]), transitionID: UUID())
     let importing = Task { _ = try await managed.applyImport(preview) }
     await pause.waitUntilSuspended()
     await fixture.transport.enqueue(.checkpoint(fixture.checkpointID, fixture.checkpoint))
@@ -389,7 +369,7 @@ private struct AdmissionFixture: Sendable {
     let persistence = try SwiftDataSyncModePersistence(rootURL: root, writeHook: writeHook, diagnostics: diagnostics)
     let descriptor = CloudCollectionDescriptor.fresh(ownerName: "owner")
     let namespace = descriptor.namespace(cloudScope: "private", accountLineage: "account")
-    try await persistence.activateEmptyCollection(namespace: descriptor.binding)
+    try await persistence.seedEmptyActiveStore(namespace: descriptor.binding)
     let active = try await persistence.snapshot().activeStore
     let library = try await persistence.libraryForTransition(storeID: active.id)
     let lease = try await persistence.activeCloudMutation(storeID: active.id)
@@ -444,16 +424,6 @@ func waitForQueuedMutations(
     if orFinished() { return }
     guard ContinuousClock.now < deadline else { throw AdmissionTestError.timedOut }
     try await Task.sleep(for: .milliseconds(1))
-  }
-}
-
-private actor AdmissionRetirementPause {
-  let pause: AutomaticSyncPause
-  var armed = false
-  init(pause: AutomaticSyncPause) { self.pause = pause }
-  func arm() { armed = true }
-  func hit(_ point: SyncModeWritePoint) async {
-    if armed, point == .beforeStoreRetirement { await pause.suspend() }
   }
 }
 

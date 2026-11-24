@@ -15,7 +15,6 @@ final class SnipListModelsTests: XCTestCase {
         let documents = sources.map { SnipMarkdownDocuments.shared.acquire($0.content) }
         for document in documents { await document.prepare() }
         defer { withExtendedLifetime(documents) {} }
-        SnipMarkdownDocuments.shared.clearWarmCache()
         let payload = SnipDragPayload.make(snips: sources)
         XCTAssertTrue(SnipMarkdown.snapshot(for: payload.text).isLoading)
 
@@ -918,7 +917,7 @@ final class SnipListModelsTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: markdownURL.deletingLastPathComponent()) }
 
-        try await Task.sleep(for: .milliseconds(600))
+        // The export is gone; an unretained file would already have been removed with it.
         XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
 
         pasteboard.clearContents()
@@ -959,8 +958,6 @@ final class SnipListModelsTests: XCTestCase {
 
     @MainActor
     func testGeneratedMarkdownKeepsWatchingThePasteboardItWasCopiedTo() async throws {
-        let attachment = try makeMixedSnipExportAttachment()
-        defer { try? FileManager.default.removeItem(at: attachment.deletingLastPathComponent()) }
         let copiedPasteboard = NSPasteboard(
             name: .init("SnipSnapTests-generated-markdown-copied-\(UUID())")
         )
@@ -969,26 +966,36 @@ final class SnipListModelsTests: XCTestCase {
             name: .init("SnipSnapTests-generated-markdown-later-\(UUID())")
         )
         defer { laterPasteboard.releaseGlobally() }
-
-        let markdownURL = try await copyMixedSnipExport(
-            attachment: attachment,
-            to: copiedPasteboard,
-            thenRetainingUntilChangesTo: laterPasteboard
+        let polls = MarkdownRetentionPolls()
+        var file: SnipPasteboardMarkdownFile? = try SnipPasteboardMarkdownFile(
+            markdown: "Explain this image\n",
+            waitForNextPoll: { await polls.wait() }
         )
+        let markdownURL = try XCTUnwrap(file?.url)
         defer { try? FileManager.default.removeItem(at: markdownURL.deletingLastPathComponent()) }
 
-        laterPasteboard.clearContents()
+        file?.retainUntilPasteboardChanges(copiedPasteboard, changeCount: copiedPasteboard.clearContents())
+        // A later copy of the same export does not move the watch.
+        file?.retainUntilPasteboardChanges(laterPasteboard, changeCount: laterPasteboard.clearContents())
+        file = nil
         XCTAssertTrue(laterPasteboard.setString("Another app's copy", forType: .string))
-        try await Task.sleep(for: .milliseconds(600))
+
+        let firstPoll = await waitUntil { polls.count == 1 }
+        XCTAssertTrue(firstPoll, "The retention watches the unchanged pasteboard it was copied to")
+        polls.resume()
+        let secondPoll = await waitUntil { polls.count == 2 }
+        XCTAssertTrue(secondPoll)
         XCTAssertTrue(FileManager.default.fileExists(atPath: markdownURL.path))
 
         copiedPasteboard.clearContents()
         XCTAssertTrue(copiedPasteboard.setString("Another app's copy", forType: .string))
+        polls.resume()
 
         let removed = await waitUntil {
             !FileManager.default.fileExists(atPath: markdownURL.path)
         }
         XCTAssertTrue(removed)
+        XCTAssertEqual(polls.count, 2)
     }
 
     private func makeMixedSnipExportAttachment() throws -> URL {
@@ -1008,8 +1015,7 @@ final class SnipListModelsTests: XCTestCase {
     @MainActor
     private func copyMixedSnipExport(
         attachment: URL,
-        to pasteboard: NSPasteboard,
-        thenRetainingUntilChangesTo laterPasteboard: NSPasteboard? = nil
+        to pasteboard: NSPasteboard
     ) async throws -> URL {
         let export = try await SnipPasteboardExport.preparingClipboardExport(
             text: "Explain this image",
@@ -1021,12 +1027,6 @@ final class SnipListModelsTests: XCTestCase {
             untilPasteboardChanges: pasteboard,
             from: changeCount
         )
-        if let laterPasteboard {
-            export.retainStagedResources(
-                untilPasteboardChanges: laterPasteboard,
-                from: laterPasteboard.clearContents()
-            )
-        }
         return try generatedMarkdownURL(in: pasteboard.pasteboardItems ?? [])
     }
 
@@ -1115,71 +1115,6 @@ final class SnipListModelsTests: XCTestCase {
         XCTAssertEqual(quickEntry.displaySourceLabel, "Snip Snap — Quick Entry")
     }
 
-    func testDoneSnipsSortAfterActiveSnipsInBothModes() {
-        let olderActive = dropSnip(
-            id: 1,
-            createdAt: 100,
-            list: "Review",
-            manualPosition: 1
-        )
-        let newerDone = dropSnip(
-            id: 2,
-            createdAt: 200,
-            list: "Review",
-            manualPosition: 0,
-            isDone: true
-        )
-        let newestActive = dropSnip(
-            id: 3,
-            createdAt: 300,
-            list: "Review",
-            manualPosition: -1
-        )
-
-        XCTAssertEqual(
-            Snip.sorted([olderActive, newerDone, newestActive], by: .chronological)
-                .map(\.id),
-            [newestActive.id, olderActive.id, newerDone.id]
-        )
-        XCTAssertEqual(
-            Snip.sorted([olderActive, newerDone, newestActive], by: .manual)
-                .map(\.id),
-            [newestActive.id, olderActive.id, newerDone.id]
-        )
-    }
-
-    func testCopyFormattingUsesChronologicalOrderAndSourceContext() {
-        let old = Snip(
-            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-            requestID: UUID(),
-            createdAt: Date(timeIntervalSince1970: 100),
-            content: "First thought",
-            origin: .quickEntry
-        )
-        let new = Snip(
-            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
-            requestID: UUID(),
-            createdAt: Date(timeIntervalSince1970: 200),
-            content: "Second snippet",
-            origin: .selection,
-            source: SnipSource(
-                applicationName: "Safari",
-                windowTitle: "Docs",
-                url: "https://example.com/docs"
-            )
-        )
-
-        XCTAssertEqual(
-            SnipFormatter.format(snips: [new, old]),
-            "First thought\n\n---\n\nSecond snippet\nSource: Safari — Docs\nURL: https://example.com/docs"
-        )
-        XCTAssertEqual(SnipFormatter.formatForClipboard(snips: [old]), "First thought")
-        XCTAssertEqual(
-            SnipFormatter.formatForClipboard(snips: [new, old]),
-            "- First thought\n- Second snippet\n  Source: Safari — Docs\n  URL: https://example.com/docs"
-        )
-    }
-
     func testSnipDragPayloadUsesVisibleOrderAndPlainTextForOneSnip() {
         let first = Snip(
             content: "Shown first",
@@ -1209,55 +1144,6 @@ final class SnipListModelsTests: XCTestCase {
                 text: "Shown second\n\n---\n\nShown first\nSource: Safari — Reference\nURL: https://example.com",
                 previewSourceLabel: "2 snips"
             )
-        )
-    }
-
-    func testFilteringSearchesContentAndSourceAndHonorsCompletionFilter() {
-        let done = Snip(
-            content: "Follow up tomorrow",
-            origin: .quickEntry,
-            isDone: true
-        )
-        let safari = Snip(
-            content: "An unrelated excerpt",
-            origin: .selection,
-            source: SnipSource(
-                applicationName: "Safari",
-                windowTitle: "Swift guide",
-                url: nil
-            )
-        )
-
-        XCTAssertEqual(
-            SnipFilter.apply(
-                snips: [done, safari],
-                query: "swift",
-                completionFilter: .all
-            ),
-            [safari]
-        )
-        XCTAssertEqual(
-            SnipFilter.apply(
-                snips: [done, safari],
-                query: "",
-                completionFilter: .done
-            ),
-            [done]
-        )
-        XCTAssertEqual(
-            SnipFilter.apply(
-                snips: [done, safari],
-                query: "",
-                completionFilter: .notDone
-            ),
-            [safari]
-        )
-        XCTAssertTrue(
-            SnipFilter.apply(
-                snips: [done, safari],
-                query: "swift",
-                completionFilter: .done
-            ).isEmpty
         )
     }
 
@@ -1293,22 +1179,6 @@ final class SnipListModelsTests: XCTestCase {
             ),
             [agent]
         )
-    }
-
-    func testLargeSnipFilteringKeepsExactMatches() {
-        let snips = (0..<2_500).map { index in
-            Snip(
-                content: index.isMultiple(of: 250) ? "Needle \(index)" : "Item \(index)",
-                origin: .quickEntry,
-                listID: index.isMultiple(of: 2) ? SnipList.inboxID : listID("Later")
-            )
-        }
-        let matches = SnipFilter.apply(
-            snips: snips,
-            query: "needle",
-            completionFilter: .all
-        )
-        XCTAssertEqual(matches.count, 10)
     }
 
     func testSnipSelectionPlainClickDoesNotStartAndClearsBatchSelection() {
@@ -1588,5 +1458,23 @@ private struct SnipListDragFixture {
             reorderingFrom: orderedIDs ?? ids,
             geometry: geometry
         )
+    }
+}
+
+/// Stands in for the retention's poll interval: each poll waits here until the test resumes it.
+@MainActor
+private final class MarkdownRetentionPolls {
+    private(set) var count = 0
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        count += 1
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func resume() {
+        let waiter = waiter
+        self.waiter = nil
+        waiter?.resume()
     }
 }

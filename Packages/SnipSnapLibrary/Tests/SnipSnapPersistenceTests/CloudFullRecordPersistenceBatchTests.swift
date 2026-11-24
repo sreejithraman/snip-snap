@@ -839,15 +839,12 @@ extension CloudFullRecordPersistenceTests {
       reference: accepted.reference,
       payload: Data("conflict".utf8)
     )
-    try await store.storeDormantCloudBases(
-      namespaceKey: namespace,
-      bases: [CloudDormantBase(
-        namespaceKey: namespace.rawValue,
-        reference: accepted.reference,
-        identity: accepted.identity,
-        payload: Data("base".utf8)
-      )]
-    )
+    try await store.testInsertDormantBases([CloudDormantBase(
+      namespaceKey: namespace.rawValue,
+      reference: accepted.reference,
+      identity: accepted.identity,
+      payload: Data("base".utf8)
+    )])
     try await store.setCloudEnrollment(
       namespaceKey: namespace,
       references: [

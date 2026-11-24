@@ -43,8 +43,7 @@ public enum JSONSnipArchiveReader {
       version = try container.decode(Int.self, forKey: .version)
       snips = try container.decode([Snip].self, forKey: .snips)
       lists = try container.decode([SnipList].self, forKey: .lists)
-      let storedRequestIDs = try container.decodeIfPresent([UUID].self, forKey: .seenRequestIDs)
-        ?? []
+      let storedRequestIDs = try container.decode([UUID].self, forKey: .seenRequestIDs)
       seenRequestIDs = Set(storedRequestIDs).union(snips.map(\.requestID))
     }
   }

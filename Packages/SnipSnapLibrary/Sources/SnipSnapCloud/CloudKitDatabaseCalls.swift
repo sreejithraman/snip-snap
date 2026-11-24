@@ -27,8 +27,6 @@ package struct CloudKitDatabaseCalls: Sendable {
     CloudKitCallBound.Kind
   ) async throws -> ZoneResults
   package let saveZone: @Sendable (CKRecordZone, CloudKitCallBound.Kind) async throws -> CKRecordZone
-  package let deleteZone: @Sendable (CKRecordZone.ID, CloudKitCallBound.Kind) async throws
-    -> CKRecordZone.ID
 
   package init(
     record: @escaping @Sendable (CKRecord.ID, CloudKitCallBound.Kind) async throws -> CKRecord,
@@ -45,15 +43,12 @@ package struct CloudKitDatabaseCalls: Sendable {
       CloudKitCallBound.Kind
     ) async throws -> ZoneResults,
     saveZone: @escaping @Sendable (CKRecordZone, CloudKitCallBound.Kind) async throws
-      -> CKRecordZone,
-    deleteZone: @escaping @Sendable (CKRecordZone.ID, CloudKitCallBound.Kind) async throws
-      -> CKRecordZone.ID
+      -> CKRecordZone
   ) {
     self.record = record
     self.modifyRecords = modifyRecords
     self.modifyRecordZones = modifyRecordZones
     self.saveZone = saveZone
-    self.deleteZone = deleteZone
   }
 
   package static func live(database: CKDatabase, bound: CloudKitCallBound) -> Self {
@@ -81,11 +76,6 @@ package struct CloudKitDatabaseCalls: Sendable {
       saveZone: { zone, kind in
         try await database.configuredWith(configuration: bound.configuration(kind)) {
           try await $0.save(zone)
-        }
-      },
-      deleteZone: { id, kind in
-        try await database.configuredWith(configuration: bound.configuration(kind)) {
-          try await $0.deleteRecordZone(withID: id)
         }
       }
     )

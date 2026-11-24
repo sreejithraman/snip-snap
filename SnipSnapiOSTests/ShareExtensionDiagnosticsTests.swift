@@ -112,41 +112,38 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
     func testCancelledLoadTaskIsQuiet() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
+        let context = DiagnosticExtensionContext()
+        let item = NSExtensionItem()
+        item.attributedContentText = NSAttributedString(string: "private text")
+        context.items = [item]
         let events = ExtensionDiagnosticEvents()
-        let model = ShareExtensionModel(extensionContext: DiagnosticExtensionContext(), sharedRootURL: root, diagnostics: events.recorder)
+        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root, diagnostics: events.recorder)
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             await model.load()
         }
         await task.value
         XCTAssertTrue(events.values.isEmpty)
+        XCTAssertEqual(model.phase, .loading, "A cancelled load must not open the editor")
+        XCTAssertEqual(model.content, "")
         XCTAssertFalse(model.canSave)
     }
 
-    func testHealthyLoadAndSaveStayQuietAndComplete() async throws {
+    func testHealthyLoadAndSaveStayQuietPublishAndComplete() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let context = DiagnosticExtensionContext()
         let events = ExtensionDiagnosticEvents()
-        let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root, diagnostics: events.recorder)
-        await model.load()
-        model.content = "private snip"
-        await model.save()
-        XCTAssertTrue(context.completed)
-        XCTAssertTrue(events.values.isEmpty)
-    }
-
-    func testHealthySavePublishesAndCompletes() async throws {
-        let root = temporaryRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let context = DiagnosticExtensionContext()
         let model = ShareExtensionModel(extensionContext: context, sharedRootURL: root,
-            diagnostics: ExtensionDiagnosticEvents().recorder)
+            defaults: scopedDefaults(), diagnostics: events.recorder)
         await model.load()
         model.content = "private snip"
         await model.save()
         XCTAssertEqual(model.phase, .published)
         XCTAssertTrue(context.completed)
+        XCTAssertTrue(events.values.isEmpty)
+        let pending = await ShareImportStore(sharedRootURL: root).pendingImportCount()
+        XCTAssertEqual(pending, 1, "A published share must be durable in the pending-import inbox")
     }
 
     func testSaveFailureWhoseTaskIsCancelledReturnsToEditing() async throws {
@@ -212,6 +209,13 @@ final class ShareExtensionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(share.phase, .cancelled)
         XCTAssertFalse(context.completed)
         XCTAssertEqual(context.cancellation?.code, NSUserCancelledError)
+    }
+
+    private func scopedDefaults() -> UserDefaults {
+        let suite = "share-extension-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
     }
 
     private func temporaryRoot() -> URL {

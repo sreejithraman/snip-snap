@@ -28,7 +28,7 @@ extension CloudFullSyncPersistenceTests {
       transport: FakeCloudRecordTransport(server: server, namespace: namespace))
     let secondClient = CloudFullSyncCoordinator(store: secondStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace))
-    try await firstClient.sync()
+    try await firstClient.fetchThenSend()
     try await secondClient.fetchRemote()
     let received = await second.snapshot(sortedBy: .manual)
     XCTAssertEqual(received.lists.first { $0.id == list.id }?.color, .blue)
@@ -36,9 +36,9 @@ extension CloudFullSyncPersistenceTests {
       .updateList(id: list.id, name: "Work", systemImage: "folder", color: .set(.violet)), sortedBy: .manual)
     _ = try await second.perform(
       .updateList(id: list.id, name: "Projects", systemImage: "folder"), sortedBy: .manual)
-    try await firstClient.sync()
-    try await secondClient.sync()
-    try await firstClient.sync()
+    try await firstClient.fetchThenSend()
+    try await secondClient.fetchThenSend()
+    try await firstClient.fetchThenSend()
     for library in [first, second] {
       let snapshot = await library.snapshot(sortedBy: .manual)
       XCTAssertEqual(snapshot.lists.first { $0.id == list.id }?.color, .violet)
@@ -46,7 +46,7 @@ extension CloudFullSyncPersistenceTests {
     }
     _ = try await first.perform(
       .updateList(id: list.id, name: "Projects", systemImage: "folder", color: .set(nil)), sortedBy: .manual)
-    try await firstClient.sync()
+    try await firstClient.fetchThenSend()
     try await secondClient.fetchRemote()
     let cleared = await second.snapshot(sortedBy: .manual)
     XCTAssertNil(cleared.lists.first { $0.id == list.id }?.color)
@@ -77,7 +77,7 @@ extension CloudFullSyncPersistenceTests {
       transport: FakeCloudRecordTransport(server: server, namespace: namespace))
     let newerClient = CloudFullSyncCoordinator(store: newerStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace))
-    try await olderClient.sync()
+    try await olderClient.fetchThenSend()
     try await newerClient.fetchRemote()
 
     let received = await newer.snapshot(sortedBy: .manual).lists
@@ -94,7 +94,7 @@ extension CloudFullSyncPersistenceTests {
     // Choosing an icon and color on one device reaches the other; clearing the icon round-trips too.
     _ = try await newer.perform(
       .updateList(id: noIcon.id, name: "Reading list", systemImage: "book.fill", color: .set(.teal)), sortedBy: .manual)
-    try await newerClient.sync()
+    try await newerClient.fetchThenSend()
     try await olderClient.fetchRemote()
     let olderLists = await older.snapshot(sortedBy: .manual).lists
     let chosen = try XCTUnwrap(olderLists.first { $0.id == noIcon.id })
@@ -102,7 +102,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(chosen.tint, .teal)
     _ = try await older.perform(
       .updateList(id: noIcon.id, name: "Reading list", systemImage: ""), sortedBy: .manual)
-    try await olderClient.sync()
+    try await olderClient.fetchThenSend()
     try await newerClient.fetchRemote()
     let newerLists = await newer.snapshot(sortedBy: .manual).lists
     let cleared = try XCTUnwrap(newerLists.first { $0.id == noIcon.id })
@@ -177,19 +177,19 @@ extension CloudFullSyncPersistenceTests {
         store: editingStore,
         transport: FakeCloudRecordTransport(server: server, namespace: namespace)
       )
-      try await deletingClient.sync()
+      try await deletingClient.fetchThenSend()
       try await editingClient.fetchRemote()
       _ = try await editingLibrary.perform(
         .place(ids: [snipID], in: list.id, before: nil, basedOn: .manual),
         sortedBy: .manual
       )
       _ = try await deletingLibrary.perform(.deleteList(id: list.id), sortedBy: .manual)
-      try await deletingClient.sendPending()
+      try await deletingClient.sendPendingUntilSettled()
 
       if fetchFirst {
         try await editingClient.fetchRemote()
       } else {
-        try await editingClient.sendPending()
+        try await editingClient.sendPendingUntilSettled()
         try await editingClient.fetchRemote()
       }
 
@@ -226,7 +226,7 @@ extension CloudFullSyncPersistenceTests {
         store: reopenedStore,
         transport: FakeCloudRecordTransport(server: server, namespace: namespace)
       )
-      try await reopened.sendPending()
+      try await reopened.sendPendingUntilSettled()
       try await deletingClient.fetchRemote()
 
       let converged = await deletingLibrary.snapshot(sortedBy: .manual)
@@ -298,7 +298,7 @@ extension CloudFullSyncPersistenceTests {
         store: editingStore,
         transport: FakeCloudRecordTransport(server: server, namespace: namespace)
       )
-      try await deletingClient.sync()
+      try await deletingClient.fetchThenSend()
       try await editingClient.fetchRemote()
       let receivedSnapshot = await editingLibrary.snapshot(sortedBy: .manual)
       let received = try XCTUnwrap(receivedSnapshot.snips.first)
@@ -313,12 +313,12 @@ extension CloudFullSyncPersistenceTests {
         sortedBy: .manual
       )
       _ = try await deletingLibrary.perform(.delete(ids: [originalID]), sortedBy: .manual)
-      try await deletingClient.sendPending()
+      try await deletingClient.sendPendingUntilSettled()
 
       if fetchFirst {
         try await editingClient.fetchRemote()
       } else {
-        try await editingClient.sendPending()
+        try await editingClient.sendPendingUntilSettled()
       }
 
       let recoveredSnapshot = await editingLibrary.snapshot(sortedBy: .manual)
@@ -336,7 +336,7 @@ extension CloudFullSyncPersistenceTests {
       XCTAssertEqual(review.promotedSnips.map(\.id), [recovered.id])
       XCTAssertEqual(review.promotedSnips.map(\.currentSnipID), [originalID])
 
-      try await editingClient.sendPending()
+      try await editingClient.sendPendingUntilSettled()
       try await deletingClient.fetchRemote()
       let converged = await deletingLibrary.snapshot(sortedBy: .manual)
       XCTAssertFalse(converged.snips.contains { $0.id == originalID })
@@ -387,13 +387,13 @@ extension CloudFullSyncPersistenceTests {
       store: secondStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sync()
+    try await first.fetchThenSend()
     try await second.fetchRemote()
 
-    let preview = try await SnipLibraryImport.preview(source: source, target: firstLibrary)
+    let preview = try await firstLibrary.previewImport(source.previewTransferSnapshot(revision: 0), transitionID: UUID())
     let actions = DirectSnipLibraryUserActions(library: firstLibrary)
     _ = try await actions.applyImport(preview, sortedBy: .manual)
-    try await first.sendPending()
+    try await first.sendPendingUntilSettled()
     try await second.fetchRemote()
 
     for library in [firstLibrary, secondLibrary] {
@@ -428,7 +428,7 @@ extension CloudFullSyncPersistenceTests {
         store: persistence,
         transport: FakeCloudRecordTransport(server: server, namespace: namespace)
       )
-      try await coordinator.sync()
+      try await coordinator.fetchThenSend()
     }
 
     let requestID = UUID()
@@ -472,7 +472,7 @@ extension CloudFullSyncPersistenceTests {
       store: firstPersistence,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await firstCoordinator.sync()
+    try await firstCoordinator.fetchThenSend()
 
     let relaunchedLibrary = try SwiftDataSnipLibrary(storeURL: firstStoreURL)
     let replay = await ShareImportStore(sharedRootURL: sharedRoot)
@@ -553,7 +553,7 @@ extension CloudFullSyncPersistenceTests {
       store: firstPersistence,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await firstCoordinator.sync()
+    try await firstCoordinator.fetchThenSend()
 
     let secondPersistence = CloudFullSyncPersistence(
       library: secondLibrary,
@@ -581,31 +581,27 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(receivedSnip.isDone)
     XCTAssertEqual(receivedSnip.manualSortKey, snip.manualSortKey)
 
-    let cleared = Snip(
-      id: receivedSnip.id,
-      requestID: receivedSnip.requestID,
-      createdAt: receivedSnip.createdAt,
-      updatedAt: Date(timeIntervalSince1970: 40),
-      content: "edited",
-      origin: receivedSnip.origin,
-      source: nil,
-      listID: SnipList.inbox.id,
-      isDone: false,
-      manualSortKey: receivedSnip.manualSortKey
+    _ = try await secondLibrary.perform(
+      .update(id: receivedSnip.id, content: "edited", attachmentURLs: nil,
+        expectedUpdatedAt: receivedSnip.updatedAt, now: Date(timeIntervalSince1970: 40)),
+      sortedBy: .manual
     )
-    _ = try await secondLibrary.perform(.replaceAll([cleared]), sortedBy: .manual)
-    try await secondCoordinator.sync()
+    _ = try await secondLibrary.perform(
+      .place(ids: [receivedSnip.id], in: SnipList.inbox.id, before: nil, basedOn: .manual),
+      sortedBy: .manual
+    )
+    _ = try await secondLibrary.perform(.setDone(ids: [receivedSnip.id], done: false), sortedBy: .manual)
+    try await secondCoordinator.fetchThenSend()
     try await firstCoordinator.fetchRemote()
     let editedSnapshot = await firstLibrary.snapshot(sortedBy: .manual)
     let edited = try XCTUnwrap(editedSnapshot.snips.first(where: { $0.id == snip.id }))
     XCTAssertEqual(edited.content, "edited")
-    XCTAssertNil(edited.source)
     XCTAssertEqual(edited.listID, SnipList.inbox.id)
     XCTAssertFalse(edited.isDone)
 
     _ = try await secondLibrary.perform(.delete(ids: [snip.id]), sortedBy: .manual)
     _ = try await secondLibrary.perform(.deleteList(id: list.id), sortedBy: .manual)
-    try await secondCoordinator.sync()
+    try await secondCoordinator.fetchThenSend()
     try await firstCoordinator.fetchRemote()
     let deleted = await firstLibrary.snapshot(sortedBy: .manual)
     XCTAssertFalse(deleted.snips.contains(where: { $0.id == snip.id }))
@@ -624,8 +620,8 @@ extension CloudFullSyncPersistenceTests {
     let secondSnip = Snip(id: sharedID, content: "second seed", origin: .quickEntry)
     let firstLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
     let secondLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
-    _ = try await firstLibrary.perform(.replaceAll([firstSnip]), sortedBy: .manual)
-    _ = try await secondLibrary.perform(.replaceAll([secondSnip]), sortedBy: .manual)
+    _ = try await firstLibrary.perform(.restore(snips: [firstSnip]), sortedBy: .manual)
+    _ = try await secondLibrary.perform(.restore(snips: [secondSnip]), sortedBy: .manual)
     let reference = CloudEntityReference(kind: .snip, domainID: sharedID)
     let enrollment: Set<CloudEntityReference> = [
       CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
@@ -651,8 +647,8 @@ extension CloudFullSyncPersistenceTests {
       store: secondStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sendPending()
-    try await second.sendPending()
+    try await first.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
 
     let secondLocal = await secondLibrary.snapshot(sortedBy: .manual)
     XCTAssertEqual(secondLocal.snips.first(where: { $0.id == sharedID })?.content, "first seed")
@@ -685,8 +681,8 @@ extension CloudFullSyncPersistenceTests {
     let shared = Snip(content: "same seed", origin: .quickEntry)
     let firstLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("first.store"))
     let secondLibrary = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("second.store"))
-    _ = try await firstLibrary.perform(.replaceAll([shared]), sortedBy: .manual)
-    _ = try await secondLibrary.perform(.replaceAll([shared]), sortedBy: .manual)
+    _ = try await firstLibrary.perform(.restore(snips: [shared]), sortedBy: .manual)
+    _ = try await secondLibrary.perform(.restore(snips: [shared]), sortedBy: .manual)
     let enrollment: Set<CloudEntityReference> = [
       CloudEntityReference(kind: .list, domainID: SnipList.inbox.id),
       CloudEntityReference(kind: .snip, domainID: shared.id),
@@ -711,8 +707,8 @@ extension CloudFullSyncPersistenceTests {
       store: secondStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sendPending()
-    try await second.sendPending()
+    try await first.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
 
     let stored = try await secondLibrary.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
@@ -781,7 +777,7 @@ extension CloudFullSyncPersistenceTests {
       store: secondStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await first.sync()
+    try await first.fetchThenSend()
     try await second.fetchRemote()
 
     _ = try await firstLibrary.perform(
@@ -792,7 +788,7 @@ extension CloudFullSyncPersistenceTests {
       .updateList(id: list.id, name: "Recovered", systemImage: "star"),
       sortedBy: .manual
     )
-    try await first.sendPending()
+    try await first.sendPendingUntilSettled()
     try await second.fetchRemote()
 
     let recovery = try await secondLibrary.recoverySnapshot(
@@ -906,12 +902,19 @@ extension CloudFullSyncPersistenceTests {
     let server = FakeCloudServer()
     let work = SnipList(id: UUID(), name: "Work", systemImage: "briefcase", position: 1)
     let base = Snip(content: "base", origin: .quickEntry)
+    // Two neighbours in Work give each client a distinct place to move the snip to.
+    let upper = Snip(content: "upper", origin: .quickEntry, listID: work.id,
+      manualSortKey: SnipOrderKey(rawDigits: [32]))
+    let lower = Snip(content: "lower", origin: .quickEntry, listID: work.id,
+      manualSortKey: SnipOrderKey(rawDigits: [64]))
     let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
     try await writer.start(state: nil)
     let seed = try await writer.send(CloudOutboundBatch(operations: [
       .save(try CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: zone)),
       .save(try CloudFullRecordCodec.listDraft(work, updatedAt: .distantPast, in: zone)),
       .save(try CloudFullRecordCodec.snipDraft(base, in: zone)),
+      .save(try CloudFullRecordCodec.snipDraft(upper, in: zone)),
+      .save(try CloudFullRecordCodec.snipDraft(lower, in: zone)),
     ]))
     try await writer.confirmApplied(seed.id)
 
@@ -936,89 +939,72 @@ extension CloudFullSyncPersistenceTests {
     try await first.fetchRemote()
     try await second.fetchRemote()
     try await third.fetchRemote()
-    let firstBaseSnapshot = await firstLibrary.snapshot(sortedBy: .manual)
-    let secondBaseSnapshot = await secondLibrary.snapshot(sortedBy: .manual)
-    let thirdBaseSnapshot = await thirdLibrary.snapshot(sortedBy: .manual)
-    let firstBase = try XCTUnwrap(firstBaseSnapshot.snips.first)
-    let secondBase = try XCTUnwrap(secondBaseSnapshot.snips.first)
-    let thirdBase = try XCTUnwrap(thirdBaseSnapshot.snips.first)
+    func current(_ library: SwiftDataSnipLibrary) async throws -> Snip {
+      let snapshot = await library.snapshot(sortedBy: .manual)
+      return try XCTUnwrap(snapshot.snips.first(where: { $0.id == base.id }))
+    }
+    let firstBase = try await current(firstLibrary)
 
     _ = try await firstLibrary.perform(
-      .replaceAll([Self.copy(firstBase, content: "text edit")]),
+      .update(id: base.id, content: "text edit", attachmentURLs: nil,
+        expectedUpdatedAt: firstBase.updatedAt, now: Date(timeIntervalSince1970: 50)),
       sortedBy: .manual
     )
-    _ = try await secondLibrary.perform(
-      .replaceAll([Self.copy(
-        secondBase,
-        source: SnipSource(applicationName: "Notes", windowTitle: "Draft"),
-        isDone: true
-      )]),
-      sortedBy: .manual
-    )
+    _ = try await secondLibrary.perform(.setDone(ids: [base.id], done: true), sortedBy: .manual)
     _ = try await thirdLibrary.perform(
-      .replaceAll([Self.copy(
-        thirdBase,
-        listID: work.id,
-        orderKey: SnipOrderKey(rawDigits: [96])
-      )]),
+      .place(ids: [base.id], in: work.id, before: nil, basedOn: .manual),
       sortedBy: .manual
     )
-    try await first.sendPending()
-    try await second.sendPending()
-    try await second.sendPending()
-    try await third.sendPending()
-    try await third.sendPending()
+    let placedKey = try await current(thirdLibrary).manualSortKey
+    try await first.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
+    try await third.sendPendingUntilSettled()
     try await first.fetchRemote()
     try await second.fetchRemote()
 
     for library in [firstLibrary, secondLibrary, thirdLibrary] {
-      let snapshot = await library.snapshot(sortedBy: .manual)
-      let snip = try XCTUnwrap(snapshot.snips.first(where: { $0.id == base.id }))
+      let snip = try await current(library)
       XCTAssertEqual(snip.content, "text edit")
-      XCTAssertEqual(snip.source?.applicationName, "Notes")
       XCTAssertTrue(snip.isDone)
       XCTAssertEqual(snip.listID, work.id)
-      XCTAssertEqual(snip.manualSortKey, SnipOrderKey(rawDigits: [96]))
+      XCTAssertEqual(snip.manualSortKey, placedKey)
       let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
       XCTAssertTrue(stored.conflicts.isEmpty)
     }
 
-    let firstFinalSnapshot = await firstLibrary.snapshot(sortedBy: .manual)
-    let secondFinalSnapshot = await secondLibrary.snapshot(sortedBy: .manual)
-    let firstFinal = try XCTUnwrap(firstFinalSnapshot.snips.first)
-    let secondFinal = try XCTUnwrap(secondFinalSnapshot.snips.first)
     _ = try await firstLibrary.perform(
-      .replaceAll([Self.copy(firstFinal, orderKey: SnipOrderKey(rawDigits: [80]))]),
+      .place(ids: [base.id], in: work.id, before: upper.id, basedOn: .manual),
       sortedBy: .manual
     )
     _ = try await secondLibrary.perform(
-      .replaceAll([Self.copy(secondFinal, orderKey: SnipOrderKey(rawDigits: [112]))]),
+      .place(ids: [base.id], in: work.id, before: lower.id, basedOn: .manual),
       sortedBy: .manual
     )
-    try await first.sendPending()
-    try await second.sendPending()
+    let firstOrderKey = try await current(firstLibrary).manualSortKey
+    let secondOrderKey = try await current(secondLibrary).manualSortKey
+    XCTAssertNotEqual(firstOrderKey, secondOrderKey)
+    try await first.sendPendingUntilSettled()
+    try await second.sendPendingUntilSettled()
     let afterOrder = try await secondLibrary.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )
     XCTAssertTrue(afterOrder.conflicts.isEmpty)
-    let secondAfterOrder = await secondLibrary.snapshot(sortedBy: .manual)
-    XCTAssertEqual(secondAfterOrder.snips.first?.manualSortKey, SnipOrderKey(rawDigits: [80]))
+    let secondAfterOrder = try await current(secondLibrary)
+    XCTAssertEqual(secondAfterOrder.manualSortKey, firstOrderKey)
 
     try await third.fetchRemote()
-    let secondForTextSnapshot = await secondLibrary.snapshot(sortedBy: .manual)
-    let thirdForTextSnapshot = await thirdLibrary.snapshot(sortedBy: .manual)
-    let secondForText = try XCTUnwrap(secondForTextSnapshot.snips.first)
-    let thirdForText = try XCTUnwrap(thirdForTextSnapshot.snips.first)
     _ = try await secondLibrary.perform(
-      .replaceAll([Self.copy(secondForText, content: "second text")]),
+      .update(id: base.id, content: "second text", attachmentURLs: nil,
+        expectedUpdatedAt: nil, now: Date(timeIntervalSince1970: 60)),
       sortedBy: .manual
     )
     _ = try await thirdLibrary.perform(
-      .replaceAll([Self.copy(thirdForText, content: "third text")]),
+      .update(id: base.id, content: "third text", attachmentURLs: nil,
+        expectedUpdatedAt: nil, now: Date(timeIntervalSince1970: 61)),
       sortedBy: .manual
     )
-    try await second.sendPending()
-    try await third.sendPending()
+    try await second.sendPendingUntilSettled()
+    try await third.sendPendingUntilSettled()
     let thirdStored = try await thirdLibrary.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )
@@ -1031,8 +1017,8 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(recovery.pendingSnips.map(\.currentSnipID), [base.id])
     XCTAssertEqual(recovery.pendingSnips.map(\.recovered.content), ["third text"])
     XCTAssertEqual(recovery.pendingSnips.map(\.conflictingFields), [[.text]])
-    let thirdAfterConflict = await thirdLibrary.snapshot(sortedBy: .manual)
-    XCTAssertEqual(thirdAfterConflict.snips.first?.content, "second text")
+    let thirdAfterConflict = try await current(thirdLibrary)
+    XCTAssertEqual(thirdAfterConflict.content, "second text")
     let blocked = try await thirdStore.pendingChanges()
     XCTAssertTrue(blocked.operations.isEmpty)
   }

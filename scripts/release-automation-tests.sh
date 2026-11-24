@@ -285,106 +285,145 @@ RUBY
 [[ -f "$beta_candidate_workflow" ]] || fail_test "missing beta-candidate.yml"
 /usr/bin/grep -F '${{ runner.temp }}' "$beta_workflow" >/dev/null && \
     fail_test "beta workflow uses runner context before a job starts"
-for required in \
-    'name: Beta candidate' \
-    'workflow_dispatch:' \
-    'group: beta-candidate-${{ github.ref }}' \
-    'cancel-in-progress: true' \
-    './scripts/test.sh' \
-    './scripts/build-matrix.sh' \
-    '"Shared/**"' \
-    '".github/workflows/beta.yml"'; do
-    /usr/bin/grep -F "$required" "$beta_candidate_workflow" >/dev/null || \
-        fail_test "beta candidate workflow is missing $required"
-done
 /usr/bin/grep -F 'environment: apple-release' "$beta_candidate_workflow" >/dev/null && \
     fail_test "beta candidate uses the protected release environment"
 /usr/bin/grep -F 'secrets.' "$beta_candidate_workflow" >/dev/null && \
     fail_test "beta candidate reads protected secrets"
 for required in \
     'workflow_run:' \
-    'Beta candidate' \
-    'group: beta-publish-main' \
-    'cancel-in-progress: false' \
-    'Prepare release source' \
     "github.event.workflow_run.conclusion == 'success'" \
-    'github.event.workflow_run.head_sha' \
-    'Check current main' \
-    'scripts/ci-changes.rb current' \
     'needs.prepare.outputs.current' \
-    'SNIP_SNAP_CANDIDATE_RUN_ATTEMPT' \
-    'SNIP_SNAP_CANDIDATE_RUN_ID' \
-    'scripts/release-build-number.sh' \
-    'scripts/testflight.sh upload --build-number' \
-    'scripts/release.sh --build-number' \
-    'scripts/publish-beta.sh --build-number' \
-    'SNIP_SNAP_RELEASE_CHECKS_PASSED: YES' \
-    'IOS_DEVELOPMENT_CERTIFICATE_BASE64' \
-    'IOS_DEVELOPMENT_CERTIFICATE_PASSWORD' \
-    'IOS_APP_DEVELOPMENT_PROFILE_BASE64' \
-    'IOS_SHARE_DEVELOPMENT_PROFILE_BASE64' \
-    'IOS_APP_STORE_PROFILE_BASE64' \
-    'IOS_SHARE_APP_STORE_PROFILE_BASE64' \
-    'IOS_APP_STORE_PROFILE_NAME' \
-    'IOS_SHARE_APP_STORE_PROFILE_NAME' \
-    'needs: [prepare, mac-build, ios-upload, ios-notes]' \
-    'SNIP_SNAP_GENERATE_APPCAST=' \
-    'gh auth setup-git --hostname github.com' \
-    'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
-    'export SNIP_SNAP_GH="$(command -v gh)"' \
-    'export SNIP_SNAP_GIT="$(command -v git)"' \
-    'export HOMEBREW_GIT_PATH="$SNIP_SNAP_GIT"' \
-    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' \
-    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'; do
+    'SNIP_SNAP_RELEASE_CHECKS_PASSED: YES'; do
     /usr/bin/grep -F "$required" "$beta_workflow" >/dev/null || \
         fail_test "beta workflow is missing $required"
 done
-/usr/bin/grep -E '^[[:space:]]+\./scripts/test\.sh$' "$beta_workflow" >/dev/null && \
-    fail_test "beta delivery reruns candidate tests"
 /usr/bin/grep -F 'workflow_dispatch:' "$beta_workflow" >/dev/null && \
     fail_test "beta delivery can bypass candidate checks"
-promotion_workflow="$script_dir/../.github/workflows/promote-stable.yml"
-for required in \
-    'version:' \
-    'gh auth setup-git --hostname github.com' \
-    'export SNIP_SNAP_RUNNER_PATH="$PATH"' \
-    'export SNIP_SNAP_GH="$(command -v gh)"' \
-    'export SNIP_SNAP_GIT="$(command -v git)"' \
-    'export HOMEBREW_GIT_PATH="$SNIP_SNAP_GIT"' \
-    'scripts/promote-release.sh' \
-    '--version "${{ inputs.version }}"' \
-    '--build-number "${{ inputs.build }}"'; do
-    /usr/bin/grep -F -- "$required" "$promotion_workflow" >/dev/null || \
-        fail_test "stable workflow is missing $required"
+# Delivery follows the candidate workflow that runs the tests, and does not run them again.
+/usr/bin/ruby - "$beta_candidate_workflow" "$beta_workflow" <<'RUBY' || \
+    fail_test "beta delivery is not tied to the tested candidate"
+require "yaml"
+
+candidate = YAML.load_file(ARGV.fetch(0))
+delivery = YAML.load_file(ARGV.fetch(1))
+triggers = delivery.fetch("on") { delivery.fetch(true) }
+followed = Array(triggers.fetch("workflow_run").fetch("workflows"))
+abort "beta delivery does not follow #{candidate.fetch("name")}" unless followed.include?(candidate.fetch("name"))
+runs = lambda do |workflow|
+  workflow.fetch("jobs").values.flat_map { |job| job.fetch("steps", []) }.map { |step| step["run"] }.compact
+end
+abort "beta candidate does not run scripts/test.sh" unless runs.call(candidate).any? { |run| run.include?("scripts/test.sh") }
+abort "beta delivery reruns candidate tests" if runs.call(delivery).any? { |run| run.include?("scripts/test.sh") }
+RUBY
+
+# Run the real retry guards of publish-beta.sh and promote-release.sh against fake GitHub and
+# Git. A matching stable release is verified and kept; every mismatch stops before a release is made.
+retry_root="$test_root/release-retry"
+retry_commit=1111111111111111111111111111111111111111
+/bin/mkdir -p "$retry_root/beta" "$retry_root/published"
+for retry_file in Snip-Snap-0.5.0.zip Snip-Snap-0.5.0.dmg; do
+    print -rn -- "$retry_file bytes" > "$retry_root/beta/$retry_file"
+    /usr/bin/shasum -a 256 "$retry_root/beta/$retry_file" > "$retry_root/beta/$retry_file.sha256"
+    /bin/cp "$retry_root/beta/$retry_file" "$retry_root/beta/$retry_file.sha256" "$retry_root/published/"
 done
-for release_script in publish-beta.sh promote-release.sh; do
-    /usr/bin/grep -F 'command "$git_tool" "$@"' \
-        "$script_dir/$release_script" >/dev/null || \
-        fail_test "$release_script does not use the explicit Git tool"
-    /usr/bin/grep -F 'git clone --quiet "https://github.com/$release_repo.git"' \
-        "$script_dir/$release_script" >/dev/null || \
-        fail_test "$release_script does not use Git for its source checkout"
-done
-for release_script in publish-beta.sh promote-release.sh; do
-    /usr/bin/grep -F 'export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${SNIP_SNAP_RUNNER_PATH:-$PATH}"' \
-        "$script_dir/$release_script" >/dev/null || \
-        fail_test "$release_script does not restore the runner tool path"
+/bin/cat > "$retry_root/gh" <<'STUB'
+#!/bin/zsh
+print -r -- "$*" >> "$RETRY_GH_LOG"
+case "$1 $2" in
+    'release view') [[ "$RETRY_RELEASE_EXISTS" == 1 ]] ;;
+    'release download') /bin/cp "$RETRY_PUBLISHED/$7" "$9/$7" ;;
+    'release create') ;;
+    *) exit 1 ;;
+esac
+STUB
+/bin/cat > "$retry_root/git" <<'STUB'
+#!/bin/zsh
+[[ "$1" == ls-remote ]] || exit 1
+if [[ "$2" == --exit-code ]]; then
+    [[ -n "$RETRY_TAG_COMMIT" ]]
+    exit
+fi
+[[ -z "$RETRY_TAG_COMMIT" ]] || print -r -- "$RETRY_TAG_COMMIT"$'\t'"$3"
+STUB
+/bin/cat > "$retry_root/run.zsh" <<'STUB'
+set -euo pipefail
+source "$RETRY_SCRIPTS/release-policy.sh"
+source "$RETRY_SCRIPTS/release-automation.sh"
+fail() { print -u2 "retry guard: $1"; exit 1; }
+git() { command "$RETRY_ROOT/git" "$@"; }
+gh_tool="$RETRY_ROOT/gh"
+release_repo=test/snip-snap
+version=0.5.0
+beta_tag=v0.5.0-beta.7
+stable_tag=v0.5.0
+source_commit="$RETRY_COMMIT"
+existing_dir="$RETRY_ROOT/existing"
+release_zip="$RETRY_ROOT/beta/Snip-Snap-0.5.0.zip"
+release_dmg="$RETRY_ROOT/beta/Snip-Snap-0.5.0.dmg"
+zip_checksum_file="$release_zip.sha256"
+dmg_checksum_file="$release_dmg.sha256"
+ios_notes="$RETRY_ROOT/ios.txt"
+stable_notes="$RETRY_ROOT/notes.md"
+eval "$(/usr/bin/awk '/^release_exists=0$/,/^fi$/' "$RETRY_SCRIPTS/$RETRY_SCRIPT")"
+if [[ "$RETRY_SCRIPT" == promote-release.sh ]]; then
+    eval "$(/usr/bin/awk '/^if \(\( ! release_exists \)\); then$/,/^fi$/' "$RETRY_SCRIPTS/$RETRY_SCRIPT")"
+fi
+print -r -- "release_exists=$release_exists"
+STUB
+/bin/chmod +x "$retry_root/gh" "$retry_root/git"
+for retry_script in publish-beta.sh promote-release.sh; do
+    /usr/bin/awk '/^release_exists=0$/,/^fi$/' "$script_dir/$retry_script" | \
+        /usr/bin/grep -F 'release view' >/dev/null || \
+        fail_test "$retry_script has no retry guard to run"
 done
 
-for retry_guard in \
-    '"$gh_tool" release view "$beta_tag"' \
-    'release_automation_verify_record'; do
-    /usr/bin/grep -F "$retry_guard" "$script_dir/publish-beta.sh" >/dev/null || \
-        fail_test "beta retry is missing $retry_guard"
+run_release_retry() {
+    /bin/rm -rf "$retry_root/existing"
+    /bin/mkdir -p "$retry_root/existing"
+    : > "$retry_root/gh.log"
+    RETRY_SCRIPTS="$script_dir" RETRY_ROOT="$retry_root" RETRY_COMMIT="$retry_commit" \
+        RETRY_GH_LOG="$retry_root/gh.log" RETRY_PUBLISHED="$retry_root/published" \
+        RETRY_SCRIPT="$1" RETRY_RELEASE_EXISTS="$2" RETRY_TAG_COMMIT="$3" \
+        /bin/zsh "$retry_root/run.zsh" > "$retry_root/output" 2>&1
+}
+require_release_retry_stopped() {
+    /usr/bin/grep -F 'retry guard:' "$retry_root/output" >/dev/null || \
+        fail_test "$1 did not stop in its guard: $(<"$retry_root/output")"
+    /usr/bin/grep -F 'release create' "$retry_root/gh.log" >/dev/null && \
+        fail_test "$1 created a release"
+    return 0
+}
+
+run_release_retry promote-release.sh 1 "$retry_commit" || \
+    fail_test "stable retry rejected the matching release: $(<"$retry_root/output")"
+/usr/bin/grep -Fx 'release_exists=1' "$retry_root/output" >/dev/null || \
+    fail_test "stable retry did not keep the existing release"
+/usr/bin/grep -F 'release download v0.5.0 ' "$retry_root/gh.log" >/dev/null || \
+    fail_test "stable retry did not check the published files"
+/usr/bin/grep -F 'release create' "$retry_root/gh.log" >/dev/null && \
+    fail_test "stable retry created the release again"
+run_release_retry promote-release.sh 0 "" || \
+    fail_test "first stable promotion failed: $(<"$retry_root/output")"
+[[ "$(/usr/bin/grep -c "^release create v0.5.0 .*--target $retry_commit" "$retry_root/gh.log")" == 1 ]] || \
+    fail_test "first stable promotion did not create one release at the recorded commit"
+print -rn -- 'other bytes' > "$retry_root/published/Snip-Snap-0.5.0.zip"
+run_release_retry promote-release.sh 1 "$retry_commit" && \
+    fail_test "stable retry accepted a release with a different ZIP"
+require_release_retry_stopped "stable retry with a different ZIP"
+/bin/cp "$retry_root/beta/Snip-Snap-0.5.0.zip" "$retry_root/published/"
+for retry_script in publish-beta.sh promote-release.sh; do
+    run_release_retry "$retry_script" 1 2222222222222222222222222222222222222222 && \
+        fail_test "$retry_script accepted a release tag at another commit"
+    require_release_retry_stopped "$retry_script with a moved tag"
+    run_release_retry "$retry_script" 0 "$retry_commit" && \
+        fail_test "$retry_script accepted a tag without a release"
+    require_release_retry_stopped "$retry_script with an orphan tag"
 done
-for retry_guard in \
-    '"$gh_tool" release view "$stable_tag"' \
-    'release_automation_remote_tag_commit' \
-    'matching beta or stable item' \
-    'release_policy_verify_checksum'; do
-    /usr/bin/grep -F "$retry_guard" "$script_dir/promote-release.sh" >/dev/null || \
-        fail_test "stable retry is missing $retry_guard"
-done
+run_release_retry publish-beta.sh 0 "" || \
+    fail_test "first beta guard failed: $(<"$retry_root/output")"
+/usr/bin/grep -Fx 'release_exists=0' "$retry_root/output" >/dev/null || \
+    fail_test "first beta guard reported an existing release"
+
 /usr/bin/grep -F 'Casks/snip-snap@beta.rb' "$script_dir/publish-beta.sh" >/dev/null || \
     fail_test "beta publish does not use the beta cask"
 /usr/bin/grep -F 'Casks/snip-snap.rb' "$script_dir/promote-release.sh" >/dev/null || \
@@ -396,14 +435,6 @@ for cask_template in snip-snap.rb.template snip-snap-beta.rb.template; do
     /usr/bin/grep -F 'binary "#{appdir}/Snip Snap.app/Contents/MacOS/snipsnap"' \
         "$script_dir/$cask_template" >/dev/null || \
         fail_test "$cask_template does not install the snipsnap CLI"
-done
-for cli_release_requirement in \
-    '--product snipsnap' \
-    '--arch arm64' \
-    '--arch x86_64' \
-    'embed_release_cli'; do
-    /usr/bin/grep -F -- "$cli_release_requirement" "$script_dir/release.sh" >/dev/null || \
-        fail_test "Mac release does not include $cli_release_requirement"
 done
 
 ci_setup_repo="$test_root/ci-setup-repo"

@@ -103,31 +103,17 @@ final class StoredCloudNamespaceState {
   var excludedSnipIDs: Data
   var zoneCreationPending: Bool
 
-  init(namespaceKey: String, value: CloudNamespaceStateStorage) throws {
+  /// Rows come only from stores written by the retired text-only sync protocol. The model
+  /// stays in the schema so those stores still open and their rows can be removed.
+  init(
+    namespaceKey: String, phase: String, approvedSnipIDs: Data, excludedSnipIDs: Data,
+    zoneCreationPending: Bool
+  ) {
     self.namespaceKey = namespaceKey
-    phase = value.phase.rawValue
-    approvedSnipIDs = try JSONEncoder().encode(value.approvedSnipIDs)
-    excludedSnipIDs = try JSONEncoder().encode(value.excludedSnipIDs)
-    zoneCreationPending = value.zoneCreationPending
-  }
-
-  func value() throws -> CloudNamespaceStateStorage {
-    guard let phase = CloudNamespaceBootstrapPhase(rawValue: phase) else {
-      throw SnipLibraryError.invalidStore
-    }
-    return try CloudNamespaceStateStorage(
-      storedPhase: phase,
-      approvedSnipIDs: JSONDecoder().decode(Set<UUID>.self, from: approvedSnipIDs),
-      excludedSnipIDs: JSONDecoder().decode(Set<UUID>.self, from: excludedSnipIDs),
-      zoneCreationPending: zoneCreationPending
-    )
-  }
-
-  func replace(with value: CloudNamespaceStateStorage) throws {
-    phase = value.phase.rawValue
-    approvedSnipIDs = try JSONEncoder().encode(value.approvedSnipIDs)
-    excludedSnipIDs = try JSONEncoder().encode(value.excludedSnipIDs)
-    zoneCreationPending = value.zoneCreationPending
+    self.phase = phase
+    self.approvedSnipIDs = approvedSnipIDs
+    self.excludedSnipIDs = excludedSnipIDs
+    self.zoneCreationPending = zoneCreationPending
   }
 }
 

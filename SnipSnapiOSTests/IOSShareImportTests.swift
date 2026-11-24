@@ -50,10 +50,13 @@ final class IOSShareImportTests: IOSModelTestCase {
 
         let didLaunch = await waitForCalls(1, from: firstProbe)
         XCTAssertTrue(didLaunch)
+        // Each layout pass renders the change before the next, so the root sees every phase.
         state.generation = 1
-        try? await Task.sleep(for: .milliseconds(30))
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
         state.phase = .background
-        try? await Task.sleep(for: .milliseconds(30))
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
         state.phase = .active
 
         let didImportOnForeground = await waitForCalls(2, from: firstProbe)
@@ -77,8 +80,7 @@ final class IOSShareImportTests: IOSModelTestCase {
 
         let launch = Task { await coordinator.importPendingAndReload() }
         await probe.waitUntilFirstImportStarts()
-        let overlappingForeground = Task { await coordinator.importPendingAndReload() }
-        await Task.yield()
+        let overlappingForeground = Task.immediate { await coordinator.importPendingAndReload() }
         await probe.finishFirstImport()
         await launch.value
         await overlappingForeground.value
@@ -104,9 +106,8 @@ final class IOSShareImportTests: IOSModelTestCase {
 
         let launch = Task { await coordinator.importPendingAndReload() }
         await imports.waitUntilFirstImportStarts()
-        let foreground = Task { await coordinator.importPendingAndReload() }
-        let shareNotification = Task { await coordinator.importPendingAndReload() }
-        await Task.yield()
+        let foreground = Task.immediate { await coordinator.importPendingAndReload() }
+        let shareNotification = Task.immediate { await coordinator.importPendingAndReload() }
         await imports.finishFirstImport()
 
         await shareNotification.value
@@ -155,8 +156,7 @@ final class IOSShareImportTests: IOSModelTestCase {
         let firstTrigger = Task { await coordinator.importPendingAndReload() }
         await probe.waitUntilFirstPassScanned()
         await probe.publish(content: "Second request", requestID: secondRequestID)
-        let overlappingTrigger = Task { await coordinator.importPendingAndReload() }
-        await Task.yield()
+        let overlappingTrigger = Task.immediate { await coordinator.importPendingAndReload() }
         await probe.releaseFirstPass()
         await firstTrigger.value
         await overlappingTrigger.value
@@ -248,8 +248,7 @@ final class IOSShareImportTests: IOSModelTestCase {
 
         let first = Task { await coordinator.importPendingAndReload() }
         await imports.waitUntilFirstImportStarts()
-        let overlapping = Task { await coordinator.importPendingAndReload() }
-        await Task.yield()
+        let overlapping = Task.immediate { await coordinator.importPendingAndReload() }
         await imports.finishFirstImport()
         await first.value
         await overlapping.value
@@ -270,8 +269,7 @@ final class IOSShareImportTests: IOSModelTestCase {
         )
         let first = Task { await coordinator.importPendingAndReload() }
         await imports.waitUntilFirstImportStarts()
-        let overlapping = Task { await coordinator.importPendingAndReload() }
-        await Task.yield()
+        let overlapping = Task.immediate { await coordinator.importPendingAndReload() }
         await imports.finishFirstImport()
         await first.value
         await overlapping.value

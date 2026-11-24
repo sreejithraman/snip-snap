@@ -159,7 +159,7 @@ final class IOSAppSession {
         }
 
         if let cloudSyncSession {
-            let reloadActiveLibrary: SyncedContentSettingsModel.DeleteCompletionAction = {
+            let reloadActiveLibrary: SyncedContentSettingsModel.CompletionAction = {
                 let active = try await cloudSyncSession.iosActiveLibrary()
                 await model.replaceLibrary(
                     active.library,
@@ -168,7 +168,6 @@ final class IOSAppSession {
             }
             syncedContentSettings.setEnableCompletionAction(reloadActiveLibrary)
             syncedContentSettings.setDisableCompletionAction(reloadActiveLibrary)
-            syncedContentSettings.setDeleteCompletionAction(reloadActiveLibrary)
         }
         cloudLifecycleHooks = SnipSnapCloudLifecycleHooks {
             await cloudSyncSession?.scheduleAutomaticSync()
@@ -188,7 +187,7 @@ final class IOSAppSession {
         await model.load()
         shareDestinationPublisher?.enqueue(model.lists, force: true)
         await cloudLifecycleHooks.run()
-        await clipboard.foreground()
+        await clipboard.synchronize()
         if let shareImporter {
             await shareImporter.importPendingAndReload()
         }
@@ -197,7 +196,7 @@ final class IOSAppSession {
     func foreground() async {
         shareDestinationPublisher?.enqueue(model.lists, force: true)
         await cloudLifecycleHooks.run()
-        await clipboard.foreground()
+        await clipboard.synchronize()
         await shareImporter?.importPendingAndReload()
     }
 
@@ -238,35 +237,6 @@ final class IOSAppSession {
             syncedContentSettings.recordOutstandingSyncRecovered()
         case .syncScheduled:
             break
-        case .libraryReplacedWithSyncIssue(let issue):
-            if let cloudSyncSession,
-               let active = try? await cloudSyncSession.iosActiveLibrary()
-            {
-                await model.replaceLibrary(
-                    active.library,
-                    recoveryScope: active.recoveryScope
-                )
-            }
-            syncedContentSettings.recordSyncFailure(issue)
-        case .libraryReplacedAndSyncCompleted:
-            if let cloudSyncSession,
-               let active = try? await cloudSyncSession.iosActiveLibrary()
-            {
-                await model.replaceLibrary(
-                    active.library,
-                    recoveryScope: active.recoveryScope
-                )
-            }
-            syncedContentSettings.recordOutstandingSyncRecovered()
-        case .libraryReplacedAndSyncScheduled:
-            if let cloudSyncSession,
-               let active = try? await cloudSyncSession.iosActiveLibrary()
-            {
-                await model.replaceLibrary(
-                    active.library,
-                    recoveryScope: active.recoveryScope
-                )
-            }
         case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
             clipboard.stop()
             await clipboard.resetAccountBinding()
@@ -278,15 +248,7 @@ final class IOSAppSession {
                     recoveryScope: active.recoveryScope
                 )
             }
-            let issue: SyncedContentSyncIssue
-            switch result {
-            case .iCloudDataReset:
-                issue = .iCloudDataReset
-            case .iCloudSignedOut:
-                issue = .signInRequired
-            default:
-                issue = .iCloudAccountChanged
-            }
+            let issue = result.syncStopIssue ?? .iCloudAccountChanged
             syncedContentSettings.recordSyncStopped(issue)
         case .syncIssue(let issue):
             syncedContentSettings.recordSyncFailure(issue)
@@ -328,38 +290,8 @@ final class IOSAppSession {
                     let active = try await session.iosActiveLibrary()
                     await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
                 }) else { return }
-            case .libraryReplaced, .oldSyncedContentRemovalPending,
-                    .oldSyncedContentRemovalCompleted:
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                if case .oldSyncedContentRemovalPending = result {
-                    settings.recordRemovalPending()
-                } else if case .oldSyncedContentRemovalCompleted = result {
-                    settings.recordRemovalCompleted(syncStart)
-                }
-            case .libraryReplacedWithSyncIssue(let issue):
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                settings.recordSyncFailure(issue)
-                return
-            case .libraryReplacedAndSyncCompleted:
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                settings.recordOutstandingSyncRecovered()
-            case .libraryReplacedAndSyncScheduled:
-                let active = try await session.iosActiveLibrary()
-                await model.replaceLibrary(active.library, recoveryScope: active.recoveryScope)
-                break
             case .iCloudDataReset, .iCloudSignedOut, .iCloudAccountChanged:
-                let issue: SyncedContentSyncIssue
-                switch result {
-                case .iCloudDataReset:
-                    issue = .iCloudDataReset
-                case .iCloudSignedOut:
-                    issue = .signInRequired
-                default:
-                    issue = .iCloudAccountChanged
-                }
+                let issue = result.syncStopIssue ?? .iCloudAccountChanged
                 stopIssue = issue
                 clipboard.stop()
                 await clipboard.resetAccountBinding()
@@ -370,9 +302,7 @@ final class IOSAppSession {
                 settings.recordSyncFailure(issue)
                 return
             }
-            if result != .oldSyncedContentRemovalPending {
-                settings.recordSyncCompleted(syncStart)
-            }
+            settings.recordSyncCompleted()
         } catch {
             settings.recordSyncFailure(SnipSnapCloudSyncIssueMapper.issue(for: error))
             if let stopIssue { settings.recordSyncStopped(stopIssue) }

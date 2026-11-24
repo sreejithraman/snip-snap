@@ -39,20 +39,6 @@ extension SwiftDataSnipLibrary {
     }
   }
 
-  /// Verifies every Cloud attachment, or makes its durable copy, before a local-copy transfer.
-  /// Cloud metadata remains intact until the transition commits.
-  package func prepareCloudAttachmentsForLocalCopy(
-    namespaceKey: CloudSyncNamespaceKey
-  ) throws {
-    let snapshot = try checkedSnapshot(sortedBy: .manual)
-    for attachmentID in snapshot.snips.flatMap(\.attachments).map(\.id) {
-      guard try materializeCloudAttachmentForLocalCopy(
-        namespaceKey: namespaceKey,
-        attachmentID: attachmentID
-      ) else { throw SnipLibraryError.attachmentCopyFailed }
-    }
-  }
-
   /// Verifies durable bytes, or makes a durable copy of a verified cache entry.
   /// Returns `false` only when the bytes are unavailable here but recoverable from CloudKit.
   package func materializeCloudAttachmentForLocalCopy(

@@ -144,7 +144,17 @@ extension SwiftDataSnipLibrary {
           identity: item.accepted.identity
         ) : nil
     })
-    guard settledDeleteKeys.isSubset(of: removedIdentityKeys) else {
+    // A restored record also settles the unacknowledged local deletion it supersedes.
+    let restoredIdentityKeys = Set(batch.items.compactMap { item -> String? in
+      guard item.acceptedAction == .upsert, item.localPrecondition == .requireMissing else { return nil }
+      switch item.localMutation {
+      case .upsertSnip, .upsertList:
+        return StoredCloudPendingDelete.identityKey(namespaceKey: batch.namespaceKey, identity: item.accepted.identity)
+      default:
+        return nil
+      }
+    })
+    guard settledDeleteKeys.isSubset(of: removedIdentityKeys.union(restoredIdentityKeys)) else {
       throw CloudFullStorageError.invalidBatchReplay
     }
     var acceptedItems: [CloudFullBatchItem] = []
@@ -236,14 +246,6 @@ extension SwiftDataSnipLibrary {
         ? $0.accepted.reference.domainID : nil
     })
     knownLists.subtract(batch.graphRepairs.map(\.missingListID))
-    // Old staged plans relied on implicit storage replay. Request one raw-batch
-    // replan, but only after their engine, namespace and accepted CAS checks.
-    if !batch.hasPlannedDeferredReleases,
-      existing.contains(where: { record in
-        record.isDeferred && !batchDomains.contains(record.id)
-          && record.dependencyListID.map(knownLists.contains) == true
-      })
-    { throw CloudFullStorageError.staleLocalEntity }
     let submittedSaveIdentities = Set(batch.outboundBindings
       .filter { $0.action == .save }.map(\.identity))
     var movedSnips: [UUID: CloudLocalSnipMutation] = [:]
@@ -312,6 +314,10 @@ extension SwiftDataSnipLibrary {
               namespaceKey: batch.namespaceKey,
               context: context
             )
+          } else {
+            try Self.retireDeleteConflicts(
+              for: value.reference, namespaceKey: batch.namespaceKey, context: context
+            )
           }
           switch item.localMutation {
           case .removeSnip, .recoverDeletedSnip:
@@ -340,10 +346,15 @@ extension SwiftDataSnipLibrary {
           )
           : nil
         if let current {
+          // A remote edit that restores a locally deleted snip is new content for this
+          // device, even when it waits for its list: its absence is not a deletion.
+          let restoresMissingSnip = if case .upsertSnip = item.localMutation {
+            item.localPrecondition == .requireMissing
+          } else { false }
           let deferredMutation = plannedDeferredMutation.map {
             let materialized = $0.wasMaterializedBeforeDeferral
               || currentDeferredMutation?.wasMaterializedBeforeDeferral == true
-              || (!current.isDeferred && deferred
+              || (!current.isDeferred && deferred && !restoresMissingSnip
                 && currentDeferredMutation?.hasUnresolvedLegacyAbsence != true)
             return CloudDeferredLocalMutation(
               precondition: $0.precondition,
@@ -388,9 +399,23 @@ extension SwiftDataSnipLibrary {
           try Self.applyLocalMutation(item.localMutation, context: context)
           if case .upsertSnip(let snip) = item.localMutation, item.localPrecondition == .requireMissing {
             newSnipIDs.insert(snip.snipID)
+            try Self.restoreRemovedCloudAttachments(
+              ofSnip: snip.snipID, namespaceKey: batch.namespaceKey, context: context
+            )
+          }
+          switch item.localMutation {
+          case .upsertSnip, .upsertList:
+            try Self.retireDeleteConflicts(
+              for: value.reference, namespaceKey: batch.namespaceKey, context: context
+            )
+          default:
+            break
           }
         }
       }
+      try Self.retireOrphanedDeleteConflicts(
+        namespaceKey: batch.namespaceKey, acceptedDomainKeys: Set(byDomain.keys), context: context
+      )
       if !movedSnips.isEmpty {
         for record in byDomain.values where record.isDeferred {
           guard let data = record.deferredMutationData else { continue }

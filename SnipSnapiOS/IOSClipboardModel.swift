@@ -17,7 +17,6 @@ private enum ClipboardSyncPhase: Equatable {
 final class IOSClipboardModel {
     private let store: ClipboardHistoryStore
     private let files: ClipboardFileStore
-    private let imports: ShareClipboardImportStore
     private let settings: SyncedContentSettingsModel
     private let cloud: ClipboardCloudSyncService?
     var cloudChecksAccount: Bool { cloud?.checksAccount == true }
@@ -46,16 +45,12 @@ final class IOSClipboardModel {
             if newValue == nil { operationFailure = nil }
         }
     }
-    private(set) var importErrorMessage: String?
     private(set) var pasteErrorMessage: String?
     private(set) var isPasting = false
     private static let representationTypes: [UTType] = [.utf8PlainText, .plainText, .url, .rtf, .html, .png, .jpeg, .tiff]
     var syncIsActive: Bool {
         guard syncEnabled, settings.mode == .iCloudSync else { return false }
-        switch settings.state {
-        case .disabling, .deleting: return false
-        default: return true
-        }
+        return settings.state != .disabling
     }
     var localDeviceLabel: String {
         UIDevice.current.model == "iPad" ? String(localized: "Only on this iPad") : String(localized: "Only on this iPhone")
@@ -74,7 +69,6 @@ final class IOSClipboardModel {
         let files = ClipboardFileStore(rootURL: rootURL.appendingPathComponent("ClipboardFiles", isDirectory: true))
         self.store = store
         self.files = files
-        imports = ShareClipboardImportStore(sharedRootURL: rootURL)
         self.settings = settings
         self.generation = generation
         self.preferences = preferences
@@ -122,57 +116,11 @@ final class IOSClipboardModel {
         }
     }
 
-    func foreground() async {
-        let previousIDs = Set(entries.map(\.id))
-        let store = store
-        let files = files
-        let device = UIDevice.current.model
-        let summary = await imports.importPendingWithRepresentations { request, urls, richText in
-            var items: [ClipboardPayloadItem] = []
-            if !request.content.isEmpty {
-                items.append(ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.utf8PlainText.identifier, data: Data(request.content.utf8))] + richText))
-            }
-            for (index, url) in urls.enumerated() {
-                let type = request.attachments.indices.contains(index)
-                    ? request.attachments[index].contentType.flatMap { UTType($0) }
-                    : UTType(filenameExtension: url.pathExtension)
-                if let type, type.conforms(to: .image) {
-                    let data = try Data(contentsOf: url)
-                    guard data.count <= ClipboardHistoryState.representationByteLimit else { throw CocoaError(.fileReadTooLarge) }
-                    items.append(ClipboardPayloadItem(representations: [ClipboardRepresentation(type: type.identifier, data: data)]))
-                } else {
-                    items.append(ClipboardPayloadItem(representations: [ClipboardRepresentation(type: UTType.fileURL.identifier, data: Data(url.absoluteString.utf8))]))
-                }
-            }
-            var entry = ClipboardEntry(id: request.requestID, capturedAt: request.createdAt,
-                sourceApplication: "Share", items: items, sourceDeviceName: device)
-            guard entry.byteCount <= ClipboardHistoryState.entryByteLimit else { throw CocoaError(.fileReadTooLarge) }
-            entry = try files.preserveFiles(of: entry)
-            _ = try await store.insert(entry)
-        }
-        if summary.imported > 0 && syncEnabled {
-            await load()
-            pendingUploadIDs.formUnion(entries.filter { $0.isSyncEligible && !previousIDs.contains($0.id) }.map(\.id))
-            savePendingUploads()
-        }
-        if summary.failed > 0 {
-            diagnostics.record(.failure(
-                operation: "clipboard.share_import",
-                errorCode: "import.partialFailure",
-                visibility: .user
-            ))
-            importErrorMessage = String(localized: "Some shared items couldn’t be added. Try again.")
-        } else {
-            importErrorMessage = nil
-        }
-        await synchronize()
-    }
-
     func synchronize() async {
         guard !isSyncing else { return }
-        switch settings.state {
-        case .disabling, .deleting: cloud?.stop(); return
-        default: break
+        if settings.state == .disabling {
+            cloud?.stop()
+            return
         }
         guard let cloud, syncEnabled, settings.mode == .iCloudSync else {
             cloud?.stop()
@@ -262,7 +210,7 @@ final class IOSClipboardModel {
             errorMessage = nil
             await synchronize()
         } catch {
-            presentError(error, operation: "clipboard.pin", message: String(localized: "Couldn’t update the pin. Try again."))
+            presentError(error, operation: "clipboard.pin", message: ClipboardFileStore.pinFailureMessage(for: error))
         }
     }
 

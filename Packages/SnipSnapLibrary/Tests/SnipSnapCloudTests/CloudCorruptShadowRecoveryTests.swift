@@ -418,7 +418,9 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     }
   }
 
-  func testMissingLocalSnipAndListKeepChangedServerInADeleteConflict() async throws {
+  /// The archive is never restored as local content, but a changed server record takes the
+  /// normal delete-versus-edit path: the edit that reached iCloud first returns (ADR 0014).
+  func testMissingLocalSnipAndListRestoreAChangedServerRecord() async throws {
     for kind: CloudEntityKind in [.snip, .list] {
       let fixture = try await Fixture()
       defer { fixture.remove() }
@@ -426,36 +428,55 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       try await fixture.changeServer(archive)
       try await fixture.coordinator.prepareManualRetry()
       try await fixture.coordinator.fetchRemote()
-      let hasLocal = try await fixture.hasLocal(archive.reference)
-      XCTAssertFalse(hasLocal)
+      let local = try await fixture.library.checkedSnapshot(sortedBy: .manual)
+      switch kind {
+      case .snip:
+        XCTAssertEqual(local.snips.first { $0.id == archive.reference.domainID }?.content, "changed remotely")
+      case .list:
+        XCTAssertEqual(local.lists.first { $0.id == archive.reference.domainID }?.name, "changed remotely")
+      }
       let stored = try await fixture.stored()
-      XCTAssertEqual(stored.conflicts.map(\.reference), [archive.reference])
+      XCTAssertEqual(stored.conflicts.map(\.reference), [])
       XCTAssertEqual(stored.quarantines.map(\.key), [archive.corruptShadowResolutionMarker.key])
       let pending = try await fixture.store.pendingChanges()
       XCTAssertFalse(pending.operations.contains { $0.id == CloudFullSyncPersistence.recordID(archive.identity) })
       let ledger = try await fixture.stored().pendingDeletes
       XCTAssertFalse(ledger.contains { $0.reference == archive.reference })
-      try await fixture.coordinator.sendPendingUntilSettled()
+      let outcome = try await fixture.coordinator.sendPendingUntilSettled()
+      XCTAssertTrue(outcome.settled)
       let remote = await fixture.server.fullSnapshot(for: CloudFullSyncPersistence.recordID(archive.identity))
       XCTAssertNotNil(remote)
       let issue = try await fixture.store.unresolvedSyncIssue()
-      XCTAssertEqual(issue, .appDataIssue)
+      XCTAssertNil(issue)
     }
   }
 
-  func testExplicitPendingDeletesSurviveQuarantineAndChangedServerFetch() async throws {
+  /// A queued delete survives quarantine and is sent while the server record is unchanged. A
+  /// server change made after the delete was queued wins instead (ADR 0014).
+  func testExplicitPendingDeletesSurviveQuarantineUnlessTheServerRecordChanged() async throws {
     for kind: CloudEntityKind in [.snip, .list] {
-      let fixture = try await Fixture()
-      defer { fixture.remove() }
-      let archive = try await fixture.removeLocalAndArchive(kind, explicitDelete: true)
-      let before = try await fixture.stored()
-      XCTAssertEqual(before.pendingDeletes.map(\.reference), [archive.reference])
-      try await fixture.changeServer(archive)
-      try await fixture.coordinator.prepareManualRetry()
-      try await fixture.coordinator.fetchRemote()
-      try await fixture.coordinator.sendPendingUntilSettled()
-      let remote = await fixture.server.fullSnapshot(for: CloudFullSyncPersistence.recordID(archive.identity))
-      XCTAssertNil(remote)
+      for serverChanged in [false, true] {
+        let label = "\(kind) serverChanged=\(serverChanged)"
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let archive = try await fixture.removeLocalAndArchive(kind, explicitDelete: true)
+        let before = try await fixture.stored()
+        XCTAssertEqual(before.pendingDeletes.map(\.reference), [archive.reference], label)
+        if serverChanged { try await fixture.changeServer(archive) }
+        try await fixture.coordinator.prepareManualRetry()
+        try await fixture.coordinator.fetchRemote()
+        let outcome = try await fixture.coordinator.sendPendingUntilSettled()
+        XCTAssertTrue(outcome.settled, label)
+        let remote = await fixture.server.fullSnapshot(for: CloudFullSyncPersistence.recordID(archive.identity))
+        let hasLocal = try await fixture.hasLocal(archive.reference)
+        XCTAssertEqual(remote != nil, serverChanged, label)
+        XCTAssertEqual(hasLocal, serverChanged, label)
+        let after = try await fixture.stored()
+        XCTAssertEqual(after.pendingDeletes.map(\.reference), [], label)
+        XCTAssertEqual(after.conflicts.map(\.reference), [], label)
+        let issue = try await fixture.store.unresolvedSyncIssue()
+        XCTAssertNil(issue, label)
+      }
     }
   }
 
@@ -476,33 +497,26 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     }
   }
 
+  /// Undo is the only local path that brings back an entity under its old ID, and it restores snips.
   func testLocalRecreationDuringRecoveryApplyReplansFromTheArchivedBase() async throws {
-    for kind: CloudEntityKind in [.snip, .list] {
-      let fixture = try await Fixture()
-      defer { fixture.remove() }
-      let archive = try await fixture.removeLocalAndArchive(kind)
-      try await prepareFreshEngine(fixture.store)
-      let reader = FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace)
-      try await reader.start(state: nil)
-      let fetched = try await reader.fetch(scope: .all)
-      try await fixture.store.stage(.fetched(fetched))
-      switch kind {
-      case .snip:
-        _ = try await fixture.library.perform(.restore(snips: [Snip(id: archive.reference.domainID,
-          content: "recreated locally", origin: .quickEntry)]), sortedBy: .manual)
-      case .list:
-        _ = try await fixture.library.perform(.restoreList(SnipList(id: archive.reference.domainID,
-          name: "recreated locally", systemImage: "folder", position: 2)), sortedBy: .manual)
-      }
-      try await fixture.store.applyStaged(fetched.id)
-      let hasLocal = try await fixture.hasLocal(archive.reference)
-      XCTAssertTrue(hasLocal)
-      let pending = try await fixture.store.pendingChanges()
-      XCTAssertFalse(pending.operations.contains {
-        if case .delete(let id, _) = $0 { return id == CloudFullSyncPersistence.recordID(archive.identity) }
-        return false
-      })
-    }
+    let fixture = try await Fixture()
+    defer { fixture.remove() }
+    let archive = try await fixture.removeLocalAndArchive(.snip)
+    try await prepareFreshEngine(fixture.store)
+    let reader = FakeCloudRecordTransport(server: fixture.server, namespace: fixture.namespace)
+    try await reader.start(state: nil)
+    let fetched = try await reader.fetch(scope: .all)
+    try await fixture.store.stage(.fetched(fetched))
+    _ = try await fixture.library.perform(.restore(snips: [Snip(id: archive.reference.domainID,
+      content: "recreated locally", origin: .quickEntry)]), sortedBy: .manual)
+    try await fixture.store.applyStaged(fetched.id)
+    let hasLocal = try await fixture.hasLocal(archive.reference)
+    XCTAssertTrue(hasLocal)
+    let pending = try await fixture.store.pendingChanges()
+    XCTAssertFalse(pending.operations.contains {
+      if case .delete(let id, _) = $0 { return id == CloudFullSyncPersistence.recordID(archive.identity) }
+      return false
+    })
   }
 
   func testNewArchiveDuringInitialFetchHasNoRecoveryProof() async throws {
@@ -691,11 +705,9 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
     let reopened = CloudFullSyncPersistence(library: reopenedLibrary,
       namespace: fixture.namespace, dataZone: fixture.zone)
     let reopenedIssue = try await reopened.unresolvedSyncIssue()
-    let status = try await reopened.statusEvidence()
     let enrollment = try await reopened.enrollmentEvidence()
     let resetNeeded = try await reopened.prepareManualRetry()
     XCTAssertNil(reopenedIssue)
-    XCTAssertFalse(status.needsAttention)
     XCTAssertFalse(enrollment.needsAttention)
     XCTAssertFalse(resetNeeded)
 
@@ -788,7 +800,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
         try await fixture.store.clearEngineState()
         try await fixture.applyCleanCompletion()
         let issue = try await fixture.store.unresolvedSyncIssue()
-        let status = try await fixture.store.statusEvidence()
+        let status = try await fixture.store.enrollmentEvidence()
         XCTAssertEqual(issue, .appDataIssue, "\(failure), resolved: \(resolved)")
         XCTAssertTrue(status.needsAttention)
       }
@@ -894,7 +906,7 @@ final class CloudCorruptShadowRecoveryTests: XCTestCase {
       }
       try context.save()
       let issue = try await fixture.store.unresolvedSyncIssue()
-      let status = try await fixture.store.statusEvidence()
+      let status = try await fixture.store.enrollmentEvidence()
       XCTAssertEqual(issue, .appDataIssue, failure)
       XCTAssertTrue(status.needsAttention, failure)
     }
@@ -919,7 +931,7 @@ private func expectRecoveryReads(
 ) async throws {
   let admission = try await store.outboundAdmission()
   let issue = try await store.unresolvedSyncIssue()
-  let status = try await store.statusEvidence()
+  let status = try await store.enrollmentEvidence()
   let reset = try await store.prepareManualRetry()
   XCTAssertEqual(admission.blockedRecordIDs.contains(recordID), blocked, "\(stage): blocked",
     file: file, line: line)

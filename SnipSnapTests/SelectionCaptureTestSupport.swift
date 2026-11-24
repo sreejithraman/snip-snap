@@ -5,7 +5,13 @@ import Foundation
 final class SelectionCaptureFixture {
     enum CopyBehavior {
         case write(String)
-        case writePayload(text: String?, items: [PasteboardSnapshot.Item])
+        /// `attachments` is what the live clipboard read returns for `items`; its filtering is
+        /// tested on a real pasteboard.
+        case writePayload(
+            text: String?,
+            items: [PasteboardSnapshot.Item],
+            attachments: [SelectionCaptureAttachment] = []
+        )
         case writeWithoutText
         case timeout
     }
@@ -189,6 +195,7 @@ private final class TestSelectionClipboardAccess: SelectionClipboardAccess, @unc
     private let lock = NSLock()
     private var items: [PasteboardSnapshot.Item]
     private var stringValue: String?
+    private var attachments: [SelectionCaptureAttachment] = []
     private var changeCountValue = 10
     private var restoreCountValue = 0
     private var restoreAttemptsValue = 0
@@ -262,22 +269,12 @@ private final class TestSelectionClipboardAccess: SelectionClipboardAccess, @unc
         lock.withLock {
             let readChangeCount = changeCountValue
             let copiedText = stringValue
-            var result: [SelectionCaptureAttachment] = []
-            var remaining = maxTotalImageBytes
-            for item in items where result.count < maxImageCount {
-                guard let value = item.values.first(where: {
-                    $0.type == NSPasteboard.PasteboardType.png.rawValue
-                        || $0.type == NSPasteboard.PasteboardType.tiff.rawValue
-                }), value.data.count <= remaining else { continue }
-                let name = value.type == NSPasteboard.PasteboardType.tiff.rawValue
-                    ? "Selection.tiff" : "Selection.png"
-                result.append(.init(fileName: name, data: value.data))
-                remaining -= value.data.count
-            }
+            let copiedAttachments = attachments
             if let thirdPartyTextAfterRead {
                 self.thirdPartyTextAfterRead = nil
                 changeCountValue += 1
                 stringValue = thirdPartyTextAfterRead
+                attachments = []
                 items = [
                     .init(values: [
                         .init(
@@ -291,7 +288,7 @@ private final class TestSelectionClipboardAccess: SelectionClipboardAccess, @unc
             return SelectionCopiedContentRead(
                 changeCount: readChangeCount,
                 text: copiedText,
-                attachments: result
+                attachments: copiedAttachments
             )
         }
     }
@@ -309,6 +306,7 @@ private final class TestSelectionClipboardAccess: SelectionClipboardAccess, @unc
             changeCountValue += 1
             items = snapshot.items
             stringValue = nil
+            attachments = []
             restoreCountValue += 1
             return .restored
         }
@@ -320,18 +318,21 @@ private final class TestSelectionClipboardAccess: SelectionClipboardAccess, @unc
             case .write(let text):
                 changeCountValue += 1
                 stringValue = text
+                attachments = []
                 items = [
                     .init(values: [
                         .init(type: "public.utf8-plain-text", data: Data(text.utf8))
                     ])
                 ]
-            case .writePayload(let text, let copiedItems):
+            case .writePayload(let text, let copiedItems, let copiedAttachments):
                 changeCountValue += 1
                 stringValue = text
                 items = copiedItems
+                attachments = copiedAttachments
             case .writeWithoutText:
                 changeCountValue += 1
                 stringValue = nil
+                attachments = []
                 items = [
                     .init(values: [
                         .init(type: "com.example.no-text", data: Data([1, 2, 3]))

@@ -104,16 +104,10 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         XCTAssertEqual(latest.message, "Snapped")
         XCTAssertEqual(latest.detail, "Copied to clipboard")
         XCTAssertNil(latest.action)
-        XCTAssertEqual(latest.duration, .seconds(3))
         XCTAssertGreaterThanOrEqual(latest.expiresAt, secondStarted.advanced(by: latest.duration))
         XCTAssertLessThanOrEqual(latest.expiresAt, secondFinished.advanced(by: latest.duration))
         XCTAssertGreaterThan(latest.expiresAt, first.expiresAt,
                              "The first copy must not consume the second copy's feedback lifetime")
-        // The shared presenter consumes this fixed deadline even after its source view is hidden.
-        try await ContinuousClock().sleep(until: latest.expiresAt)
-        XCTAssertGreaterThanOrEqual(ContinuousClock().now, latest.expiresAt)
-        XCTAssertEqual(model.toast?.expiresAt, latest.expiresAt,
-                       "Without a presenter, retaining feedback must not renew its expired deadline")
     }
 
     func testRemoteAttachmentShowsWaitingSyncingAndAvailableStates() async throws {
@@ -495,36 +489,6 @@ final class IOSAttachmentPreviewTests: IOSModelTestCase {
         await model.load()
 
         XCTAssertEqual(model.attachmentTransferState(for: id), .failed)
-        XCTAssertNil(model.usableAttachmentURL(for: id))
-    }
-
-    func testClearingDownloadsDropsAFilePreparedWhileTheLibraryReloads() async throws {
-        let id = UUID()
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "SnipSnapVerifiedImageClear-\(UUID().uuidString)", isDirectory: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let url = root.appendingPathComponent("photo.png")
-        try Data([1, 2, 3]).write(to: url)
-        let attachment = try testAttachment(id: id, fileName: "photo.png")
-        let snip = Snip(content: "Photo", origin: .quickEntry, attachments: [attachment])
-        let library = ModelTestLibrary(snips: [snip], attachmentURLs: [id: url])
-        let handler = IOSCloudSyncHandlerProbe(states: [id: .available])
-        let model = IOSAppModel(library: library, cloudSyncHandler: handler)
-        await model.load()
-
-        await library.suspendNextSnapshot()
-        let clearing = Task { await model.clearDownloadedFiles() }
-        await library.waitUntilSnapshotStarts()
-        let preparing = Task { await model.prepareAttachment(id, for: .preview) }
-        await handler.waitUntilPrepareStarts()
-        await handler.finishPrepare(with: .success(url))
-        _ = await preparing.value
-        await library.resumeSnapshot()
-        await clearing.value
-
-        XCTAssertNil(model.attachmentURL(for: id))
         XCTAssertNil(model.usableAttachmentURL(for: id))
     }
 

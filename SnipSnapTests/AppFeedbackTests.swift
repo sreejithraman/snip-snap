@@ -291,14 +291,13 @@ private struct ToastHandoffProbe: View {
     var body: some View {
         Text("Library")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .appToast($state.toast, alignment: .bottom, edge: .bottom,
-                      isHidden: state.showsSettings, usesFixedExpiry: true, onDismiss: dismissed)
+            .appToast($state.toast, isHidden: state.showsSettings, usesFixedExpiry: true,
+                      onDismiss: dismissed)
             .onAppear(perform: rootMounted)
             .sheet(isPresented: $state.showsSettings) {
                 Text("Settings")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .appToast($state.toast, alignment: .bottom, edge: .bottom,
-                              usesFixedExpiry: true, onDismiss: dismissed)
+                    .appToast($state.toast, usesFixedExpiry: true, onDismiss: dismissed)
                     .onAppear(perform: settingsMounted)
             }
     }

@@ -15,23 +15,10 @@ public actor ClipboardHistoryStore {
         return try Self.decodeHistory(Data(contentsOf: url))
     }
 
+    /// Reads only the object format every tagged build since v0.5.0-beta.50 writes. Anything else,
+    /// such as the bare-array history of earlier builds, throws, and no write replaces it.
     private static func decodeHistory(_ data: Data) throws -> ClipboardHistoryState {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let value = try decoder.singleValueContainer()
-            if let seconds = try? value.decode(Double.self) { return Date(timeIntervalSinceReferenceDate: seconds) }
-            let text = try value.decode(String.self)
-            let formatter = ISO8601DateFormatter()
-            if let date = formatter.date(from: text) { return date }
-            formatter.formatOptions.insert(.withFractionalSeconds)
-            if let date = formatter.date(from: text) { return date }
-            throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid clipboard date")
-        }
-        if let state = try? decoder.decode(ClipboardHistoryState.self, from: data) {
-            return ClipboardHistoryState(entries: state.entries, tombstones: state.tombstones, retentionTombstones: state.retentionTombstones)
-        }
-        // Decode legacy Mac history without rewriting it until a successful save.
-        return ClipboardHistoryState(entries: try decoder.decode([ClipboardEntry].self, from: data))
+        try JSONDecoder().decode(ClipboardHistoryState.self, from: data)
     }
 
     /// Copies the history beside itself, then empties it, in one step, so no other store write

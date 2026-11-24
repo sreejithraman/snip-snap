@@ -269,12 +269,12 @@ extension CloudFullSyncPersistenceTests {
       CloudEntityReference(kind: .snip, domainID: snipID),
     ])
     let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
-    try await coordinator.sync()
+    try await coordinator.fetchThenSend()
     _ = try await library.perform(.delete(ids: [snipID]), sortedBy: .manual)
     let recordID = CloudRecordID.snip(snipID, in: zone)
     await transport.failNextSentItem(recordID, failure: .retryable)
 
-    try await coordinator.sendPending()
+    try await coordinator.sendPendingUntilSettled()
 
     let afterFailure = try await library.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
@@ -295,7 +295,7 @@ extension CloudFullSyncPersistenceTests {
       store: reopenedStore,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    try await reopened.sendPending()
+    try await reopened.sendPendingUntilSettled()
 
     let settled = try await reopenedLibrary.cloudFullStorageSnapshot(
       namespaceKey: namespace.namespaceKey
@@ -397,7 +397,7 @@ extension CloudFullSyncPersistenceTests {
     let coordinator = CloudFullSyncCoordinator(store: persistence, transport: transport)
 
     await XCTAssertThrowsErrorAsync {
-      try await coordinator.sync()
+      try await coordinator.fetchThenSend()
     }
 
     let acceptedCount = await server.acceptedOperationCount(for: .snip(snipID, in: zone))
@@ -475,7 +475,7 @@ extension CloudFullSyncPersistenceTests {
       store: persistence,
       transport: FakeCloudRecordTransport(server: server, namespace: namespace)
     )
-    let retry = try await coordinator.sendPending()
+    let retry = try await coordinator.sendPendingUntilSettled()
 
     let issueAfterRetry = try await persistence.unresolvedSyncIssue()
     let pendingAfterRetry = try await persistence.pendingChanges()
@@ -744,7 +744,7 @@ extension CloudFullSyncPersistenceTests {
 
     let evidence = try await persistence.enrollmentEvidence()
     XCTAssertTrue(evidence.needsAttention)
-    XCTAssertFalse(evidence.blocksSending)
+    XCTAssertNotEqual(evidence.phase, .blocked)
     let attachments = try await library.cloudAttachmentStorageSnapshot(
       namespaceKey: namespace.namespaceKey
     )
@@ -820,26 +820,6 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertTrue(recoveries.allSatisfy { $0.kind == .malformedSentBatch })
   }
 
-  func testDuplicateOutboundIdentityIsRejectedBeforeFakeTransportCallsServer() async throws {
-    let namespace = makeNamespace()
-    let zone = try XCTUnwrap(namespace.zones.first)
-    let server = FakeCloudServer()
-    let transport = FakeCloudRecordTransport(server: server, namespace: namespace)
-    try await transport.start(state: nil)
-    let draft = try CloudFullRecordCodec.snipDraft(
-      Snip(content: "duplicate", origin: .quickEntry),
-      in: zone
-    )
-    let outbound = CloudOutboundBatch(operations: [.save(draft), .save(draft)])
-    await XCTAssertThrowsErrorAsync {
-      _ = try await transport.send(outbound)
-    }
-    let acceptedCount = await server.acceptedOperationCount(for: draft.id)
-    let events = await transport.events()
-    XCTAssertEqual(acceptedCount, 0)
-    XCTAssertEqual(events, [.started])
-  }
-
   func testMalformedTransportResultStaysPendingAndNeverAdvancesOrConfirms() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("CloudFullMalformedTransportTests-\(UUID().uuidString)")
@@ -874,8 +854,8 @@ extension CloudFullSyncPersistenceTests {
     ])
     await transport.omitNextSentResult(CloudRecordID.snip(snip.id, in: zone))
     let coordinator = CloudFullSyncCoordinator(store: persistence, transport: transport)
-    await XCTAssertThrowsErrorAsync { try await coordinator.sendPending() }
-    await XCTAssertThrowsErrorAsync { try await coordinator.sendPending() }
+    await XCTAssertThrowsErrorAsync { try await coordinator.sendPendingUntilSettled() }
+    await XCTAssertThrowsErrorAsync { try await coordinator.sendPendingUntilSettled() }
 
     let recoveries = try await library.cloudFullRecoveryEvents(
       namespaceKey: namespace.namespaceKey
@@ -946,7 +926,7 @@ extension CloudFullSyncPersistenceTests {
       ),
       sortedBy: .manual
     )
-    try await coordinator.sendPending()
+    try await coordinator.sendOneBatch()
     let afterUnknownSave = await library.snapshot(sortedBy: .manual)
     XCTAssertFalse(afterUnknownSave.snips.contains(where: { $0.id == snip.id }))
     let recovered = try XCTUnwrap(afterUnknownSave.snips.first)
@@ -971,7 +951,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertEqual(review.promotedSnips.first?.currentSnipID, snip.id)
 
     _ = try await library.perform(.delete(ids: [recovered.id]), sortedBy: .manual)
-    try await coordinator.sendPending()
+    try await coordinator.sendPendingUntilSettled()
     let pendingAfterDelete = try await persistence.pendingChanges()
     XCTAssertTrue(pendingAfterDelete.operations.isEmpty)
     stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)

@@ -69,11 +69,6 @@ final class AttachmentPreparationCoordinator {
         return attachments.filter { seen.insert($0.id).inserted }
     }
 
-    func clearDownloadedFiles() async throws {
-        guard let cloudSyncHandler else { throw SnipLibraryError.transferUnsupported }
-        try await cloudSyncHandler.clearDownloadedFiles()
-    }
-
     private func isAvailable(_ url: URL) -> Bool {
         guard FileManager.default.isReadableFile(atPath: url.path) else { return false }
         guard let values = try? url.resourceValues(forKeys: [

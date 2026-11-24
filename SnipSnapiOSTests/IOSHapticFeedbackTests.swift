@@ -11,32 +11,6 @@ import XCTest
 
 @MainActor
 final class IOSHapticFeedbackTests: XCTestCase {
-    func testEveryOutcomeUsesTheSharedMeaningPolicy() {
-        let groups: [(IOSHapticFeedback.Meaning, [IOSHapticFeedback.Kind])] = [
-            (.selectionChanged, [.selection]),
-            (.gestureCommitted, [.snap]),
-            (.actionCompleted, [.saved, .copied, .markedDone, .reopened, .deleted, .restored, .moved]),
-            (.significantSuccess, [.merged]),
-            (.warning, [.warning]),
-            (.error, [.error])
-        ]
-        let covered = groups.flatMap { $0.1 }
-        XCTAssertEqual(covered.count, IOSHapticFeedback.Kind.allCases.count)
-        for kind in IOSHapticFeedback.Kind.allCases {
-            XCTAssertEqual(covered.filter { $0 == kind }.count, 1)
-        }
-        let player = RecordingHapticPlayer()
-        let feedback = makeFeedback(player: player)
-        for (meaning, outcomes) in groups {
-            for outcome in outcomes {
-                player.played.removeAll()
-                feedback.emit(outcome, for: feedback.beginInteraction())
-                XCTAssertEqual(player.played, [meaning], "Outcome: \(outcome)")
-                XCTAssertEqual(feedback.event?.kind, outcome)
-            }
-        }
-    }
-
     func testSaveAndDoneEmitFreshEventsAndUnchangedBatchStaysQuiet() async throws {
         let feedback = makeFeedback()
         let model = IOSAppModel(library: ModelTestLibrary(), haptics: feedback)

@@ -10,8 +10,9 @@ metadata.
 Existing downloads beside the store remain readable after upgrade. The first
 cache sweep verifies each legacy file, copies it durably into the cache
 directory, and only then removes the old copy. A failed copy leaves the legacy
-file and row intact. Cache clearing, sync-cache retirement, and orphan cleanup
-cover both locations.
+file and row intact. The command-line cache clear, sync-cache retirement, and
+orphan cleanup cover both locations. The apps have no control for clearing
+downloads.
 
 The cache resolver trusts the app-owned namespace root even when iOS exposes
 that root through a container alias. It still rejects malformed relative paths
@@ -23,8 +24,11 @@ the alias. Upload and import roots keep their stricter root validation.
 Before leaving iCloud sync, Snip Snap re-downloads any cache misses and promotes
 each attachment into durable local storage before the mode transition starts.
 If bytes cannot be recovered, the transition stops and keeps the cloud metadata
-and source store. Account-isolation quarantine follows the same fail-safe rule
-when the prior account is unavailable.
+and source store. An Apple Account change or iCloud data reset is different:
+the bytes can no longer be fetched, so the kept library
+([ADR 0015](0015-keep-the-local-library-on-apple-account-change.md),
+[ADR 0024](0024-keep-the-local-library-after-icloud-data-reset.md)) promotes the
+downloads that are on the device and continues.
 
 The cache module owns receipt validation, staged-file validation, installation,
 database commit, rollback, and safe staging cleanup behind one operation. The

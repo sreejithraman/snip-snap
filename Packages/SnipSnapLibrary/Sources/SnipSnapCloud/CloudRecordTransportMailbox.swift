@@ -222,19 +222,6 @@ package struct CloudRecordOutboundQueue: Sendable {
       observedBlocks.removeValue(forKey: batchID)
     }
 
-    mutating func confirmLegacy(_ batch: CloudSyncBatch) {
-      if case .fetched(let fetched) = batch {
-        durableBlocks.formUnion(observedBlocks[batch.id] ?? [])
-        durableBlocks.subtract(fetched.items.compactMap { item -> CloudRecordID? in
-          switch item {
-          case .record(let record): record.id
-          case .deleted(let id): id
-          case .failed: nil
-          }
-        })
-      }
-      observedBlocks.removeValue(forKey: batch.id)
-    }
   }
 
   private var desired = CloudOutboundBatch(operations: [])
@@ -310,12 +297,6 @@ package struct CloudRecordOutboundQueue: Sendable {
 
   package mutating func confirmAdmission(_ batchID: UUID, durable: CloudRecordOutboundAdmission) {
     gate.confirm(batchID, durable: durable)
-    enforceAdmission()
-  }
-
-  /// The legacy adapter has no full-record recovery rows; its acknowledgement is durable.
-  package mutating func confirmLegacyAdmission(_ batch: CloudSyncBatch) {
-    gate.confirmLegacy(batch)
     enforceAdmission()
   }
 

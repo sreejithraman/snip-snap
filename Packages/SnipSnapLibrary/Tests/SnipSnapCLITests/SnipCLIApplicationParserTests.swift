@@ -32,10 +32,7 @@ final class SnipCLIApplicationParserTests: XCTestCase {
     let action = try XCTUnwrap(SnipCLIApplicationParser.parse([
       "diagnostics", "logs", "--range", "7d", "--errors-only", "--limit", "3",
     ]))
-    let encoded = String(decoding: try JSONEncoder().encode(action), as: UTF8.self)
-    XCTAssertTrue(encoded.contains("last7Days"))
-    XCTAssertTrue(encoded.contains(#""limit":3"#))
-    XCTAssertTrue(encoded.contains(#""errorsOnly":true"#))
+    XCTAssertEqual(action, .extended(.application(.diagnosticLogs(range: .last7Days, limit: 3, errorsOnly: true))))
     if case .extended(let query) = action { XCTAssertTrue(query.isReadOnly) }
     else { XCTFail("Expected a read-only extended action") }
     XCTAssertEqual(try SnipCLIApplicationParser.parse(["diagnostics", "logs"]),
@@ -54,8 +51,7 @@ final class SnipCLIApplicationParserTests: XCTestCase {
     let action = try XCTUnwrap(SnipCLIApplicationParser.parse([
       "diagnostics", "export", "/tmp/diagnostics.txt", "--range", "7d",
     ]))
-    let encoded = String(decoding: try JSONEncoder().encode(action), as: UTF8.self)
-    XCTAssertTrue(encoded.contains("last7Days"))
+    XCTAssertEqual(action, .extended(.application(.exportDiagnostics(path: "/tmp/diagnostics.txt", range: .last7Days))))
     for invalid in ["30d", "", "yesterday"] {
       XCTAssertThrowsError(try SnipCLIApplicationParser.parse([
         "diagnostics", "export", "/tmp/diagnostics.txt", "--range", invalid,
@@ -72,8 +68,10 @@ final class SnipCLIApplicationParserTests: XCTestCase {
       let action = try XCTUnwrap(SnipCLIApplicationParser.parse([
         "diagnostics", "recording", choice, "--if-revision", revision,
       ]))
-      let encoded = String(decoding: try JSONEncoder().encode(action), as: UTF8.self)
-      XCTAssertTrue(encoded.contains("setDiagnosticRecording"))
+      XCTAssertEqual(
+        action,
+        .extended(.application(.setDiagnosticRecording(enabled: choice == "on", expectedRevision: revision)))
+      )
     }
     for args in [
       ["diagnostics", "recording", "off"],

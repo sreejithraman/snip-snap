@@ -6,29 +6,27 @@ import Carbon.HIToolbox
 
 final class ShortcutTests: StoreBackedTestCase {
     func testShortcutSettingsOnlyExposeSnipSnapSpecificCommands() {
-        XCTAssertEqual(
-            GlobalHotKeyAction.allCases.map(\.title),
-            ["Capture Selection", "Open or Hide Snip Snap", "Open or Hide Clipboard"]
-        )
-        XCTAssertEqual(AppShortcutAction.allCases.map(\.title), [
-            "Done or Not Done",
-            "Merge Snips",
-        ])
+        XCTAssertEqual(GlobalHotKeyAction.allCases, [.captureSelection, .togglePanel, .toggleClipboard])
+        XCTAssertEqual(AppShortcutAction.allCases, [.toggleDone, .merge])
+        // Saved shortcut settings encode this value.
         XCTAssertEqual(AppShortcutAction.toggleDone.rawValue, "toggleDone")
     }
 
     func testCompletionCommandsUseSharedDoneLanguage() {
-        XCTAssertEqual(SnipCompletionLanguage.done, "Done")
-        XCTAssertEqual(SnipCompletionLanguage.notDone, "Not Done")
         XCTAssertEqual(SnipCompletionLanguage.stateTitle(isDone: true), "Done")
         XCTAssertEqual(SnipCompletionLanguage.stateTitle(isDone: false), "Not Done")
+        XCTAssertEqual(SnipCompletionLanguage.actionTitle(isDone: true), "Not Done")
+        XCTAssertEqual(SnipCompletionLanguage.menuActionTitle(isDone: true), "Mark Not Done")
+        XCTAssertEqual(SnipCompletionLanguage.menuActionTitle(isDone: false), "Mark Done")
         XCTAssertEqual(SnipCommand.toggleDone.title(allSelectedAreDone: false), "Done")
         XCTAssertEqual(SnipCommand.toggleDone.title(allSelectedAreDone: true), "Not Done")
-        XCTAssertEqual(AppShortcutAction.toggleDone.title, "Done or Not Done")
     }
 
     func testSharedCatalogCoversEveryListIconAndTheInboxName() {
-        XCTAssertEqual(SnipList.inbox.displayName, String(localized: "Inbox"))
+        XCTAssertEqual(SnipList.inbox.displayName, "Inbox")
+        var renamedInbox = SnipList.inbox
+        renamedInbox.name = "Desk"
+        XCTAssertEqual(renamedInbox.displayName, "Desk")
 
         let icons = Set(SnipListIconOptions.categories.flatMap(\.icons))
         XCTAssertFalse(icons.isEmpty)

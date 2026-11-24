@@ -1,3 +1,0 @@
-Snip Snap 0.5.1 Beta 70 — iOS
-
-- Recover iCloud sync health safely

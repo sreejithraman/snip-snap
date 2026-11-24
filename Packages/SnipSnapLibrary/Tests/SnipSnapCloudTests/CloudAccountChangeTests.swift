@@ -1,5 +1,6 @@
 import Foundation
 import SnipSnapCore
+import SnipSnapTestSupport
 @testable import SnipSnapCloud
 @testable import SnipSnapPersistence
 import XCTest
@@ -65,7 +66,7 @@ final class CloudAccountChangeTests: XCTestCase {
     _ = try await remote.fetchRemote()
     _ = try await other.perform(.update(id: snip.id, content: "edited on another device",
       attachmentURLs: nil, expectedUpdatedAt: nil, now: Date()), sortedBy: .manual)
-    _ = try await remote.sendPending()
+    try await remote.sendPendingUntilSettled()
 
     await fixture.account.set(.available(accountLineage: "account-a"))
     let resumed = try await fixture.lifecycle.enableICloudSync()
@@ -74,7 +75,9 @@ final class CloudAccountChangeTests: XCTestCase {
     let activeID = try await fixture.persistence.snapshot().activeStore.id
     let active = try await fixture.persistence.libraryForTransition(storeID: activeID)
     let recordState = try await active.cloudFullStorageSnapshot(namespaceKey: fixture.namespace.namespaceKey)
-    XCTAssertTrue(recordState.conflicts.contains { $0.reference.domainID == snip.id })
+    XCTAssertEqual(recordState.conflicts.map(\.reference), [])
+    let restored = try await active.checkedSnapshot(sortedBy: .manual).snips.first { $0.id == snip.id }
+    XCTAssertEqual(restored?.content, "edited on another device", "The later remote edit wins over the offline delete")
     let remoteRecord = await fixture.server.fullSnapshot(for: acceptedID)
     XCTAssertNotNil(remoteRecord, "The offline delete must not erase the later remote edit")
   }
@@ -258,6 +261,57 @@ final class CloudAccountChangeTests: XCTestCase {
     XCTAssertNil(control)
   }
 
+  func testSignedOutLibraryThatReturnsToAnotherGenerationJoinsItOnTheNextEnable() async throws {
+    let fixture = try await Fixture.make()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let library = try await fixture.persistence.activeLibrary()
+    _ = try await add("kept through sign-out", to: library)
+    await fixture.account.set(.noAccount)
+    let stopped = try await fixture.lifecycle.synchronize()
+    XCTAssertEqual(stopped, .iCloudSignedOut)
+
+    // While this device was signed out, another device reset iCloud and turned sync on again.
+    let next = CloudCollectionDescriptor.fresh(ownerName: "owner")
+    let nextNamespace = next.namespace(cloudScope: "private", accountLineage: "account-a")
+    await fixture.control.seedControl(next)
+    let inbox = try CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: next.metadataZone)
+    _ = try await fixture.server.send(
+      CloudOutboundBatch(operations: [.save(inbox)], zonesToSave: next.zones), failures: [:]
+    )
+    await fixture.account.set(.available(accountLineage: "account-a"))
+    let lifecycle = SnipSnapICloudSyncLifecycle(
+      rootURL: fixture.root, sourceLibrary: library,
+      syncModeStore: SnipSyncModeStore(fixture.persistence),
+      cloudScope: "private", accountLineage: "account-a", accountStateSource: fixture.account,
+      ownerName: "owner", controlTransport: fixture.control,
+      makeRecordTransport: { [server = fixture.server] in
+        FakeCloudRecordTransport(server: server, namespace: $0.namespace)
+      },
+      makeDescriptor: {
+        XCTFail("The kept library must join the current generation")
+        return next
+      }
+    )
+    do {
+      _ = try await lifecycle.enableICloudSync()
+      XCTFail("Setup should report the reset before joining another generation")
+    } catch let error as CloudSyncIssueError {
+      XCTAssertEqual(error.issue, .iCloudDataReset)
+    }
+    let kept = try await fixture.persistence.snapshot()
+    XCTAssertTrue(kept.keptAfterCloudReset)
+    let stillLocal = try await add("still writable", to: library)
+    XCTAssertEqual(Set(stillLocal.snapshot.snips.map(\.content)), ["kept through sign-out", "still writable"])
+
+    let enabled = try await lifecycle.enableICloudSync()
+    XCTAssertEqual(enabled, .enabled)
+    let active = try await fixture.persistence.snapshot().activeStore
+    XCTAssertEqual(active.namespace, nextNamespace.binding)
+    _ = try await lifecycle.retrySynchronization()
+    let uploaded = await fixture.server.storedTextValues()
+    XCTAssertTrue(Set(uploaded).isSuperset(of: ["kept through sign-out", "still writable"]))
+  }
+
   func testAccountChangeKeepsAStoreAwaitingACloudZone() async throws {
     let fixture = try await Fixture.make()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -300,11 +354,13 @@ final class CloudAccountChangeTests: XCTestCase {
       if swapped { _ = try await add("edited after isolation", to: replacementLibrary) }
       let binding = CloudCollectionDescriptor.fresh(ownerName: "owner")
         .namespace(cloudScope: "private", accountLineage: "account-a").binding
-      try await persistence.activateEmptyCollection(namespace: binding)
+      try await persistence.seedEmptyActiveStore(namespace: binding)
       let cache = try await persistence.snapshot().activeStore
       let cacheLibrary = try await persistence.libraryForTransition(storeID: cache.id)
       _ = try await add("old account cache", to: cacheLibrary)
-      if swapped { try await cacheLibrary.markReadOnlyRecovery() }
+      if swapped {
+        try LegacySyncModeFixture.markReadOnly(storeDirectory: await persistence.storeURL(cache))
+      }
 
       let activation = root.appendingPathComponent("activation.json")
       let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: activation))
@@ -315,7 +371,6 @@ final class CloudAccountChangeTests: XCTestCase {
         if id == replacement.id.uuidString { stores[index]["lifecycle"] = swapped ? "ready" : "creating" }
         if id == cache.id.uuidString {
           stores[index]["lifecycle"] = swapped ? "isolated" : "ready"
-          if swapped { stores[index].removeValue(forKey: "syncProtocol") }
         }
       }
       manifest["stores"] = stores
@@ -372,7 +427,7 @@ final class CloudAccountChangeTests: XCTestCase {
       await control.seedControl(descriptor)
       let inbox = try CloudFullRecordCodec.listDraft(.inbox, updatedAt: .distantPast, in: descriptor.metadataZone)
       _ = try await server.send(CloudOutboundBatch(operations: [.save(inbox)]), failures: [:])
-      try await persistence.activateEmptyCollection(namespace: namespace.binding)
+      try await persistence.seedEmptyActiveStore(namespace: namespace.binding)
       let source = try await persistence.activeLibrary()
       try Data("1".utf8).write(to: persistence.initialImportMarkerURL)
       let records = FakeCloudRecordTransport(server: server, namespace: namespace)

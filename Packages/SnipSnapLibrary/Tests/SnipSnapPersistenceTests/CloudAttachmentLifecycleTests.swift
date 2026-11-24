@@ -162,49 +162,6 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     XCTAssertEqual(uploadDirectoryNames(root: fixture.root), [], "No upload directory may remain.")
   }
 
-  func testReplacingAFileWhileAPublishedAttachmentsEditIsPendingKeepsTheOldPayloadUntilTheNewMetadataPublishes() async throws {
-    let fixture = try await makeLocalAttachmentFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let published = try await publishLocalAttachment(fixture)
-    var snips = try await fixture.library.checkedSnapshot(sortedBy: .manual).snips
-    let index = try XCTUnwrap(snips.firstIndex(where: { $0.id == fixture.snipID }), "The fixture must keep its snip.")
-    snips[index].attachments[0].fileName = "renamed.txt"
-    _ = try await fixture.library.perform(.replaceAll(snips), sortedBy: .manual)
-    try await reconcile(fixture.library)
-    let editedStorage = try await attachmentStorage(fixture.library)
-    let edited = try XCTUnwrap(editedStorage.publications.first, "The metadata edit must keep the publication.")
-    XCTAssertFalse(edited.metadataAccepted, "The rename must be pending before the file changes.")
-
-    try await replaceFixtureFile(fixture)
-
-    let replacedStorage = try await attachmentStorage(fixture.library)
-    let replaced = try XCTUnwrap(replacedStorage.publications.first, "The replacement must keep the publication.")
-    XCTAssertTrue(replacedStorage.cleanups.isEmpty, "Published metadata still names the old payload, so its cleanup must wait.")
-    XCTAssertEqual(replaced.priorPayloadIdentity, published.metadata.payloadIdentity, "The old payload must wait as the replaced payload.")
-    XCTAssertEqual(replaced.priorPayloadShadowData, published.payloadShadowData, "The replaced payload must retain its accepted shadow.")
-    let reopened = try SwiftDataSnipLibrary(storeURL: fixture.storeURL)
-    let reopenedStorage = try await attachmentStorage(reopened)
-    XCTAssertEqual(reopenedStorage, replacedStorage, "The pending replacement must survive a reopen.")
-    try await commit(reopened, [.payloadAccepted(
-      attachmentID: replaced.metadata.attachmentID,
-      expectedRevision: replaced.revision,
-      shadowData: Data("replacement-payload-shadow".utf8),
-      systemFields: Data()
-    )])
-    let payloadStorage = try await attachmentStorage(reopened)
-    let payload = try XCTUnwrap(payloadStorage.publications.first, "Accepting the payload must keep the publication.")
-    XCTAssertTrue(payloadStorage.cleanups.isEmpty, "The old payload must still wait for the new metadata.")
-    try await commit(reopened, [.metadataAccepted(
-      attachmentID: payload.metadata.attachmentID,
-      expectedRevision: payload.revision,
-      shadowData: Data("replacement-metadata-shadow".utf8),
-      systemFields: Data()
-    )])
-    let accepted = try await attachmentStorage(reopened)
-    XCTAssertEqual(accepted.cleanups.map(\.identity), [published.metadata.payloadIdentity], "Publishing the replacement must owe exactly the old payload a cleanup.")
-    XCTAssertEqual(accepted.cleanups.first?.shadowData, published.payloadShadowData, "The cleanup must use the old payload shadow.")
-  }
-
   func testRemovingAnAttachmentAfterItsFileWasReplacedKeepsItUntilItsMetadataDeleteIsAccepted() async throws {
     let fixture = try await makeLocalAttachmentFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1075,7 +1032,9 @@ final class CloudAttachmentLifecycleTests: XCTestCase {
     let reopened = try SwiftDataSnipLibrary(storeURL: storeURL)
 
     do {
-      try await reopened.prepareCloudAttachmentsForLocalCopy(namespaceKey: namespace)
+      let isReady = try await reopened.materializeCloudAttachmentForLocalCopy(
+        namespaceKey: namespace, attachmentID: metadata.attachmentID)
+      XCTAssertTrue(isReady)
     } catch {
       return XCTFail(
         "A partial file from an interrupted durable copy must not block keeping a local copy: \(error)"

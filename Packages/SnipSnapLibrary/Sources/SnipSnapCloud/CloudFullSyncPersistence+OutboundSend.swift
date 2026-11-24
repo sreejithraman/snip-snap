@@ -37,9 +37,12 @@ extension CloudFullSyncPersistence {
     let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespaceKey)
     let recovery = try await library.cloudFullRecoveryEvents(namespaceKey: namespaceKey)
     let attachments = try await library.cloudAttachmentStorageSnapshot(namespaceKey: namespaceKey)
-    var issues = recovery.map(Self.storedSyncIssue(for:))
+    var issues = recovery.compactMap(Self.storedSyncIssue(for:))
+    // A conflict with a recovery review waits for the user in Needs Attention (ADR 0014).
+    // Only a conflict the user cannot review is a sync issue.
+    let reviewed = try await library.recoveryReviewConflictKeys(namespaceKey: namespaceKey)
     if stored.namespaceState.phase == .blocked
-      || !stored.conflicts.isEmpty
+      || stored.conflicts.contains(where: { !reviewed.contains($0.key) })
       || corruptShadowRecovery(in: stored).needsAttention
     {
       issues.append(.appDataIssue)
@@ -178,10 +181,8 @@ extension CloudFullSyncPersistence {
     eligible.formUnion(locallyDeletedAccepted)
     let deletedListPlacements = try recovery.filter { $0.kind == .deletedListPlacement }
       .reduce(into: [UUID: Set<UUID>]()) { result, recovery in
-        let decoder = JSONDecoder()
-        let deletedListID = try decoder.decode(UUID.self, from: recovery.outboundData)
-        for snipID in try decoder.decode([UUID].self, from: recovery.resultData) {
-          result[snipID, default: []].insert(deletedListID)
+        for (deletedListID, snipIDs) in try Self.deletedListPlacements(in: recovery) {
+          for snipID in snipIDs { result[snipID, default: []].insert(deletedListID) }
         }
     }
     eligible.subtract(Set(stored.deferredEntities.compactMap { entity in

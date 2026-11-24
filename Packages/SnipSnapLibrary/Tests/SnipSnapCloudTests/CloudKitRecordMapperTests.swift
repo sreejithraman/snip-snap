@@ -31,9 +31,11 @@ final class CloudKitRecordMapperTests: XCTestCase {
         let snapshot = try CloudKitRecordMapper.snapshot(
             CloudKitRecordMapper.record(for: draft)
         )
-        let text = try CloudTextRecord(snapshot: snapshot)
+        guard case .string(let snipID)? = snapshot.routingFields["snipID"],
+              case .string(let text)? = snapshot.encryptedFields["text"]
+        else { return XCTFail("Expected the snip ID and text to survive the mapping.") }
 
-        XCTAssertEqual(text.snipID, UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
-        XCTAssertEqual(text.text, "round trip")
+        XCTAssertEqual(UUID(uuidString: snipID), UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
+        XCTAssertEqual(text, "round trip")
     }
 }

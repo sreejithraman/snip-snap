@@ -51,7 +51,7 @@ final class SnipLibraryLocationTests: XCTestCase {
     let activeStore: SyncModeStore
     do {
       let original = try SwiftDataSyncModePersistence(rootURL: appGroup.syncModeRootURL)
-      try await original.activateEmptyCollection(namespace: namespace)
+      try await original.seedEmptyActiveStore(namespace: namespace)
       _ = try await original.activeLibrary().perform(.add(content: "Synced", origin: .agent,
         source: nil, listID: SnipList.inboxID, attachmentURLs: [], requestID: UUID(), now: Date()),
         sortedBy: .manual)

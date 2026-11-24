@@ -179,15 +179,12 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     }
     try await store.setCloudEnrollment(namespaceKey: namespace, references: [list, snip])
     let transferBeforeDormant = try await store.transferSnapshot(revision: 1)
-    try await store.storeDormantCloudBases(
-      namespaceKey: namespace,
-      bases: [CloudDormantBase(
-        namespaceKey: namespace.rawValue,
-        reference: snip,
-        identity: identity("s-snip"),
-        payload: Data("base".utf8)
-      )]
-    )
+    try await store.testInsertDormantBases([CloudDormantBase(
+      namespaceKey: namespace.rawValue,
+      reference: snip,
+      identity: identity("s-snip"),
+      payload: Data("base".utf8)
+    )])
 
     let exact = try await store.testDormantCloudBase(namespaceKey: namespace, reference: snip)
     let wrongAccount = try await store.testDormantCloudBase(
@@ -218,34 +215,6 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     let localEnrollment = try await store.cloudFullStorageSnapshot(namespaceKey: localNamespace)
     XCTAssertEqual(localEnrollment.enrolledEntities, [localList, localSnip])
 
-    do {
-      try await store.storeDormantCloudBases(
-        namespaceKey: namespace,
-        bases: [CloudDormantBase(
-          namespaceKey: namespace.rawValue,
-          reference: snip,
-          identity: identity("other-record"),
-          payload: Data("other".utf8)
-        )]
-      )
-      XCTFail("Expected the dormant domain collision")
-    } catch {
-      XCTAssertEqual(error as? CloudFullStorageError, .duplicateDormantBinding)
-    }
-    do {
-      try await store.storeDormantCloudBases(
-        namespaceKey: namespace,
-        bases: [CloudDormantBase(
-          namespaceKey: namespace.rawValue,
-          reference: CloudEntityReference(kind: .snip, domainID: UUID()),
-          identity: identity("s-snip"),
-          payload: Data("other".utf8)
-        )]
-      )
-      XCTFail("Expected the dormant identity collision")
-    } catch {
-      XCTAssertEqual(error as? CloudFullStorageError, .duplicateDormantBinding)
-    }
   }
 
   func testTransferSavesDormantBundleWithLocalCandidateOrRollsBackBoth() async throws {
@@ -264,24 +233,18 @@ final class CloudFullRecordPersistenceTests: XCTestCase {
     let otherNamespace = CloudSyncNamespaceKey(rawValue: "private|account-b|generation-b")
     let first = CloudEntityReference(kind: .snip, domainID: UUID())
     let second = CloudEntityReference(kind: .list, domainID: UUID())
-    try await source.storeDormantCloudBases(
-      namespaceKey: namespace,
-      bases: [CloudDormantBase(
-        namespaceKey: namespace.rawValue,
-        reference: first,
-        identity: identity("s-first"),
-        payload: Data("first-base".utf8)
-      )]
-    )
-    try await source.storeDormantCloudBases(
-      namespaceKey: otherNamespace,
-      bases: [CloudDormantBase(
-        namespaceKey: otherNamespace.rawValue,
-        reference: second,
-        identity: identity("l-second"),
-        payload: Data("second-base".utf8)
-      )]
-    )
+    try await source.testInsertDormantBases([CloudDormantBase(
+      namespaceKey: namespace.rawValue,
+      reference: first,
+      identity: identity("s-first"),
+      payload: Data("first-base".utf8)
+    )])
+    try await source.testInsertDormantBases([CloudDormantBase(
+      namespaceKey: otherNamespace.rawValue,
+      reference: second,
+      identity: identity("l-second"),
+      payload: Data("second-base".utf8)
+    )])
     _ = try await source.perform(
       .add(
         content: "copied with bases",

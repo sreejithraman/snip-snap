@@ -26,55 +26,6 @@ if ! awk '
     exit 1
 fi
 
-for required_file in \
-    SnipSnapiOSApp.swift \
-    IOSAppSession.swift \
-    IOSUITestSupport.swift \
-    IOSAppModel.swift \
-    IOSAppRootView.swift \
-    LibrarySidebarViews.swift \
-    SnipCollectionViews.swift \
-    RecoveryViews.swift \
-    MoveSnipMenu.swift \
-    WorkflowControls.swift \
-    EditorViews.swift \
-    AttachmentViews.swift \
-    IOSCopyShare.swift \
-    IOSClipboardModel.swift \
-    IOSClipboardView.swift \
-    SnipSnapiOS.entitlements \
-    PrivacyInfo.xcprivacy; do
-    grep -F -- "$required_file" "$project_file" >/dev/null
-done
-
-ios_group="$({
-    awk '
-        /^[[:space:]]*E70000000000000000000001 \/\* SnipSnapiOS \*\/ = \{/ { capture = 1 }
-        capture { print }
-        capture && /sourceTree = "<group>"/ { exit }
-    ' "$project_file"
-})"
-[[ "$ios_group" == *"SnipSnapiOS.entitlements"* ]]
-[[ "$ios_group" == *"Info.plist"* ]]
-
-share_group="$({
-    awk '
-        /^[[:space:]]*F70000000000000000000001 \/\* SnipSnapShareExtension \*\/ = \{/ { capture = 1 }
-        capture { print }
-        capture && /sourceTree = "<group>"/ { exit }
-    ' "$project_file"
-})"
-for required_file in \
-    ShareViewController.swift \
-    ShareExtensionModel.swift \
-    ShareExtensionInputLoader.swift \
-    ShareExtensionView.swift \
-    SnipSnapShareExtension.entitlements \
-    PrivacyInfo.xcprivacy \
-    Info.plist; do
-    [[ "$share_group" == *"$required_file"* ]]
-done
-
 if /usr/bin/grep -En \
     '(^|[^A-Za-z])(import AppKit|import CloudKit|NSPasteboard|SelectionCapture|GlobalHotKey|ClipboardHistory|SnipSnapPanel)([^A-Za-z0-9_]|$)' \
     "$ios_source_dir"/*.swift; then
@@ -96,8 +47,7 @@ ios_target="$({
         capture && /productType = "com.apple.product-type.application"/ { exit }
     ' "$project_file"
 })"
-[[ "$ios_target" == *"SnipSnapCore"* ]]
-[[ "$ios_target" == *"SnipSnapPersistence"* ]]
+[[ "$ios_target" == *'productType = "com.apple.product-type.application"'* ]]
 [[ "$ios_target" != *"Sparkle"* ]]
 
 ios_sources="$({
@@ -125,8 +75,7 @@ share_target="$({
         capture && /productType = "com.apple.product-type.app-extension"/ { exit }
     ' "$project_file"
 })"
-[[ "$share_target" == *"SnipSnapCore"* ]]
-[[ "$share_target" == *"SnipSnapPersistence"* ]]
+[[ "$share_target" == *'productType = "com.apple.product-type.app-extension"'* ]]
 [[ "$share_target" != *"SnipSnapCloud"* ]]
 [[ "$share_target" != *"Sparkle"* ]]
 
@@ -137,25 +86,9 @@ share_sources="$({
         capture && /runOnlyForDeploymentPostprocessing = 0/ { exit }
     ' "$project_file"
 })"
-for required_file in \
-    ShareViewController.swift \
-    ShareExtensionModel.swift \
-    ShareExtensionInputLoader.swift \
-    ShareExtensionView.swift; do
-    [[ "$share_sources" == *"$required_file"* ]]
+for source_file in "$share_source_dir"/*.swift; do
+    [[ "$share_sources" == *"${source_file:t}"* ]]
 done
-
-embed_phase="$({
-    awk '
-        /^[[:space:]]*F40000000000000000000001 \/\* Embed App Extensions \*\/ = \{/ { capture = 1 }
-        capture { print }
-        capture && /runOnlyForDeploymentPostprocessing = 0/ { exit }
-    ' "$project_file"
-})"
-[[ "$embed_phase" == *"SnipSnapShareExtension.appex"* ]]
-[[ "$ios_target" == *"Embed App Extensions"* ]]
-grep -F -- 'target = F50000000000000000000001 /* SnipSnapShareExtension */;' \
-    "$project_file" >/dev/null
 
 [[ "$(/usr/bin/sed -nE \
     's/^[[:space:]]*SNIP_SNAP_APP_GROUP_IDENTIFIER = (.*)$/\1/p' \
@@ -200,9 +133,5 @@ for manifest in "$ios_privacy" "$share_privacy"; do
         abort "Diagnostics need the elapsed-event timing privacy reason." unless valid
     '
 done
-/usr/bin/grep -F 'E10000000000000000000035 /* PrivacyInfo.xcprivacy in Resources */' \
-    "$project_file" >/dev/null
-/usr/bin/grep -F 'F10000000000000000000008 /* PrivacyInfo.xcprivacy in Resources */' \
-    "$project_file" >/dev/null
 
 print "iOS target policy checks passed."

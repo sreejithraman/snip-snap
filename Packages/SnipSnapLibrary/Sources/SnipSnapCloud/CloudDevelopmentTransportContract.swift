@@ -86,6 +86,7 @@ public enum CloudDevelopmentTransportContract {
         try await exerciseClipboard(
           transport: clipboard, name: "CloudKit",
           zoneExists: { try await zoneExists(clipboardZone, in: database) },
+          deleteZone: { try await database.deleteRecordZone(withID: clipboardZone) },
           requireMissingZone: { try await requireManifestReadReportsZoneNotFound(clipboardZone, in: database) },
           validateAccount: validateAccount
         )
@@ -132,12 +133,13 @@ public enum CloudDevelopmentTransportContract {
     return CKRecordZone.ID(zoneName: "SnipSnapClipboard-" + String(digest.prefix(24)))
   }
 
-  /// A clipboard fetch reads without creating the zone; only a save creates it, and `deleteAll()`
-  /// removes it. `requireMissingZone` checks the code a read of the missing zone returns.
+  /// A clipboard fetch reads without creating the zone; only a save creates it. `requireMissingZone`
+  /// checks the code a read of the missing zone returns, before the first save and after `deleteZone`.
   static func exerciseClipboard(
     transport: any ClipboardCloudTransport,
     name: String,
     zoneExists: () async throws -> Bool,
+    deleteZone: () async throws -> Void,
     requireMissingZone: () async throws -> Void,
     validateAccount: () async throws -> Void = {}
   ) async throws {
@@ -168,9 +170,9 @@ public enum CloudDevelopmentTransportContract {
         throw ContractError.clipboardEntryWasNotFetched
       }
     }
-    try await step("\(name) clipboard: delete all") {
+    try await step("\(name) clipboard: delete zone") {
       try await validateAccount()
-      try await transport.deleteAll()
+      try await deleteZone()
       guard try await !zoneExists() else { throw ContractError.clipboardZoneStillExists }
     }
     try await step("\(name) clipboard: a deleted zone reads as missing") {
@@ -316,24 +318,28 @@ public enum CloudDevelopmentTransportContract {
   }
 
   // The real transport queues checkpoints before returned batches. Never acknowledge
-  // past one, or silently discard an unexpected batch/account change.
+  // past one, or silently discard an unexpected batch/account change. A batch is confirmed
+  // as the app confirms it, with its durable outbound admission; the contract keeps no
+  // recovery rows, so that admission blocks nothing.
   static func confirm(
     _ batch: CloudSyncBatch, transport: any CloudRecordTransport,
     validateAccount: () async throws -> Void
   ) async throws {
     while let event = await transport.pendingEvent() {
       switch event {
-      case .checkpoint: break
+      case .checkpoint:
+        try await transport.confirmApplied(event.id)
       case .batch(let pending):
         guard pending.batch.id == batch.id else { throw ContractError.unexpectedBatch }
+        try await transport.confirmApplied(event.id, outboundAdmission: .open)
       case .accountChange:
         // A fresh engine reports initial sign-in too; accept only the account this run started with.
         try await validateAccount()
+        try await transport.confirmApplied(event.id)
       }
-      try await transport.confirmApplied(event.id)
       if event.id == batch.id { return }
     }
-    try await transport.confirmApplied(batch.id)
+    try await transport.confirmApplied(batch.id, outboundAdmission: .open)
   }
 
   private static func step<Value>(

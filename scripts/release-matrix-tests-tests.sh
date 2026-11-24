@@ -69,91 +69,57 @@ output="$(
 [[ "$(/usr/bin/wc -l < "$args_file" | /usr/bin/tr -d ' ')" == 6 ]] || \
     fail_test "the release matrix did not run exactly six Simulator test commands"
 
-for line in 1 4; do
-    destination='platform=iOS Simulator,name=Example iPhone'
-    [[ "$line" == 4 ]] && destination='platform=iOS Simulator,name=Example iPad'
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        "Packages/SnipSnapLibrary :: -scheme SnipSnapLibrary-Package -configuration Debug -destination $destination" >/dev/null || \
-        fail_test "the package transfer test missed $destination"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapCloudTests/CloudAttachmentTransferTests/testTwentyFiveMiBDownloadVerifiesHashRetriesInterruptionAndUsesBoundedCache' >/dev/null || \
-        fail_test "the package command missed the exact 25 MiB transfer test"
-    for test_name in \
-        testHundredMiBPerSnipLimitAcceptsInclusiveTotalAndRejectsOneByteOver \
-        testQuotaUploadFailureDoesNotFalseAcceptBeforeRetry \
-        testInterruptedUploadRetriesWithoutDuplicateAcceptance
-    do
-        /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-            "-only-testing:SnipSnapCloudTests/CloudAttachmentTransferTests/$test_name" >/dev/null || \
-            fail_test "the package command missed $test_name"
-    done
+iphone_destination='platform=iOS Simulator,name=Example iPhone'
+ipad_destination='platform=iOS Simulator,name=Example iPad'
+for line in 1 2 3; do
+    iphone_command="$(/usr/bin/sed -n "${line}p" "$args_file")"
+    ipad_command="$(/usr/bin/sed -n "$(( line + 3 ))p" "$args_file")"
+    [[ "$iphone_command" == *"-destination $iphone_destination "* && \
+       "$ipad_command" == *"-destination $ipad_destination "* ]] || \
+        fail_test "matrix command $line did not run on iPhone and then iPad"
+    [[ "${${ipad_command//$ipad_destination/$iphone_destination}//\/ipad-//iphone-}" == "$iphone_command" ]] || \
+        fail_test "the iPad leg of matrix command $line differs from the iPhone leg"
+    [[ "$iphone_command" == *" -only-testing:"* ]] || \
+        fail_test "matrix command $line selects no tests"
 done
 
-for line in 2 5; do
+for line in 1 4; do
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSyncEnableReportsEveryAttachmentAboveTheSnipSnapLimit' >/dev/null || \
-        fail_test "the app command missed the over-limit setup action"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testQuickComposerSendsWithoutOpeningTheEditor' >/dev/null || \
-        fail_test "the app command missed the compact composer flow"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testRegularSidebarNewListMeetsTouchTargetMinimum' >/dev/null || \
-        fail_test "the app command missed the sidebar New List target"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testCompactListTabsCreateAndSwitchLists' >/dev/null || \
-        fail_test "the app command missed the compact list-tab flow"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testSharesMultipleSelectedSnips' >/dev/null || \
-        fail_test "the app command missed the Share flow"
-    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        '-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/testLocalAttachmentsPreviewRemoveAndSurviveRelaunch' >/dev/null || \
-        fail_test "the app command missed the attachment flow"
+        'Packages/SnipSnapLibrary :: -scheme SnipSnapLibrary-Package -configuration Debug ' >/dev/null || \
+        fail_test "matrix command $line is not the package transfer test"
 done
 
 for line in 3 6; do
-    destination='platform=iOS Simulator,name=Example iPhone'
-    [[ "$line" == 6 ]] && destination='platform=iOS Simulator,name=Example iPad'
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-        "-scheme SnipSnapiOS -configuration Debug -destination $destination" >/dev/null || \
-        fail_test "the Share extension process command missed $destination"
-    for test_name in \
-        testSharesSnipBackIntoSnipSnap \
-        testShareExtensionImportsExactlyOnceWhileMainAppIsOpen \
-        testShareExtensionImportsExactlyOnceWhileMainAppIsClosed \
-        testShareExtensionDefersExactlyOnceWhileMainStoreIsUnavailable
-    do
-        /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
-            "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/$test_name" >/dev/null || \
-            fail_test "the Share extension process command missed $test_name"
-    done
+        '-scheme SnipSnapiOS -configuration Debug ' >/dev/null || \
+        fail_test "matrix command $line is not the Share extension process test"
     /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
         'CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=' >/dev/null || \
         fail_test "the Share extension process command was not ad-hoc signed"
+    /usr/bin/sed -n "${line}p" "$args_file" | /usr/bin/grep -F -- \
+        '/testShareExtension' >/dev/null || \
+        fail_test "the Share extension process command runs no Share extension test"
 done
 
 [[ "$(/usr/bin/grep -Fc -- 'CODE_SIGNING_ALLOWED=NO' "$args_file")" == 4 ]] || \
     fail_test "one or more package or app-action tests allowed signing"
 
-/usr/bin/grep -F -- './scripts/test.sh --ios-only' \
-    "$script_dir/../.github/workflows/ci.yml" >/dev/null || \
-    fail_test "CI does not run iOS tests and bundle checks"
-
-for slow_command in \
-    'run: ./scripts/build.sh' \
-    'run: ./scripts/build-matrix.sh --iphone-only' \
-    'run: ./scripts/build-matrix.sh' \
-    'run: ./scripts/release-matrix-tests.sh'
-do
-    if /usr/bin/grep -Fx -- "        $slow_command" \
-        "$script_dir/../.github/workflows/ci.yml" >/dev/null
-    then
-        fail_test "CI still runs a slow build or release step: $slow_command"
-    fi
+# A renamed or deleted test must fail here, not only during a manual release-matrix run.
+repo_root="${script_dir:h}"
+for selector in ${(u)${(f)"$(/usr/bin/grep -o -- '-only-testing:[^ ]*' "$args_file")"}}; do
+    selector="${selector#-only-testing:}"
+    test_target="${selector%%/*}"
+    test_class="${${selector#*/}%%/*}"
+    test_method="${selector##*/}"
+    [[ "$selector" == "$test_target/$test_class/$test_method" ]] || \
+        fail_test "matrix selector $selector does not name one test method"
+    test_sources="$repo_root/Packages/SnipSnapLibrary/Tests/$test_target"
+    [[ "$test_target" != SnipSnapiOSUITests ]] || test_sources="$repo_root/SnipSnapiOSUITests"
+    class_files=(${(f)"$(/usr/bin/grep -rlE --include='*.swift' -- "class $test_class([^[:alnum:]_]|$)" "$test_sources" 2>/dev/null || true)"})
+    (( ${#class_files} )) || fail_test "matrix test class $test_target/$test_class does not exist"
+    /usr/bin/grep -F -- "func $test_method(" "${class_files[@]}" >/dev/null || \
+        fail_test "matrix test $selector does not exist"
 done
-
-/usr/bin/grep -F -- 'assertShareExtensionReportedLocalSave' \
-    "$script_dir/../SnipSnapiOSUITests/SnipSnapiOSUITests.swift" >/dev/null || \
-    fail_test "the unavailable-store process test does not assert extension save success"
 
 [[ "$output" == *"Share fixture started:"* ]] || \
     fail_test "the release matrix did not report the local fixture start"

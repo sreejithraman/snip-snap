@@ -27,5 +27,3 @@ Heavy and rigid impacts are outside the default set. Add a new meaning only when
 ## Verification
 
 `IOSHapticFeedbackTests` checks outcome grouping, action results, repeated actions, no-ops, failure precedence, preferences, and stale work. `testSelectorPullThresholdCancelAndCreate` checks below-threshold return, one create snap, cancellation, and repeated creation. These checks prove requests and timing; judge physical feel on an iPhone.
-
-Verified on September 8, 2026: all 19 haptic tests and the selector pull/cancel/create UI test passed on the Dev 6 iOS 26.5 Simulator. `scripts/run.sh` built, installed, and opened Dev 6 on the connected iPhone 17 Pro. Physical feel remains for user review.

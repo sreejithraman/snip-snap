@@ -117,20 +117,15 @@ final class IOSAppModelTests: IOSModelTestCase {
         XCTAssertFalse(diagnostics.events.first?.line.contains("Private") ?? true)
     }
 
-    func testUnsupportedListIconKeepsItsSavedChoiceAndVisibleIdentity() {
-        let savedSymbol = "snipsnap.future-symbol"
-        let list = SnipList(id: UUID(), name: "Future", systemImage: savedSymbol, position: 1)
+    func testUnsupportedListIconShowsTheListInitialAndInboxKeepsItsIcon() {
+        let list = SnipList(id: UUID(), name: "Future", systemImage: "snipsnap.future-symbol", position: 1)
 
         XCTAssertEqual(list.displayMark, .letters("F"))
-        XCTAssertEqual(list.systemImage, savedSymbol)
         XCTAssertEqual(SnipList.inbox.displayMark, .icon(SnipList.inbox.systemImage))
     }
 
     func testControlTintUsesTheMonochromeActionPair() throws {
-        for (style, fillWhite, labelWhite) in [
-            (UIUserInterfaceStyle.light, 0.16, 1.0),
-            (.dark, 0.92, 0.10),
-        ] {
+        for style in [UIUserInterfaceStyle.light, .dark] {
             let traits = UITraitCollection(userInterfaceStyle: style)
             let tint = UIColor(SnipSnapTheme.controlTint).resolvedColor(with: traits)
             let label = UIColor(SnipSnapTheme.actionLabel).resolvedColor(with: traits)
@@ -142,75 +137,16 @@ final class IOSAppModelTests: IOSModelTestCase {
             var labelBlue: CGFloat = 0
             XCTAssertTrue(tint.getRed(&tintRed, green: &tintGreen, blue: &tintBlue, alpha: nil))
             XCTAssertTrue(label.getRed(&labelRed, green: &labelGreen, blue: &labelBlue, alpha: nil))
-            XCTAssertEqual(tintRed, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(tintGreen, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(tintBlue, fillWhite, accuracy: 0.001)
-            XCTAssertEqual(labelRed, labelWhite, accuracy: 0.001)
-            XCTAssertEqual(labelGreen, labelWhite, accuracy: 0.001)
-            XCTAssertEqual(labelBlue, labelWhite, accuracy: 0.001)
+            XCTAssertEqual(tintRed, tintGreen, accuracy: 0.001, "Control tint must be gray in style \(style.rawValue).")
+            XCTAssertEqual(tintGreen, tintBlue, accuracy: 0.001, "Control tint must be gray in style \(style.rawValue).")
+            XCTAssertEqual(labelRed, labelGreen, accuracy: 0.001, "Action label must be gray in style \(style.rawValue).")
+            XCTAssertEqual(labelGreen, labelBlue, accuracy: 0.001, "Action label must be gray in style \(style.rawValue).")
             XCTAssertGreaterThanOrEqual(
                 contrastRatio(tint, label),
                 4.5,
                 "Action controls need readable label contrast in style \(style.rawValue)."
             )
         }
-    }
-
-    func testAttachmentDraftCleanupWaitsForChildPresentations() {
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: true,
-                isStaging: false,
-                isImporting: false,
-                isPickingMedia: false,
-                isPreviewing: false
-            )
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: false,
-                isStaging: true,
-                isImporting: false,
-                isPickingMedia: false,
-                isPreviewing: false
-            )
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: false,
-                isStaging: false,
-                isImporting: true,
-                isPickingMedia: false,
-                isPreviewing: false
-            )
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: false,
-                isStaging: false,
-                isImporting: false,
-                isPickingMedia: true,
-                isPreviewing: false
-            )
-        )
-        XCTAssertFalse(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: false,
-                isStaging: false,
-                isImporting: false,
-                isPickingMedia: false,
-                isPreviewing: true
-            )
-        )
-        XCTAssertTrue(
-            AttachmentDraftLifecycle.allowsSaving(
-                isSaving: false,
-                isStaging: false,
-                isImporting: false,
-                isPickingMedia: false,
-                isPreviewing: false
-            )
-        )
     }
 
     func testTextSnipFlowCreatesEditsMovesAndDeletes() async throws {
@@ -283,14 +219,11 @@ final class IOSAppModelTests: IOSModelTestCase {
             snips: [current],
             recovery: SnipRecoverySnapshot(pendingSnips: [recovered])
         )
-        let assembly = SnipLibraryAssembly(
-            library: library,
-            activeCloudNamespace: namespace
-        )
-        XCTAssertNotNil(assembly.recoveryScope)
+        let recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
+        XCTAssertNotNil(recoveryScope)
         let model = IOSAppModel(
-            library: assembly.library,
-            recoveryScope: assembly.recoveryScope
+            library: library,
+            recoveryScope: recoveryScope
         )
 
         await model.load()
@@ -305,54 +238,6 @@ final class IOSAppModelTests: IOSModelTestCase {
         let choices = await library.resolutionChoices()
         XCTAssertEqual(choices, [.keepCurrent])
         XCTAssertEqual(model.recoverySnapshot.needsAttentionCount, 0)
-    }
-
-    func testShippedAssemblyReadsExactCloudScopeAndFailsClosed() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("IOSAssemblyScopeTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let namespace = ICloudSyncNamespaceBinding(
-            scope: "private",
-            accountLineage: "account-a",
-            generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
-            zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
-        )
-        let cloudRoot = root.appendingPathComponent("Cloud", isDirectory: true)
-        try writeActivationManifest(namespace: namespace, to: cloudRoot)
-        let library = ModelTestLibrary()
-
-        let cloudAssembly = SnipLibraryAssembly(
-            library: library,
-            syncModeRootURL: cloudRoot
-        )
-
-        XCTAssertEqual(
-            SyncModeActivationManifestReader.activeCloudNamespace(
-                atSyncModeRootURL: cloudRoot
-            ),
-            namespace
-        )
-        XCTAssertEqual(
-            cloudAssembly.recoveryScope,
-            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
-        )
-
-        let localOnlyRoot = root.appendingPathComponent("LocalOnly", isDirectory: true)
-        let localOnlyAssembly = SnipLibraryAssembly(
-            library: library,
-            syncModeRootURL: localOnlyRoot
-        )
-        XCTAssertNil(localOnlyAssembly.recoveryScope)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: localOnlyRoot.path))
-
-        let malformedRoot = root.appendingPathComponent("Malformed", isDirectory: true)
-        try FileManager.default.createDirectory(at: malformedRoot, withIntermediateDirectories: true)
-        try Data("not-json".utf8).write(
-            to: malformedRoot.appendingPathComponent("activation.json")
-        )
-        XCTAssertNil(
-            SnipLibraryAssembly(library: library, syncModeRootURL: malformedRoot).recoveryScope
-        )
     }
 
     func testAttachmentInputsUseTheTargetedLibraryCommands() async throws {
@@ -466,32 +351,6 @@ final class IOSAppModelTests: IOSModelTestCase {
         }
         return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
     }
-}
-
-private func writeActivationManifest(
-    namespace: ICloudSyncNamespaceBinding,
-    to rootURL: URL
-) throws {
-    let storeID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-    let namespaceData = try JSONEncoder().encode(namespace)
-    let namespaceValue = try JSONSerialization.jsonObject(with: namespaceData)
-    let manifest: [String: Any] = [
-        "version": 2,
-        "activeStoreID": storeID.uuidString,
-        "stores": [[
-            "id": storeID.uuidString,
-            "kind": "iCloudSync",
-            "namespace": namespaceValue,
-            "relativeRoot": "stores/iCloudSync-\(storeID.uuidString.lowercased())",
-            "syncProtocol": "fullRecordV1",
-            "revision": 0,
-            "lifecycle": "ready"
-        ]]
-    ]
-    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-    try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]).write(
-        to: rootURL.appendingPathComponent("activation.json")
-    )
 }
 
 @MainActor

@@ -126,12 +126,6 @@ public actor SnipSnapCloudSyncHandler: OptionalCloudSyncHandling {
         }
     }
 
-    public func clearDownloadedFiles() async throws {
-        try await operationGate.withLease {
-            try await self.withAttachmentCoordinator { coordinator, _ in try await coordinator.clearDownloads() }
-        }
-    }
-
     public func downloadedAttachmentCache(in scope: SnipRecoveryScope) async throws -> SyncedAttachmentCacheSnapshot {
         try await operationGate.withLease {
             try await self.withAttachmentCoordinator { _, source in

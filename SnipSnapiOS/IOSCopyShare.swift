@@ -104,11 +104,6 @@ final class IOSSystemPasteboard: NSObject, IOSPasteboardWriting {
 
     private var leaseState = LeaseState.released
 
-    var activeLeaseDirectory: URL? {
-        guard case .held(let lease, _) = leaseState else { return nil }
-        return lease.directory
-    }
-
     init(
         pasteboard: any IOSItemProviderPasteboard = UIPasteboard.general,
         stagingRoot: URL = FileManager.default.temporaryDirectory

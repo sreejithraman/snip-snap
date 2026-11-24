@@ -50,12 +50,10 @@ package struct SyncModeTransition: Codable, Equatable, Sendable {
     candidateStoreID = try values.decode(UUID.self, forKey: .candidateStoreID)
     targetKind = try values.decode(SyncModeStoreKind.self, forKey: .targetKind)
     namespace = try values.decodeIfPresent(ICloudSyncNamespaceBinding.self, forKey: .namespace)
-    syncProtocol = try values.decodeIfPresent(
-      SyncModeSyncProtocol.self, forKey: .syncProtocol
-    ) ?? .retiredText
+    syncProtocol = try values.decode(SyncModeSyncProtocol.self, forKey: .syncProtocol)
     switch try values.decode(String.self, forKey: .phase) {
     case "merged": phase = .merged
-    case "swapped", "pointerSwapped": phase = .swapped
+    case "swapped": phase = .swapped
     default: phase = .declared
     }
   }

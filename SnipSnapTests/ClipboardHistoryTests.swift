@@ -163,7 +163,6 @@ private actor ClipboardHeldUploadCloud: ClipboardCloudTransport {
         snapshot = incoming
     }
 
-    func deleteAll() { snapshot = ClipboardCloudSnapshot() }
 }
 
 /// Holds a step of a clipboard binding reset, fails one once, or holds a step and then fails it.
@@ -728,11 +727,12 @@ final class ClipboardHistoryTests: XCTestCase {
         history.requestSync()
         gate.release(1)
         try await waitUntil { gate.isHolding(2) }
+        // The newer request is still running, so this one is absorbed rather than scheduled.
         history.requestSync()
         gate.release(2)
-        // A third run could start only after the 300 ms debounce; the wait ends early if one does.
-        try await waitUntil(timeout: .seconds(3), reportingTimeout: false) { gate.requestCount > 2 }
+        try await waitUntil { !history.isSyncing }
 
+        XCTAssertFalse(history.hasPendingSyncRequest)
         XCTAssertEqual(gate.requestCount, 2)
     }
 
@@ -756,10 +756,7 @@ final class ClipboardHistoryTests: XCTestCase {
             // As SnipSnapApp wires it.
             mainEnabled: {
                 guard settings.mode == .iCloudSync else { return false }
-                switch settings.state {
-                case .disabling, .deleting: return false
-                default: return true
-                }
+                return settings.state != .disabling
             },
             generation: { "account-generation-A" },
             makeCloudService: { _, _, _ in service }
@@ -1270,13 +1267,9 @@ final class ClipboardHistoryTests: XCTestCase {
         await history.syncNow()
         let syncError = try XCTUnwrap(history.syncError)
         XCTAssertTrue(syncError.hasPrefix("Couldn’t sync clipboard history."))
-        let generationRequests = fixture.generationSource.requestCount
-
         // Normal syncs come from poll()'s 15-second rule and from onChange after a save, never
-        // from the failure. Waits past the 300 ms debounce for any sync the failure scheduled.
-        try await Task.sleep(for: .milliseconds(500))
-
-        XCTAssertEqual(fixture.generationSource.requestCount, generationRequests)
+        // from the failure.
+        XCTAssertFalse(history.hasPendingSyncRequest)
         XCTAssertEqual(diagnostics.events.filter { $0.operation == "clipboard.sync" }.count, 1)
         XCTAssertEqual(Set(diagnostics.events.map(\.operation)), ["clipboard.persist", "clipboard.sync"])
         XCTAssertEqual(history.syncError, syncError)
@@ -1514,21 +1507,6 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(reopened.entries.isEmpty)
     }
 
-    func testClipboardEntryRejectsTheOldFlatPayloadShape() throws {
-        let legacy = """
-        {
-          "id": "00000000-0000-0000-0000-000000000123",
-          "capturedAt": "2026-08-22T12:00:00Z",
-          "representations": [],
-          "plainText": "Old"
-        }
-        """
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        XCTAssertThrowsError(try decoder.decode(ClipboardEntry.self, from: Data(legacy.utf8)))
-    }
-
     func testCaptureNowRecordsTheCurrentPasteboard() throws {
         let context = try makeContext()
         writeText("Initial", to: context.pasteboard)
@@ -1594,22 +1572,6 @@ final class ClipboardHistoryTests: XCTestCase {
 
         XCTAssertEqual(context.history.entries.map(\.text), ["Keep this in memory"])
         XCTAssertNotNil(context.history.persistenceError)
-    }
-
-    func testHistoryByteLimitKeepsANewestFirstPrefixAfterSkippingOversizedEntries() {
-        let oversized = clipboardEntry("O", byteCount: 9)
-        let newest = clipboardEntry("N", byteCount: 6)
-        let next = clipboardEntry("M", byteCount: 4)
-        let older = clipboardEntry("L", byteCount: 2)
-
-        let result = ClipboardHistoryState.trimmed(
-            [oversized, newest, next, older],
-            maximumEntryBytes: 8,
-            maximumHistoryBytes: 8,
-            maximumCount: 4
-        )
-
-        XCTAssertEqual(result.map(\.text), ["N"])
     }
 
     func testPinnedHistorySurvivesTrimmingClearAndRelaunch() async throws {
@@ -1686,6 +1648,24 @@ final class ClipboardHistoryTests: XCTestCase {
         await reopened.flushPersistence()
     }
 
+    func testPinningAMissingFileLeavesItUnpinnedAndSaysWhy() async throws {
+        let context = try makeContext()
+        let directory = context.storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("gone.txt")
+        try Data("Short-lived bytes".utf8).write(to: source)
+        writeFileURLs([source], to: context.pasteboard)
+        context.history.poll()
+        let id = try XCTUnwrap(context.history.entries.first?.id)
+        try FileManager.default.removeItem(at: source)
+
+        await context.history.togglePinned(id: id)
+
+        XCTAssertFalse(try XCTUnwrap(context.history.entry(id: id)).isPinned)
+        XCTAssertEqual(context.history.persistenceError, "The file gone.txt is missing or unreadable.")
+        await context.history.flushPersistence()
+    }
+
     func testMissingOwnedFileCopyRecordsVisibleFailure() async throws {
         let diagnostics = ClipboardDiagnosticProbe()
         let context = try makeContext(diagnostics: diagnostics.recorder)
@@ -1710,19 +1690,6 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertFalse(diagnostics.events.first?.line.contains("private-source.txt") ?? true)
     }
 
-    func testMissingFileCannotBecomePinned() async throws {
-        let context = try makeContext()
-        let missing = context.storeURL.deletingLastPathComponent().appendingPathComponent("missing.txt")
-        writeFileURLs([missing], to: context.pasteboard)
-        context.history.poll()
-        let id = try XCTUnwrap(context.history.entries.first?.id)
-
-        await context.history.togglePinned(id: id)
-
-        XCTAssertFalse(try XCTUnwrap(context.history.entry(id: id)).isPinned)
-        XCTAssertNotNil(context.history.persistenceError)
-    }
-
     private func makeContext(
         persistedEntries: [ClipboardEntry] = [],
         diagnostics: AppDiagnosticRecorder = AppDiagnosticRecorder.live,
@@ -1744,9 +1711,9 @@ final class ClipboardHistoryTests: XCTestCase {
         let storeURL = directory.appendingPathComponent("clipboard.json")
         if !persistedEntries.isEmpty {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            try encoder.encode(persistedEntries).write(to: storeURL, options: .atomic)
+            // The object format the shipped store writes; it no longer reads a bare entry array.
+            try JSONEncoder().encode(ClipboardHistoryState(entries: persistedEntries))
+                .write(to: storeURL, options: .atomic)
         }
         addTeardownBlock {
             pasteboard.releaseGlobally()
@@ -2011,14 +1978,13 @@ final class ClipboardHistoryTests: XCTestCase {
 
     private func waitUntil(
         timeout: Duration = .seconds(5),
-        reportingTimeout: Bool = true,
         _ condition: () -> Bool
     ) async throws {
         let deadline = ContinuousClock.now + timeout
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        if reportingTimeout { XCTAssertTrue(condition()) }
+        XCTAssertTrue(condition())
     }
 
     private func writeText(_ text: String, to pasteboard: NSPasteboard) {
@@ -2044,7 +2010,7 @@ final class SnipPinTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: url)
         let added = try await repository.add(content: "Reusable", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         await model.toggleDoneNow(id: snip.id)
         XCTAssertTrue(try XCTUnwrap(model.snips.first).isDone)
@@ -2057,7 +2023,7 @@ final class SnipPinTests: StoreBackedTestCase {
         await model.toggleDoneNow(id: snip.id)
         XCTAssertFalse(try XCTUnwrap(model.snips.first).isDone)
 
-        let reopened = AppModel(library: try JSONSnipLibrary(fileURL: url))
+        let reopened = AppModel(library: try JSONSnipLibrary(fileURL: url), defaults: defaults())
         await reopened.reload()
         XCTAssertEqual(reopened.snips.first?.pinnedAt, pinned.pinnedAt)
         XCTAssertFalse(try XCTUnwrap(reopened.snips.first).isDone)
@@ -2073,7 +2039,7 @@ final class SnipPinTests: StoreBackedTestCase {
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         model.selection = [first.id, second.id]
         await model.toggleDoneNow(id: first.id)

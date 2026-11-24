@@ -1,3 +1,0 @@
-Snip Snap 0.6.0 Beta 116 — iOS
-
-- Keep downloaded iOS attachment images across refresh

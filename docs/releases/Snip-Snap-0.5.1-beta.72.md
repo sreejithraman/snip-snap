@@ -1,9 +1,0 @@
-# Snip Snap 0.5.1 Beta 72
-
-## Mac
-
-- Show cached iCloud data before sync
-
-## iOS
-
-- Show cached iCloud data before sync

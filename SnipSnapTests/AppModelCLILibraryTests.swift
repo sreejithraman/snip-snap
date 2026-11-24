@@ -125,7 +125,9 @@ final class AppModelCLILibraryTests: StoreBackedTestCase {
         do {
             _ = try await model.handleCLIRequest(.init(action: .extended(.library(export))))
             XCTFail("Export must leave an existing destination intact.")
-        } catch {}
+        } catch {
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteFileExists)
+        }
         XCTAssertEqual(try Data(contentsOf: destination), Data("keep existing".utf8))
     }
 

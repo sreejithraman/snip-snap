@@ -114,7 +114,10 @@ final class SavedSnipsSessionTests: XCTestCase {
       case "done": command = .setDone(ids: [original.id], done: true)
       case "delete": command = .delete(ids: [original.id])
       default:
-        command = .replaceAll([Snip(id: original.id, content: original.content, origin: original.origin)])
+        command = .batch([
+          .delete(ids: [original.id]),
+          .restore(snips: [Snip(id: original.id, content: original.content, origin: original.origin)]),
+        ])
       }
       let library = ControlledDoneUndoLibrary(base: base)
       let session = SavedSnipsSession(library: library)
@@ -150,7 +153,9 @@ final class SavedSnipsSessionTests: XCTestCase {
     let library = ControlledDoneUndoLibrary(base: base)
     let session = SavedSnipsSession(library: library)
     for mutation in ["order", "identity", "name", "path", "type", "bytes"] {
-      _ = try await base.perform(.replaceAll([original]), sortedBy: .manual)
+      _ = try await base.perform(
+        .batch([.delete(ids: [original.id]), .restore(snips: [original])]), sortedBy: .manual
+      )
       var changed = original
       switch mutation {
       case "order": changed.attachments.reverse()
@@ -165,7 +170,9 @@ final class SavedSnipsSessionTests: XCTestCase {
       case "type": changed.attachments[0].contentType = "application/octet-stream"
       default: changed.attachments[0].byteCount += 1
       }
-      await library.performBeforeNextCommand(.replaceAll([changed]))
+      await library.performBeforeNextCommand(
+        .batch([.delete(ids: [original.id]), .restore(snips: [changed])])
+      )
 
       do {
         _ = try await session.setDone(
@@ -474,7 +481,7 @@ final class SavedSnipsSessionTests: XCTestCase {
     let changed = try await session.setDone(ids: [snips[0].id], done: true, sortedBy: .manual)
     let undo = try XCTUnwrap(changed.undo)
     let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
-    _ = try await replacement.perform(.replaceAll(changed.update.snapshot.snips), sortedBy: .manual)
+    _ = try await replacement.perform(.restore(snips: changed.update.snapshot.snips), sortedBy: .manual)
 
     _ = await session.replaceLibrary(replacement, recoveryScope: nil, sortedBy: .manual)
     let stale = try await session.restoreDone(token: undo.id, sortedBy: .manual)
@@ -717,24 +724,25 @@ final class SavedSnipsSessionTests: XCTestCase {
       }
     }
     while !probe.isHoldingFirst { await Task.yield() }
-    let later = [2, 3].map { number in
-      Task { @MainActor in
-        probe.markQueued(number)
+    // Start each later caller only after the previous one is queued in the session,
+    // so the call order is fixed rather than left to the scheduler.
+    var later: [Task<Void, Never>] = []
+    for number in [2, 3] {
+      later.append(Task { @MainActor in
         await session.withExclusiveAccess { _ in
           probe.record("start \(number)")
           await Task.yield()
           probe.record("end \(number)")
         }
-      }
+      })
+      while await session.exclusiveAccessWaiterCount < number - 1 { await Task.yield() }
     }
-    while probe.queued.count < 2 { await Task.yield() }
 
     probe.releaseFirst()
     await first.value
     for task in later { await task.value }
 
-    let callOrder = probe.queued.flatMap { ["start \($0)", "end \($0)"] }
-    XCTAssertEqual(probe.events, ["start 1", "end 1"] + callOrder)
+    XCTAssertEqual(probe.events, ["start 1", "end 1", "start 2", "end 2", "start 3", "end 3"])
   }
 
   private func makeBackup(at url: URL, content: String) async throws -> URL {
@@ -853,14 +861,11 @@ private actor ImportPreviewGate {
 @MainActor
 private final class ExclusiveAccessProbe {
   private(set) var events: [String] = []
-  private(set) var queued: [Int] = []
   private var heldFirst: CheckedContinuation<Void, Never>?
 
   var isHoldingFirst: Bool { heldFirst != nil }
 
   func record(_ event: String) { events.append(event) }
-
-  func markQueued(_ number: Int) { queued.append(number) }
 
   func holdFirst() async {
     await withCheckedContinuation { heldFirst = $0 }

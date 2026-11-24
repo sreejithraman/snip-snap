@@ -25,7 +25,7 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        let writerResult = try await writer.enableAndPublish()
+        let writerResult = try await writer.enableAndPublish(persistence: writerPersistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(writerResult.state, .on)
 
         let readerPersistence = try SwiftDataSyncModePersistence(
@@ -89,7 +89,7 @@ extension ICloudSyncModeCoordinatorTests {
             payloadZone: payloadZone,
             makeTransport: { transport }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: dataZone, payloadZone: payloadZone, transport: transport)
         XCTAssertEqual(enabled.state, .on)
         let active = try await persistence.activeLibrary()
         let current = await active.snapshot(sortedBy: .manual)
@@ -111,7 +111,12 @@ extension ICloudSyncModeCoordinatorTests {
             sortedBy: .manual
         )
         await transport.pauseNextSend()
-        let failingSync = Task { try await coordinator.syncActive() }
+        let failingSync = Task {
+            try await publishActiveStore(
+                persistence: persistence, namespace: namespace,
+                textZone: dataZone, payloadZone: payloadZone, transport: transport
+            )
+        }
         await transport.waitUntilSendPauses()
         let activeStore = try await persistence.snapshot().activeStore
         let activeLibrary = try await persistence.libraryForTransition(storeID: activeStore.id)
@@ -134,8 +139,10 @@ extension ICloudSyncModeCoordinatorTests {
             XCTAssertEqual(error.issue, .appDataIssue)
         }
         try await add("unrelated after attachment failure", to: active)
-        let laterResult = try await coordinator.syncActive()
-        XCTAssertEqual(laterResult.state, .on)
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace,
+            textZone: dataZone, payloadZone: payloadZone, transport: transport
+        )
 
         let after = try await activeLibrary.cloudAttachmentStorageSnapshot(
             namespaceKey: namespace.namespaceKey
@@ -205,7 +212,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { transport }
         )
 
-        let result = try await coordinator.enableAndPublish()
+        let result = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: dataZone, payloadZone: payloadZone, transport: transport)
 
         XCTAssertEqual(result.state, .on)
         let storage = try await persistence.snapshot()
@@ -276,7 +283,7 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: dataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
         let storage = try await persistence.snapshot()
         let activeLibrary = try await persistence.libraryForTransition(
@@ -382,7 +389,7 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: dataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
 
         let bytes = Data("local attachment before reconciliation".utf8)
@@ -489,7 +496,7 @@ extension ICloudSyncModeCoordinatorTests {
         )
 
         do {
-            _ = try await coordinator.enableAndPublish()
+            _ = try await coordinator.enableOrRetry()
             XCTFail("Expected setup to report unsupported files")
         } catch let CloudAttachmentSetupError.unsupportedFiles(files) {
             XCTAssertEqual(files.map(\.fileName), ["first.bin", "second.bin"])
@@ -516,81 +523,6 @@ extension ICloudSyncModeCoordinatorTests {
         XCTAssertNil(reopenedSnapshot.transition)
     }
 
-    func testDefaultFullRecordModeUsesOneDriverAndKeepsStatusReadOnly() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-        let namespace = makeNamespace()
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: {
-                FakeCloudRecordTransport(server: FakeCloudServer(), namespace: namespace)
-            }
-        )
-
-        let enabled = try await coordinator.enableOrRetry()
-        XCTAssertEqual(enabled.state, .on)
-        let modeBefore = try await persistence.snapshot()
-        XCTAssertEqual(modeBefore.activeStore.syncProtocol, .fullRecordV1)
-        let active = try await persistence.libraryForTransition(storeID: modeBefore.activeStore.id)
-        let fullBefore = try await active.cloudFullStorageSnapshot(
-            namespaceKey: namespace.namespaceKey
-        )
-        XCTAssertEqual(fullBefore.namespaceState.phase, .seeding)
-
-        let firstStatus = try await coordinator.status()
-        let secondStatus = try await coordinator.status()
-        let modeAfter = try await persistence.snapshot()
-        let fullAfter = try await active.cloudFullStorageSnapshot(
-            namespaceKey: namespace.namespaceKey
-        )
-        XCTAssertEqual(firstStatus.state, .on)
-        XCTAssertEqual(secondStatus, firstStatus)
-        XCTAssertEqual(modeAfter, modeBefore)
-        XCTAssertEqual(fullAfter, fullBefore)
-    }
-
-    func testFullRecordActiveSyncHoldsOneOuterLeaseWhileStatusReads() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-        let namespace = makeNamespace()
-        let server = FakeCloudServer()
-        let initial = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
-        )
-        let enabled = try await initial.enableAndPublish()
-        XCTAssertEqual(enabled.state, .on)
-
-        let paused = FakeCloudRecordTransport(server: server, namespace: namespace)
-        await paused.pauseNextFetch()
-        let coordinator = ICloudSyncModeCoordinator(
-            persistence: persistence,
-            namespace: namespace,
-            textZone: textZone(namespace),
-            makeTransport: { paused }
-        )
-        let syncing = Task { try await coordinator.syncActive() }
-        await paused.waitUntilFetchPauses()
-        let beforeStatus = try await persistence.snapshot()
-
-        let firstStatus = try await coordinator.status()
-        let secondStatus = try await coordinator.status()
-        let afterStatus = try await persistence.snapshot()
-        XCTAssertEqual(firstStatus.state, .syncing)
-        XCTAssertEqual(secondStatus, firstStatus)
-        XCTAssertEqual(afterStatus, beforeStatus)
-
-        await paused.resumeFetch()
-        let finished = try await syncing.value
-        XCTAssertEqual(finished.state, .on)
-    }
-
     func testFullActiveModeEnrollsNewLocalListAndSnipForAnotherClient() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -603,7 +535,7 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: textZone(namespace),
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: textZone(namespace), transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
         let library = try await persistence.activeLibrary()
         let created = try await library.perform(
@@ -625,8 +557,10 @@ extension ICloudSyncModeCoordinatorTests {
             ),
             sortedBy: .manual
         )
-        let synced = try await coordinator.syncActive()
-        XCTAssertEqual(synced.state, .on)
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace, textZone: textZone(namespace),
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+        )
 
         let secondRoot = root.appendingPathComponent("second.store")
         let secondLibrary = try SwiftDataSnipLibrary(storeURL: secondRoot)
@@ -686,7 +620,7 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: dataZone, payloadZone: payloadZone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
         let source = root.appendingPathComponent("foreground.txt")
         try Data("saved offline first".utf8).write(to: source)
@@ -707,9 +641,12 @@ extension ICloudSyncModeCoordinatorTests {
             sortedBy: .manual
         )
 
-        let result = try await coordinator.syncActive()
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace, textZone: dataZone,
+            payloadZone: payloadZone,
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+        )
 
-        XCTAssertEqual(result.state, .on)
         let stored = try await library.cloudAttachmentStorageSnapshot(
             namespaceKey: namespace.namespaceKey
         )
@@ -739,15 +676,17 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
         let writer = FakeCloudRecordTransport(server: server, namespace: namespace)
         _ = try await writer.send(CloudOutboundBatch(operations: [
             .save(CloudFullRecordCodec.snipDraft(snip, in: zone))
         ]))
 
-        let first = try await coordinator.syncActive()
-        XCTAssertEqual(first.state, .on)
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace, textZone: zone,
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+        )
         let activeBeforeList = try await persistence.snapshot()
         let waiting = try await persistence.libraryForTransition(
             storeID: activeBeforeList.activeStore.id
@@ -763,8 +702,10 @@ extension ICloudSyncModeCoordinatorTests {
         _ = try await listWriter.send(CloudOutboundBatch(operations: [
             .save(CloudFullRecordCodec.listDraft(list, updatedAt: Date(), in: zone))
         ]))
-        let second = try await coordinator.syncActive()
-        XCTAssertEqual(second.state, .on)
+        try await publishActiveStore(
+            persistence: persistence, namespace: namespace, textZone: zone,
+            transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+        )
         let active = try await persistence.activeLibrary()
         let final = await active.snapshot(sortedBy: .manual)
         XCTAssertTrue(final.lists.contains { $0.id == list.id })
@@ -795,7 +736,7 @@ extension ICloudSyncModeCoordinatorTests {
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
 
-        let result = try await coordinator.enableAndPublish()
+        let result = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
 
         XCTAssertEqual(result.state, .on)
         let completed = try await persistence.snapshot()
@@ -841,7 +782,7 @@ extension ICloudSyncModeCoordinatorTests {
         let interruptedStorage = try await persistence.snapshot()
         XCTAssertNil(interruptedStorage.transition)
 
-        let completed = try await coordinator.enableAndPublish()
+        let completed = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: transport)
 
         XCTAssertEqual(completed.state, .on)
         let active = try await persistence.activeLibrary()
@@ -874,7 +815,7 @@ extension ICloudSyncModeCoordinatorTests {
                     FakeCloudRecordTransport(server: server, namespace: namespace)
                 }
             )
-            let enabled = try await coordinator.enableAndPublish()
+            let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
             XCTAssertEqual(enabled.state, .on)
             let missingListID = UUID()
             let deferred = Snip(
@@ -889,8 +830,10 @@ extension ICloudSyncModeCoordinatorTests {
             guard case .saved = try XCTUnwrap(sent.items.first) else {
                 return XCTFail("Expected the remote Snip save")
             }
-            let synced = try await coordinator.syncActive()
-            XCTAssertEqual(synced.state, .on)
+            try await publishActiveStore(
+                persistence: persistence, namespace: namespace, textZone: zone,
+                transport: FakeCloudRecordTransport(server: server, namespace: namespace)
+            )
             let cloudStorage = try await persistence.snapshot()
             let cloudLibrary = try await persistence.libraryForTransition(
                 storeID: cloudStorage.activeStore.id
@@ -950,7 +893,7 @@ extension ICloudSyncModeCoordinatorTests {
                 FakeCloudRecordTransport(server: server, namespace: namespace)
             }
         )
-        let enabled = try await coordinator.enableAndPublish()
+        let enabled = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         XCTAssertEqual(enabled.state, .on)
         let optedOut = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         XCTAssertEqual(optedOut.state, .off)
@@ -1121,7 +1064,7 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        _ = try await coordinator.enableAndPublish()
+        _ = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         let local = try await persistence.activeLibrary()
         let localSnapshot = await local.snapshot(sortedBy: .manual)
@@ -1181,7 +1124,7 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        _ = try await coordinator.enableAndPublish()
+        _ = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         let recordID = CloudRecordID.snip(base.id, in: zone)
         let storedValue = await server.fullSnapshot(for: recordID)
@@ -1220,7 +1163,7 @@ extension ICloudSyncModeCoordinatorTests {
             textZone: zone,
             makeTransport: { FakeCloudRecordTransport(server: server, namespace: namespace) }
         )
-        _ = try await coordinator.enableAndPublish()
+        _ = try await coordinator.enableAndPublish(persistence: persistence, namespace: namespace, textZone: zone, transport: FakeCloudRecordTransport(server: server, namespace: namespace))
         _ = try await coordinator.optOut(.useCurrentCacheAfterStaleDataWarning)
         let local = try await persistence.activeLibrary()
         _ = try await local.perform(

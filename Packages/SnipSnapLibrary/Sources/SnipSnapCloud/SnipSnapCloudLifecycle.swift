@@ -45,10 +45,6 @@ public final class SnipSnapCloudLifecycleHooks {
 public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case noChange
   case contentUpdated
-  case libraryReplaced
-  case libraryReplacedWithSyncIssue(SyncedContentSyncIssue)
-  case libraryReplacedAndSyncCompleted
-  case libraryReplacedAndSyncScheduled
   case iCloudDataReset
   case iCloudSignedOut
   case iCloudAccountChanged
@@ -57,8 +53,6 @@ public enum SnipSnapCloudSyncResult: Equatable, Sendable {
   case syncScheduled
   case iCloudSyncSettingUp(SyncedContentSyncIssue? = nil)
   case iCloudSyncEnabled
-  case oldSyncedContentRemovalPending
-  case oldSyncedContentRemovalCompleted
 }
 
 package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
@@ -223,10 +217,12 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     )
     let descriptor: CloudCollectionDescriptor
     if let kept, !storage.keptAfterCloudReset {
-      // A reset may happen while the account-stopped library is local-only.
+      // A reset may happen while the account-stopped library is local-only. Any control record
+      // that no longer describes the kept collection means this device missed it.
       let remote = try await controlTransport.fetchControl()?.descriptor
-      let binding = remote?.namespace(cloudScope: cloudScope, accountLineage: lineage).binding
-      if remote == nil || (remote?.generation == kept.generation && binding != kept) {
+      guard let remote,
+        remote.namespace(cloudScope: cloudScope, accountLineage: lineage).binding == kept
+      else {
         try await requireAccountLineage(lineage)
         let stopped = try await modePersistence.keepCloudCacheLocally(
           storeID: storage.activeStore.id, namespace: kept, reason: .namespaceChanged
@@ -234,18 +230,19 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
         guard stopped == .keptAfterReset else { throw CloudRecordWorkError.replaced }
         throw CloudSyncIssueError(.iCloudDataReset)
       }
-      guard let remote else { throw CloudCollectionError.noActiveCollection }
       try remote.validate(ownerName: ownerName, reservedZones: reservedZones)
       descriptor = remote
-    } else {
-      descriptor = try await bootstrap.activeOrCreate(
-        afterReset: storage.keptAfterCloudReset ? kept : nil
+    } else if let kept, storage.keptAfterCloudReset {
+      descriptor = try await bootstrap.activeOrCreate(afterReset: kept)
+      // Nothing else removes the reset generation's zones if they survived it.
+      try await collectionLocal.stageCleanup(
+        Set(kept.zones.map { CloudZoneID(name: $0.name, ownerName: $0.ownerName) })
+          .subtracting(descriptor.zones).subtracting(reservedZones)
       )
+    } else {
+      descriptor = try await bootstrap.activeOrCreate()
     }
     let namespace = descriptor.namespace(cloudScope: cloudScope, accountLineage: lineage)
-    if let kept, !storage.keptAfterCloudReset, kept != namespace.binding {
-      throw SyncModePersistenceError.namespaceMismatch
-    }
     accountLineage = lineage
     if kept != nil, !storage.keptAfterCloudReset {
       try await requireAccountLineage(lineage)
@@ -452,22 +449,6 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
     await clearCollectionCoordinator()
   }
 
-  package func deleteSyncedContent() async throws -> SyncedContentDeleteOutcome {
-    if try await stopRecordedResetIfNeeded() {
-      automaticResultHandler(.iCloudDataReset)
-      throw CloudCollectionError.noActiveCollection
-    }
-    do {
-      guard let coordinator = try await activeCollectionCoordinator() else {
-        throw CloudCollectionError.noActiveCollection
-      }
-      return deleteOutcome(for: try await coordinator.deleteSyncedContent())
-    } catch let error as ICloudAccountGateError {
-      if let result = try await stopSync(for: error) { automaticResultHandler(result) }
-      throw error
-    }
-  }
-
   package func activeLibrary() async throws -> SnipSnapCloudActiveLibrary {
     guard let persistence else {
       return SnipSnapCloudActiveLibrary(library: sourceLibrary, recoveryScope: nil)
@@ -641,13 +622,11 @@ package actor SnipSnapICloudSyncLifecycle: ICloudAccountStateSource {
       try descriptor?.validate(ownerName: ownerName, reservedZones: reservedZones)
       return
     }
-    if descriptor == nil || descriptor?.generation == context.binding.generation {
-      // A different account may return no control record for this collection.
-      try await requireAccountLineage(context.binding.accountLineage)
-      if try await keepLibraryAfterReset(context) { automaticResultHandler(.iCloudDataReset) }
-      throw CloudRecordWorkError.replaced
-    }
-    throw CloudCollectionError.syncNeedsAttention
+    // A missing record, other zones, or another generation all mean a missed reset. A
+    // different account may return no control record for this collection.
+    try await requireAccountLineage(context.binding.accountLineage)
+    if try await keepLibraryAfterReset(context) { automaticResultHandler(.iCloudDataReset) }
+    throw CloudRecordWorkError.replaced
   }
 
   private func currentControlDescriptor() async throws -> CloudCollectionDescriptor? {

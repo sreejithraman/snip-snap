@@ -42,7 +42,6 @@ package final class ClipboardCloudCancellation: @unchecked Sendable {
 package protocol ClipboardCloudTransport: Sendable {
     func fetch() async throws -> ClipboardCloudSnapshot
     func save(_ snapshot: ClipboardCloudSnapshot, cancellation: ClipboardCloudCancellation) async throws
-    func deleteAll() async throws
 }
 
 /// Immutable entry assets keep an edit from retransferring the rest of history.
@@ -173,11 +172,6 @@ package actor CloudKitClipboardTransport: ClipboardCloudTransport {
         let results = try await calls.modifyRecords([record], deleting, policy, true, .transfer)
         guard let result = results.saveResults[record.recordID] else { throw ClipboardCloudError.invalidPayload }
         _ = try result.get()
-    }
-    package func deleteAll() async throws {
-        do { _ = try await calls.deleteZone(zone, .small) }
-        catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem { }
-        zoneReady = false; uploaded = []; cache = [:]; fetchedReferences = []
     }
     /// The caller reads the record's asset after this returns, so a late read changes nothing.
     private func transferRecord(_ id: CKRecord.ID) async throws -> CKRecord {

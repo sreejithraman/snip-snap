@@ -221,30 +221,20 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertNil(panel.attachedSheet)
         XCTAssertEqual(panel.alphaValue, 1, accuracy: 0.001)
         panel.setFrameOrigin(NSPoint(x: 180, y: 180))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(dialog.frame.midX, panel.frame.midX, accuracy: 0.5)
-        XCTAssertEqual(dialog.frame.midY, panel.frame.midY, accuracy: 0.5)
-        XCTAssertTrue(
-            AppCoordinator.shouldRestorePreviousApplication(
-                panelIsKey: false,
-                dialogIsKey: true
-            )
-        )
-        XCTAssertTrue(
-            AppCoordinator.shouldRestorePreviousApplication(
-                panelIsKey: false,
-                dialogIsKey: false,
-                filePanelIsKey: true
-            )
-        )
+        let recentered = await waitForTransition(within: .seconds(2)) {
+            abs(dialog.frame.midX - panel.frame.midX) <= 0.5
+                && abs(dialog.frame.midY - panel.frame.midY) <= 0.5
+        }
+        XCTAssertTrue(recentered, "The dialog follows its moved panel")
 
         model.presentError("Dialog save failed")
-        try await Task.sleep(for: .milliseconds(100))
+        let attached = await waitForTransition(within: .seconds(2)) { dialog.attachedSheet != nil }
 
+        XCTAssertTrue(attached)
         XCTAssertTrue(panel.childWindows?.first === dialog)
-        XCTAssertNotNil(dialog.attachedSheet)
         model.dismissPresentedError()
-        try await Task.sleep(for: .milliseconds(100))
+        let detached = await waitForTransition(within: .seconds(2)) { dialog.attachedSheet == nil }
+        XCTAssertTrue(detached)
 
         coordinator.toggleClipboard()
 
@@ -314,8 +304,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         try Data().write(to: firstFile)
         try Data().write(to: secondFile)
         fileDrops.fileDrops.send([firstFile])
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.composerDraft(for: model.activeListID).attachments, [firstFile])
+        let attachedFirst = await waitForTransition(within: .seconds(2)) {
+            model.composerDraft(for: model.activeListID).attachments == [firstFile]
+        }
+        XCTAssertTrue(attachedFirst)
 
         coordinator.presentPanelDialog(id: .newList, title: "New list") {} content: {
             Text("Dialog")
@@ -331,7 +323,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testBackupImporterUsesTheOwnedStandalonePanelPath() {
+    func testBackupImporterAcceptsOneFolderOrJSONFile() {
         let panel = BackupImportOpenPanel.makePanel()
 
         XCTAssertTrue(panel.canChooseFiles)
@@ -678,9 +670,9 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             coordinator.dismissPanelDialog(id: .error)
             parent.orderOut(nil)
         }
-        try await Task.sleep(for: .milliseconds(100))
         model.presentError(SnipLibraryError.storeUnavailable, operation: "clipboard.write")
-        try await Task.sleep(for: .milliseconds(100))
+        let presentedInline = await waitForTransition(within: .seconds(2)) { model.presentedError != nil }
+        XCTAssertTrue(presentedInline)
         let inlineMessage = model.presentedError
         XCTAssertNil(model.dialogFailure)
         XCTAssertFalse(coordinator.panelDialogs.isPresented)
@@ -1241,8 +1233,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
             Text("Repair")
         }
 
-        coordinator.dismissPanelDialog(id: .accessibility, restoringParent: false)
-        coordinator.accessibilityPermissions.performPrimaryAction()
+        coordinator.performAccessibilityRepairPrimaryAction()
 
         XCTAssertTrue(openedSettings)
         XCTAssertNil(parent.childWindows?.first)
@@ -1272,11 +1263,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         }
         let formWindow = try XCTUnwrap(panel.childWindows?.first)
         model.presentError("Dialog save failed")
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertNotNil(formWindow.attachedSheet)
+        let attached = await waitForTransition(within: .seconds(2)) { formWindow.attachedSheet != nil }
+        XCTAssertTrue(attached)
 
         coordinator.togglePanel()
-        try await Task.sleep(for: .milliseconds(100))
 
         XCTAssertFalse(panel.isVisible)
         XCTAssertNotNil(model.presentedError)
@@ -1320,7 +1310,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         model.presentError("Dialog save failed")
 
         coordinator.dismissPanelDialog(id: .newList)
-        try await Task.sleep(for: .milliseconds(100))
+        let presented = await waitForTransition(within: .seconds(2)) { panel.childWindows?.first != nil }
+        XCTAssertTrue(presented)
 
         let errorWindow = try XCTUnwrap(panel.childWindows?.first)
         XCTAssertFalse(errorWindow.isOpaque)
@@ -1458,7 +1449,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testStartShowsAccessibilitySetupCardBeforeRequestingIt() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -1519,7 +1510,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testStartOffersAccessibilitySetupWithoutDoubleShiftShortcuts() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let suiteName = "Snip SnapShortcutTrustTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -1583,16 +1574,17 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testTrustedStartDoesNotOfferOrRequestAccessibility() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         var requestCount = 0
         var openSettingsCount = 0
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             makeHotKeyManager: { _ in StubGlobalHotKeyManager() },
             isAccessibilityTrusted: { true },
             requestAccessibilityTrust: { requestCount += 1 },
-            openAccessibilitySettings: { openSettingsCount += 1 }
+            openAccessibilitySettings: { openSettingsCount += 1 },
+            accessibilitySetupDefaults: defaults()
         )
 
         coordinator.start()
@@ -1609,15 +1601,16 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testCapturePresentsAccessibilityRepairWithoutRequestingIt() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let panel = NSWindow()
         defer { panel.orderOut(nil) }
         var requestCount = 0
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { false },
-            requestAccessibilityTrust: { requestCount += 1 }
+            requestAccessibilityTrust: { requestCount += 1 },
+            accessibilitySetupDefaults: defaults()
         )
         coordinator.attachPanelWindow(panel)
 
@@ -1631,7 +1624,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testDeferredAccessibilitySetupStaysQuietOnNextStart() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let suiteName = "Snip SnapDeferredAccessibilityTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -1664,7 +1657,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testGrantRefreshRestartsShortcutsAndHidesPermissionUI() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let suiteName = "Snip SnapAccessibilityGrantTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -1728,37 +1721,13 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testComposerExpansionOnlyChangesTheAttachedPanelWindow() throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
-        let settings = ShortcutSettings()
-        let coordinator = AppCoordinator(
-            model: model,
-            shortcutSettings: settings,
-            isAccessibilityTrusted: { true }
-        )
-        let panel = NSWindow()
-        let editor = NSWindow()
-
-        coordinator.attachPanelWindow(panel)
-        let panelFrame = panel.frame
-        let editorFrame = editor.frame
-
-        coordinator.updatePanelComposerExpansion(44)
-
-        XCTAssertEqual(panel.frame.height, panelFrame.height + 44)
-        XCTAssertEqual(panel.frame.maxY, panelFrame.maxY)
-        XCTAssertEqual(editor.frame, editorFrame)
-    }
-
-    @MainActor
     func testComposerExpansionGrowsPanelDownwardAndPreservesBaseHeight() throws {
         let autosaveName = NSWindow.FrameAutosaveName("AppCoordinatorTests-\(UUID().uuidString)")
         defer { NSWindow.removeFrame(usingName: autosaveName) }
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(library: repository),
-            shortcutSettings: ShortcutSettings(),
+            model: AppModel(library: repository, defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = SnipSnapPanel.make(
@@ -1773,7 +1742,6 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
         XCTAssertEqual(panel.frame.height, baseline.height + 44)
         XCTAssertEqual(panel.frame.maxY, baseline.maxY)
-        XCTAssertEqual(panel.frame.height - 44, baseline.height)
 
         coordinator.savePanelWindowFrame(using: autosaveName)
 
@@ -1789,8 +1757,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     func testComposerExpansionDoesNotRepeatDuringReentrantWindowLayout() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(library: repository),
-            shortcutSettings: ShortcutSettings(),
+            model: AppModel(library: repository, defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = ReentrantLayoutWindow(
@@ -1815,8 +1783,8 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     func testToggleHidesAVisiblePanelOnActiveSpace() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let coordinator = AppCoordinator(
-            model: AppModel(library: repository),
-            shortcutSettings: ShortcutSettings(),
+            model: AppModel(library: repository, defaults: defaults()),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1831,10 +1799,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testToggleFromHiddenClipboardSearchOpensTheActiveListComposer() async throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults())
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1862,11 +1830,11 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testClipboardShortcutOpensClipboardThenHidesIt() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         model.query = "old search"
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1885,10 +1853,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testClipboardShortcutExitsSearchBeforeTogglingClipboard() async throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults())
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1921,7 +1889,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         await model.waitForInitialLoad()
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1939,10 +1907,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testSearchShortcutOpensHiddenPanelAndRequestsSearchFocus() async throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults())
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1963,10 +1931,10 @@ final class AppCoordinatorTests: StoreBackedTestCase {
 
     @MainActor
     func testLaterClipboardShortcutSupersedesQueuedSearchFocus() async throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults())
         let coordinator = AppCoordinator(
             model: model,
-            shortcutSettings: ShortcutSettings(),
+            shortcutSettings: ShortcutSettings(defaults: defaults()),
             isAccessibilityTrusted: { true }
         )
         let panel = NSWindow()
@@ -1988,6 +1956,17 @@ final class AppCoordinatorTests: StoreBackedTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertTrue(model.isShowingClipboard)
         XCTAssertFalse(model.isSearchExpanded)
+    }
+
+    func testHidingRestoresThePreviousAppOnlyWhenAPanelWindowWasKey() {
+        XCTAssertTrue(AppCoordinator.shouldRestorePreviousApplication(panelIsKey: true, dialogIsKey: false))
+        XCTAssertTrue(AppCoordinator.shouldRestorePreviousApplication(panelIsKey: false, dialogIsKey: true))
+        XCTAssertTrue(
+            AppCoordinator.shouldRestorePreviousApplication(
+                panelIsKey: false, dialogIsKey: false, filePanelIsKey: true
+            )
+        )
+        XCTAssertFalse(AppCoordinator.shouldRestorePreviousApplication(panelIsKey: false, dialogIsKey: false))
     }
 
     func testToggleHidesWhenVisibleOnActiveSpaceOrDialogIsPresented() {
@@ -2032,7 +2011,7 @@ final class AppCoordinatorTests: StoreBackedTestCase {
     @MainActor
     func testFailedShortcutInstallReleasesPartialManagerBeforeRollback() throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         let suiteName = "Snip SnapShortcutRollbackTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }

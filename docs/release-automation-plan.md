@@ -112,7 +112,9 @@ submit App Store metadata or send a release for review.
 
 Published notes live in `docs/releases/`. Stable promotion rebuilds
 `docs/CHANGELOG.md` from the stable feed entries and their archived notes, then
-commits it with the feed and notes. Beta delivery leaves the stable changelog
+commits it with the feed and notes. After promotion, the promoted version's beta
+items and notes are pruned as [ADR 0011](adr/0011-version-and-release-policy.md)
+describes. Beta delivery leaves the stable changelog
 alone. The [changelog](CHANGELOG.md) links to each release's full notes; the
 root README links to the changelog.
 
@@ -191,9 +193,7 @@ printing them. Fork pull requests must never receive this environment.
 
 ## Implementation
 
-The repo implements all nine items above. Keep beta delivery off until
-the protected environment has all inputs and one maintainer has checked the
-first internal TestFlight and Mac beta.
+The repo implements all nine items above.
 
 Do not add a release service, bot account, daily schedule, deployment reviewer,
 or automatic issue creation. GitHub Actions logs and reruns are enough for this

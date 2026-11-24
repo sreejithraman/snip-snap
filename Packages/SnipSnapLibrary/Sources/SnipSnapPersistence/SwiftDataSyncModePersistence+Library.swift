@@ -4,11 +4,13 @@ import SnipSnapCore
 extension SwiftDataSyncModePersistence {
   package func activeLibrary() async throws -> any SnipLibrary {
     let initial = try await managedSnapshot(sortedBy: .chronological)
-    return ModeManagedSnipLibrary(persistence: self, fallback: nil, lastKnown: initial)
+    return ModeManagedSnipLibrary(persistence: self, lastKnown: initial)
   }
 
-  nonisolated package func activeLibrary(fallback: any SnipLibrary) -> any SnipLibrary {
-    ModeManagedSnipLibrary(persistence: self, fallback: fallback, lastKnown: nil)
+  /// The active library, read on first use. A failed first read shows an empty
+  /// library and records store-read attention; it never shows another store.
+  nonisolated package func lazyActiveLibrary() -> any SnipLibrary {
+    ModeManagedSnipLibrary(persistence: self, lastKnown: nil)
   }
 
   package func activeCloudMutation(storeID: UUID) throws -> SyncModeActiveMutation {
@@ -49,7 +51,6 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedSnapshot(sortedBy: SnipSortMode) async throws -> SnipLibrarySnapshot {
     try await finishLegacyAccountCopy()
-    await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
     return try await libraryForTransition(storeID: manifest.activeStoreID)
@@ -58,7 +59,6 @@ extension SwiftDataSyncModePersistence {
 
   fileprivate func managedArchive() async throws -> SnipLibraryArchive {
     try await finishLegacyAccountCopy()
-    await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
     return try await libraryForTransition(storeID: manifest.activeStoreID).archive()
@@ -68,7 +68,6 @@ extension SwiftDataSyncModePersistence {
     in scope: SnipRecoveryScope
   ) async throws -> SnipRecoverySnapshot {
     try await finishLegacyAccountCopy()
-    await finishRecoveryQuarantines()
     try await readHook()
     try resolveActivationWrite()
     return try await libraryForTransition(storeID: manifest.activeStoreID)
@@ -99,7 +98,6 @@ extension SwiftDataSyncModePersistence {
     _ operation: @escaping @Sendable (SwiftDataSnipLibrary) async throws -> Value
   ) async throws -> Value {
     try await finishLegacyAccountCopy()
-    await finishRecoveryQuarantines()
     if activeStoreActivity == .cloudMutation {
       diagnostics.record(.writeAdmission(.started, reason: .syncBusy))
     }
@@ -177,16 +175,10 @@ extension SwiftDataSyncModePersistence {
 
 private actor ModeManagedSnipLibrary: SnipLibrary {
   let persistence: SwiftDataSyncModePersistence
-  private let fallback: (any SnipLibrary)?
   private var lastKnown: SnipLibrarySnapshot?
 
-  init(
-    persistence: SwiftDataSyncModePersistence,
-    fallback: (any SnipLibrary)?,
-    lastKnown: SnipLibrarySnapshot?
-  ) {
+  init(persistence: SwiftDataSyncModePersistence, lastKnown: SnipLibrarySnapshot?) {
     self.persistence = persistence
-    self.fallback = fallback
     self.lastKnown = lastKnown
   }
 
@@ -195,7 +187,6 @@ private actor ModeManagedSnipLibrary: SnipLibrary {
       return try await checkedSnapshot(sortedBy: sortMode)
     } catch {
       if let lastKnown { return lastKnown }
-      if let fallback { return await fallback.snapshot(sortedBy: sortMode) }
       return SnipLibrarySnapshot(snips: [], lists: [.inbox])
     }
   }

@@ -238,13 +238,12 @@ fi
 if ! cmp -s "$test_dir/before-test-selection" "$FAKE_SIM_LOG"; then
  print -u2 'A UI group manually opened the app before XCTest'; exit 1
 fi
-/usr/bin/ruby - "$FAKE_BUILD_LOG" <<'RUBY'
+/usr/bin/ruby "$script_dir/ios-test-selection.rb" --ui-group smoke > "$test_dir/smoke-selection"
+/usr/bin/ruby - "$FAKE_BUILD_LOG" "$test_dir/smoke-selection" <<'RUBY'
 line = File.readlines(ARGV.fetch(0)).last
-expected = %w[
- testCreatesAndEditsTextSnip testCopiesTextOnlySnip
- testTappingCompletionCircleTogglesWithoutEditingOrSelecting
- testListSwipeSwitchesListsFromAVisibleRow testSelectionPersistsAcrossLists
-].map { |method| "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/#{method}" }
+expected = File.readlines(ARGV.fetch(1), chomp: true)
+  .map { |method| "-only-testing:SnipSnapiOSUITests/SnipSnapiOSUITests/#{method}" }
+abort 'The smoke group selected no workflows' if expected.empty?
 abort 'A group did not select exactly its workflows in one test action' unless
  line.scan(/-only-testing:\S+/) == expected && line.end_with?(" test\n")
 RUBY

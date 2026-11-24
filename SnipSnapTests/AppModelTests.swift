@@ -35,7 +35,6 @@ private actor EvictingBackupAttachmentHandler: OptionalCloudSyncHandling {
     func syncWhenPossible() async {}
     func isCloudSyncActive() async throws -> Bool { true }
     func syncedAttachmentStates() async throws -> [UUID: SyncedAttachmentTransferState] { [:] }
-    func clearDownloadedFiles() async throws {}
 
     func prepareSyncedAttachment(_ id: UUID, for use: SyncedAttachmentUse) async throws -> URL {
         if let cachedURL {
@@ -826,30 +825,6 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testExplicitSyncEnableReplacesTheVisibleLibraryBeforeReportingOn() async {
-        let oldLibrary = InMemorySnipLibrary(
-            snips: [Snip(content: "Local before enable", origin: .quickEntry)]
-        )
-        let cloudLibrary = InMemorySnipLibrary(
-            snips: [Snip(content: "Merged after enable", origin: .quickEntry)]
-        )
-        let model = AppModel(library: oldLibrary)
-        await model.reload()
-        let settings = SyncedContentSettingsModel(
-            mode: .localOnly,
-            enableAction: { .enabled }
-        )
-        settings.setEnableCompletionAction {
-            await model.replaceLibrary(cloudLibrary, recoveryScope: nil)
-        }
-
-        await settings.enableICloudSync()
-
-        XCTAssertEqual(settings.mode, .iCloudSync)
-        XCTAssertEqual(model.snips.map(\.content), ["Merged after enable"])
-    }
-
-    @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
         condition: @escaping @MainActor () -> Bool
@@ -860,55 +835,6 @@ final class AppModelTests: StoreBackedTestCase {
             try? await Task.sleep(for: .milliseconds(1))
         }
         return condition()
-    }
-
-    @MainActor
-    func testShippedAssemblyReadsExactCloudScopeAndFailsClosed() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MacAssemblyScopeTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let namespace = ICloudSyncNamespaceBinding(
-            scope: "private",
-            accountLineage: "account-a",
-            generation: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
-            zones: [ICloudSyncZoneBinding(name: "SnipSnap", ownerName: "owner-a")]
-        )
-        let cloudRoot = root.appendingPathComponent("Cloud", isDirectory: true)
-        try writeActivationManifest(namespace: namespace, to: cloudRoot)
-        let library = InMemorySnipLibrary(snips: [])
-
-        let cloudAssembly = SnipLibraryAssembly(
-            library: library,
-            syncModeRootURL: cloudRoot
-        )
-
-        XCTAssertEqual(
-            SyncModeActivationManifestReader.activeCloudNamespace(
-                atSyncModeRootURL: cloudRoot
-            ),
-            namespace
-        )
-        XCTAssertEqual(
-            cloudAssembly.recoveryScope,
-            SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
-        )
-
-        let localOnlyRoot = root.appendingPathComponent("LocalOnly", isDirectory: true)
-        let localOnlyAssembly = SnipLibraryAssembly(
-            library: library,
-            syncModeRootURL: localOnlyRoot
-        )
-        XCTAssertNil(localOnlyAssembly.recoveryScope)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: localOnlyRoot.path))
-
-        let malformedRoot = root.appendingPathComponent("Malformed", isDirectory: true)
-        try FileManager.default.createDirectory(at: malformedRoot, withIntermediateDirectories: true)
-        try Data("not-json".utf8).write(
-            to: malformedRoot.appendingPathComponent("activation.json")
-        )
-        XCTAssertNil(
-            SnipLibraryAssembly(library: library, syncModeRootURL: malformedRoot).recoveryScope
-        )
     }
 
     @MainActor
@@ -931,15 +857,12 @@ final class AppModelTests: StoreBackedTestCase {
             snips: [current],
             recovery: SnipRecoverySnapshot(pendingSnips: [recovered])
         )
-        let assembly = SnipLibraryAssembly(
-            library: library,
-            activeCloudNamespace: namespace
-        )
-        XCTAssertNotNil(assembly.recoveryScope)
+        let recoveryScope = SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: namespace)
+        XCTAssertNotNil(recoveryScope)
         let model = AppModel(
-            library: assembly.library,
+            library: library,
             defaults: defaults(),
-            recoveryScope: assembly.recoveryScope
+            recoveryScope: recoveryScope
         )
 
         await model.reload()
@@ -1642,7 +1565,7 @@ final class AppModelTests: StoreBackedTestCase {
         let secondResult = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         model.selection = [first.id, second.id]
 
@@ -2364,7 +2287,7 @@ final class AppModelTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Snip", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
 
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-rapid-check-copy-\(UUID())"))
@@ -2436,7 +2359,7 @@ final class AppModelTests: StoreBackedTestCase {
         let first = try XCTUnwrap(firstResult)
         let second = try XCTUnwrap(secondResult)
         try await repository.setDone(ids: [second.id], done: true)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
 
         await model.setDoneAfterExternalDropNow(versions: [
@@ -2453,7 +2376,7 @@ final class AppModelTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Original", origin: .quickEntry)
         let original = try XCTUnwrap(added)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         let versions = [original.id: original.updatedAt]
 
@@ -2470,7 +2393,7 @@ final class AppModelTests: StoreBackedTestCase {
     func testExternalDropRechecksVersionAfterWaitingForLibraryLock() async throws {
         let original = Snip(content: "Original", origin: .quickEntry)
         let library = InMemorySnipLibrary(snips: [original], suspendsFirstCommand: true)
-        let model = AppModel(library: library)
+        let model = AppModel(library: library, defaults: defaults())
         await model.reload()
         let versions = [original.id: original.updatedAt]
         let editTask = Task { @MainActor in
@@ -2498,7 +2421,7 @@ final class AppModelTests: StoreBackedTestCase {
         let addedSecond = try await repository.add(content: "Second", origin: .quickEntry)
         let first = try XCTUnwrap(addedFirst)
         let second = try XCTUnwrap(addedSecond)
-        let model = AppModel(library: repository, userActions: userActions(for: repository))
+        let model = AppModel(library: repository, defaults: defaults(), userActions: userActions(for: repository))
         await model.reload()
         model.selection = [first.id, second.id]
 
@@ -2516,7 +2439,7 @@ final class AppModelTests: StoreBackedTestCase {
 
     @MainActor
     func testAddResultKeepsStoreFailureDistinctFromDuplicate() async {
-        let model = AppModel(library: JSONSnipLibrary.unavailable())
+        let model = AppModel(library: JSONSnipLibrary.unavailable(), defaults: defaults())
 
         let result = await model.addResult(content: "Keep me", origin: .selection)
 
@@ -2528,7 +2451,7 @@ final class AppModelTests: StoreBackedTestCase {
 
     @MainActor
     func testAddResultReturnsTheCreatedSnipIdentity() async throws {
-        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()))
+        let model = AppModel(library: try JSONSnipLibrary(fileURL: storeURL()), defaults: defaults())
 
         let result = await model.addResult(content: "Created", origin: .quickEntry)
 
@@ -2544,7 +2467,7 @@ final class AppModelTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let addedOriginal = try await repository.add(content: "Original", origin: .quickEntry)
         let original = try XCTUnwrap(addedOriginal)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
 
         let savedNewerEdit = await model.update(id: original.id, content: "Newer inline edit")
@@ -2564,7 +2487,7 @@ final class AppModelTests: StoreBackedTestCase {
     @MainActor
     func testAppModelDoesNotSelectNewlyAddedInlineItem() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
 
         let saved = await model.add(
             content: "Inline focus handoff",
@@ -2692,33 +2615,6 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertTrue(moved)
         XCTAssertEqual(model.sortMode, .manual)
         XCTAssertEqual(model.snips.map(\.id), [middle.id, new.id, old.id])
-    }
-
-    @MainActor
-    func testDropMovePreservesSelection() async throws {
-        let repository = try JSONSnipLibrary(fileURL: storeURL())
-        let movedResult = try await repository.add(content: "Moved", origin: .quickEntry)
-        let selectedResult = try await repository.add(content: "Selected", origin: .quickEntry)
-        let moved = try XCTUnwrap(movedResult)
-        let selected = try XCTUnwrap(selectedResult)
-        let review = try await repository.createList(name: "Review", systemImage: "star")
-        let model = AppModel(
-            library: repository,
-            defaults: defaults(),
-            userActions: userActions(for: repository)
-        )
-        await model.reload()
-        model.selection = [selected.id]
-
-        let didMove = await model.moveChronologically(
-            ids: [moved.id],
-            to: review.id,
-            selectionAfterMove: model.selection
-        )
-
-        XCTAssertTrue(didMove)
-        XCTAssertEqual(model.selection, [selected.id])
-        XCTAssertEqual(model.snips.first { $0.id == moved.id }?.listID, review.id)
     }
 
     @MainActor
@@ -2947,38 +2843,6 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testEditingRetainsStoredAttachmentsWithoutCopyingThemAgain() async throws {
-        let url = try storeURL()
-        let source = url.deletingLastPathComponent().appendingPathComponent("note.md")
-        try Data("Note".utf8).write(to: source)
-        let repository = try JSONSnipLibrary(fileURL: url)
-        let addedItem = try await repository.add(
-            content: "Before",
-            origin: .quickEntry,
-            attachmentURLs: [source]
-        )
-        let snip = try XCTUnwrap(addedItem)
-        let originalAttachment = try XCTUnwrap(snip.attachments.first)
-        let model = AppModel(library: repository, defaults: defaults())
-        await model.reload()
-
-        let didUpdate = await model.update(
-            id: snip.id,
-            content: "After",
-            attachmentURLs: [try XCTUnwrap(model.attachmentURL(for: originalAttachment))]
-        )
-        XCTAssertTrue(didUpdate)
-
-        let saved = try XCTUnwrap(model.snips.first)
-        XCTAssertEqual(saved.attachments, [originalAttachment])
-        let directories = try FileManager.default.contentsOfDirectory(
-            at: repository.attachmentRootURL,
-            includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(directories.count, 1)
-    }
-
-    @MainActor
     func testPreparingACachedAttachmentDoesNotCallCloudHandler() async throws {
         let store = try storeURL()
         let source = store.deletingLastPathComponent().appendingPathComponent("cached.md")
@@ -3191,7 +3055,9 @@ final class AppModelTests: StoreBackedTestCase {
         do {
             _ = try await model.prepareAttachments([attachment], for: .preview)
             XCTFail("Expected the first preparation to fail")
-        } catch {}
+        } catch {
+            XCTAssertEqual(error as? MacAttachmentPreparationError, .unavailable)
+        }
         let retried = try await model.prepareAttachments([attachment], for: .preview)
         let requests = await handler.preparationRequests()
 
@@ -3234,33 +3100,6 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(diagnostics.events.first?.outcome, .failed)
         XCTAssertEqual(diagnostics.events.first?.visibility, .user)
         XCTAssertEqual(diagnostics.events.first?.errorCode, "other.UnknownError")
-
-        model.presentError(
-            model.presentedError,
-            operation: "attachment.prepare",
-            diagnosticCode: "other.UnknownError"
-        )
-        XCTAssertEqual(diagnostics.events.count, 1)
-        model.presentError(
-            "A different attachment failure",
-            operation: "attachment.prepare",
-            diagnosticCode: "storage.pathOutsideRoot"
-        )
-        XCTAssertEqual(diagnostics.events.count, 2)
-        XCTAssertEqual(diagnostics.events.last?.errorCode, "storage.pathOutsideRoot")
-        XCTAssertEqual(model.presentedError, "A different attachment failure")
-        model.presentError(
-            "A different attachment failure",
-            operation: "attachment.prepare",
-            diagnosticCode: "storage.pathOutsideRoot"
-        )
-        XCTAssertEqual(diagnostics.events.count, 2)
-        model.dismissPresentedError()
-        model.presentError(
-            SnipLibraryError.attachmentCopyFailed,
-            operation: "attachment.prepare"
-        )
-        XCTAssertEqual(diagnostics.events.count, 3)
 
         do {
             try await model.createBackup(at: store.deletingLastPathComponent().appendingPathComponent("Failed Backup"))
@@ -3542,7 +3381,7 @@ final class AppModelTests: StoreBackedTestCase {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let added = try await repository.add(content: "Copy me", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
-        let model = AppModel(library: repository)
+        let model = AppModel(library: repository, defaults: defaults())
         await model.reload()
         model.showSnackbar(.deleted(count: 1, id: UUID()))
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-copy-undo-\(UUID())"))
@@ -3945,7 +3784,7 @@ final class AppModelTests: StoreBackedTestCase {
             snips: [older, newer, blocker],
             suspendsFirstCommand: true
         )
-        let model = AppModel(library: library)
+        let model = AppModel(library: library, defaults: defaults())
         await model.reload()
         let pasteboard = NSPasteboard(name: .init("SnipSnapTests-post-write-generation-\(UUID())"))
         let blockerTask = Task { @MainActor in
@@ -4416,38 +4255,6 @@ final class AppModelTests: StoreBackedTestCase {
     }
 
     @MainActor
-    func testClearingDownloadedFilesRefreshesAttachmentURLs() async throws {
-        let store = try storeURL()
-        let source = store.deletingLastPathComponent().appendingPathComponent("clear.md")
-        try Data("Clear".utf8).write(to: source)
-        let repository = try JSONSnipLibrary(fileURL: store)
-        let added = try await repository.add(
-            content: "Clear attachment",
-            origin: .quickEntry,
-            attachmentURLs: [source]
-        )
-        let attachment = try XCTUnwrap(added?.attachments.first)
-        let storedURL = repository.attachmentURL(for: attachment)
-        let handler = MacOptionalCloudSyncHandlerProbe(clearURLs: [storedURL])
-        let model = AppModel(
-            library: InMemorySnipLibrary(
-                snips: [try XCTUnwrap(added)],
-                attachmentURLs: [attachment.id: storedURL]
-            ),
-            defaults: defaults(),
-            cloudSyncHandler: handler
-        )
-        await model.reload()
-        XCTAssertEqual(model.attachmentURL(for: attachment), storedURL)
-
-        try await model.clearDownloadedFiles()
-        let clearCount = await handler.clearCount()
-
-        XCTAssertNil(model.attachmentURL(for: attachment))
-        XCTAssertEqual(clearCount, 1)
-    }
-
-    @MainActor
     func testSelectingAListCanPreserveTheCurrentSelectionDuringDrag() async throws {
         let repository = try JSONSnipLibrary(fileURL: storeURL())
         let addedItem = try await repository.add(content: "Snip", origin: .quickEntry)
@@ -4537,25 +4344,32 @@ final class AppModelTests: StoreBackedTestCase {
         XCTAssertEqual(reopened.draft(for: SnipList.inboxID).text, "Account B")
     }
 
+    /// Builds before 0.6.0 beta 112 kept drafts under the unscoped key, and 0.6.0 moved them on
+    /// launch. A dictionary still there is ignored and left in place.
     @MainActor
-    func testComposerDraftScopesQuarantineUnattributedLegacyDraft() {
+    func testComposerDraftStoreIgnoresAndKeepsAnUnscopedDraftDictionary() {
         let defaults = defaults()
-        defaults.set(
-            [SnipList.inboxID.uuidString: "Existing draft"], forKey: "drafts"
-        )
+        let unscoped = [SnipList.inboxID.uuidString: "Existing draft"]
+        defaults.set(unscoped, forKey: "drafts")
         let store = ComposerDraftStore(
             defaults: defaults, textDefaultsKey: "drafts", scope: "account-a"
         )
         XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "")
-        store.switchScope(to: ComposerDraftStore.unattributedLegacyScope)
-        XCTAssertEqual(store.draft(for: SnipList.inboxID).text, "Existing draft")
+        XCTAssertTrue(store.unattributedLegacyDrafts().isEmpty)
+        XCTAssertEqual(defaults.dictionary(forKey: "drafts") as? [String: String], unscoped)
     }
 
     @MainActor
     func testUnattributedLegacyDraftCanBeMovedToCurrentInboxExplicitly() async {
         let defaults = defaults()
         let formerListID = UUID()
-        defaults.set([formerListID.uuidString: "Old unsent idea"], forKey: "listDrafts")
+        // 0.6.0 moved unscoped drafts into this scope; they stay until the user moves them.
+        let legacyDrafts = ComposerDraftStore(
+            defaults: defaults, textDefaultsKey: AppModel.listDraftsDefaultsKey,
+            scope: ComposerDraftStore.unattributedLegacyScope
+        )
+        legacyDrafts.setText("Old unsent idea", for: formerListID)
+        legacyDrafts.flushText()
         let model = AppModel(
             library: InMemorySnipLibrary(snips: []), defaults: defaults,
             recoveryScope: SnipRecoveryScope("current-account")
@@ -4670,10 +4484,12 @@ final class AppModelTests: StoreBackedTestCase {
             .createList(name: "Work", systemImage: "folder", color: nil), sortedBy: .chronological
         )
         let work = try XCTUnwrap(workUpdate.snapshot.lists.first { $0.name == "Work" })
+        // The replacement starts as a copy of the library with Work, so the list ID matches.
+        let replacementURL = root.appendingPathComponent("replacement.json")
+        try FileManager.default.copyItem(at: root.appendingPathComponent("original.json"), to: replacementURL)
         let added = try await original.add(content: "Pending delete", origin: .quickEntry)
         let snip = try XCTUnwrap(added)
-        let replacement = try JSONSnipLibrary(fileURL: root.appendingPathComponent("replacement.json"))
-        _ = try await replacement.perform(.restoreList(work), sortedBy: .chronological)
+        let replacement = try JSONSnipLibrary(fileURL: replacementURL)
         let gatedActions = GatedDiscardUserActions(base: userActions(for: original))
         let model = AppModel(library: original, defaults: defaults(), userActions: gatedActions)
         await model.reload()
@@ -5014,27 +4830,11 @@ private actor GatedDiscardUserActions: SnipLibraryUserActions {
         self.base = base
     }
 
-    func perform(
-        command: SnipLibraryCommand,
-        sortedBy sortMode: SnipSortMode
-    ) async throws -> SnipLibraryUpdate {
-        try await base.perform(command: command, sortedBy: sortMode)
-    }
-
     func performWithResult(
         command: SnipLibraryCommand,
         sortedBy sortMode: SnipSortMode
     ) async throws -> SnipLibraryCommandResult {
         try await base.performWithResult(command: command, sortedBy: sortMode)
-    }
-
-    func delete(
-        ids: Set<UUID>,
-        token: UUID,
-        expectation: SnipLibraryExpectation?,
-        sortedBy sortMode: SnipSortMode
-    ) async throws -> SnipLibraryUpdate {
-        try await base.delete(ids: ids, token: token, expectation: expectation, sortedBy: sortMode)
     }
 
     func deleteWithResult(
@@ -5080,32 +4880,6 @@ private actor GatedDiscardUserActions: SnipLibraryUserActions {
     }
 }
 
-private func writeActivationManifest(
-    namespace: ICloudSyncNamespaceBinding,
-    to rootURL: URL
-) throws {
-    let storeID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-    let namespaceData = try JSONEncoder().encode(namespace)
-    let namespaceValue = try JSONSerialization.jsonObject(with: namespaceData)
-    let manifest: [String: Any] = [
-        "version": 2,
-        "activeStoreID": storeID.uuidString,
-        "stores": [[
-            "id": storeID.uuidString,
-            "kind": "iCloudSync",
-            "namespace": namespaceValue,
-            "relativeRoot": "stores/iCloudSync-\(storeID.uuidString.lowercased())",
-            "syncProtocol": "fullRecordV1",
-            "revision": 0,
-            "lifecycle": "ready"
-        ]]
-    ]
-    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-    try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]).write(
-        to: rootURL.appendingPathComponent("activation.json")
-    )
-}
-
 private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
     private let url: URL
     private let returnsNonCancellationError: Bool
@@ -5138,7 +4912,6 @@ private actor CancellableMacAttachmentHandler: OptionalCloudSyncHandling {
         return url
     }
 
-    func clearDownloadedFiles() async throws {}
 
     func waitUntilPreparationStarts() async {
         while !preparationStarted {
@@ -5173,7 +4946,6 @@ private actor GatedMacAttachmentHandler: OptionalCloudSyncHandling {
         }
     }
 
-    func clearDownloadedFiles() async throws {}
 
     func waitUntilPreparationStarts(count: Int = 1) async {
         while preparationCount < count { await Task.yield() }

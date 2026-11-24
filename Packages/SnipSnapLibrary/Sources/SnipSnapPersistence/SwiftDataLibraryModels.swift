@@ -357,10 +357,6 @@ package enum LibraryMetadataBackfillPoint: CaseIterable {
   case beforeSave, afterSave
 }
 
-package enum CloudFullRecordBackfillPoint: CaseIterable {
-  case beforeSave, afterSave
-}
-
 @Model
 final class StoredLibraryMetadataRecord {
   @Attribute(.unique) var id: String

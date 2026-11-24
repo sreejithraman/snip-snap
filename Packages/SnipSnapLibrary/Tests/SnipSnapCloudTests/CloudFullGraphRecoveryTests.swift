@@ -311,7 +311,7 @@ extension CloudFullSyncPersistenceTests {
     try await assertCleanRetryPreservesDeletion(deleteBeforeDeferral: false)
   }
 
-  func testCleanRetryPreservesDeletionConflictMadeBeforeDeferral() async throws {
+  func testCleanRetryRestoresARemoteMoveThatArrivedAfterAnUnsentDeletion() async throws {
     try await assertCleanRetryPreservesDeletion(deleteBeforeDeferral: true)
   }
 
@@ -385,14 +385,22 @@ extension CloudFullSyncPersistenceTests {
     try await persistence.applyStaged(complete.id)
 
     let local = await library.snapshot(sortedBy: .manual)
-    XCTAssertFalse(local.snips.contains { $0.id == snip.id })
     if deleteBeforeDeferral {
+      // The remote move reached iCloud before the unsent deletion, so it wins (ADR 0014).
+      // Its list is proven absent, so the restored snip lands in Inbox.
+      let restored = try XCTUnwrap(local.snips.first { $0.id == snip.id })
+      XCTAssertEqual(restored.listID, SnipList.inbox.id)
       let stored = try await library.cloudFullStorageSnapshot(namespaceKey: namespace.namespaceKey)
-      XCTAssertTrue(stored.deferredEntities.first { $0.reference.domainID == snip.id }?
-        .wasMaterializedBeforeDeferral == true)
-      XCTAssertTrue(stored.conflicts.contains { $0.reference.domainID == snip.id })
+      XCTAssertEqual(stored.conflicts.map(\.reference), [])
+      XCTAssertFalse(stored.deferredEntities.contains { $0.reference.domainID == snip.id })
+      let pending = try await persistence.pendingChanges()
+      XCTAssertFalse(pending.operations.contains { operation in
+        if case .delete = operation { return true }
+        return false
+      })
       return
     }
+    XCTAssertFalse(local.snips.contains { $0.id == snip.id })
     let pending = try await persistence.pendingChanges()
     XCTAssertTrue(pending.operations.contains { operation in
       if case .delete(let id, _) = operation { return id == movedSnapshot.id }

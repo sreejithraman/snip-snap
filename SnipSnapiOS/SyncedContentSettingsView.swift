@@ -47,7 +47,7 @@ struct SyncedContentSettingsView: View {
                         syncMessage
                             .padding(.leading, settingsIconWidth + 12)
                     }
-                    if model.canRetryFailedSync || model.canFinishDeleting, let retryAction {
+                    if model.canRetryFailedSync, let retryAction {
                         Button {
                             guard !isRetryingSync, !isRetryingClipboardSync else { return }
                             isRetryingSync = true
@@ -216,8 +216,7 @@ struct SyncedContentSettingsView: View {
         .sheet(item: $settingsErrorDetails) { failure in
             AppErrorDetailsView(failure: failure, onClose: { settingsErrorDetails = nil })
         }
-        .appToast($settingsToast, alignment: .bottom, edge: .bottom,
-                  isHidden: library != nil, reservesSpace: true)
+        .appToast($settingsToast, isHidden: library != nil, reservesSpace: true)
         .onChange(of: diagnostics.notice) { _, notice in
             switch notice {
             case .saved:
@@ -244,7 +243,6 @@ struct SyncedContentSettingsView: View {
         } message: {
             Text("Sync text, images, and pinned files across your devices. Clipboard history already on this device will upload to iCloud. Files that have synced keep syncing after you unpin them.")
         }
-        .onAppear(perform: showUITestIssueIfNeeded)
         .alert("Turn off sync?", isPresented: $confirmsUsingDeviceCopy) {
             Button("Cancel", role: .cancel) {}
             Button("Turn off sync") {
@@ -326,8 +324,8 @@ struct SyncedContentSettingsView: View {
 
     private var showsSyncMessage: Bool {
         switch model.state {
-        case .ready, .deleted: false
-        case .enabling, .syncing, .disabling, .deleting, .removalPending, .failed: true
+        case .ready: false
+        case .enabling, .syncing, .disabling, .failed: true
         }
     }
 
@@ -519,14 +517,6 @@ struct SyncedContentSettingsView: View {
         )
     }
 
-    private func showUITestIssueIfNeeded() {
-#if DEBUG
-        if ProcessInfo.processInfo.environment["SNIP_SNAP_UI_TEST_SYNC_ISSUE"] == "app-data" {
-            model.recordSyncFailure(.appDataIssue)
-        }
-#endif
-    }
-
     private var canChangeSync: Bool {
         if model.canCancelEnable { return true }
         return model.mode == .iCloudSync ? model.canDisable : model.canEnable
@@ -534,8 +524,8 @@ struct SyncedContentSettingsView: View {
 
     private var isSyncBusy: Bool {
         switch model.state {
-        case .enabling, .syncing, .disabling, .deleting: true
-        case .ready, .removalPending, .deleted, .failed: false
+        case .enabling, .syncing, .disabling: true
+        case .ready, .failed: false
         }
     }
 }

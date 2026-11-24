@@ -8,7 +8,7 @@ final class SnipCLIDataBackupTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let source = try JSONSnipLibrary(fileURL: root.appendingPathComponent("source/snips.json"))
+    let source = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("source/snips.store"))
     let file = root.appendingPathComponent("evidence.txt")
     let bytes = Data("Exact backup attachment".utf8)
     try bytes.write(to: file)
@@ -16,7 +16,7 @@ final class SnipCLIDataBackupTests: XCTestCase {
       listID: SnipList.inboxID, attachmentURLs: [file], requestID: UUID(), now: Date()), sortedBy: .chronological)
     let backup = root.appendingPathComponent("Backup")
     try await JSONSnipArchiveTransfer.write(source.archive(), to: backup)
-    let target = try JSONSnipLibrary(fileURL: root.appendingPathComponent("target/snips.json"))
+    let target = try SwiftDataSnipLibrary(storeURL: root.appendingPathComponent("target/snips.store"))
     let actions = DirectSnipLibraryUserActions(library: target, previewBackupImport: { url, library in
       try await SnipLibraryImport.preview(backupURL: url, target: library)
     })

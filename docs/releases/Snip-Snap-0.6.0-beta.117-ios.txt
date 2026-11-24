@@ -1,3 +1,0 @@
-Snip Snap 0.6.0 Beta 117 — iOS
-
-- No iOS changes in this build.

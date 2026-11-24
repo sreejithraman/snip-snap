@@ -3,27 +3,6 @@ import SnipSnapCore
 
 public enum SnipLibraryImport {
   public static func preview(
-    source: any SnipLibrary,
-    target: any SnipLibrary
-  ) async throws -> SnipImportPreview {
-    let transitionID = UUID()
-    let sourceSnapshot = try await source.previewTransferSnapshot(revision: 0)
-    let staged = try AttachmentFileIO.stagePreviewSnapshot(
-      sourceSnapshot,
-      transitionID: transitionID
-    )
-    do {
-      return try await target.previewImport(
-        staged.snapshot,
-        transitionID: transitionID
-      ).withOptionalStagingLease(staged.lease)
-    } catch {
-      try? staged.lease?.release()
-      throw error
-    }
-  }
-
-  public static func preview(
     backupURL: URL,
     target: any SnipLibrary
   ) async throws -> SnipImportPreview {
@@ -40,7 +19,6 @@ public enum SnipLibraryImport {
         attachmentData: [:],
         attachmentFileURLs: staged.archive.attachmentURLs,
         attachmentFileDigests: staged.attachmentDigests,
-        legacyManualPositions: [:],
         additionalSeenRequestIDs: staged.archive.seenRequestIDs
       )
       return try await target.previewImport(source, transitionID: transitionID)
@@ -98,11 +76,7 @@ extension SnipLibraryImport {
       },
       transitionID: transitionID,
       source: source,
-      targetDigest: plan.targetDigest,
-      devicePatch: .between(
-        SnipLibrarySnapshot(snips: target.snips, lists: target.lists),
-        SnipLibrarySnapshot(snips: plan.snips, lists: plan.lists)
-      )
+      targetDigest: plan.targetDigest
     )
   }
 
@@ -125,8 +99,7 @@ extension SnipLibraryImport {
     return SnipImportResult(
       snapshot: try await target.checkedSnapshot(sortedBy: .chronological),
       addedSnipCount: preview.addedSnipCount,
-      recoveredSnipCount: transfer.recoveredSourceSnipIDs.count,
-      devicePatch: preview.devicePatch
+      recoveredSnipCount: transfer.recoveredSourceSnipIDs.count
     )
   }
 }

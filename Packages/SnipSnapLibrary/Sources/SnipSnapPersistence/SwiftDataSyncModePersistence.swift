@@ -18,11 +18,8 @@ public enum SyncModeActivationManifestReader {
   }
 
   /// Whether sync mode has an activation manifest under its root. Presence, not
-  /// validity: a broken file still means this device activated sync mode.
-  /// Assembly tries to open that store and falls back to the legacy library
-  /// when the open fails. The app publisher then writes whichever library
-  /// assembly returned, so a broken manifest is not treated as local-only
-  /// before the open.
+  /// validity: a broken file still means this device's library lives in sync mode,
+  /// so assembly opens an unavailable library rather than the older root store.
   package static func hasActivationManifest(atSyncModeRootURL rootURL: URL) -> Bool {
     let manifestURL = rootURL
       .appendingPathComponent("activation.json", isDirectory: false)
@@ -148,7 +145,6 @@ package enum SyncModeCrashPoint: Equatable, Sendable {
 
 package enum SyncModeWritePoint: Equatable, Sendable {
   case beforeLibraryWrite
-  case beforeStoreRetirement
 }
 
 /// Owns mode-store roots and the one atomic file that selects the active root.
@@ -156,7 +152,6 @@ package actor SwiftDataSyncModePersistence {
   package typealias ManifestWriter = @Sendable (Data, URL) throws -> Void
   package typealias WriteHook = @Sendable (SyncModeWritePoint) async throws -> Void
   package typealias ReadHook = @Sendable () async throws -> Void
-  package typealias RecoveryQuarantineHook = @Sendable () throws -> Void
 
   struct Manifest: Codable, Equatable {
     let version: Int
@@ -183,9 +178,7 @@ package actor SwiftDataSyncModePersistence {
   let manifestWriter: ManifestWriter
   let writeHook: WriteHook
   let readHook: ReadHook
-  let recoveryQuarantineHook: RecoveryQuarantineHook
   let afterMutationBeforeSave: @Sendable () throws -> Void
-  let defaultSyncProtocol: SyncModeSyncProtocol
   let diagnostics: AppDiagnosticRecorder
   var manifest: Manifest
   /// Until first setup, the original SwiftData file is still the local store.
@@ -200,7 +193,6 @@ package actor SwiftDataSyncModePersistence {
   // Advance before crossing to SwiftData. A mode change checks the revision again
   // when it swaps, so work on a stale source snapshot can never replace an edit.
   var activeStoreRevision: UInt64 = 0
-  var completedRecoveryQuarantineStoreIDs: Set<UUID> = []
 
   /// The transition a rollback left when its commit failed. Try Again finishes only this one.
   private var strandedRollback: SyncModeTransition?
@@ -213,13 +205,11 @@ package actor SwiftDataSyncModePersistence {
   package init(
     rootURL: URL,
     attachmentCacheRootURL: URL? = nil,
-    defaultSyncProtocol: SyncModeSyncProtocol = .fullRecordV1,
     initialLocalLibrary: SwiftDataSnipLibrary? = nil,
     crashHook: @escaping @Sendable (SyncModeCrashPoint) throws -> Void = { _ in },
     manifestWriter: @escaping ManifestWriter = { try DurableFile.write($0, to: $1) },
     writeHook: @escaping WriteHook = { _ in },
     readHook: @escaping ReadHook = {},
-    recoveryQuarantineHook: @escaping RecoveryQuarantineHook = {},
     afterMutationBeforeSave: @escaping @Sendable () throws -> Void = {},
     diagnostics: AppDiagnosticRecorder = .live
   ) throws {
@@ -230,9 +220,7 @@ package actor SwiftDataSyncModePersistence {
     self.manifestWriter = manifestWriter
     self.writeHook = writeHook
     self.readHook = readHook
-    self.recoveryQuarantineHook = recoveryQuarantineHook
     self.afterMutationBeforeSave = afterMutationBeforeSave
-    self.defaultSyncProtocol = defaultSyncProtocol
     self.diagnostics = diagnostics
     if FileManager.default.fileExists(atPath: manifestURL.path) {
       do {
@@ -252,7 +240,7 @@ package actor SwiftDataSyncModePersistence {
       var store = Self.newStore(
         kind: .localOnly,
         namespace: nil,
-        syncProtocol: defaultSyncProtocol
+        syncProtocol: .fullRecordV1
       )
       if let initialLocalLibrary {
         store.lifecycle = .ready
@@ -330,7 +318,6 @@ package actor SwiftDataSyncModePersistence {
   package func snapshot() async throws -> SyncModeStorageSnapshot {
     try resolveActivationWrite()
     try await finishLegacyAccountCopy()
-    await finishRecoveryQuarantines()
     guard let active = manifest.stores.first(where: { $0.id == manifest.activeStoreID }) else {
       throw SyncModePersistenceError.missingStore
     }
@@ -354,8 +341,8 @@ package actor SwiftDataSyncModePersistence {
     // A mode change's inactive candidate before the swap, and its retired source after it, must
     // have their files, so an empty recreate never stands in for either. The active store keeps
     // open-or-create so the app stays usable, though that can't protect a swapped-in candidate
-    // whose files vanish. Recovery, isolated, and other inactive stores are exempt: recreating
-    // them can't replace user data, and refusing them would strand the user.
+    // whose files vanish. Other inactive stores, such as an earlier build's recovery copy, are
+    // exempt: recreating them can't replace user data, and refusing them would strand the user.
     let isModeChangeStore = manifest.transition.map {
       [$0.sourceStoreID, $0.candidateStoreID].contains(store.id)
     } ?? false
@@ -395,7 +382,7 @@ package actor SwiftDataSyncModePersistence {
       throw SyncModePersistenceError.namespaceMismatch
     }
     let syncProtocol = targetKind == .iCloudSync
-      ? defaultSyncProtocol
+      ? .fullRecordV1
       : try currentTransitionProtocolForOptOut()
     let candidate = Self.newStore(
       kind: targetKind,
@@ -511,12 +498,12 @@ package actor SwiftDataSyncModePersistence {
     }
   }
 
-  /// Activates a fresh empty store while keeping the prior store as a recovery copy.
-  package func activateEmptyCollection(
-    namespace: ICloudSyncNamespaceBinding?
-  ) async throws {
+  #if DEBUG
+  /// Test and UI-fixture support only: makes a new empty store active for `namespace`, or a
+  /// local-only store when it is nil, and marks the prior store for deletion. No app path
+  /// replaces a library this way.
+  package func seedEmptyActiveStore(namespace: ICloudSyncNamespaceBinding?) async throws {
     guard initialLocalLibrary == nil, manifest.transition == nil,
-      !activeStoreBusy,
       let current = store(id: manifest.activeStoreID)
     else { throw SyncModePersistenceError.transitionInProgress }
     if current.namespace == namespace,
@@ -526,80 +513,25 @@ package actor SwiftDataSyncModePersistence {
     }
     try beginStoreReplacement()
     defer { finishStoreReplacement() }
-    let kind: SyncModeStoreKind = namespace == nil ? .localOnly : .iCloudSync
     var candidate = Self.newStore(
-      kind: kind,
+      kind: namespace == nil ? .localOnly : .iCloudSync,
       namespace: namespace,
       syncProtocol: current.syncProtocol
     )
-    var declared = manifest
-    declared.stores.append(candidate)
-    declared.attentionReason = nil
-    try commit(declared)
-    do {
-      let candidateRoot = storeURL(candidate)
-      _ = try SwiftDataSnipLibrary(
-        storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
-        attachmentCacheRootURL: Self.cacheRootURL(
-          base: attachmentCacheRootURL,
-          storeID: candidate.id
-        )
-      )
-      try DurableFile.syncDirectory(candidateRoot)
-      try DurableFile.syncDirectory(candidateRoot.deletingLastPathComponent())
-      let currentLibrary = try libraryForTransition(storeID: current.id)
-      try await writeHook(.beforeStoreRetirement)
-      try await currentLibrary.markReadOnlyRecovery()
-      candidate.lifecycle = .ready
-      var activated = manifest
-      activated.stores[try storeIndex(id: candidate.id)] = candidate
-      activated.stores[try storeIndex(id: current.id)].lifecycle = .recovery
-      activated.activeStoreID = candidate.id
-      try commit(activated)
-      do {
-        try await quarantineRecoveryStore(current)
-      } catch {
-        try? recordAttention(.storageFailure)
-      }
-    } catch {
-      if let currentLibrary = try? libraryForTransition(storeID: current.id) {
-        try? await currentLibrary.removeReadOnlyRecoveryMarker()
-      }
-      var restored = manifest
-      restored.stores.removeAll { $0.id == candidate.id }
-      try? removeStoreFiles(candidate)
-      try? commit(restored)
-      throw error
-    }
+    let candidateRoot = storeURL(candidate)
+    _ = try SwiftDataSnipLibrary(
+      storeURL: candidateRoot.appendingPathComponent("snips.store", isDirectory: false),
+      attachmentCacheRootURL: Self.cacheRootURL(base: attachmentCacheRootURL, storeID: candidate.id)
+    )
+    candidate.lifecycle = .ready
+    var activated = manifest
+    activated.stores.append(candidate)
+    activated.stores[try storeIndex(id: current.id)].lifecycle = .deleting
+    activated.activeStoreID = candidate.id
+    activated.attentionReason = nil
+    try commit(activated)
   }
-
-  func finishRecoveryQuarantines() async {
-    for store in manifest.stores where store.lifecycle == .recovery {
-      do {
-        try await quarantineRecoveryStore(store)
-      } catch {
-        try? recordAttention(.storageFailure)
-      }
-    }
-  }
-
-  private func quarantineRecoveryStore(_ store: SyncModeStore) async throws {
-    guard !completedRecoveryQuarantineStoreIDs.contains(store.id) else { return }
-    let library = try libraryForTransition(storeID: store.id)
-    if await library.isRecoveryQuarantineComplete() {
-      completedRecoveryQuarantineStoreIDs.insert(store.id)
-      return
-    }
-    try recoveryQuarantineHook()
-    try await library.markReadOnlyRecovery()
-    if let namespace = store.namespace {
-      try await library.clearCloudSyncState(
-        namespaceKey: namespace.namespaceKey
-      )
-    }
-    try await library.markRecoveryQuarantineComplete()
-    completedRecoveryQuarantineStoreIDs.insert(store.id)
-  }
+  #endif
 
   package func retryCandidateRollback() throws {
     guard let transition = manifest.transition, transition == strandedRollback else { return }

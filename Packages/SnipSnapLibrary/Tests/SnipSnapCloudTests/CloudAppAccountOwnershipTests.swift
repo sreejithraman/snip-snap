@@ -43,7 +43,7 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
             )
         )
 
-        try await persistence.activateEmptyCollection(namespace: binding)
+        try await persistence.seedEmptyActiveStore(namespace: binding)
         let control = FakeCloudControlTransport(server: FakeCloudServer())
         await control.seedControl(generated)
         let preparedURL = root.appendingPathComponent("prepared.bin")
@@ -68,13 +68,10 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
             let result = try await handler.prepareSyncedAttachment(attachmentID, for: use)
             XCTAssertEqual(result, preparedURL)
         }
-        try await handler.clearDownloadedFiles()
 
         let uses = await probe.uses()
-        let clearCount = await probe.clearCount()
         let configuration = await probe.configuration()
         XCTAssertEqual(uses, [.preview, .open, .copy, .export])
-        XCTAssertEqual(clearCount, 1)
         XCTAssertEqual(configuration?.namespace, namespace)
         XCTAssertEqual(configuration?.payloadZone, generated.payloadZone)
     }
@@ -117,8 +114,8 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
     let fetches = await fixture.control.fetchCount()
     XCTAssertEqual(fetches, 0)
 
-    try await fixture.persistence.activateEmptyCollection(namespace: nil)
-    try await fixture.persistence.activateEmptyCollection(namespace: binding)
+    try await fixture.persistence.seedEmptyActiveStore(namespace: nil)
+    try await fixture.persistence.seedEmptyActiveStore(namespace: binding)
     let replacementStore = try await fixture.persistence.snapshot().activeStore
     XCTAssertNotEqual(replacementStore.id, storage.activeStore.id)
     let replaced = try await fixture.handler.syncedAttachmentStates()
@@ -141,8 +138,7 @@ final class CloudAppAccountOwnershipTests: XCTestCase {
         record: { _, _ in try await probe.record() },
         modifyRecords: { _, _, _, _, _ in throw CloudTransportError.sendFailed },
         modifyRecordZones: { _, _, _ in throw CloudTransportError.sendFailed },
-        saveZone: { _, _ in throw CloudTransportError.sendFailed },
-        deleteZone: { _, _ in throw CloudTransportError.sendFailed }),
+        saveZone: { _, _ in throw CloudTransportError.sendFailed }),
       retry: CloudKitOperationRetry(diagnostics: AppDiagnosticRecorder(record: { _ in })))
     let fixture = try await Fixture.make(controlTransport: control)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -304,7 +300,6 @@ private struct Fixture: Sendable {
     let session = SnipSnapCloudSyncSession(synchronize: { try await lifecycle.synchronize() },
       enable: { try await lifecycle.enableICloudSync() },
       disable: { try await lifecycle.disableICloudSync($0) },
-      delete: { try await lifecycle.deleteSyncedContent() },
       activeLibrary: { try await lifecycle.activeLibrary() }, operationGate: gate)
     let handler = lifecycle.makeCloudSyncHandler(operationGate: gate,
       syncWhenPossible: { _ = try? await session.synchronize() },
@@ -453,12 +448,12 @@ extension CloudAppAccountOwnershipTests {
     let scope = try XCTUnwrap(SnipRecoveryScopeFactory.scope(forActiveCloudNamespace: binding))
     let before = try await fixture.handler.downloadedAttachmentCache(in: scope)
 
-    try await fixture.persistence.activateEmptyCollection(namespace: nil)
+    try await fixture.persistence.seedEmptyActiveStore(namespace: nil)
     do {
       _ = try await fixture.handler.clearDownloadedFiles(ifRevision: before.revision, in: scope)
       XCTFail("A local-only store cannot admit an iCloud cache clear")
     } catch SnipLibraryError.transferUnsupported {}
-    try await fixture.persistence.activateEmptyCollection(namespace: binding)
+    try await fixture.persistence.seedEmptyActiveStore(namespace: binding)
     let replacement = try await fixture.persistence.snapshot().activeStore
     let after = try await fixture.handler.downloadedAttachmentCache(in: scope)
 
@@ -545,6 +540,5 @@ private actor AttachmentTransferProbe: CloudAttachmentTransferring {
         recordedConfiguration = Configuration(namespace: namespace, payloadZone: payloadZone)
     }
     func uses() -> [SyncedAttachmentUse] { recordedUses }
-    func clearCount() -> Int { recordedClearCount }
     func configuration() -> Configuration? { recordedConfiguration }
 }

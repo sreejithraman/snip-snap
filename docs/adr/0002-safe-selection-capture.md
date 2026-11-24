@@ -6,7 +6,7 @@ Apps expose selections in different ways. Copy can provide text and images, whil
 
 ## Decision
 
-Take a bounded clipboard snapshot, then queue a short Command-C cycle for the same front app so Snip Snap can collect text and images. Accept only the expected clipboard change. If Copy has no text, read exposed text through Accessibility, including a bounded parent search. Restore all readable clipboard items and types unless a newer writer has changed the clipboard.
+Read exposed text through Accessibility first, including a bounded parent search, and hold it as the fallback. Take a bounded clipboard snapshot, then queue a short Command-C cycle for the same front app so Snip Snap can collect text and images. Accept only the expected clipboard change. Use the Accessibility text when Copy returns no text or the Copy cycle fails. Restore the snapshot unless a newer writer has changed the clipboard. If any clipboard type cannot be read into the snapshot, skip Copy, because the clipboard could not be restored in full, and use the Accessibility text alone.
 
 ## Consequences
 

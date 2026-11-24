@@ -33,7 +33,7 @@ final class CloudAutomaticSyncResetTests: XCTestCase {
       accountLineage: namespace.accountLineage, generation: namespace.generation,
       zones: [ICloudSyncZoneBinding(name: zone.name, ownerName: zone.ownerName)])
     let persistence = try SwiftDataSyncModePersistence(rootURL: root)
-    try await persistence.activateEmptyCollection(namespace: binding)
+    try await persistence.seedEmptyActiveStore(namespace: binding)
     let original = try await persistence.snapshot().activeStore
     let library = try await persistence.libraryForTransition(storeID: original.id)
     _ = try await library.perform(Self.resetTestEdit("before reset"), sortedBy: .manual)
@@ -161,7 +161,7 @@ final class CloudAutomaticSyncResetTests: XCTestCase {
       XCTFail("A reset source must reject content edits")
     } catch SnipLibraryError.modeTransitionInProgress {}
     let source = SnipLibraryTransferSnapshot(revision: 0,
-      snips: [], lists: [.inbox], attachmentData: [:], legacyManualPositions: [:])
+      snips: [], lists: [.inbox], attachmentData: [:])
     let preview = try await library.previewImport(source, transitionID: UUID())
     do {
       _ = try await library.applyImport(preview)

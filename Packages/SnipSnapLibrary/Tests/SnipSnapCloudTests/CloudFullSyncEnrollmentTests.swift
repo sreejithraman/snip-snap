@@ -107,7 +107,7 @@ extension CloudFullSyncPersistenceTests {
     try await blocked.expect(.blocked, pending: false, revision: 7, "reopen while blocked")
     let evidence = try await blocked.persistence.enrollmentEvidence()
     let blockedPending = try await blocked.persistence.pendingChanges()
-    XCTAssertTrue(evidence.blocksSending)
+    XCTAssertEqual(evidence.phase, .blocked)
     XCTAssertEqual(blockedPending, CloudOutboundBatch(operations: []))
   }
 
@@ -154,7 +154,7 @@ extension CloudFullSyncPersistenceTests {
     ] {
       let evidence = try await blocked.persistence.enrollmentEvidence()
       let pending = try await blocked.persistence.pendingChanges()
-      XCTAssertTrue(evidence.blocksSending, label)
+      XCTAssertEqual(evidence.phase, .blocked, label)
       XCTAssertEqual(pending, CloudOutboundBatch(operations: []), label)
     }
   }

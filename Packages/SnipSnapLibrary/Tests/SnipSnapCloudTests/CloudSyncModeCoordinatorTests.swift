@@ -198,9 +198,43 @@ final class FailNextManifestWriter: @unchecked Sendable {
 
 extension ICloudSyncModeCoordinator {
     /// Test setup for cases that need a settled server record as their merge base.
-    func enableAndPublish() async throws -> ICloudSyncModeStatus {
+    func enableAndPublish(
+        persistence: SwiftDataSyncModePersistence,
+        namespace: CloudSyncNamespace,
+        textZone: CloudZoneID,
+        payloadZone: CloudZoneID? = nil,
+        transport: any CloudRecordTransport
+    ) async throws -> ICloudSyncModeStatus {
         let status = try await enableOrRetry()
-        if status.state == .on { _ = try await syncActive() }
+        if status.state == .on {
+            try await publishActiveStore(
+                persistence: persistence, namespace: namespace,
+                textZone: textZone, payloadZone: payloadZone, transport: transport
+            )
+        }
         return status
     }
+}
+
+/// Runs the app's record sync for the active iCloud store, as `CloudFullRecordCollectionSyncDriver`
+/// does: under the store's cloud mutation lease, fetch, then send until settled. A fetch issue
+/// that blocks sending, or any send issue, throws as it does from the driver.
+func publishActiveStore(
+    persistence: SwiftDataSyncModePersistence,
+    namespace: CloudSyncNamespace,
+    textZone: CloudZoneID,
+    payloadZone: CloudZoneID? = nil,
+    transport: any CloudRecordTransport
+) async throws {
+    let storeID = try await persistence.snapshot().activeStore.id
+    let store = CloudFullSyncPersistence(
+        library: try await persistence.libraryForTransition(storeID: storeID),
+        namespace: namespace, dataZone: textZone, payloadZone: payloadZone,
+        activeMutation: try await persistence.activeCloudMutation(storeID: storeID)
+    )
+    let coordinator = CloudFullSyncCoordinator(store: store, transport: transport)
+    let fetched = try await coordinator.fetchRemote()
+    if let issue = fetched.issue, fetched.blocksOutbound { throw CloudSyncIssueError(issue) }
+    let sent = try await coordinator.sendPendingUntilSettled()
+    if let issue = sent.issue { throw CloudSyncIssueError(issue) }
 }

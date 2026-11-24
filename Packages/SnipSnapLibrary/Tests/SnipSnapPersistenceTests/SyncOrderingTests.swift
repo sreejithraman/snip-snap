@@ -273,16 +273,23 @@ final class SyncOrderingTests: XCTestCase {
     XCTAssertEqual(Set(rebalanced.map { $0.data.count }), [10])
   }
 
-  func testLegacyListJSONDecodesDesiredNameAndOrderKey() throws {
+  /// Only a v0.4.x store file wrote lists with `name` and `position` alone.
+  func testListJSONWithOnlyTheOldKeysIsRefused() throws {
     let data = Data(#"{"id":"00000000-0000-0000-0000-000000000040","name":"  Legacy List  ","systemImage":"folder","position":7}"#.utf8)
 
-    let list = try JSONDecoder().decode(SnipList.self, from: data)
+    XCTAssertThrowsError(try JSONDecoder().decode(SnipList.self, from: data))
+  }
 
-    XCTAssertEqual(list.desiredName, "Legacy List")
-    XCTAssertEqual(list.sortKey, SnipOrderKey.legacy(7))
-
-    let state = SnipLibraryState(snips: [], lists: [list], seenRequestIDs: [])
-    XCTAssertEqual(state.allLists().first?.resolvedName, "Legacy List")
+  func testEncodedListAndSnipKeepTheOldKeysForReceiptReaders() throws {
+    let list = SnipList(id: UUID(), name: "Work", systemImage: "folder", position: 3)
+    let snip = Snip(content: "kept", origin: .quickEntry, listID: list.id, manualPosition: 5)
+    let listJSON = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(list)) as? [String: Any])
+    let snipJSON = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(snip)) as? [String: Any])
+    XCTAssertEqual(listJSON["name"] as? String, "Work")
+    XCTAssertEqual(listJSON["position"] as? Int, 3)
+    XCTAssertEqual(snipJSON["manualPosition"] as? Int, 5)
   }
 
   func testInboundOrderKeyRejectsEmptyOverlongAndNoncanonicalData() {

@@ -1153,12 +1153,7 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    func saveClipboardEntry(
-        _ entry: ClipboardEntry,
-        listID: UUID? = nil,
-        before destinationID: UUID? = nil,
-        placesManually: Bool = false
-    ) async -> Bool {
+    func saveClipboardEntry(_ entry: ClipboardEntry) async -> Bool {
         let entry = clipboardHistory.resolvedEntry(entry)
         let materialization: ClipboardSnipMaterialization
         do {
@@ -1173,18 +1168,16 @@ final class AppModel: ObservableObject {
             return false
         }
         defer { materialization.removeTemporaryFiles() }
-        let targetListID = listID ?? activeListID
         let result = await addResult(
             content: materialization.text,
             origin: .clipboard,
             source: materialization.source,
             attachmentURLs: materialization.fileURLs,
-            listID: targetListID
+            listID: activeListID
         )
         switch result {
-        case .success(.added(let id)):
-            guard placesManually else { return true }
-            return await move(ids: [id], to: targetListID, before: destinationID)
+        case .success(.added):
+            return true
         case .success(.duplicate):
             return false
         case .failure(let error):
@@ -1351,50 +1344,32 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func moveToList(
-        ids: [UUID],
-        listID: UUID,
-        selectionAfterMove: Set<UUID>? = nil
-    ) async -> Bool {
+    func moveToList(ids: [UUID], listID: UUID) async -> Bool {
         let command = moveToListCommand(ids: ids, to: listID, sortedBy: sortMode, in: snips)
-        return await moveSnips(
-            command, ids: ids, selectionAfterMove: selectionAfterMove,
-            afterSortMode: sortMode == .manual ? .manual : nil
-        )
+        return await moveSnips(command, ids: ids, afterSortMode: sortMode == .manual ? .manual : nil)
     }
 
     @discardableResult
-    func move(
-        ids: [UUID],
-        to listID: UUID,
-        before destinationID: UUID?,
-        selectionAfterMove: Set<UUID>? = nil
-    ) async -> Bool {
+    func move(ids: [UUID], to listID: UUID, before destinationID: UUID?) async -> Bool {
         await moveSnips(
             .place(ids: ids, in: listID, before: destinationID, basedOn: sortMode),
-            ids: ids, selectionAfterMove: selectionAfterMove, afterSortMode: .manual
+            ids: ids, afterSortMode: .manual
         )
     }
 
     @discardableResult
-    func moveChronologically(
-        ids: [UUID],
-        to listID: UUID,
-        selectionAfterMove: Set<UUID>? = nil
-    ) async -> Bool {
-        await moveSnips(.moveChronologically(ids: ids, to: listID), ids: ids, selectionAfterMove: selectionAfterMove)
+    func moveChronologically(ids: [UUID], to listID: UUID) async -> Bool {
+        await moveSnips(.moveChronologically(ids: ids, to: listID), ids: ids)
     }
 
     private func moveSnips(
         _ command: SnipLibraryCommand,
         ids: [UUID],
-        selectionAfterMove: Set<UUID>?,
         afterSortMode: SnipSortMode? = nil
     ) async -> Bool {
         guard !ids.isEmpty, !ids.contains(where: { $0 == editingID }) else { return false }
         switch await performCommand(
             command: command,
-            afterSelection: selectionAfterMove,
             afterSortMode: afterSortMode,
             affectedIDs: Set(ids)
         ) {
@@ -1708,11 +1683,6 @@ final class AppModel: ObservableObject {
 
     func waitForPendingClipboardWrite() async {
         _ = await clipboardWrites.pendingTask?.value
-    }
-
-    func clearDownloadedFiles() async throws {
-        try await attachmentPreparation.clearDownloadedFiles()
-        await reload()
     }
 
     func mergeSelectionNow(ids targets: Set<UUID>? = nil) async {

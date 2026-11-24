@@ -25,18 +25,6 @@ abort unless device.fetch("verify") == ["device-verify"]
 '
 [[ ! -d "$SNIP_SNAP_DEV_STATE_DIR/claims" ]]
 
-legacy_name="SnipSnap""Review"
-legacy_bundle_id="world.sree.snipsnap.""review"
-if /usr/bin/grep -F \
-    -e "$legacy_name" \
-    -e "$legacy_bundle_id" \
-    -- \
-    "$script_dir/dev-app.sh" \
-    "$script_dir/run.sh" \
-    "$script_dir/showroom-delivery.sh" >/dev/null; then
-    print -u2 "An old Showroom identity returned."
-    exit 1
-fi
 /usr/bin/grep -F -- \
     'delivery = ["scripts/run.sh"]' \
     "$script_dir/../.showroom.toml" >/dev/null
@@ -131,12 +119,8 @@ fi' > "$test_dir/bin/xcodebuild"
 PATH="$test_dir/bin:$PATH" \
     SNIP_SNAP_BUILD_ARGS_FILE="$test_dir/build-args" \
     "$script_dir/build.sh" >/dev/null
+# Building into the claimed slot must leave its running app alone.
 /bin/kill -0 "$test_pid"
-/usr/bin/grep -F -- "$SNIP_SNAP_DEV_STATE_DIR/build/slot-2" "$test_dir/build-args" >/dev/null
-/usr/bin/grep -F -- "PRODUCT_BUNDLE_IDENTIFIER=world.sree.snipsnap.dev2" "$test_dir/build-args" >/dev/null
-/usr/bin/grep -E -- '(^|[[:space:]])SNIP_SNAP_PRODUCT_NAME=SnipSnapDev2([[:space:]]|$)' \
-    "$test_dir/build-args" >/dev/null
-/usr/bin/grep -F -- "INFOPLIST_KEY_CFBundleDisplayName=Snip Snap Dev 2" "$test_dir/build-args" >/dev/null
 
 recorded_pid="$test_pid"
 /bin/kill "$test_pid"

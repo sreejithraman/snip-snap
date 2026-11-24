@@ -2,13 +2,14 @@ import Foundation
 import SnipSnapCore
 import SnipSnapPersistence
 
-/// Keeps reset bookkeeping beside the sync-mode manifest and preserves replaced stores.
+/// Keeps staged zone cleanup beside the sync-mode manifest.
 package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
+  /// Earlier builds also wrote `deletionState` for the Delete Synced Content action that builds
+  /// before 0.6.0 beta 124 offered. Decoding ignores that key, and the next write drops it.
   private struct StoredState: Codable {
     var version = 1
     var hasSyncedBefore = false
     var cleanupZones: Set<CloudZoneID> = []
-    var deletionState: CloudCollectionDeletionState? = CloudCollectionDeletionState.none
   }
 
   private let persistence: SwiftDataSyncModePersistence
@@ -51,7 +52,6 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
       hasSyncedBefore: stored.hasSyncedBefore || namespace != nil || snapshot.keptAfterCloudReset,
       activeNamespace: namespace,
       cleanupZones: stored.cleanupZones,
-      deletionState: stored.deletionState ?? .none,
       keptAfterReset: snapshot.keptAfterCloudReset
     )
   }
@@ -66,24 +66,11 @@ package actor SwiftDataCloudCollectionLocalStore: CloudCollectionLocalStore {
     try update { $0.cleanupZones.subtract(zones) }
   }
 
-  package func adopt(_ namespace: CloudSyncNamespace) async throws {
-    try update { $0.hasSyncedBefore = true }
-    try await persistence.activateEmptyCollection(namespace: namespace.binding)
-  }
-
   package func stopAfterDataReset(in namespace: CloudSyncNamespace) async throws -> Bool {
     let store = try await persistence.snapshot().activeStore
     return try await persistence.keepCloudCacheLocally(
       storeID: store.id, namespace: namespace.binding, reason: .namespaceChanged
     ) == .keptAfterReset
-  }
-
-  package func markDeletionPending() throws {
-    try update { $0.deletionState = .pending }
-  }
-
-  package func markDeletionCompleted() throws {
-    try update { $0.deletionState = .completed }
   }
 
   private func update(_ transition: (inout StoredState) -> Void) throws {

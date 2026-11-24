@@ -84,7 +84,7 @@ extension CloudFullSyncPersistenceTests {
     _ = try await library.perform(.delete(ids: [deleted.id]), sortedBy: .manual)
     await transport.failNextFetchedItem(saveID, failure: failure)
     await transport.failNextFetchedItem(deleteID, failure: failure)
-    try await coordinator.sync()
+    try await coordinator.fetchThenSend()
     let saveCount = await server.acceptedOperationCount(for: saveID)
     let unrelatedCount = await server.acceptedOperationCount(for: unrelatedID)
     let remoteDeleted = await server.fullSnapshot(for: deleteID)
@@ -97,7 +97,7 @@ extension CloudFullSyncPersistenceTests {
     let reopenedTransport = FakeCloudRecordTransport(server: server, namespace: namespace)
     let reopened = CloudFullSyncCoordinator(store: reopenedStore, transport: reopenedTransport)
     // A successful incremental fetch with no matching records cannot clear their evidence.
-    try await reopened.sync()
+    try await reopened.fetchThenSend()
     let blocked = try await reopenedStore.pendingChanges()
     XCTAssertFalse(blocked.operations.contains { $0.id == saveID || $0.id == deleteID })
     let durable = try await reopenedLibrary.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
@@ -106,7 +106,7 @@ extension CloudFullSyncPersistenceTests {
     // Try Again must refetch unchanged records; one success clears only its own block.
     try await reopened.prepareManualRetry()
     await reopenedTransport.failNextFetchedItem(deleteID, failure: failure)
-    try await reopened.sync()
+    try await reopened.fetchThenSend()
     let partiallyRecovered = try await reopenedLibrary.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)
     XCTAssertEqual(try CloudFullSyncPersistence.failedFetchRecordIDs(partiallyRecovered), [deleteID])
     let updated = await server.fullSnapshot(for: saveID)
@@ -117,7 +117,7 @@ extension CloudFullSyncPersistenceTests {
     XCTAssertNotNil(stillPresent)
 
     try await reopened.prepareManualRetry()
-    try await reopened.sync()
+    try await reopened.fetchThenSend()
     let removed = await server.fullSnapshot(for: deleteID)
     XCTAssertNil(removed)
     let recovered = try await reopenedLibrary.cloudFullRecoveryEvents(namespaceKey: namespace.namespaceKey)

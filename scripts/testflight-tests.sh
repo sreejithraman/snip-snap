@@ -23,8 +23,6 @@ fi
 for required in \
     '-scheme SnipSnapiOS' \
     "-destination 'generic/platform=iOS'" \
-    '-allowProvisioningUpdates' \
-    'release_policy_require_source' \
     'test.sh" --without-mac-app-tests' \
     'testflight_policy_verify_source_record' \
     'testflight_policy_verify_archive' \

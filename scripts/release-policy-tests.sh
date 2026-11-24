@@ -122,15 +122,6 @@ assert_succeeds release_policy_appcast_contains_release "$appcast"
 print '<item sparkle:version="2" sparkle:shortVersionString="0.2.0"/>' > "$appcast"
 assert_fails release_policy_require_build_not_older "$appcast"
 
-assert_succeeds release_policy_notary_history_contains_build \
-    '{"history":[{"name":"Snip-Snap-build-1-0.0.9-submission.zip"}]}' \
-    1
-assert_fails release_policy_notary_history_contains_build \
-    '{"history":[{"name":"Snip-Snap-build-2-0.1.0-submission.zip"}]}' \
-    1
-assert_fails release_policy_notary_history_contains_build \
-    '{"message":"No submission history.","history":[]}' \
-    1
 entry="$(release_policy_notary_submission_entry \
     '{"history":[{"id":"submission-2","name":"Snip-Snap-build-2-0.1.1-submission.dmg","status":"Accepted"}]}' \
     'Snip-Snap-build-2-0.1.1-submission.dmg')"
